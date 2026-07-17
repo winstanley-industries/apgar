@@ -347,9 +347,11 @@ Conservative approximation.
 
 The search representation should never permit geometry that is illegal in the exact model.
 
-False positives are acceptable.
+If the compiled search representation marks a movement as legal, its exact swept geometry must be legal.
 
-False negatives are not.
+The compiler may conservatively block movement that exact geometry would permit. This false-blocked space is acceptable for correctness, but it reduces routing quality and must be measured.
+
+Marking an exactly illegal movement as free is a correctness defect.
 
 ---
 
@@ -574,4 +576,3 @@ https://www.comp.nus.edu.sg/~tants/pba.html
 
 **PCBWorld: A Real-World Benchmark for PCB Routing.**
 https://arxiv.org/abs/2607.05915
-
