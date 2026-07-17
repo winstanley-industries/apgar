@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly REPO_ROOT
 
 if [[ -z "${BAZEL_REAL:-}" ]]; then
   echo "APGAR's Bazel wrapper must be launched through Bazelisk." >&2
@@ -12,7 +13,10 @@ fi
 
 if [[ "${1:-}" == "lint" ]]; then
   shift
-  exec "${REPO_ROOT}/bazel/lint/lint.sh" "$@"
+  exec "${BAZEL_REAL}" run \
+    --run_env="APGAR_BAZEL_REAL=${BAZEL_REAL}" \
+    --run_env="APGAR_REPO_ROOT=${REPO_ROOT}" \
+    //bazel/lint:lint -- "$@"
 fi
 
 exec "${BAZEL_REAL}" "$@"

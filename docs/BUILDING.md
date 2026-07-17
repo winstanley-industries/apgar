@@ -11,8 +11,8 @@ compilation.
   and toolchain archives.
 - On macOS, an installed Apple developer SDK selected by `xcode-select`.
 
-No host C or C++ compiler is required. Bazel downloads and selects the LLVM
-version declared in `MODULE.bazel`.
+No host C or C++ compiler or Python interpreter is required. Bazel downloads
+and selects the LLVM and CPython versions declared in `MODULE.bazel`.
 
 Developer-specific Bazel settings may be placed in the ignored
 `.bazelrc.user`, which is imported after the repository defaults.
@@ -56,26 +56,31 @@ bazel lint
 ```
 
 Apply safe formatter and lint fixes with `bazel lint --fix`. To run a single
-driver while iterating, use `bazel lint --only cpp` or
+language while iterating, use `bazel lint --only cpp`,
+`bazel lint --only python`, `bazel lint --only shell`, or
 `bazel lint --only starlark`.
 
-The dispatcher in `bazel/lint/lint.sh` runs language-specific drivers over
-tracked and untracked, non-ignored files. The C/C++ driver uses the pinned
-LLVM `clang-format`; the Bazel/Starlark driver uses the pinned Buildifier. Both
-tools are launched through the real Bazel binary supplied to `tools/bazel` by
-Bazelisk.
+The `//bazel/lint:lint` Python binary runs under downloaded CPython 3.13.13 and
+discovers tracked and untracked, non-ignored files. Its declarative language
+registry invokes pinned tools through the real Bazel binary supplied by
+Bazelisk: LLVM `clang-format` for C, C++, and CUDA; Ruff for Python; and
+ShellCheck for Bash/shell scripts; and Buildifier for Bazel/Starlark. Unit tests
+cover file matching, selection, discovery, command construction, failure
+propagation, and the Python toolchain version. ShellCheck has no in-place fix
+mode, so `bazel lint --fix` runs it as a check after applying other supported
+fixes.
 
-When a language is added, add its executable driver under `bazel/lint/` and
-register it in the dispatcher's default language list. Drivers receive the
-repository root, requested mode, and real Bazel path through the documented
-`APGAR_*` environment variables used by the existing drivers.
+When a language is added, add a `Linter` entry in `bazel/lint/lint.py` and
+extend `//bazel/lint:lint_test`. A linter declares its file patterns and one or
+more check/fix invocations, so the default command continues to cover every
+supported language without adding another orchestration script.
 
 ## Hermeticity boundary
 
-The Bazel binary, module graph, LLVM compiler binaries, compiler builtin
-headers, and normal build actions are pinned or sandboxed. Toolchain archives
-are checksum-verified, and Bazel records the resolved module graph and extension
-inputs in `MODULE.bazel.lock`.
+The Bazel binary, module graph, LLVM compiler binaries, CPython runtime, lint
+tools, compiler builtin headers, and normal build actions are pinned or
+sandboxed. Toolchain archives are checksum-verified, and Bazel records the
+resolved module graph and extension inputs in `MODULE.bazel.lock`.
 
 On macOS, the Apple SDK supplies platform headers, libc++, system libraries, and
 linker integration. Those remain host platform inputs because Apple SDK
