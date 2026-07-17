@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ -z "${BAZEL_REAL:-}" ]]; then
+  echo "APGAR's Bazel wrapper must be launched through Bazelisk." >&2
+  echo "Install Bazelisk, then run: bazel ${*:-help}" >&2
+  exit 2
+fi
+
+if [[ "${1:-}" == "lint" ]]; then
+  shift
+  exec "${REPO_ROOT}/bazel/lint/lint.sh" "$@"
+fi
+
+exec "${BAZEL_REAL}" "$@"

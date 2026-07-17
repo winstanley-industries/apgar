@@ -38,10 +38,13 @@ repository.
 APGAR uses Bazel with Bzlmod and a pinned, downloaded LLVM toolchain:
 
 ```sh
-bazelisk build //...
-bazelisk test //...
-bazelisk run //:apgar_smoke
+bazel lint
+bazel build //...
+bazel test //...
+bazel run //:apgar_smoke
 ```
 
-See [Building APGAR](docs/BUILDING.md) for toolchain, sanitizer, formatting, and
+The `bazel` command must be Bazelisk. The repository wrapper adds `bazel lint`
+and forwards normal commands to the version pinned in `.bazelversion`. See
+[Building APGAR](docs/BUILDING.md) for toolchain, sanitizer, lint, and
 hermeticity details.

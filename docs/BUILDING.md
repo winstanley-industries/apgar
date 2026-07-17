@@ -17,40 +17,58 @@ version declared in `MODULE.bazel`.
 Developer-specific Bazel settings may be placed in the ignored
 `.bazelrc.user`, which is imported after the repository defaults.
 
+Install Bazelisk as `bazel` on `PATH`, as the standard Bazelisk packages do.
+Bazelisk delegates to `tools/bazel`; APGAR's wrapper adds repository commands
+and forwards all native Bazel commands to the downloaded binary selected by
+`.bazelversion`. Invoking `tools/bazel` directly is intentionally unsupported
+because that would bypass version selection.
+
 ## Standard commands
 
 ```sh
-bazelisk build //...
-bazelisk test //...
-bazelisk run //:apgar_smoke
+bazel build //...
+bazel test //...
+bazel run //:apgar_smoke
 ```
 
 Release and sanitizer configurations are explicit:
 
 ```sh
-bazelisk build --config=release //...
-bazelisk test --config=asan //...
-bazelisk test --config=ubsan //...
+bazel build --config=release //...
+bazel test --config=asan //...
+bazel test --config=ubsan //...
 ```
 
 When changing `MODULE.bazel`, update and inspect `MODULE.bazel.lock` with a
-successful build or `bazelisk mod deps`. In validation and CI, use
+successful build or `bazel mod deps`. In validation and CI, use
 `--lockfile_mode=error` to reject an out-of-date lockfile:
 
 ```sh
-bazelisk test --lockfile_mode=error //...
+bazel test --lockfile_mode=error //...
 ```
 
-## Formatting
+## Linting and formatting
 
-The LLVM toolchain exposes its pinned `clang-format` binary through Bazel. Run
-it with the source files being changed:
+Run every repository linter in check mode with one command:
 
 ```sh
-bazelisk run @llvm_toolchain//:clang-format -- \
-  -i "$PWD/include/apgar/version.h" "$PWD/src/version.cc" \
-  "$PWD/tests/version_test.cc" "$PWD/tools/apgar_smoke.cc"
+bazel lint
 ```
+
+Apply safe formatter and lint fixes with `bazel lint --fix`. To run a single
+driver while iterating, use `bazel lint --only cpp` or
+`bazel lint --only starlark`.
+
+The dispatcher in `bazel/lint/lint.sh` runs language-specific drivers over
+tracked and untracked, non-ignored files. The C/C++ driver uses the pinned
+LLVM `clang-format`; the Bazel/Starlark driver uses the pinned Buildifier. Both
+tools are launched through the real Bazel binary supplied to `tools/bazel` by
+Bazelisk.
+
+When a language is added, add its executable driver under `bazel/lint/` and
+register it in the dispatcher's default language list. Drivers receive the
+repository root, requested mode, and real Bazel path through the documented
+`APGAR_*` environment variables used by the existing drivers.
 
 ## Hermeticity boundary
 

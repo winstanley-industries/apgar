@@ -23,12 +23,13 @@ scaffolding makes the architecture harder to evaluate.
 Bazel is the canonical build interface. Build and test the repository with:
 
 ```sh
-bazelisk build //...
-bazelisk test //...
+bazel lint
+bazel build //...
+bazel test //...
 ```
 
 See `docs/BUILDING.md` for the pinned toolchain, sanitizer configurations,
-formatting command, and hermeticity boundary.
+lint command, and hermeticity boundary.
 
 ## Correctness expectations
 
