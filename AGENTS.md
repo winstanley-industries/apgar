@@ -61,9 +61,16 @@ architecture specification is explicitly revised.
 ## Required validation
 
 Run the narrowest relevant checks during development, then the repository-wide
-format, build, and test targets before committing. GPU changes additionally
-require CPU/GPU differential tests and a replayable failure artifact for any
-new invariant class.
+format, build, and test targets before committing:
+
+```sh
+bazelisk build //...
+bazelisk test //...
+```
+
+Use `bazelisk test --lockfile_mode=error //...` for the final dependency-lock
+check. GPU changes additionally require CPU/GPU differential tests and a
+replayable failure artifact for any new invariant class.
 
 If a required tool or accelerator is unavailable, report exactly which check
 was not run; do not present an unexecuted check as passing.

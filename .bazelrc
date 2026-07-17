@@ -1,0 +1,16 @@
+common --announce_rc
+
+build --cxxopt=-std=c++20
+build --spawn_strategy=sandboxed
+
+test --test_output=errors
+test --spawn_strategy=sandboxed
+
+build:debug --compilation_mode=dbg
+build:release --compilation_mode=opt
+
+build:asan --features=asan
+
+build:ubsan --features=ubsan
+
+try-import %workspace%/.bazelrc.user

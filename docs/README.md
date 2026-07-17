@@ -20,6 +20,8 @@ architecture explicitly.
   open questions, and references.
 - `KICKOFF.md`: project vision, early research summary, and the architectural
   proposal that led to the full specification.
+- `BUILDING.md`: canonical Bazel commands, pinned toolchain behavior, and the
+  current hermeticity boundary.
 
 ## Change policy
 

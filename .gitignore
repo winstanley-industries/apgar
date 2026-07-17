@@ -1,0 +1,13 @@
+# Bazel output symlinks and local configuration.
+/bazel-*
+/.bazelrc.user
+
+# Editor and operating-system state.
+/.idea/
+/.vscode/
+.DS_Store
+
+# Local compilation databases and profiling output.
+/compile_commands.json
+*.profraw
+*.profdata

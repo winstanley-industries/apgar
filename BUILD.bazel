@@ -1,0 +1,36 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+
+package(default_visibility = ["//visibility:private"])
+
+APGAR_COPTS = [
+    "-Wall",
+    "-Werror",
+    "-Wextra",
+    "-Wpedantic",
+]
+
+cc_library(
+    name = "apgar",
+    srcs = ["src/version.cc"],
+    hdrs = ["include/apgar/version.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "apgar_smoke",
+    srcs = ["tools/apgar_smoke.cc"],
+    copts = APGAR_COPTS,
+    deps = [":apgar"],
+)
+
+cc_test(
+    name = "version_test",
+    size = "small",
+    srcs = ["tests/version_test.cc"],
+    copts = APGAR_COPTS,
+    deps = [":apgar"],
+)

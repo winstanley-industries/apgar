@@ -32,3 +32,16 @@ usable PCB autorouter.
 
 Automated agents should also read [AGENTS.md](AGENTS.md) before changing the
 repository.
+
+## Build
+
+APGAR uses Bazel with Bzlmod and a pinned, downloaded LLVM toolchain:
+
+```sh
+bazelisk build //...
+bazelisk test //...
+bazelisk run //:apgar_smoke
+```
+
+See [Building APGAR](docs/BUILDING.md) for toolchain, sanitizer, formatting, and
+hermeticity details.

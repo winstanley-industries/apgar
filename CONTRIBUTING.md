@@ -20,8 +20,15 @@ scaffolding makes the architecture harder to evaluate.
 5. Keep commits focused and describe observable behavior rather than internal
    activity.
 
-Bazel is the canonical build interface. The initial hermetic toolchain and
-standard commands are being established as part of the foundation work.
+Bazel is the canonical build interface. Build and test the repository with:
+
+```sh
+bazelisk build //...
+bazelisk test //...
+```
+
+See `docs/BUILDING.md` for the pinned toolchain, sanitizer configurations,
+formatting command, and hermeticity boundary.
 
 ## Correctness expectations
 
