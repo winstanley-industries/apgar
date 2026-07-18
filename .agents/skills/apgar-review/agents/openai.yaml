@@ -1,0 +1,4 @@
+interface:
+  display_name: "APGAR Review"
+  short_description: "Architecture-first APGAR code review"
+  default_prompt: "Use $apgar-review to review the current APGAR working-tree changes at high effort."
