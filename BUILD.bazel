@@ -30,7 +30,13 @@ cc_binary(
 cc_test(
     name = "version_test",
     size = "small",
-    srcs = ["tests/version_test.cc"],
+    srcs = [
+        "tests/support/google_test.h",
+        "tests/version_test.cc",
+    ],
     copts = APGAR_COPTS,
-    deps = [":apgar"],
+    deps = [
+        ":apgar",
+        "@googletest//:gtest_main",
+    ],
 )

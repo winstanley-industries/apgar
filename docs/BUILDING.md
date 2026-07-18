@@ -92,3 +92,16 @@ self-contained C++ action environment.
 CUDA is intentionally not part of this first foundation. It will be introduced
 as a separately pinned toolchain and execution platform so CPU-only development
 and CI do not depend on a local CUDA installation or GPU.
+
+## Continuous integration
+
+GitHub Actions runs lint, build, and test checks on Ubuntu and build and test
+checks on macOS. Separate Linux jobs run the test suite under AddressSanitizer
+and UndefinedBehaviorSanitizer. All CI builds reject dependency-lock changes.
+
+The workflow uses GitHub-hosted `ubuntu-24.04` and `macos-15` runners by
+default. To migrate a job to an on-premises runner without changing its status
+check name or branch-protection rule, set the `APGAR_LINUX_RUNNER` or
+`APGAR_MACOS_RUNNER` repository Actions variable to a label assigned to that
+runner. Leave either variable unset to keep that platform on GitHub-hosted
+infrastructure.

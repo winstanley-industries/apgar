@@ -1,17 +1,13 @@
 #include "apgar/version.h"
 
-#include <iostream>
+#include "tests/support/google_test.h"
 
-int main() {
-  if (apgar::ProjectName() != "APGAR") {
-    std::cerr << "unexpected project name: " << apgar::ProjectName() << '\n';
-    return 1;
-  }
+namespace apgar {
+namespace {
 
-  if (apgar::Version() != "0.0.0-dev") {
-    std::cerr << "unexpected version: " << apgar::Version() << '\n';
-    return 1;
-  }
+TEST(VersionTest, ReportsProjectName) { EXPECT_EQ(ProjectName(), "APGAR"); }
 
-  return 0;
-}
+TEST(VersionTest, ReportsDevelopmentVersion) { EXPECT_EQ(Version(), "0.0.0-dev"); }
+
+}  // namespace
+}  // namespace apgar
