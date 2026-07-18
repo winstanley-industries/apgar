@@ -298,6 +298,33 @@ TEST(CompiledBoardTest, RejectsMalformedAndUnrepresentableProfilesExplicitly) {
             CompileErrorCode::kUnrepresentableProfile);
 }
 
+TEST(CompiledBoardTest, RejectsEmptyHeadingMaskAsInvalidProfile) {
+  const BoardSnapshot board = Snapshot(test_support::ValidM1BoardData());
+  CompilerProfile profile = test_support::DefaultCompilerProfile({0});
+  profile.heading_mask = 0;
+
+  CompileResult result = CompileBoard(board, profile);
+
+  ASSERT_TRUE(std::holds_alternative<CompileError>(result));
+  const CompileError& error = std::get<CompileError>(result);
+  EXPECT_EQ(error.code, CompileErrorCode::kInvalidProfile);
+  EXPECT_EQ(error.detail, "Compiler profile heading mask must be non-empty");
+}
+
+TEST(CompiledBoardTest, RejectsNonM1HeadingBitAsUnsupported) {
+  const BoardSnapshot board = Snapshot(test_support::ValidM1BoardData());
+  CompilerProfile profile = test_support::DefaultCompilerProfile({0});
+  profile.heading_mask = static_cast<board_ir::HeadingMask>(1U << 3U);
+
+  CompileResult result = CompileBoard(board, profile);
+
+  ASSERT_TRUE(std::holds_alternative<CompileError>(result));
+  const CompileError& error = std::get<CompileError>(result);
+  EXPECT_EQ(error.code, CompileErrorCode::kUnsupported);
+  EXPECT_EQ(error.detail,
+            "Compiler profile heading mask contains headings outside the M1 H/V/45 set");
+}
+
 TEST(CompiledBoardTest, SupportsNegativeLatticeAndTileCoordinatesWithoutAliasing) {
   BoardData data = test_support::ValidM1BoardData();
   data.obstacles.clear();

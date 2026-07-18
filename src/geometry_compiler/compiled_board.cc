@@ -138,10 +138,13 @@ void Normalize(CompilerProfile& profile) {
     return Error(CompileErrorCode::kInvalidProfile,
                  "At least one layer-scoped active region is required");
   }
-  if (profile.heading_mask == 0 ||
-      (profile.heading_mask & static_cast<board_ir::HeadingMask>(~board_ir::kM1HeadingMask)) != 0) {
+  if (profile.heading_mask == 0) {
+    return Error(CompileErrorCode::kInvalidProfile,
+                 "Compiler profile heading mask must be non-empty");
+  }
+  if ((profile.heading_mask & static_cast<board_ir::HeadingMask>(~board_ir::kM1HeadingMask)) != 0) {
     return Error(CompileErrorCode::kUnsupported,
-                 "Compiler profile headings must be a non-empty M1 H/V/45 subset");
+                 "Compiler profile heading mask contains headings outside the M1 H/V/45 set");
   }
   const board_ir::RoutingProfile& routing = board.data().routing_profile;
   if ((profile.heading_mask & static_cast<board_ir::HeadingMask>(~routing.allowed_headings)) != 0) {
