@@ -8,6 +8,10 @@ APGAR_COPTS = [
     "-Wall",
     "-Werror",
     "-Wextra",
+    # toolchains_llvm selects libc++ on Linux; Clang 22 reports that toolchain
+    # flag as unused during compilation. Keep it visible without weakening
+    # errors for source-level warnings.
+    "-Wno-error=unused-command-line-argument",
     "-Wpedantic",
 ]
 
