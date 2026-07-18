@@ -11,3 +11,6 @@
 /compile_commands.json
 *.profraw
 *.profdata
+
+# Cross-agent review reports, handoffs, probes, and other ephemeral artifacts.
+/.agent-scratch/

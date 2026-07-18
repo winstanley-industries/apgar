@@ -58,6 +58,14 @@ architecture specification is explicitly revised.
   CMake, Make, or language-specific top-level build without an explicit project
   decision.
 
+## Ephemeral agent artifacts
+
+Place cross-agent review reports, temporary handoff notes, probe output, and
+similar working documents under `.agent-scratch/`. The directory is git-ignored
+and its contents are not a durable source of truth. Promote lasting decisions
+or contracts into the architecture specification, a focused ADR, a versioned
+schema, or tests before discarding the scratch artifact.
+
 ## Required validation
 
 Run the narrowest relevant checks during development, then the repository-wide
