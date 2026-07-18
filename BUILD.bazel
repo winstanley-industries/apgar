@@ -16,12 +16,60 @@ APGAR_COPTS = [
 ]
 
 cc_library(
+    name = "utf8",
+    hdrs = ["include/apgar/text/utf8.h"],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "board_ir",
+    srcs = ["src/board_ir/board.cc"],
+    hdrs = [
+        "include/apgar/board_ir/board.h",
+        "include/apgar/board_ir/stable_hash.h",
+    ],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [":utf8"],
+)
+
+cc_library(
+    name = "exact_geometry",
+    srcs = ["src/geometry/exact.cc"],
+    hdrs = ["include/apgar/geometry/exact.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [":board_ir"],
+)
+
+cc_library(
+    name = "kicad_fixture_adapter",
+    srcs = ["src/adapters/kicad_fixture.cc"],
+    hdrs = ["include/apgar/adapters/kicad_fixture.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":utf8",
+    ],
+)
+
+cc_library(
     name = "apgar",
     srcs = ["src/version.cc"],
     hdrs = ["include/apgar/version.h"],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",
     visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":exact_geometry",
+        ":kicad_fixture_adapter",
+    ],
 )
 
 cc_binary(
@@ -29,6 +77,54 @@ cc_binary(
     srcs = ["tools/apgar_smoke.cc"],
     copts = APGAR_COPTS,
     deps = [":apgar"],
+)
+
+cc_test(
+    name = "board_ir_test",
+    size = "small",
+    srcs = [
+        "tests/board_ir/board_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "exact_geometry_test",
+    size = "small",
+    srcs = [
+        "tests/geometry/exact_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":exact_geometry",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "kicad_fixture_adapter_test",
+    size = "small",
+    srcs = [
+        "tests/adapters/kicad_fixture_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/m1_exactness.kicad_pcb"],
+    deps = [
+        ":board_ir",
+        ":exact_geometry",
+        ":kicad_fixture_adapter",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(

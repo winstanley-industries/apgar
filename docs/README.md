@@ -22,6 +22,10 @@ architecture explicitly.
   proposal that led to the full specification.
 - `BUILDING.md`: canonical Bazel commands, pinned toolchain behavior, and the
   current hermeticity boundary.
+- `adr/ADR-008-exact-coordinate-arithmetic.md`: accepted arithmetic envelope,
+  KiCad fixture unit scale, and exact boundary semantics for Board IR v1.
+- `../schemas/board_ir/v1.md`: normalized M1 Board IR entities,
+  canonicalization, fingerprinting, and deliberate schema limits.
 
 ## Change policy
 
