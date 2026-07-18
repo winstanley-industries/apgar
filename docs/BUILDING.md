@@ -105,3 +105,8 @@ check name or branch-protection rule, set the `APGAR_LINUX_RUNNER` or
 `APGAR_MACOS_RUNNER` repository Actions variable to a label assigned to that
 runner. Leave either variable unset to keep that platform on GitHub-hosted
 infrastructure.
+
+The standard GitHub-hosted Linux image does not have enough free space to
+extract the pinned LLVM distribution alongside its archive, so Linux jobs
+remove the image's unused Android SDK before Bazel starts. The cleanup is
+guarded by `runner.environment` and never runs on self-hosted infrastructure.
