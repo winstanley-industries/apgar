@@ -46,6 +46,33 @@ cc_library(
 )
 
 cc_library(
+    name = "geometry_compiler",
+    srcs = ["src/geometry_compiler/compiled_board.cc"],
+    hdrs = ["include/apgar/geometry_compiler/compiled_board.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":exact_geometry",
+    ],
+)
+
+cc_library(
+    name = "cpu_astar",
+    srcs = ["src/routing/cpu_astar.cc"],
+    hdrs = ["include/apgar/routing/cpu_astar.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":exact_geometry",
+        ":geometry_compiler",
+    ],
+)
+
+cc_library(
     name = "kicad_fixture_adapter",
     srcs = ["src/adapters/kicad_fixture.cc"],
     hdrs = ["include/apgar/adapters/kicad_fixture.h"],
@@ -67,7 +94,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":board_ir",
+        ":cpu_astar",
         ":exact_geometry",
+        ":geometry_compiler",
         ":kicad_fixture_adapter",
     ],
 )
@@ -106,6 +135,44 @@ cc_test(
     deps = [
         ":board_ir",
         ":exact_geometry",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "geometry_compiler_test",
+    size = "small",
+    srcs = [
+        "tests/geometry_compiler/compiled_board_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":exact_geometry",
+        ":geometry_compiler",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cpu_astar_test",
+    size = "small",
+    srcs = [
+        "tests/routing/cpu_astar_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/m1_exactness.kicad_pcb"],
+    deps = [
+        ":board_ir",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":kicad_fixture_adapter",
         "@googletest//:gtest_main",
     ],
 )

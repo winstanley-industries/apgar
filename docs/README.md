@@ -24,8 +24,13 @@ architecture explicitly.
   current hermeticity boundary.
 - `adr/ADR-008-exact-coordinate-arithmetic.md`: accepted arithmetic envelope,
   KiCad fixture unit scale, and exact boundary semantics for Board IR v1.
+- `adr/ADR-009-m1-sparse-field-and-planar-reference-semantics.md`: accepted
+  sparse active-region, directional-edge, telemetry, and planar CPU reference
+  semantics for Phase 1.
 - `../schemas/board_ir/v1.md`: normalized M1 Board IR entities,
   canonicalization, fingerprinting, and deliberate schema limits.
+- `../schemas/compiled_board/v1.md`: versioned CompilerProfile, rule bucket,
+  sparse directional field, telemetry, and CPU reference consumption contract.
 
 ## Change policy
 
