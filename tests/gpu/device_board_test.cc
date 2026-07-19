@@ -15,50 +15,21 @@
 #include "tests/support/board_builder.h"
 #include "tests/support/compiler_builder.h"
 #include "tests/support/google_test.h"
+#include "tests/support/routing_builder.h"
 
 namespace apgar::gpu {
 namespace {
 
-using board_ir::BoardCreationResult;
 using board_ir::BoardData;
 using board_ir::BoardSnapshot;
 using geometry_compiler::CompiledBoard;
-using geometry_compiler::CompileError;
 using geometry_compiler::CompilerProfile;
 using geometry_compiler::Direction;
 
 using routing::CpuRouteRequest;
-
-[[nodiscard]] BoardSnapshot Snapshot(BoardData data = test_support::ValidM1BoardData()) {
-  BoardCreationResult result = board_ir::CreateBoardSnapshot(std::move(data));
-  EXPECT_TRUE(std::holds_alternative<BoardSnapshot>(result));
-  return std::get<BoardSnapshot>(std::move(result));
-}
-
-[[nodiscard]] CpuRouteRequest Request(const BoardSnapshot& board) {
-  const board_ir::Net* net = board.FindNet(board.data().routing_profile.net);
-  EXPECT_NE(net, nullptr);
-  const board_ir::Terminal* first = board.FindTerminal(net->terminals[0]);
-  const board_ir::Terminal* second = board.FindTerminal(net->terminals[1]);
-  EXPECT_NE(first, nullptr);
-  EXPECT_NE(second, nullptr);
-  return CpuRouteRequest{
-      .net = net->ref,
-      .start = first->center,
-      .goal = second->center,
-      .start_layer = 0,
-      .goal_layer = 0,
-  };
-}
-
-[[nodiscard]] CompiledBoard Compile(const BoardSnapshot& board, CompilerProfile profile) {
-  geometry_compiler::CompileResult result =
-      geometry_compiler::CompileBoard(board, std::move(profile));
-  EXPECT_TRUE(std::holds_alternative<CompiledBoard>(result))
-      << (std::holds_alternative<CompileError>(result) ? std::get<CompileError>(result).detail
-                                                       : "");
-  return std::get<CompiledBoard>(std::move(result));
-}
+using test_support::Compile;
+using test_support::Snapshot;
+using test_support::TwoTerminalRequest;
 
 [[nodiscard]] DeviceCompiledBoardV1 Flatten(const BoardSnapshot& board,
                                             const CompiledBoard& compiled) {
@@ -68,6 +39,24 @@ using routing::CpuRouteRequest;
               ? std::get<PlanarGpuFailure>(result).detail
               : "");
   return std::get<DeviceCompiledBoardV1>(std::move(result));
+}
+
+void SetBatchTelemetry(const DeviceCompiledBoardV1& device, PlanarGenerator generator,
+                       UntrustedKernelResult* result) {
+  result->generator = generator;
+  std::uint64_t batch_bytes = sizeof(DeviceResultHeaderV1) +
+                              result->labels.size() * sizeof(std::uint64_t) +
+                              result->predecessors.size() * sizeof(std::uint32_t);
+  if (generator == PlanarGenerator::kBucketedFrontier) {
+    batch_bytes += result->labels.size() * 2 * sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t);
+  } else {
+    batch_bytes +=
+        device.header.represented_nodes * 8 * sizeof(std::uint64_t) + 2 * sizeof(std::uint64_t);
+  }
+  result->telemetry.persistent_device_bytes = device.header.estimated_persistent_device_bytes;
+  result->telemetry.batch_device_bytes = batch_bytes;
+  result->telemetry.peak_device_bytes =
+      result->telemetry.persistent_device_bytes + result->telemetry.batch_device_bytes;
 }
 
 [[nodiscard]] UntrustedKernelResult StraightEastResult(const CompiledBoard& compiled,
@@ -103,12 +92,7 @@ using routing::CpuRouteRequest;
           std::vector<std::uint32_t>(device->header.represented_states, kInvalidStateIndex),
       .telemetry = {},
   };
-  result.telemetry.persistent_device_bytes = device->header.estimated_persistent_device_bytes;
-  result.telemetry.batch_device_bytes = sizeof(DeviceResultHeaderV1) +
-                                        result.labels.size() * sizeof(std::uint64_t) +
-                                        result.predecessors.size() * sizeof(std::uint32_t);
-  result.telemetry.peak_device_bytes =
-      result.telemetry.persistent_device_bytes + result.telemetry.batch_device_bytes;
+  SetBatchTelemetry(*device, PlanarGenerator::kBucketedFrontier, &result);
 
   std::uint32_t predecessor = StateIndex(*start_node, kNoIncomingHeading);
   result.labels[predecessor] = 0;
@@ -185,19 +169,25 @@ class ScriptedBackend final : public IPlanarRouteBackend {
   }
 
   [[nodiscard]] UploadResult UploadCompiledView(const DeviceCompiledBoardV1&) override {
+    ++uploads;
     return std::unique_ptr<UploadedCompiledView>(std::make_unique<StubUploadedView>());
   }
 
   [[nodiscard]] ExecutionResult ExecuteRoute(const UploadedCompiledView&,
                                              const BackendExecutionRequest&) override {
+    ++executions;
     return std::unique_ptr<PendingRouteExecution>(std::make_unique<StubPendingExecution>());
   }
 
   [[nodiscard]] ReadbackResult ReadbackRoute(const PendingRouteExecution&) override {
+    ++readbacks;
     return result_;
   }
 
   mutable std::uint32_t metadata_queries = 0;
+  std::uint32_t uploads = 0;
+  std::uint32_t executions = 0;
+  std::uint32_t readbacks = 0;
 
  private:
   UntrustedKernelResult result_;
@@ -279,7 +269,7 @@ TEST(GpuUntrustedResultTest, RejectsAssociationsBoundsHeadingsCostsAndCycles) {
   const BoardSnapshot board = Snapshot(std::move(data));
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
   DeviceCompiledBoardV1 device = Flatten(board, compiled);
-  const CpuRouteRequest request = Request(board);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
   const UntrustedKernelResult valid = StraightEastResult(compiled, &device, request, false);
   ASSERT_TRUE(
       std::holds_alternative<PlanarGpuRoute>(Validate(board, compiled, device, request, valid)));
@@ -334,6 +324,11 @@ TEST(GpuUntrustedResultTest, RejectsAssociationsBoundsHeadingsCostsAndCycles) {
   timing.telemetry.kernel_milliseconds = -1.0;
   ExpectFailureCode(Validate(board, compiled, device, request, timing),
                     PlanarGpuFailureCode::kInternalInvariant);
+
+  UntrustedKernelResult inflated_peak = valid;
+  ++inflated_peak.telemetry.peak_device_bytes;
+  ExpectFailureCode(Validate(board, compiled, device, request, inflated_peak),
+                    PlanarGpuFailureCode::kInternalInvariant);
 }
 
 TEST(GpuUntrustedResultTest, ValidatesFailureArraysAndPolicyBeforeClassifyingOutcomes) {
@@ -342,7 +337,7 @@ TEST(GpuUntrustedResultTest, ValidatesFailureArraysAndPolicyBeforeClassifyingOut
   const BoardSnapshot board = Snapshot(std::move(data));
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
   DeviceCompiledBoardV1 device = Flatten(board, compiled);
-  const CpuRouteRequest request = Request(board);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
   UntrustedKernelResult valid = StraightEastResult(compiled, &device, request, false);
   valid.telemetry.rounds = 1;
 
@@ -356,6 +351,27 @@ TEST(GpuUntrustedResultTest, ValidatesFailureArraysAndPolicyBeforeClassifyingOut
       malformed_backend);
   ExpectFailureCode(malformed, PlanarGpuFailureCode::kInternalInvariant);
   EXPECT_TRUE(std::get<PlanarGpuFailure>(malformed).telemetry.has_value());
+
+  UntrustedKernelResult partial_sweep = valid;
+  SetBatchTelemetry(device, PlanarGenerator::kHeadingAwareSweep, &partial_sweep);
+  partial_sweep.completion = KernelCompletion::kBudgetExhausted;
+  const std::uint32_t partial_state = partial_sweep.goal_state;
+  partial_sweep.predecessors[partial_state] = kInvalidStateIndex;
+  ScriptedBackend partial_backend(partial_sweep);
+  const PlanarRoutePolicy partial_policy{.generator = PlanarGenerator::kHeadingAwareSweep,
+                                         .maximum_rounds = 1};
+  const PlanarGpuRouteResult partial =
+      RouteWithPlanarGpuBackend(board, compiled, request, partial_policy, partial_backend);
+  ExpectFailureCode(partial, PlanarGpuFailureCode::kResourceExhausted);
+  EXPECT_TRUE(std::get<PlanarGpuFailure>(partial).telemetry.has_value());
+
+  partial_sweep.predecessors[partial_state] = partial_state;
+  ScriptedBackend corrupt_partial_backend(std::move(partial_sweep));
+  const PlanarGpuRouteResult corrupt_partial =
+      RouteWithPlanarGpuBackend(board, compiled, request, partial_policy, corrupt_partial_backend);
+  ExpectFailureCode(corrupt_partial, PlanarGpuFailureCode::kInternalInvariant);
+  EXPECT_EQ(std::get<PlanarGpuFailure>(corrupt_partial).invariant_id,
+            "gpu.predecessor.self_reference.v1");
 
   UntrustedKernelResult corrupted_disconnected = valid;
   corrupted_disconnected.completion = KernelCompletion::kDisconnected;
@@ -391,11 +407,49 @@ TEST(GpuUntrustedResultTest, ValidatesFailureArraysAndPolicyBeforeClassifyingOut
   EXPECT_EQ(unused_backend.metadata_queries, 0U);
 }
 
+TEST(GpuPreparedViewTest, ReusesOneUploadAndRejectsStaleBoardAssociation) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(data);
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
+  UntrustedKernelResult kernel_result = StraightEastResult(compiled, &device, request, false);
+  kernel_result.telemetry.rounds = 1;
+  ScriptedBackend backend(std::move(kernel_result));
+
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, compiled, backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+  ASSERT_NE(prepared, nullptr);
+  EXPECT_EQ(backend.metadata_queries, 1U);
+  EXPECT_EQ(backend.uploads, 1U);
+
+  for (int repetition = 0; repetition < 2; ++repetition) {
+    const PlanarGpuRouteResult result =
+        RouteWithPreparedPlanarGpuBackend(board, compiled, request, PlanarRoutePolicy{}, *prepared);
+    ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(result));
+  }
+  EXPECT_EQ(backend.metadata_queries, 1U);
+  EXPECT_EQ(backend.uploads, 1U);
+  EXPECT_EQ(backend.executions, 2U);
+  EXPECT_EQ(backend.readbacks, 2U);
+
+  ++data.revision;
+  const BoardSnapshot stale_board = Snapshot(std::move(data));
+  const PlanarGpuRouteResult stale = RouteWithPreparedPlanarGpuBackend(
+      stale_board, compiled, request, PlanarRoutePolicy{}, *prepared);
+  ExpectFailureCode(stale, PlanarGpuFailureCode::kValidationFailed);
+  EXPECT_EQ(backend.executions, 2U);
+}
+
 TEST(GpuUntrustedResultTest, ExactSweptGeometryRejectsStructurallyValidFalseFreePath) {
   const BoardSnapshot board = Snapshot();
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
   DeviceCompiledBoardV1 device = Flatten(board, compiled);
-  const CpuRouteRequest request = Request(board);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
   const UntrustedKernelResult false_free = StraightEastResult(compiled, &device, request, true);
 
   ExpectFailureCode(Validate(board, compiled, device, request, false_free),

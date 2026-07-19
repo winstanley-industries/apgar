@@ -10,25 +10,9 @@
 
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry_compiler/compiled_board.h"
+#include "apgar/routing/planar_route.h"
 
 namespace apgar::routing {
-
-struct CpuRouteRequest {
-  board_ir::EntityRef net;
-  board_ir::Point64 start;
-  board_ir::Point64 goal;
-  board_ir::LayerId start_layer;
-  board_ir::LayerId goal_layer;
-
-  friend bool operator==(const CpuRouteRequest&, const CpuRouteRequest&) = default;
-};
-
-struct LayerSegment {
-  board_ir::LayerId layer;
-  board_ir::Segment64 centerline;
-
-  friend bool operator==(const LayerSegment&, const LayerSegment&) = default;
-};
 
 enum class RouteFailureCode : std::uint8_t {
   kInvalidRequest,

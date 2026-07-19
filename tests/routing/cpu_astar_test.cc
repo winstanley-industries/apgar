@@ -2,9 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdlib>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <utility>
 #include <variant>
@@ -15,6 +12,7 @@
 #include "tests/support/board_builder.h"
 #include "tests/support/compiler_builder.h"
 #include "tests/support/google_test.h"
+#include "tests/support/routing_builder.h"
 
 namespace apgar::geometry_compiler {
 
@@ -50,60 +48,16 @@ namespace apgar::routing {
 namespace {
 
 using board_ir::AxisAlignedBox64;
-using board_ir::BoardCreationResult;
 using board_ir::BoardData;
 using board_ir::BoardSnapshot;
 using board_ir::Point64;
 using geometry_compiler::ActiveRegion;
 using geometry_compiler::CompiledBoard;
-using geometry_compiler::CompileError;
 using geometry_compiler::CompilerProfile;
-
-[[nodiscard]] BoardSnapshot Snapshot(BoardData data) {
-  BoardCreationResult result = board_ir::CreateBoardSnapshot(std::move(data));
-  EXPECT_TRUE(std::holds_alternative<BoardSnapshot>(result));
-  return std::get<BoardSnapshot>(std::move(result));
-}
-
-[[nodiscard]] CompiledBoard Compile(const BoardSnapshot& board, CompilerProfile profile) {
-  geometry_compiler::CompileResult result =
-      geometry_compiler::CompileBoard(board, std::move(profile));
-  EXPECT_TRUE(std::holds_alternative<CompiledBoard>(result))
-      << (std::holds_alternative<CompileError>(result) ? std::get<CompileError>(result).detail
-                                                       : "");
-  return std::get<CompiledBoard>(std::move(result));
-}
-
-[[nodiscard]] CpuRouteRequest Request(const BoardSnapshot& board, board_ir::LayerId layer) {
-  const board_ir::Net* net = board.FindNet(board.data().routing_profile.net);
-  EXPECT_NE(net, nullptr);
-  const board_ir::Terminal* first = board.FindTerminal(net->terminals[0]);
-  const board_ir::Terminal* second = board.FindTerminal(net->terminals[1]);
-  EXPECT_NE(first, nullptr);
-  EXPECT_NE(second, nullptr);
-  return CpuRouteRequest{
-      .net = net->ref,
-      .start = first->center,
-      .goal = second->center,
-      .start_layer = layer,
-      .goal_layer = layer,
-  };
-}
-
-[[nodiscard]] std::string ReadFixture() {
-  const char* test_srcdir = std::getenv("TEST_SRCDIR");
-  const char* test_workspace = std::getenv("TEST_WORKSPACE");
-  if (test_srcdir == nullptr || test_workspace == nullptr) {
-    return {};
-  }
-  const std::string path =
-      std::string(test_srcdir) + "/" + test_workspace + "/tests/fixtures/m1_exactness.kicad_pcb";
-  std::ifstream input(path);
-  if (!input) {
-    return {};
-  }
-  return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
-}
+using test_support::Compile;
+using test_support::ReadFixture;
+using test_support::Snapshot;
+using test_support::TwoTerminalRequest;
 
 TEST(CpuAStarTest, RepeatedCompilationAndRoutingAreExternallyIdentical) {
   const BoardSnapshot board = Snapshot(test_support::ValidM1BoardData());
@@ -111,8 +65,10 @@ TEST(CpuAStarTest, RepeatedCompilationAndRoutingAreExternallyIdentical) {
   const CompiledBoard first_compiled = Compile(board, profile);
   const CompiledBoard second_compiled = Compile(board, profile);
 
-  const CpuRouteResult first = RouteWithCpuAStar(board, first_compiled, Request(board, 0));
-  const CpuRouteResult second = RouteWithCpuAStar(board, second_compiled, Request(board, 0));
+  const CpuRouteResult first =
+      RouteWithCpuAStar(board, first_compiled, TwoTerminalRequest(board, 0, 0));
+  const CpuRouteResult second =
+      RouteWithCpuAStar(board, second_compiled, TwoTerminalRequest(board, 0, 0));
 
   ASSERT_TRUE(std::holds_alternative<CpuRoute>(first));
   ASSERT_TRUE(std::holds_alternative<CpuRoute>(second));
@@ -157,7 +113,7 @@ TEST(CpuAStarTest, CheapDiagonalHeuristicRemainsAdmissible) {
   };
   const CompiledBoard compiled = Compile(board, profile);
 
-  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, Request(board, 0));
+  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, TwoTerminalRequest(board, 0, 0));
 
   ASSERT_TRUE(std::holds_alternative<CpuRoute>(result));
   const CpuRoute& route = std::get<CpuRoute>(result);
@@ -183,11 +139,12 @@ TEST(CpuAStarTest, ReturnsStructuredDisconnectedAndMalformedRequestFailures) {
   profile.active_regions = {ActiveRegion{.layer = 0, .bounds = profile.compilation_roi}};
   const CompiledBoard compiled = Compile(board, profile);
 
-  const CpuRouteResult disconnected = RouteWithCpuAStar(board, compiled, Request(board, 0));
+  const CpuRouteResult disconnected =
+      RouteWithCpuAStar(board, compiled, TwoTerminalRequest(board, 0, 0));
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(disconnected));
   EXPECT_EQ(std::get<RouteFailure>(disconnected).code, RouteFailureCode::kDisconnected);
 
-  CpuRouteRequest malformed = Request(board, 0);
+  CpuRouteRequest malformed = TwoTerminalRequest(board, 0, 0);
   malformed.net.generation += 1;
   const CpuRouteResult invalid = RouteWithCpuAStar(board, compiled, malformed);
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(invalid));
@@ -197,7 +154,7 @@ TEST(CpuAStarTest, ReturnsStructuredDisconnectedAndMalformedRequestFailures) {
 TEST(CpuAStarTest, DeclaresLayerTransitionsUnsupportedInsteadOfInventingVias) {
   const BoardSnapshot board = Snapshot(test_support::ValidM1BoardData());
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile());
-  CpuRouteRequest request = Request(board, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   request.goal_layer = 31;
 
   const CpuRouteResult result = RouteWithCpuAStar(board, compiled, request);
@@ -212,7 +169,7 @@ TEST(CpuAStarTest, RejectsEndpointsOutsideTheRepresentedLattice) {
   profile.lattice_origin = Point64{.x = 1, .y = 0};
   const CompiledBoard compiled = Compile(board, profile);
 
-  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, Request(board, 0));
+  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, TwoTerminalRequest(board, 0, 0));
 
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(result));
   EXPECT_EQ(std::get<RouteFailure>(result).code, RouteFailureCode::kInvalidRequest);
@@ -221,7 +178,7 @@ TEST(CpuAStarTest, RejectsEndpointsOutsideTheRepresentedLattice) {
 TEST(CpuAStarTest, ExactValidatorRejectsDeliberatelyCorruptedReconstructedPath) {
   const BoardSnapshot board = Snapshot(test_support::ValidM1BoardData());
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile());
-  const CpuRouteRequest request = Request(board, 0);
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   const LayerSegment illegal{
       .layer = 0,
       .centerline = board_ir::Segment64{.start = request.start, .end = request.goal},
@@ -250,11 +207,14 @@ TEST(CpuAStarTest, ExactValidatorRejectsAPathEnabledByACorruptedMask) {
   ASSERT_TRUE(geometry_compiler::CompiledBoardTestPeer::AddLegalEdge(
       compiled, 0, 0, 0, geometry_compiler::Direction::kEast));
 
-  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, Request(board, 0));
+  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, TwoTerminalRequest(board, 0, 0));
 
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(result));
-  EXPECT_EQ(std::get<RouteFailure>(result).code, RouteFailureCode::kValidationFailed);
-  EXPECT_TRUE(std::get<RouteFailure>(result).obstacle.has_value());
+  const RouteFailure& failure = std::get<RouteFailure>(result);
+  EXPECT_EQ(failure.code, RouteFailureCode::kValidationFailed);
+  EXPECT_TRUE(failure.obstacle.has_value());
+  ASSERT_TRUE(failure.telemetry.has_value());
+  EXPECT_GT(failure.telemetry->expanded_states, 0U);
 }
 
 TEST(CpuAStarTest, RejectsCorruptedMaskDirectionsExcludedByCompilerProfile) {
@@ -267,10 +227,13 @@ TEST(CpuAStarTest, RejectsCorruptedMaskDirectionsExcludedByCompilerProfile) {
   ASSERT_TRUE(geometry_compiler::CompiledBoardTestPeer::AddLegalEdge(
       compiled, 0, 0, 0, geometry_compiler::Direction::kNorthEast));
 
-  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, Request(board, 0));
+  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, TwoTerminalRequest(board, 0, 0));
 
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(result));
-  EXPECT_EQ(std::get<RouteFailure>(result).code, RouteFailureCode::kValidationFailed);
+  const RouteFailure& failure = std::get<RouteFailure>(result);
+  EXPECT_EQ(failure.code, RouteFailureCode::kValidationFailed);
+  ASSERT_TRUE(failure.telemetry.has_value());
+  EXPECT_GT(failure.telemetry->expanded_states, 0U);
 }
 
 TEST(CpuAStarTest, RejectsStaleBoardAndProfileAssociationsBeforeSearch) {
@@ -280,18 +243,21 @@ TEST(CpuAStarTest, RejectsStaleBoardAndProfileAssociationsBeforeSearch) {
   BoardData changed_data = test_support::ValidM1BoardData();
   ++changed_data.revision;
   const BoardSnapshot changed = Snapshot(std::move(changed_data));
-  const CpuRouteResult stale_board = RouteWithCpuAStar(changed, compiled, Request(changed, 0));
+  const CpuRouteResult stale_board =
+      RouteWithCpuAStar(changed, compiled, TwoTerminalRequest(changed, 0, 0));
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(stale_board));
   EXPECT_EQ(std::get<RouteFailure>(stale_board).code, RouteFailureCode::kValidationFailed);
 
   geometry_compiler::CompiledBoardTestPeer::CorruptProfileFingerprint(compiled);
-  const CpuRouteResult stale_profile = RouteWithCpuAStar(board, compiled, Request(board, 0));
+  const CpuRouteResult stale_profile =
+      RouteWithCpuAStar(board, compiled, TwoTerminalRequest(board, 0, 0));
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(stale_profile));
   EXPECT_EQ(std::get<RouteFailure>(stale_profile).code, RouteFailureCode::kValidationFailed);
 
   CompiledBoard stale_bucket = Compile(board, test_support::DefaultCompilerProfile());
   geometry_compiler::CompiledBoardTestPeer::CorruptRuleBucketIdentity(stale_bucket);
-  const CpuRouteResult invalid_bucket = RouteWithCpuAStar(board, stale_bucket, Request(board, 0));
+  const CpuRouteResult invalid_bucket =
+      RouteWithCpuAStar(board, stale_bucket, TwoTerminalRequest(board, 0, 0));
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(invalid_bucket));
   EXPECT_EQ(std::get<RouteFailure>(invalid_bucket).code, RouteFailureCode::kValidationFailed);
 }
@@ -329,8 +295,8 @@ TEST(CpuAStarIntegrationTest, RoutesKiCadFixtureAroundFrontBlockerAndDirectlyOnB
               .orthogonal_step = 1000, .diagonal_step = 1414, .bend = 100},
   };
   const CompiledBoard compiled = Compile(board, profile);
-  CpuRouteRequest front_request = Request(board, 0);
-  CpuRouteRequest back_request = Request(board, 31);
+  CpuRouteRequest front_request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest back_request = TwoTerminalRequest(board, 31, 31);
   if (front_request.start.x > front_request.goal.x) {
     std::swap(front_request.start, front_request.goal);
     std::swap(back_request.start, back_request.goal);

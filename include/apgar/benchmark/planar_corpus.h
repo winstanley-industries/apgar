@@ -22,7 +22,13 @@ struct PlanarCorpusCase {
   routing::CpuRouteRequest request;
 };
 
+using PlanarCorpusCaseResult = std::variant<PlanarCorpusCase, std::string>;
 using PlanarCorpusResult = std::variant<std::vector<PlanarCorpusCase>, std::string>;
+
+// Builds the version-1 KiCad fixture case using the same import, profile, and
+// request construction as the full bakeoff corpus. Replay tools consume this
+// entry point so their pinned associations cannot drift from the corpus.
+[[nodiscard]] PlanarCorpusCaseResult BuildPlanarBakeoffKicadCaseV1(std::string_view kicad_fixture);
 
 // Builds the fixed Phase 2 planar corpus. The KiCad contents are supplied by
 // the caller so tests and benchmarks use Bazel runfiles rather than host paths.

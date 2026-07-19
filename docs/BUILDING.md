@@ -40,6 +40,14 @@ bazel test --config=asan //...
 bazel test --config=ubsan //...
 ```
 
+The ASan and UBSan configurations instrument the pinned LLVM CPU toolchain.
+CUDA targets are explicitly incompatible with either sanitizer configuration:
+the pinned CUDA compiler and NVIDIA driver boundary cannot currently be
+instrumented end-to-end by those runtimes. Bazel therefore rejects commands
+that combine `--config=cuda` with `--config=asan` or `--config=ubsan`, rather
+than silently producing a partially instrumented result. Run the CPU sanitizer
+gates above and the CUDA differential/replay gates separately.
+
 When changing `MODULE.bazel`, update and inspect `MODULE.bazel.lock` with a
 successful build or `bazel mod deps`. In validation and CI, use
 `--lockfile_mode=error` to reject an out-of-date lockfile:
@@ -127,10 +135,13 @@ bazel run --config=cuda --config=benchmark //:planar_benchmark -- \
 
 The harness programmatically fixes 20 repetitions, a 0.02-second minimum
 measurement time, a 0.01-second Google Benchmark warm-up, wall-clock timing,
-and microsecond output. APGAR counters add differential semantics, work,
-rounds, kernel time, deterministic geometry fingerprints, and owned device
-memory to Google Benchmark's JSON. `--benchmark_dry_run` is useful only for
-bring-up and does not produce publishable measurements.
+and microsecond output. Each corpus CompiledBoard is uploaded once before
+timing; the measured GPU scope is execution, readback, reconstruction, and
+untrusted-result validation against that immutable prepared view. APGAR
+counters add differential semantics, work, rounds, kernel time, deterministic
+geometry fingerprints, and per-route owned device memory to Google Benchmark's
+JSON. `--benchmark_dry_run` is useful only for bring-up and does not produce
+publishable measurements.
 
 ## Continuous integration
 

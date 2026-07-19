@@ -4,6 +4,7 @@ module(
 
 bazel_dep(name = "rules_cc", version = "0.2.22")
 bazel_dep(name = "rules_cuda", version = "0.3.0")
+bazel_dep(name = "platforms", version = "1.1.0")
 
 # CUDA 13.0 supports GCC 15, while the repository's default LLVM 22/libc++
 # toolchain is intentionally newer than nvcc's supported host range.

@@ -29,7 +29,8 @@ make the supported device build difficult to reproduce.
   backend in Phase 2.
 - Device CompiledBoard schema v1 is immutable and versioned. It carries stable
   node and incoming-heading state indices, explicit array bounds, association
-  fingerprints, and deterministic owned-byte accounting.
+  fingerprints, and deterministic owned-byte accounting. A prepared-view API
+  permits repeated route execution against one validated immutable upload.
 - The deterministic bucketed frontier and heading-aware segmented sweep remain
   experimental planar generators. Every result is reconstructed and validated
   on the host; neither generator is legality authority.
@@ -49,8 +50,7 @@ make the supported device build difficult to reproduce.
   while execution still requires the declared host glibc ABI plus a compatible
   NVIDIA kernel driver and GPU.
 - The benchmark result is deliberately negative: the current GPU prototypes do
-  not justify dispatching these small and medium, upload-per-route fields away
-  from CPU A*.
+  not justify dispatching these small and medium planar fields away from CPU A*.
 - Sweep is not promoted to a general speed winner. Candidate batching, reuse,
   larger fields, and later candidate-store integration require new evidence.
 - Both CUDA generators must continue to match CPU reachability/failure

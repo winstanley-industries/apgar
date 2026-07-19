@@ -12,6 +12,28 @@ APGAR_COPTS = [
     "-Wpedantic",
 ]
 
+config_setting(
+    name = "asan_enabled",
+    flag_values = {"@llvm//config:asan": "True"},
+)
+
+config_setting(
+    name = "ubsan_enabled",
+    flag_values = {"@llvm//config:ubsan": "True"},
+)
+
+# The CUDA host/device boundary cannot currently be instrumented end-to-end by
+# the pinned LLVM sanitizer runtimes. Reject the combination at analysis time
+# instead of silently presenting a partially instrumented CUDA build as a
+# sanitizer result.
+CUDA_SANITIZER_COMPATIBILITY = select({
+    ":asan_enabled": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+}) + select({
+    ":ubsan_enabled": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+})
+
 cc_library(
     name = "utf8",
     hdrs = ["include/apgar/text/utf8.h"],
@@ -56,6 +78,19 @@ cc_library(
 )
 
 cc_library(
+    name = "planar_route",
+    srcs = ["src/routing/planar_route.cc"],
+    hdrs = ["include/apgar/routing/planar_route.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":geometry_compiler",
+    ],
+)
+
+cc_library(
     name = "cpu_astar",
     srcs = ["src/routing/cpu_astar.cc"],
     hdrs = ["include/apgar/routing/cpu_astar.h"],
@@ -66,6 +101,7 @@ cc_library(
         ":board_ir",
         ":exact_geometry",
         ":geometry_compiler",
+        ":planar_route",
     ],
 )
 
@@ -83,7 +119,17 @@ cc_library(
         ":board_ir",
         ":cpu_astar",
         ":geometry_compiler",
+        ":planar_route",
     ],
+)
+
+cc_library(
+    name = "gpu_fault_injecting_backend",
+    srcs = ["src/gpu/fault_injecting_backend.cc"],
+    hdrs = ["include/apgar/gpu/fault_injecting_backend.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    deps = [":gpu_planar_router"],
 )
 
 cuda_library(
@@ -91,6 +137,7 @@ cuda_library(
     srcs = ["gpu/cuda/planar_router.cu"],
     copts = ["-std=c++20"],
     tags = ["manual"],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [":cuda_planar_route_backend_api"],
 )
@@ -115,7 +162,16 @@ cc_library(
         ":cpu_astar",
         ":geometry_compiler",
         ":kicad_fixture_adapter",
+        ":planar_route",
     ],
+)
+
+cc_library(
+    name = "tool_runfiles",
+    srcs = ["src/tooling/runfiles.cc"],
+    hdrs = ["include/apgar/tooling/runfiles.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
 )
 
 cc_library(
@@ -167,12 +223,14 @@ cc_binary(
         "manual",
         "requires-gpu",
     ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     deps = [
         ":board_ir",
         ":cuda_planar_route_backend",
-        ":geometry_compiler",
+        ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
-        ":kicad_fixture_adapter",
+        ":planar_benchmark_corpus",
+        ":tool_runfiles",
     ],
 )
 
@@ -185,12 +243,14 @@ cc_binary(
         "manual",
         "requires-gpu",
     ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     deps = [
         ":board_ir",
         ":cpu_astar",
         ":cuda_planar_route_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
+        ":tool_runfiles",
         "@google_benchmark//:benchmark",
     ],
 )
@@ -208,12 +268,14 @@ cc_test(
         "manual",
         "requires-gpu",
     ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     deps = [
         ":board_ir",
         ":cuda_planar_route_backend",
-        ":geometry_compiler",
+        ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
-        ":kicad_fixture_adapter",
+        ":planar_benchmark_corpus",
+        ":tool_runfiles",
     ],
 )
 
@@ -225,6 +287,7 @@ cuda_test(
         "manual",
         "requires-gpu",
     ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
 )
 
 cc_test(
@@ -284,6 +347,7 @@ cc_test(
         "tests/support/board_builder.h",
         "tests/support/compiler_builder.h",
         "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
     ],
     copts = APGAR_COPTS,
     deps = [
@@ -302,6 +366,7 @@ cc_test(
         "tests/support/board_builder.h",
         "tests/support/compiler_builder.h",
         "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
     ],
     copts = APGAR_COPTS,
     data = ["tests/fixtures/m1_exactness.kicad_pcb"],
@@ -309,11 +374,13 @@ cc_test(
         "manual",
         "requires-gpu",
     ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     deps = [
         ":board_ir",
         ":cpu_astar",
         ":cuda_planar_route_backend",
         ":geometry_compiler",
+        ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
         "@googletest//:gtest_main",
@@ -328,6 +395,7 @@ cc_test(
         "tests/support/board_builder.h",
         "tests/support/compiler_builder.h",
         "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
     ],
     copts = APGAR_COPTS,
     data = ["tests/fixtures/m1_exactness.kicad_pcb"],

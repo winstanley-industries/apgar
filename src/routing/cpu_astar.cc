@@ -31,8 +31,6 @@ using geometry_compiler::LatticeIndex;
 using Wide = __int128_t;
 using UWide = __uint128_t;
 
-inline constexpr std::uint8_t kNoIncomingDirection = 8;
-
 struct SearchState {
   std::int64_t x;
   std::int64_t y;
@@ -80,77 +78,51 @@ struct QueueGreater {
       .code = code, .detail = std::move(detail), .obstacle = obstacle, .telemetry = telemetry};
 }
 
-[[nodiscard]] std::optional<RouteFailure> ValidateAssociation(const board_ir::BoardSnapshot& board,
-                                                              const CompiledBoard& compiled) {
-  if (compiled.source_board_content_hash() != board.content_hash()) {
-    return Failure(RouteFailureCode::kValidationFailed,
-                   "Compiled board source hash does not match the exact BoardSnapshot");
+[[nodiscard]] RouteFailure AssociationFailure(CompiledBoardAssociationIssue issue) {
+  switch (issue) {
+    case CompiledBoardAssociationIssue::kSourceBoardMismatch:
+      return Failure(RouteFailureCode::kValidationFailed,
+                     "Compiled board source hash does not match the exact BoardSnapshot");
+    case CompiledBoardAssociationIssue::kCompilerVersionMismatch:
+      return Failure(RouteFailureCode::kValidationFailed,
+                     "Compiled board compiler version is not supported");
+    case CompiledBoardAssociationIssue::kProfileFingerprintMismatch:
+      return Failure(RouteFailureCode::kValidationFailed,
+                     "Compiled board profile fingerprint does not match its profile payload");
+    case CompiledBoardAssociationIssue::kRuleBucketMismatch:
+      return Failure(RouteFailureCode::kValidationFailed,
+                     "Compiled board rule bucket is stale or does not match the BoardSnapshot");
   }
-  if (compiled.compiler_version() != geometry_compiler::kGeometryCompilerVersion) {
-    return Failure(RouteFailureCode::kValidationFailed,
-                   "Compiled board compiler version is not supported");
-  }
-  if (compiled.compiler_profile_fingerprint() !=
-      geometry_compiler::FingerprintCompilerProfile(compiled.profile())) {
-    return Failure(RouteFailureCode::kValidationFailed,
-                   "Compiled board profile fingerprint does not match its profile payload");
-  }
-  if (compiled.rule_bucket() !=
-      geometry_compiler::DeriveM1RuleBucket(board.data().routing_profile)) {
-    return Failure(RouteFailureCode::kValidationFailed,
-                   "Compiled board rule bucket is stale or does not match the BoardSnapshot");
-  }
-  return std::nullopt;
+  return Failure(RouteFailureCode::kInternalInvariant,
+                 "Compiled-board association validator returned an unknown issue");
 }
 
-[[nodiscard]] bool TerminalSupportsLayer(const board_ir::Terminal& terminal,
-                                         board_ir::LayerId layer) {
-  return std::ranges::binary_search(terminal.layers, layer);
-}
-
-[[nodiscard]] std::optional<RouteFailure> ValidateRequest(const board_ir::BoardSnapshot& board,
-                                                          const CompiledBoard& compiled,
-                                                          const CpuRouteRequest& request) {
-  const board_ir::RoutingProfile& routing = board.data().routing_profile;
-  if (request.net != routing.net || board.FindNet(request.net) == nullptr) {
-    return Failure(RouteFailureCode::kInvalidRequest,
-                   "CPU route request does not name the Board IR routing-profile net");
+[[nodiscard]] RouteFailure AdmissionFailure(RouteRequestAdmissionIssue issue) {
+  switch (issue) {
+    case RouteRequestAdmissionIssue::kRoutingProfileNetMismatch:
+      return Failure(RouteFailureCode::kInvalidRequest,
+                     "CPU route request does not name the Board IR routing-profile net");
+    case RouteRequestAdmissionIssue::kInvalidOrCoincidentEndpoints:
+      return Failure(RouteFailureCode::kInvalidRequest,
+                     "CPU route endpoints must be distinct valid exact coordinates");
+    case RouteRequestAdmissionIssue::kRequiresExactlyTwoTerminals:
+      return Failure(RouteFailureCode::kInvalidRequest,
+                     "M1 CPU routing requires exactly two target terminals");
+    case RouteRequestAdmissionIssue::kMissingTerminal:
+      return Failure(RouteFailureCode::kInvalidRequest,
+                     "CPU route request refers to missing target terminals");
+    case RouteRequestAdmissionIssue::kEndpointsNotTerminalCenters:
+      return Failure(RouteFailureCode::kInvalidRequest,
+                     "M1 CPU route endpoints must be the two exact terminal centers");
+    case RouteRequestAdmissionIssue::kUnsupportedTerminalLayer:
+      return Failure(RouteFailureCode::kInvalidRequest,
+                     "Requested endpoint layer is not a terminal connection layer");
+    case RouteRequestAdmissionIssue::kLayerOutsideRuleBucket:
+      return Failure(RouteFailureCode::kInvalidRequest,
+                     "Requested endpoint layer is not in the compiled M1 rule bucket");
   }
-  if (!board_ir::PointIsValid(request.start) || !board_ir::PointIsValid(request.goal) ||
-      request.start == request.goal) {
-    return Failure(RouteFailureCode::kInvalidRequest,
-                   "CPU route endpoints must be distinct valid exact coordinates");
-  }
-  const board_ir::Net* net = board.FindNet(request.net);
-  if (net == nullptr || net->terminals.size() != 2) {
-    return Failure(RouteFailureCode::kInvalidRequest,
-                   "M1 CPU routing requires exactly two target terminals");
-  }
-  const board_ir::Terminal* first = board.FindTerminal(net->terminals[0]);
-  const board_ir::Terminal* second = board.FindTerminal(net->terminals[1]);
-  if (first == nullptr || second == nullptr) {
-    return Failure(RouteFailureCode::kInvalidRequest,
-                   "CPU route request refers to missing target terminals");
-  }
-  const bool forward = request.start == first->center && request.goal == second->center;
-  const bool reverse = request.start == second->center && request.goal == first->center;
-  if (!forward && !reverse) {
-    return Failure(RouteFailureCode::kInvalidRequest,
-                   "M1 CPU route endpoints must be the two exact terminal centers");
-  }
-  const board_ir::Terminal& start_terminal = forward ? *first : *second;
-  const board_ir::Terminal& goal_terminal = forward ? *second : *first;
-  if (!TerminalSupportsLayer(start_terminal, request.start_layer) ||
-      !TerminalSupportsLayer(goal_terminal, request.goal_layer)) {
-    return Failure(RouteFailureCode::kInvalidRequest,
-                   "Requested endpoint layer is not a terminal connection layer");
-  }
-  if (!std::ranges::binary_search(compiled.rule_bucket().allowed_layers, request.start_layer) ||
-      !std::ranges::binary_search(compiled.rule_bucket().allowed_layers, request.goal_layer)) {
-    return Failure(RouteFailureCode::kInvalidRequest,
-                   "Requested endpoint layer is not in the compiled M1 rule bucket");
-  }
-  return std::nullopt;
+  return Failure(RouteFailureCode::kInternalInvariant,
+                 "Route-request admission validator returned an unknown issue");
 }
 
 [[nodiscard]] std::uint64_t AbsoluteDifference(std::int64_t left, std::int64_t right) noexcept {
@@ -209,69 +181,8 @@ struct QueueGreater {
   return static_cast<std::uint64_t>(estimate);
 }
 
-[[nodiscard]] std::optional<std::uint64_t> CheckedAdd(std::uint64_t left,
-                                                      std::uint64_t right) noexcept {
-  if (right > std::numeric_limits<std::uint64_t>::max() - left) {
-    return std::nullopt;
-  }
-  return left + right;
-}
-
 [[nodiscard]] std::uint64_t EstimatedTotal(std::uint64_t cost, std::uint64_t heuristic) noexcept {
   return CheckedAdd(cost, heuristic).value_or(std::numeric_limits<std::uint64_t>::max());
-}
-
-[[nodiscard]] std::uint64_t StepCost(const CompilerProfile& profile, Direction direction,
-                                     std::uint8_t incoming_direction) noexcept {
-  std::uint64_t cost = geometry_compiler::IsDiagonal(direction) ? profile.costs.diagonal_step
-                                                                : profile.costs.orthogonal_step;
-  if (incoming_direction != kNoIncomingDirection &&
-      incoming_direction != static_cast<std::uint8_t>(direction)) {
-    cost += profile.costs.bend;
-  }
-  return cost;
-}
-
-[[nodiscard]] std::optional<Direction> DirectionBetween(LatticeIndex start,
-                                                        LatticeIndex end) noexcept {
-  const std::int64_t delta_x = end.x - start.x;
-  const std::int64_t delta_y = end.y - start.y;
-  for (Direction direction : kStableDirectionOrder) {
-    const DirectionDelta delta = geometry_compiler::DeltaFor(direction);
-    if (delta_x == delta.x && delta_y == delta.y) {
-      return direction;
-    }
-  }
-  return std::nullopt;
-}
-
-[[nodiscard]] std::vector<LayerSegment> CoalesceSegments(
-    board_ir::LayerId layer, std::span<const board_ir::Point64> points) {
-  std::vector<LayerSegment> segments;
-  if (points.size() < 2) {
-    return segments;
-  }
-  board_ir::Point64 segment_start = points.front();
-  board_ir::DbCoord previous_delta_x = points[1].x - points[0].x;
-  board_ir::DbCoord previous_delta_y = points[1].y - points[0].y;
-  for (std::size_t index = 2; index < points.size(); ++index) {
-    const board_ir::DbCoord delta_x = points[index].x - points[index - 1].x;
-    const board_ir::DbCoord delta_y = points[index].y - points[index - 1].y;
-    if (delta_x != previous_delta_x || delta_y != previous_delta_y) {
-      segments.push_back(LayerSegment{
-          .layer = layer,
-          .centerline = board_ir::Segment64{.start = segment_start, .end = points[index - 1]},
-      });
-      segment_start = points[index - 1];
-      previous_delta_x = delta_x;
-      previous_delta_y = delta_y;
-    }
-  }
-  segments.push_back(LayerSegment{
-      .layer = layer,
-      .centerline = board_ir::Segment64{.start = segment_start, .end = points.back()},
-  });
-  return segments;
 }
 
 [[nodiscard]] std::optional<RouteFailure> ValidateExactSegments(
@@ -317,13 +228,15 @@ std::optional<RouteFailure> ValidateReconstructedRoute(const board_ir::BoardSnap
                                                        const CompiledBoard& compiled_board,
                                                        const CpuRouteRequest& request,
                                                        std::span<const LayerSegment> segments) {
-  if (std::optional<RouteFailure> association = ValidateAssociation(board, compiled_board);
+  if (std::optional<CompiledBoardAssociationIssue> association =
+          ValidateCompiledBoardAssociation(board, compiled_board);
       association.has_value()) {
-    return association;
+    return AssociationFailure(*association);
   }
-  if (std::optional<RouteFailure> invalid = ValidateRequest(board, compiled_board, request);
+  if (std::optional<RouteRequestAdmissionIssue> invalid =
+          ValidateTwoTerminalRouteRequest(board, compiled_board, request);
       invalid.has_value()) {
-    return invalid;
+    return AdmissionFailure(*invalid);
   }
   return ValidateExactSegments(board, request, segments);
 }
@@ -331,13 +244,15 @@ std::optional<RouteFailure> ValidateReconstructedRoute(const board_ir::BoardSnap
 CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                                  const CompiledBoard& compiled_board,
                                  const CpuRouteRequest& request) {
-  if (std::optional<RouteFailure> association = ValidateAssociation(board, compiled_board);
+  if (std::optional<CompiledBoardAssociationIssue> association =
+          ValidateCompiledBoardAssociation(board, compiled_board);
       association.has_value()) {
-    return std::move(*association);
+    return AssociationFailure(*association);
   }
-  if (std::optional<RouteFailure> invalid = ValidateRequest(board, compiled_board, request);
+  if (std::optional<RouteRequestAdmissionIssue> invalid =
+          ValidateTwoTerminalRouteRequest(board, compiled_board, request);
       invalid.has_value()) {
-    return std::move(*invalid);
+    return AdmissionFailure(*invalid);
   }
   if (request.start_layer != request.goal_layer) {
     return Failure(RouteFailureCode::kUnsupportedLayerTransition,
@@ -345,23 +260,23 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
   }
 
   const CompilerProfile& profile = compiled_board.profile();
-  const std::optional<LatticeIndex> start =
-      geometry_compiler::ExactPointToLatticeIndex(profile, request.start);
-  const std::optional<LatticeIndex> goal =
-      geometry_compiler::ExactPointToLatticeIndex(profile, request.goal);
-  if (!start.has_value() || !goal.has_value()) {
-    return Failure(RouteFailureCode::kInvalidRequest,
-                   "CPU route endpoints must lie exactly on the compiler lattice");
-  }
-  if (!compiled_board.ContainsNode(request.start_layer, start->x, start->y) ||
-      !compiled_board.ContainsNode(request.goal_layer, goal->x, goal->y)) {
+  const PlanarEndpointResult endpoint_result = ResolvePlanarEndpoints(compiled_board, request);
+  if (std::holds_alternative<PlanarEndpointIssue>(endpoint_result)) {
+    if (std::get<PlanarEndpointIssue>(endpoint_result) ==
+        PlanarEndpointIssue::kNotOnCompilerLattice) {
+      return Failure(RouteFailureCode::kInvalidRequest,
+                     "CPU route endpoints must lie exactly on the compiler lattice");
+    }
     return Failure(RouteFailureCode::kInvalidRequest,
                    "CPU route endpoints must both be represented by active sparse tiles");
   }
+  const ResolvedPlanarEndpoints& endpoints = std::get<ResolvedPlanarEndpoints>(endpoint_result);
+  const LatticeIndex& start = endpoints.start;
+  const LatticeIndex& goal = endpoints.goal;
 
   const SearchState start_state{
-      .x = start->x,
-      .y = start->y,
+      .x = start.x,
+      .y = start.y,
       .incoming_direction = kNoIncomingDirection,
   };
   std::unordered_map<SearchState, SearchRecord, SearchStateHash> records;
@@ -369,7 +284,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       std::min<std::uint64_t>(compiled_board.telemetry().represented_nodes * 2, 1'000'000)));
   records.emplace(start_state, SearchRecord{.cost = 0, .predecessor = std::nullopt});
   std::priority_queue<QueueItem, std::vector<QueueItem>, QueueGreater> queue;
-  const std::uint64_t start_heuristic = Heuristic(profile, *start, *goal);
+  const std::uint64_t start_heuristic = Heuristic(profile, start, goal);
   std::uint64_t sequence = 0;
   queue.push(QueueItem{.estimated_total = start_heuristic,
                        .heuristic = start_heuristic,
@@ -390,7 +305,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
     if (current_record == records.end() || current_record->second.cost != current.cost) {
       continue;
     }
-    if (current.state.x == goal->x && current.state.y == goal->y) {
+    if (current.state.x == goal.x && current.state.y == goal.y) {
       goal_state = current.state;
       break;
     }
@@ -400,7 +315,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
         compiled_board.FindNode(request.start_layer, current.state.x, current.state.y);
     if (current_node == nullptr) {
       return Failure(RouteFailureCode::kInternalInvariant,
-                     "A* expanded a state outside the represented sparse field");
+                     "A* expanded a state outside the represented sparse field", std::nullopt,
+                     telemetry);
     }
 
     for (Direction direction : kStableDirectionOrder) {
@@ -409,7 +325,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       if ((profile.heading_mask & geometry_compiler::HeadingFor(direction)) == 0) {
         if (mask_is_legal) {
           return Failure(RouteFailureCode::kValidationFailed,
-                         "Compiled mask enables a direction excluded by its profile");
+                         "Compiled mask enables a direction excluded by its profile", std::nullopt,
+                         telemetry);
         }
         continue;
       }
@@ -425,13 +342,15 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       };
       if (!compiled_board.ContainsNode(request.start_layer, neighbor.x, neighbor.y)) {
         return Failure(RouteFailureCode::kInternalInvariant,
-                       "Compiled legal edge points outside the represented sparse field");
+                       "Compiled legal edge points outside the represented sparse field",
+                       std::nullopt, telemetry);
       }
       const std::optional<std::uint64_t> next_cost =
           CheckedAdd(current.cost, StepCost(profile, direction, current.state.incoming_direction));
       if (!next_cost.has_value()) {
         return Failure(RouteFailureCode::kResourceExhausted,
-                       "Integer route cost overflowed the validated search envelope");
+                       "Integer route cost overflowed the validated search envelope", std::nullopt,
+                       telemetry);
       }
       const auto existing = records.find(neighbor);
       if (existing != records.end() && existing->second.cost <= *next_cost) {
@@ -441,7 +360,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                                SearchRecord{.cost = *next_cost, .predecessor = current.state});
       ++telemetry.accepted_relaxations;
       const std::uint64_t heuristic =
-          Heuristic(profile, LatticeIndex{.x = neighbor.x, .y = neighbor.y}, *goal);
+          Heuristic(profile, LatticeIndex{.x = neighbor.x, .y = neighbor.y}, goal);
       queue.push(QueueItem{
           .estimated_total = EstimatedTotal(*next_cost, heuristic),
           .heuristic = heuristic,
@@ -472,12 +391,14 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
     }
     if (reversed_states.size() > maximum_reconstruction_states) {
       return Failure(RouteFailureCode::kInternalInvariant,
-                     "A* predecessor reconstruction exceeded the acyclic state bound");
+                     "A* predecessor reconstruction exceeded the acyclic state bound", std::nullopt,
+                     telemetry);
     }
     const auto record = records.find(cursor);
     if (record == records.end() || !record->second.predecessor.has_value()) {
       return Failure(RouteFailureCode::kInternalInvariant,
-                     "A* predecessor reconstruction encountered a missing state");
+                     "A* predecessor reconstruction encountered a missing state", std::nullopt,
+                     telemetry);
     }
     cursor = *record->second.predecessor;
   }
@@ -490,7 +411,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
         profile, LatticeIndex{.x = state.x, .y = state.y});
     if (!point.has_value()) {
       return Failure(RouteFailureCode::kInternalInvariant,
-                     "A* reconstruction escaped the exact coordinate envelope");
+                     "A* reconstruction escaped the exact coordinate envelope", std::nullopt,
+                     telemetry);
     }
     points.push_back(*point);
   }
@@ -506,25 +428,28 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
         !compiled_board.EdgeIsLegal(request.start_layer, reversed_states[index - 1].x,
                                     reversed_states[index - 1].y, *direction)) {
       return Failure(RouteFailureCode::kInternalInvariant,
-                     "A* reconstruction does not follow adjacent compiled legal edges");
+                     "A* reconstruction does not follow adjacent compiled legal edges",
+                     std::nullopt, telemetry);
     }
     const std::optional<std::uint64_t> next_cost =
         CheckedAdd(reconstructed_cost, StepCost(profile, *direction, incoming_direction));
     if (!next_cost.has_value()) {
       return Failure(RouteFailureCode::kResourceExhausted,
-                     "Reconstructed integer route cost overflowed");
+                     "Reconstructed integer route cost overflowed", std::nullopt, telemetry);
     }
     reconstructed_cost = *next_cost;
     incoming_direction = static_cast<std::uint8_t>(*direction);
   }
   if (reconstructed_cost != records.at(*goal_state).cost) {
     return Failure(RouteFailureCode::kInternalInvariant,
-                   "Reconstructed path cost disagrees with the deterministic A* label");
+                   "Reconstructed path cost disagrees with the deterministic A* label",
+                   std::nullopt, telemetry);
   }
 
   std::vector<LayerSegment> segments = CoalesceSegments(request.start_layer, points);
   if (std::optional<RouteFailure> invalid = ValidateExactSegments(board, request, segments);
       invalid.has_value()) {
+    invalid->telemetry = telemetry;
     return std::move(*invalid);
   }
 

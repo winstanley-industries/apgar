@@ -41,25 +41,27 @@ struct NodeKey {
 
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidateAssociation(
     const board_ir::BoardSnapshot& board, const CompiledBoard& compiled) {
-  if (compiled.source_board_content_hash() != board.content_hash()) {
-    return Failure(PlanarGpuFailureCode::kValidationFailed,
-                   "Compiled board source hash does not match the exact BoardSnapshot");
+  const std::optional<routing::CompiledBoardAssociationIssue> issue =
+      routing::ValidateCompiledBoardAssociation(board, compiled);
+  if (!issue.has_value()) {
+    return std::nullopt;
   }
-  if (compiled.compiler_version() != geometry_compiler::kGeometryCompilerVersion) {
-    return Failure(PlanarGpuFailureCode::kValidationFailed,
-                   "Compiled board compiler version is not supported by device schema v1");
+  switch (*issue) {
+    case routing::CompiledBoardAssociationIssue::kSourceBoardMismatch:
+      return Failure(PlanarGpuFailureCode::kValidationFailed,
+                     "Compiled board source hash does not match the exact BoardSnapshot");
+    case routing::CompiledBoardAssociationIssue::kCompilerVersionMismatch:
+      return Failure(PlanarGpuFailureCode::kValidationFailed,
+                     "Compiled board compiler version is not supported by device schema v1");
+    case routing::CompiledBoardAssociationIssue::kProfileFingerprintMismatch:
+      return Failure(PlanarGpuFailureCode::kValidationFailed,
+                     "Compiled board profile fingerprint does not match its payload");
+    case routing::CompiledBoardAssociationIssue::kRuleBucketMismatch:
+      return Failure(PlanarGpuFailureCode::kValidationFailed,
+                     "Compiled board rule bucket is stale or does not match the BoardSnapshot");
   }
-  if (compiled.compiler_profile_fingerprint() !=
-      geometry_compiler::FingerprintCompilerProfile(compiled.profile())) {
-    return Failure(PlanarGpuFailureCode::kValidationFailed,
-                   "Compiled board profile fingerprint does not match its payload");
-  }
-  if (compiled.rule_bucket() !=
-      geometry_compiler::DeriveM1RuleBucket(board.data().routing_profile)) {
-    return Failure(PlanarGpuFailureCode::kValidationFailed,
-                   "Compiled board rule bucket is stale or does not match the BoardSnapshot");
-  }
-  return std::nullopt;
+  return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                 "Compiled-board association validator returned an unknown issue");
 }
 
 [[nodiscard]] std::optional<std::uint64_t> PersistentBytes(
@@ -75,7 +77,9 @@ struct NodeKey {
   return static_cast<std::uint64_t>(bytes);
 }
 
-[[nodiscard]] std::uint64_t Fingerprint(const DeviceCompiledBoardV1& board) {
+}  // namespace
+
+std::uint64_t ComputeDeviceCompiledBoardFingerprintV1(const DeviceCompiledBoardV1& board) {
   board_ir::StableHashBuilder hash;
   hash.AddString("APGAR-DEVICE-COMPILED-BOARD-V1");
   hash.AddU32(board.header.schema_version);
@@ -128,8 +132,6 @@ struct NodeKey {
   }
   return hash.Finish();
 }
-
-}  // namespace
 
 DeviceCompiledBoardResult BuildDeviceCompiledBoardV1(const board_ir::BoardSnapshot& board,
                                                      const CompiledBoard& compiled_board) {
@@ -318,7 +320,7 @@ DeviceCompiledBoardResult BuildDeviceCompiledBoardV1(const board_ir::BoardSnapsh
                    "Flattened device memory accounting overflowed uint64");
   }
   device.header.estimated_persistent_device_bytes = *bytes;
-  device.header.device_view_fingerprint = Fingerprint(device);
+  device.header.device_view_fingerprint = ComputeDeviceCompiledBoardFingerprintV1(device);
   return device;
 }
 

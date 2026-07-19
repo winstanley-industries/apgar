@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -144,6 +145,9 @@ struct DeviceCompiledBoardV1 {
   friend bool operator==(const DeviceCompiledBoardV1&, const DeviceCompiledBoardV1&) = default;
 };
 
+[[nodiscard]] std::uint64_t ComputeDeviceCompiledBoardFingerprintV1(
+    const DeviceCompiledBoardV1& board);
+
 using DeviceCompiledBoardResult = std::variant<DeviceCompiledBoardV1, PlanarGpuFailure>;
 
 [[nodiscard]] DeviceCompiledBoardResult BuildDeviceCompiledBoardV1(
@@ -206,19 +210,11 @@ struct UntrustedKernelResult {
   KernelTelemetry telemetry;
 };
 
-enum class KernelFaultInjection : std::uint8_t {
-  kNone,
-  kGoalPredecessorSelfCycle,
-};
-
 struct PlanarRoutePolicy {
   PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
   std::uint32_t maximum_rounds = 100'000;
   std::uint64_t maximum_device_bytes = std::numeric_limits<std::uint64_t>::max();
   const std::atomic_bool* cancellation = nullptr;
-  // Test/replay-only deterministic corruption. Production callers leave this
-  // at kNone.
-  KernelFaultInjection fault_injection = KernelFaultInjection::kNone;
 };
 
 struct BackendExecutionRequest {
@@ -228,7 +224,6 @@ struct BackendExecutionRequest {
   std::uint32_t maximum_rounds;
   std::uint64_t maximum_device_bytes;
   const std::atomic_bool* cancellation;
-  KernelFaultInjection fault_injection;
 };
 
 enum class BackendErrorCode : std::uint8_t {
@@ -287,6 +282,49 @@ struct PlanarGpuRoute {
 
 using PlanarGpuRouteResult = std::variant<PlanarGpuRoute, PlanarGpuFailure>;
 
+class PreparedPlanarCompiledView;
+using PreparedPlanarCompiledViewResult =
+    std::variant<std::unique_ptr<PreparedPlanarCompiledView>, PlanarGpuFailure>;
+
+// Reusable immutable device view. Preparation owns flattening, backend metadata
+// discovery, and upload; each route still executes, reads back, reconstructs,
+// and validates a fresh untrusted kernel result. The backend passed to
+// PreparePlanarCompiledView must outlive this object and every route call that
+// uses it.
+class PreparedPlanarCompiledView {
+ public:
+  PreparedPlanarCompiledView(const PreparedPlanarCompiledView&) = delete;
+  PreparedPlanarCompiledView& operator=(const PreparedPlanarCompiledView&) = delete;
+  PreparedPlanarCompiledView(PreparedPlanarCompiledView&&) = delete;
+  PreparedPlanarCompiledView& operator=(PreparedPlanarCompiledView&&) = delete;
+
+ private:
+  friend PreparedPlanarCompiledViewResult PreparePlanarCompiledView(
+      const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+      IPlanarRouteBackend& backend);
+  friend PlanarGpuRouteResult RouteWithPreparedPlanarGpuBackend(
+      const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+      const routing::CpuRouteRequest& request, const PlanarRoutePolicy& policy,
+      PreparedPlanarCompiledView& prepared);
+
+  PreparedPlanarCompiledView(IPlanarRouteBackend& backend, DeviceCompiledBoardV1 device_board,
+                             BackendMetadata metadata,
+                             std::unique_ptr<UploadedCompiledView> uploaded)
+      : backend_(&backend),
+        device_board_(std::move(device_board)),
+        metadata_(std::move(metadata)),
+        uploaded_(std::move(uploaded)) {}
+
+  IPlanarRouteBackend* backend_;
+  DeviceCompiledBoardV1 device_board_;
+  BackendMetadata metadata_;
+  std::unique_ptr<UploadedCompiledView> uploaded_;
+};
+
+[[nodiscard]] PreparedPlanarCompiledViewResult PreparePlanarCompiledView(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    IPlanarRouteBackend& backend);
+
 [[nodiscard]] PlanarGpuRouteResult ValidateAndReconstructGpuRoute(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     const DeviceCompiledBoardV1& device_board, const routing::CpuRouteRequest& request,
@@ -297,6 +335,11 @@ using PlanarGpuRouteResult = std::variant<PlanarGpuRoute, PlanarGpuFailure>;
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     const routing::CpuRouteRequest& request, const PlanarRoutePolicy& policy,
     IPlanarRouteBackend& backend);
+
+[[nodiscard]] PlanarGpuRouteResult RouteWithPreparedPlanarGpuBackend(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    const routing::CpuRouteRequest& request, const PlanarRoutePolicy& policy,
+    PreparedPlanarCompiledView& prepared);
 
 }  // namespace apgar::gpu
 

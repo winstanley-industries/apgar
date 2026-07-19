@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "apgar/adapters/kicad_fixture.h"
+#include "apgar/routing/planar_route.h"
 
 namespace apgar::benchmark {
 namespace {
@@ -41,6 +44,18 @@ struct GeneratedDescription {
   Point64 goal;
   CompilerProfile profile;
 };
+
+[[nodiscard]] std::string RequestIssueName(routing::TwoTerminalRequestIssue issue) {
+  switch (issue) {
+    case routing::TwoTerminalRequestIssue::kMissingRoutingProfileNet:
+      return "routing-profile net is missing";
+    case routing::TwoTerminalRequestIssue::kRequiresExactlyTwoTerminals:
+      return "target net does not have exactly two terminals";
+    case routing::TwoTerminalRequestIssue::kMissingTerminal:
+      return "target terminal is missing";
+  }
+  return "unknown two-terminal request issue";
+}
 
 [[nodiscard]] AxisAlignedBox64 TerminalBox(Point64 center) {
   return AxisAlignedBox64{
@@ -126,30 +141,59 @@ void AddPoint(CompilerProfile* profile, LatticeIndex point) {
       ActiveRegion{.layer = 0, .bounds = AxisAlignedBox64{.min = exact, .max = exact}});
 }
 
-void AddInclusiveLine(CompilerProfile* profile, LatticeIndex start, LatticeIndex end) {
+[[nodiscard]] constexpr std::uint64_t CoordinateDistance(std::int64_t left,
+                                                         std::int64_t right) noexcept {
+  return left >= right ? static_cast<std::uint64_t>(left) - static_cast<std::uint64_t>(right)
+                       : static_cast<std::uint64_t>(right) - static_cast<std::uint64_t>(left);
+}
+
+[[nodiscard]] constexpr bool IsSupportedSegment(LatticeIndex start, LatticeIndex end) noexcept {
+  const std::uint64_t distance_x = CoordinateDistance(start.x, end.x);
+  const std::uint64_t distance_y = CoordinateDistance(start.y, end.y);
+  return distance_x == 0 || distance_y == 0 || distance_x == distance_y;
+}
+
+static_assert(IsSupportedSegment({0, 0}, {3, 0}));
+static_assert(IsSupportedSegment({0, 0}, {3, 3}));
+static_assert(!IsSupportedSegment({0, 0}, {3, 1}));
+
+[[nodiscard]] std::optional<std::string> AddInclusiveLine(CompilerProfile* profile,
+                                                          LatticeIndex start, LatticeIndex end) {
   const std::int64_t delta_x = (end.x > start.x) - (end.x < start.x);
   const std::int64_t delta_y = (end.y > start.y) - (end.y < start.y);
-  const std::uint64_t distance_x =
-      static_cast<std::uint64_t>(std::max(start.x, end.x) - std::min(start.x, end.x));
-  const std::uint64_t distance_y =
-      static_cast<std::uint64_t>(std::max(start.y, end.y) - std::min(start.y, end.y));
-  if (distance_x != 0 && distance_y != 0 && distance_x != distance_y) {
-    return;
+  const std::uint64_t distance_x = CoordinateDistance(start.x, end.x);
+  const std::uint64_t distance_y = CoordinateDistance(start.y, end.y);
+  if (!IsSupportedSegment(start, end)) {
+    return "corpus segment is not H/V/45: (" + std::to_string(start.x) + "," +
+           std::to_string(start.y) + ")->(" + std::to_string(end.x) + "," + std::to_string(end.y) +
+           ")";
   }
   const std::uint64_t steps = std::max(distance_x, distance_y);
+  if (steps > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+    return "corpus segment exceeds the signed lattice iteration range";
+  }
   for (std::uint64_t step = 0; step <= steps; ++step) {
     AddPoint(profile, LatticeIndex{.x = start.x + delta_x * static_cast<std::int64_t>(step),
                                    .y = start.y + delta_y * static_cast<std::int64_t>(step)});
   }
+  return std::nullopt;
 }
 
-void AddPolyline(CompilerProfile* profile, const std::vector<LatticeIndex>& vertices) {
+[[nodiscard]] std::optional<std::string> AddPolyline(CompilerProfile* profile,
+                                                     const std::vector<LatticeIndex>& vertices) {
   for (std::size_t index = 1; index < vertices.size(); ++index) {
-    AddInclusiveLine(profile, vertices[index - 1], vertices[index]);
+    if (std::optional<std::string> error =
+            AddInclusiveLine(profile, vertices[index - 1], vertices[index]);
+        error.has_value()) {
+      return error;
+    }
   }
+  return std::nullopt;
 }
 
-[[nodiscard]] std::vector<GeneratedDescription> GeneratedDescriptions() {
+using GeneratedDescriptionsResult = std::variant<std::vector<GeneratedDescription>, std::string>;
+
+[[nodiscard]] GeneratedDescriptionsResult GeneratedDescriptions() {
   constexpr auto kHv = static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal) |
                        static_cast<board_ir::HeadingMask>(board_ir::Heading::kVertical);
   std::vector<GeneratedDescription> descriptions;
@@ -167,7 +211,11 @@ void AddPolyline(CompilerProfile* profile, const std::vector<LatticeIndex>& vert
   CompilerProfile sparse = BaseProfile(
       AxisAlignedBox64{.min = Point64{.x = 0, .y = -40}, .max = Point64{.x = 100, .y = 40}}, 10, 4,
       3, DeterministicCosts{.orthogonal_step = 19, .diagonal_step = 3, .bend = 29});
-  AddPolyline(&sparse, {{0, 0}, {2, 2}, {4, 2}, {6, 0}, {8, -2}, {10, 0}});
+  if (std::optional<std::string> error =
+          AddPolyline(&sparse, {{0, 0}, {2, 2}, {4, 2}, {6, 0}, {8, -2}, {10, 0}});
+      error.has_value()) {
+    return *error;
+  }
   descriptions.push_back(GeneratedDescription{.name = "sparse_regions",
                                               .family = "sparse-regions",
                                               .start = Point64{.x = 0, .y = 0},
@@ -201,8 +249,12 @@ void AddPolyline(CompilerProfile* profile, const std::vector<LatticeIndex>& vert
   CompilerProfile maze = BaseProfile(
       AxisAlignedBox64{.min = Point64{.x = 0, .y = -40}, .max = Point64{.x = 100, .y = 40}}, 10, 3,
       3, DeterministicCosts{.orthogonal_step = 10, .diagonal_step = 14, .bend = 101}, kHv);
-  AddPolyline(&maze,
-              {{0, 0}, {2, 0}, {2, 4}, {4, 4}, {4, -4}, {6, -4}, {6, 4}, {8, 4}, {8, 0}, {10, 0}});
+  if (std::optional<std::string> error = AddPolyline(
+          &maze,
+          {{0, 0}, {2, 0}, {2, 4}, {4, 4}, {4, -4}, {6, -4}, {6, 4}, {8, 4}, {8, 0}, {10, 0}});
+      error.has_value()) {
+    return *error;
+  }
   descriptions.push_back(GeneratedDescription{.name = "high_turn_maze",
                                               .family = "high-turn-maze",
                                               .start = Point64{.x = 0, .y = 0},
@@ -232,8 +284,14 @@ void AddPolyline(CompilerProfile* profile, const std::vector<LatticeIndex>& vert
   CompilerProfile disconnected = BaseProfile(
       AxisAlignedBox64{.min = Point64{.x = 0, .y = 0}, .max = Point64{.x = 100, .y = 0}}, 10, 4, 2,
       DeterministicCosts{.orthogonal_step = 10, .diagonal_step = 14, .bend = 3}, kHv);
-  AddInclusiveLine(&disconnected, {0, 0}, {4, 0});
-  AddInclusiveLine(&disconnected, {6, 0}, {10, 0});
+  if (std::optional<std::string> error = AddInclusiveLine(&disconnected, {0, 0}, {4, 0});
+      error.has_value()) {
+    return *error;
+  }
+  if (std::optional<std::string> error = AddInclusiveLine(&disconnected, {6, 0}, {10, 0});
+      error.has_value()) {
+    return *error;
+  }
   descriptions.push_back(GeneratedDescription{.name = "disconnected_fields",
                                               .family = "disconnected-fields",
                                               .start = Point64{.x = 0, .y = 0},
@@ -251,6 +309,12 @@ void AddPolyline(CompilerProfile* profile, const std::vector<LatticeIndex>& vert
            std::get<board_ir::BoardValidationError>(board_result).message;
   }
   BoardSnapshot board = std::get<BoardSnapshot>(std::move(board_result));
+  routing::TwoTerminalRequestResult request_result =
+      routing::BuildTwoTerminalRouteRequest(board, 0, 0);
+  if (!std::holds_alternative<routing::CpuRouteRequest>(request_result)) {
+    return std::string("generated corpus request construction failed: ") + description.name + ": " +
+           RequestIssueName(std::get<routing::TwoTerminalRequestIssue>(request_result));
+  }
   geometry_compiler::CompileResult compiled_result =
       geometry_compiler::CompileBoard(board, std::move(description.profile));
   if (!std::holds_alternative<CompiledBoard>(compiled_result)) {
@@ -262,15 +326,11 @@ void AddPolyline(CompilerProfile* profile, const std::vector<LatticeIndex>& vert
       .family = std::move(description.family),
       .board = board,
       .compiled_board = std::get<CompiledBoard>(std::move(compiled_result)),
-      .request = routing::CpuRouteRequest{.net = kTargetNet,
-                                          .start = description.start,
-                                          .goal = description.goal,
-                                          .start_layer = 0,
-                                          .goal_layer = 0},
+      .request = std::get<routing::CpuRouteRequest>(std::move(request_result)),
   };
 }
 
-[[nodiscard]] std::variant<PlanarCorpusCase, std::string> BuildKicad(std::string_view contents) {
+[[nodiscard]] PlanarCorpusCaseResult BuildKicad(std::string_view contents) {
   adapters::KicadFixtureImportResult imported = adapters::ImportKicadFixture(
       contents, adapters::KicadFixtureImportConfig{
                     .target_net_name = "TARGET", .nominal_width = 500'000, .clearance = 500'000});
@@ -278,6 +338,12 @@ void AddPolyline(CompilerProfile* profile, const std::vector<LatticeIndex>& vert
     return std::string("KiCad corpus fixture import failed");
   }
   BoardSnapshot board = std::get<BoardSnapshot>(std::move(imported));
+  routing::TwoTerminalRequestResult request_result =
+      routing::BuildTwoTerminalRouteRequest(board, 0, 0);
+  if (!std::holds_alternative<routing::CpuRouteRequest>(request_result)) {
+    return std::string("KiCad corpus request construction failed: ") +
+           RequestIssueName(std::get<routing::TwoTerminalRequestIssue>(request_result));
+  }
   const AxisAlignedBox64 bounds{.min = Point64{.x = 0, .y = 6'000'000},
                                 .max = Point64{.x = 20'000'000, .y = 14'000'000}};
   CompilerProfile profile =
@@ -289,40 +355,36 @@ void AddPolyline(CompilerProfile* profile, const std::vector<LatticeIndex>& vert
   if (!std::holds_alternative<CompiledBoard>(compiled_result)) {
     return std::string("KiCad corpus fixture compilation failed");
   }
-  const Net* net = board.FindNet(board.data().routing_profile.net);
-  if (net == nullptr || net->terminals.size() != 2) {
-    return std::string("KiCad corpus target net is invalid");
-  }
-  const Terminal* first = board.FindTerminal(net->terminals[0]);
-  const Terminal* second = board.FindTerminal(net->terminals[1]);
-  if (first == nullptr || second == nullptr) {
-    return std::string("KiCad corpus target terminals are invalid");
-  }
   return PlanarCorpusCase{
       .name = "kicad_fixture",
       .family = "kicad-fixture",
       .board = board,
       .compiled_board = std::get<CompiledBoard>(std::move(compiled_result)),
-      .request = routing::CpuRouteRequest{.net = net->ref,
-                                          .start = first->center,
-                                          .goal = second->center,
-                                          .start_layer = 0,
-                                          .goal_layer = 0},
+      .request = std::get<routing::CpuRouteRequest>(std::move(request_result)),
   };
 }
 
 }  // namespace
 
+PlanarCorpusCaseResult BuildPlanarBakeoffKicadCaseV1(std::string_view kicad_fixture) {
+  return BuildKicad(kicad_fixture);
+}
+
 PlanarCorpusResult BuildPlanarBakeoffCorpus(std::string_view kicad_fixture) {
   std::vector<PlanarCorpusCase> corpus;
-  for (GeneratedDescription description : GeneratedDescriptions()) {
+  GeneratedDescriptionsResult descriptions = GeneratedDescriptions();
+  if (std::holds_alternative<std::string>(descriptions)) {
+    return std::get<std::string>(std::move(descriptions));
+  }
+  for (GeneratedDescription& description :
+       std::get<std::vector<GeneratedDescription>>(descriptions)) {
     std::variant<PlanarCorpusCase, std::string> result = BuildGenerated(std::move(description));
     if (std::holds_alternative<std::string>(result)) {
       return std::get<std::string>(std::move(result));
     }
     corpus.push_back(std::get<PlanarCorpusCase>(std::move(result)));
   }
-  std::variant<PlanarCorpusCase, std::string> kicad = BuildKicad(kicad_fixture);
+  PlanarCorpusCaseResult kicad = BuildPlanarBakeoffKicadCaseV1(kicad_fixture);
   if (std::holds_alternative<std::string>(kicad)) {
     return std::get<std::string>(std::move(kicad));
   }

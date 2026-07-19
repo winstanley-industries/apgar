@@ -1,14 +1,12 @@
 #include "apgar/gpu/planar_router.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <ranges>
-#include <span>
 #include <string>
 #include <utility>
 #include <variant>
@@ -18,10 +16,11 @@ namespace apgar::gpu {
 namespace {
 
 using geometry_compiler::CompiledBoard;
-using geometry_compiler::CompilerProfile;
 using geometry_compiler::Direction;
-using geometry_compiler::DirectionDelta;
 using geometry_compiler::LatticeIndex;
+using UWide = __uint128_t;
+
+static_assert(kNoIncomingHeading == routing::kNoIncomingDirection);
 
 [[nodiscard]] PlanarGpuFailure Failure(PlanarGpuFailureCode code, std::string detail,
                                        std::optional<board_ir::EntityRef> obstacle = std::nullopt,
@@ -55,73 +54,39 @@ using geometry_compiler::LatticeIndex;
                  "Backend returned an unknown error code");
 }
 
-[[nodiscard]] bool TerminalSupportsLayer(const board_ir::Terminal& terminal,
-                                         board_ir::LayerId layer) {
-  return std::ranges::binary_search(terminal.layers, layer);
-}
-
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidateRequest(
     const board_ir::BoardSnapshot& board, const CompiledBoard& compiled,
     const routing::CpuRouteRequest& request) {
-  const board_ir::RoutingProfile& routing = board.data().routing_profile;
-  if (request.net != routing.net || board.FindNet(request.net) == nullptr) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "GPU route request does not name the Board IR routing-profile net");
-  }
-  if (!board_ir::PointIsValid(request.start) || !board_ir::PointIsValid(request.goal) ||
-      request.start == request.goal) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "GPU route endpoints must be distinct valid exact coordinates");
-  }
-  const board_ir::Net* net = board.FindNet(request.net);
-  if (net == nullptr || net->terminals.size() != 2) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "M1 GPU routing requires exactly two target terminals");
-  }
-  const board_ir::Terminal* first = board.FindTerminal(net->terminals[0]);
-  const board_ir::Terminal* second = board.FindTerminal(net->terminals[1]);
-  if (first == nullptr || second == nullptr) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "GPU route request refers to missing target terminals");
-  }
-  const bool forward = request.start == first->center && request.goal == second->center;
-  const bool reverse = request.start == second->center && request.goal == first->center;
-  if (!forward && !reverse) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "M1 GPU route endpoints must be the two exact terminal centers");
-  }
-  const board_ir::Terminal& start_terminal = forward ? *first : *second;
-  const board_ir::Terminal& goal_terminal = forward ? *second : *first;
-  if (!TerminalSupportsLayer(start_terminal, request.start_layer) ||
-      !TerminalSupportsLayer(goal_terminal, request.goal_layer)) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "Requested endpoint layer is not a terminal connection layer");
-  }
-  if (!std::ranges::binary_search(compiled.rule_bucket().allowed_layers, request.start_layer) ||
-      !std::ranges::binary_search(compiled.rule_bucket().allowed_layers, request.goal_layer)) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "Requested endpoint layer is not in the compiled M1 rule bucket");
-  }
-  return std::nullopt;
-}
-
-[[nodiscard]] std::optional<std::uint64_t> CheckedAdd(std::uint64_t left,
-                                                      std::uint64_t right) noexcept {
-  if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+  const std::optional<routing::RouteRequestAdmissionIssue> issue =
+      routing::ValidateTwoTerminalRouteRequest(board, compiled, request);
+  if (!issue.has_value()) {
     return std::nullopt;
   }
-  return left + right;
-}
-
-[[nodiscard]] std::uint64_t StepCost(const CompilerProfile& profile, Direction direction,
-                                     std::uint8_t incoming_heading) noexcept {
-  std::uint64_t cost = geometry_compiler::IsDiagonal(direction) ? profile.costs.diagonal_step
-                                                                : profile.costs.orthogonal_step;
-  if (incoming_heading != kNoIncomingHeading &&
-      incoming_heading != static_cast<std::uint8_t>(direction)) {
-    cost += profile.costs.bend;
+  switch (*issue) {
+    case routing::RouteRequestAdmissionIssue::kRoutingProfileNetMismatch:
+      return Failure(PlanarGpuFailureCode::kInvalidInput,
+                     "GPU route request does not name the Board IR routing-profile net");
+    case routing::RouteRequestAdmissionIssue::kInvalidOrCoincidentEndpoints:
+      return Failure(PlanarGpuFailureCode::kInvalidInput,
+                     "GPU route endpoints must be distinct valid exact coordinates");
+    case routing::RouteRequestAdmissionIssue::kRequiresExactlyTwoTerminals:
+      return Failure(PlanarGpuFailureCode::kInvalidInput,
+                     "M1 GPU routing requires exactly two target terminals");
+    case routing::RouteRequestAdmissionIssue::kMissingTerminal:
+      return Failure(PlanarGpuFailureCode::kInvalidInput,
+                     "GPU route request refers to missing target terminals");
+    case routing::RouteRequestAdmissionIssue::kEndpointsNotTerminalCenters:
+      return Failure(PlanarGpuFailureCode::kInvalidInput,
+                     "M1 GPU route endpoints must be the two exact terminal centers");
+    case routing::RouteRequestAdmissionIssue::kUnsupportedTerminalLayer:
+      return Failure(PlanarGpuFailureCode::kInvalidInput,
+                     "Requested endpoint layer is not a terminal connection layer");
+    case routing::RouteRequestAdmissionIssue::kLayerOutsideRuleBucket:
+      return Failure(PlanarGpuFailureCode::kInvalidInput,
+                     "Requested endpoint layer is not in the compiled M1 rule bucket");
   }
-  return cost;
+  return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                 "Route-request admission validator returned an unknown issue");
 }
 
 [[nodiscard]] std::optional<Direction> DirectionBetween(const DeviceNodeV1& start,
@@ -129,44 +94,46 @@ using geometry_compiler::LatticeIndex;
   if (start.layer != end.layer) {
     return std::nullopt;
   }
-  const std::int64_t delta_x = end.lattice_x - start.lattice_x;
-  const std::int64_t delta_y = end.lattice_y - start.lattice_y;
-  for (Direction direction : geometry_compiler::kStableDirectionOrder) {
-    const DirectionDelta delta = geometry_compiler::DeltaFor(direction);
-    if (delta_x == delta.x && delta_y == delta.y) {
-      return direction;
-    }
-  }
-  return std::nullopt;
+  return routing::DirectionBetween(LatticeIndex{.x = start.lattice_x, .y = start.lattice_y},
+                                   LatticeIndex{.x = end.lattice_x, .y = end.lattice_y});
 }
 
-[[nodiscard]] std::vector<routing::LayerSegment> CoalesceSegments(
-    board_ir::LayerId layer, std::span<const board_ir::Point64> points) {
-  std::vector<routing::LayerSegment> segments;
-  if (points.size() < 2) {
-    return segments;
-  }
-  board_ir::Point64 segment_start = points.front();
-  board_ir::DbCoord previous_delta_x = points[1].x - points[0].x;
-  board_ir::DbCoord previous_delta_y = points[1].y - points[0].y;
-  for (std::size_t index = 2; index < points.size(); ++index) {
-    const board_ir::DbCoord delta_x = points[index].x - points[index - 1].x;
-    const board_ir::DbCoord delta_y = points[index].y - points[index - 1].y;
-    if (delta_x != previous_delta_x || delta_y != previous_delta_y) {
-      segments.push_back(routing::LayerSegment{
-          .layer = layer,
-          .centerline = board_ir::Segment64{.start = segment_start, .end = points[index - 1]},
-      });
-      segment_start = points[index - 1];
-      previous_delta_x = delta_x;
-      previous_delta_y = delta_y;
+struct DeviceEndpoints {
+  LatticeIndex start;
+  LatticeIndex goal;
+  std::uint32_t start_node;
+  std::uint32_t goal_node;
+};
+
+using DeviceEndpointResult = std::variant<DeviceEndpoints, PlanarGpuFailure>;
+
+[[nodiscard]] DeviceEndpointResult ResolveDeviceEndpoints(const CompiledBoard& compiled,
+                                                          const DeviceCompiledBoardV1& device,
+                                                          const routing::CpuRouteRequest& request) {
+  const routing::PlanarEndpointResult resolved = routing::ResolvePlanarEndpoints(compiled, request);
+  if (std::holds_alternative<routing::PlanarEndpointIssue>(resolved)) {
+    if (std::get<routing::PlanarEndpointIssue>(resolved) ==
+        routing::PlanarEndpointIssue::kNotOnCompilerLattice) {
+      return Failure(PlanarGpuFailureCode::kInvalidInput,
+                     "GPU route endpoints must lie exactly on the compiler lattice");
     }
+    return Failure(PlanarGpuFailureCode::kInvalidInput,
+                   "GPU route endpoints must both be represented by active sparse tiles");
   }
-  segments.push_back(routing::LayerSegment{
-      .layer = layer,
-      .centerline = board_ir::Segment64{.start = segment_start, .end = points.back()},
-  });
-  return segments;
+  const routing::ResolvedPlanarEndpoints& endpoints =
+      std::get<routing::ResolvedPlanarEndpoints>(resolved);
+  const std::optional<std::uint32_t> start_node =
+      FindDeviceNodeIndex(device, request.start_layer, endpoints.start);
+  const std::optional<std::uint32_t> goal_node =
+      FindDeviceNodeIndex(device, request.goal_layer, endpoints.goal);
+  if (!start_node.has_value() || !goal_node.has_value()) {
+    return Failure(PlanarGpuFailureCode::kInvalidInput,
+                   "GPU route endpoints must both be represented by active sparse tiles");
+  }
+  return DeviceEndpoints{.start = endpoints.start,
+                         .goal = endpoints.goal,
+                         .start_node = *start_node,
+                         .goal_node = *goal_node};
 }
 
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidateRawAssociations(
@@ -186,19 +153,39 @@ using geometry_compiler::LatticeIndex;
     return Failure(PlanarGpuFailureCode::kValidationFailed,
                    "GPU result endpoint or generator associations do not match the route request");
   }
+  return std::nullopt;
+}
+
+[[nodiscard]] std::optional<PlanarGpuFailure> ValidateKernelTelemetry(
+    const DeviceCompiledBoardV1& device, PlanarGenerator generator,
+    const UntrustedKernelResult& untrusted) {
   if (untrusted.telemetry.persistent_device_bytes !=
       device.header.estimated_persistent_device_bytes) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
                    "GPU persistent-memory telemetry disagrees with deterministic accounting");
   }
-  const std::uint64_t minimum_batch_bytes =
-      sizeof(DeviceResultHeaderV1) +
-      device.header.represented_states * (sizeof(std::uint64_t) + sizeof(std::uint32_t));
-  if (untrusted.telemetry.batch_device_bytes < minimum_batch_bytes) {
-    return Failure(PlanarGpuFailureCode::kInternalInvariant,
-                   "GPU batch-memory telemetry omits required result arrays");
+  UWide expected_batch_bytes = sizeof(DeviceResultHeaderV1);
+  expected_batch_bytes += static_cast<UWide>(device.header.represented_states) *
+                          (sizeof(std::uint64_t) + sizeof(std::uint32_t));
+  if (generator == PlanarGenerator::kBucketedFrontier) {
+    expected_batch_bytes +=
+        static_cast<UWide>(device.header.represented_states) * 2 * sizeof(std::uint32_t) +
+        2 * sizeof(std::uint64_t);
+  } else if (generator == PlanarGenerator::kHeadingAwareSweep) {
+    expected_batch_bytes +=
+        static_cast<UWide>(device.header.represented_nodes) * 8 * sizeof(std::uint64_t) +
+        2 * sizeof(std::uint64_t);
+  } else {
+    return Failure(PlanarGpuFailureCode::kValidationFailed,
+                   "GPU telemetry validation names an unknown planar generator", std::nullopt,
+                   std::nullopt, "gpu.generator.unknown.v1");
   }
-  const std::optional<std::uint64_t> expected_peak = CheckedAdd(
+  if (expected_batch_bytes > std::numeric_limits<std::uint64_t>::max() ||
+      untrusted.telemetry.batch_device_bytes != static_cast<std::uint64_t>(expected_batch_bytes)) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU batch-memory telemetry disagrees with deterministic accounting");
+  }
+  const std::optional<std::uint64_t> expected_peak = routing::CheckedAdd(
       untrusted.telemetry.persistent_device_bytes, untrusted.telemetry.batch_device_bytes);
   if (!expected_peak.has_value() || untrusted.telemetry.peak_device_bytes != *expected_peak) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
@@ -214,6 +201,17 @@ using geometry_compiler::LatticeIndex;
 
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidateCompletionTelemetry(
     const UntrustedKernelResult& untrusted, std::uint32_t maximum_rounds) {
+  switch (untrusted.completion) {
+    case KernelCompletion::kReached:
+    case KernelCompletion::kDisconnected:
+    case KernelCompletion::kBudgetExhausted:
+    case KernelCompletion::kCancelled:
+      break;
+    default:
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "GPU result contains an unknown completion code", std::nullopt, std::nullopt,
+                     "gpu.completion.unknown.v1");
+  }
   if (untrusted.telemetry.rounds > maximum_rounds) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
                    "GPU round telemetry exceeds the configured execution budget");
@@ -232,13 +230,23 @@ using geometry_compiler::LatticeIndex;
   return std::nullopt;
 }
 
+enum class PredecessorCostValidation : std::uint8_t {
+  kExact,
+  kPartial,
+};
+
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidateAllPredecessors(
     const CompiledBoard& compiled, const DeviceCompiledBoardV1& device, std::uint32_t start_node,
-    const UntrustedKernelResult& untrusted) {
+    const UntrustedKernelResult& untrusted, PredecessorCostValidation cost_validation) {
   const std::uint64_t state_count = device.header.represented_states;
   if (untrusted.labels.size() != state_count || untrusted.predecessors.size() != state_count) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
                    "GPU label or predecessor array has an invalid bound");
+  }
+  if (start_node >= device.nodes.size() ||
+      StateIndex(start_node, kNoIncomingHeading) >= state_count) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU start node maps outside the flattened state array");
   }
   const std::uint32_t start_state = StateIndex(start_node, kNoIncomingHeading);
   if (untrusted.labels[start_state] != 0 ||
@@ -266,6 +274,14 @@ using geometry_compiler::LatticeIndex;
         return Failure(PlanarGpuFailureCode::kInternalInvariant,
                        "GPU unreachable state carries a predecessor");
       }
+      continue;
+    }
+    if (predecessor == kInvalidStateIndex &&
+        cost_validation == PredecessorCostValidation::kPartial) {
+      // A bounded sweep can improve a label during the final round after its
+      // stable predecessor-selection pass has observed an older departure
+      // snapshot. Such a finite state is structurally valid but is not
+      // reconstructible until a later converged round.
       continue;
     }
     if (predecessor >= state_count) {
@@ -302,11 +318,17 @@ using geometry_compiler::LatticeIndex;
       return Failure(PlanarGpuFailureCode::kInternalInvariant,
                      "GPU finite state follows an unreachable predecessor");
     }
-    const std::optional<std::uint64_t> expected =
-        CheckedAdd(predecessor_label, StepCost(compiled.profile(), direction, predecessor_heading));
-    if (!expected.has_value() || *expected != label) {
+    const std::optional<std::uint64_t> expected = routing::CheckedAdd(
+        predecessor_label, routing::StepCost(compiled.profile(), direction, predecessor_heading));
+    const bool invalid_cost =
+        !expected.has_value() ||
+        (cost_validation == PredecessorCostValidation::kExact ? *expected != label
+                                                              : *expected > label);
+    if (invalid_cost) {
       return Failure(PlanarGpuFailureCode::kInternalInvariant,
-                     "GPU predecessor label does not reconstruct the exact scalar cost");
+                     cost_validation == PredecessorCostValidation::kExact
+                         ? "GPU predecessor label does not reconstruct the exact scalar cost"
+                         : "GPU partial predecessor label violates the scalar-cost lower bound");
     }
   }
   return std::nullopt;
@@ -328,6 +350,46 @@ using geometry_compiler::LatticeIndex;
   return std::nullopt;
 }
 
+[[nodiscard]] std::optional<PlanarGpuFailure> ValidateRouteAdmission(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled,
+    const routing::CpuRouteRequest& request, const PlanarRoutePolicy& policy) {
+  if (policy.maximum_rounds == 0) {
+    return Failure(PlanarGpuFailureCode::kInvalidInput, "GPU route round budget must be positive");
+  }
+  if (policy.generator != PlanarGenerator::kBucketedFrontier &&
+      policy.generator != PlanarGenerator::kHeadingAwareSweep) {
+    return Failure(PlanarGpuFailureCode::kInvalidInput,
+                   "GPU route policy names an unknown planar generator");
+  }
+  if (std::optional<PlanarGpuFailure> invalid = ValidateRequest(board, compiled, request);
+      invalid.has_value()) {
+    return invalid;
+  }
+  if (request.start_layer != request.goal_layer) {
+    return Failure(PlanarGpuFailureCode::kUnsupported,
+                   "Planar Phase 2 GPU kernels cannot invent via padstack legality");
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] std::optional<PlanarGpuFailure> ValidatePreparedAssociations(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled,
+    const DeviceCompiledBoardV1& device) {
+  if (routing::ValidateCompiledBoardAssociation(board, compiled).has_value()) {
+    return Failure(PlanarGpuFailureCode::kValidationFailed,
+                   "Prepared GPU view no longer matches the BoardSnapshot and CompiledBoard");
+  }
+  if (device.header.schema_version != kDeviceCompiledBoardSchemaVersion ||
+      device.header.source_board_content_hash != compiled.source_board_content_hash() ||
+      device.header.compiler_version != compiled.compiler_version() ||
+      device.header.compiler_profile_fingerprint != compiled.compiler_profile_fingerprint() ||
+      device.header.rule_bucket_identity != compiled.rule_bucket().identity) {
+    return Failure(PlanarGpuFailureCode::kValidationFailed,
+                   "Prepared GPU view associations do not match this compiled route field");
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapshot& board,
@@ -337,33 +399,35 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapsho
                                                     PlanarGenerator generator,
                                                     const BackendMetadata& backend,
                                                     const UntrustedKernelResult& untrusted) {
-  const std::optional<LatticeIndex> start =
-      geometry_compiler::ExactPointToLatticeIndex(compiled_board.profile(), request.start);
-  const std::optional<LatticeIndex> goal =
-      geometry_compiler::ExactPointToLatticeIndex(compiled_board.profile(), request.goal);
-  if (!start.has_value() || !goal.has_value()) {
+  if (generator != PlanarGenerator::kBucketedFrontier &&
+      generator != PlanarGenerator::kHeadingAwareSweep) {
     return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "GPU route endpoints must lie exactly on the compiler lattice");
+                   "GPU route validation names an unknown planar generator");
   }
-  const std::optional<std::uint32_t> start_node =
-      FindDeviceNodeIndex(device_board, request.start_layer, *start);
-  const std::optional<std::uint32_t> goal_node =
-      FindDeviceNodeIndex(device_board, request.goal_layer, *goal);
-  if (!start_node.has_value() || !goal_node.has_value()) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "GPU route endpoints must both be represented by active sparse tiles");
+  DeviceEndpointResult endpoint_result =
+      ResolveDeviceEndpoints(compiled_board, device_board, request);
+  if (std::holds_alternative<PlanarGpuFailure>(endpoint_result)) {
+    return std::get<PlanarGpuFailure>(std::move(endpoint_result));
   }
-  if (std::optional<PlanarGpuFailure> association =
-          ValidateRawAssociations(device_board, *start_node, *goal_node, generator, untrusted);
+  const DeviceEndpoints endpoints = std::get<DeviceEndpoints>(endpoint_result);
+  if (std::optional<PlanarGpuFailure> invalid =
+          ValidateKernelTelemetry(device_board, generator, untrusted);
+      invalid.has_value()) {
+    return std::move(*invalid);
+  }
+  if (std::optional<PlanarGpuFailure> association = ValidateRawAssociations(
+          device_board, endpoints.start_node, endpoints.goal_node, generator, untrusted);
       association.has_value()) {
-    return std::move(*association);
+    return WithTelemetry(std::move(*association), untrusted.telemetry);
   }
   if (untrusted.completion != KernelCompletion::kReached) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
-                   "Route reconstruction requires a reached GPU result");
+                   "Route reconstruction requires a reached GPU result", std::nullopt,
+                   untrusted.telemetry);
   }
   if (std::optional<PlanarGpuFailure> invalid =
-          ValidateAllPredecessors(compiled_board, device_board, *start_node, untrusted);
+          ValidateAllPredecessors(compiled_board, device_board, endpoints.start_node, untrusted,
+                                  PredecessorCostValidation::kExact);
       invalid.has_value()) {
     return WithTelemetry(std::move(*invalid), untrusted.telemetry);
   }
@@ -371,7 +435,7 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapsho
   std::uint64_t best_goal_cost = kInfiniteRouteCost;
   std::uint32_t best_goal_state = kInvalidStateIndex;
   for (std::uint8_t heading = 0; heading < 8; ++heading) {
-    const std::uint32_t state = StateIndex(*goal_node, heading);
+    const std::uint32_t state = StateIndex(endpoints.goal_node, heading);
     if (untrusted.labels[state] < best_goal_cost ||
         (untrusted.labels[state] == best_goal_cost && state < best_goal_state)) {
       best_goal_cost = untrusted.labels[state];
@@ -384,7 +448,7 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapsho
                    untrusted.telemetry);
   }
 
-  const std::uint32_t start_state = StateIndex(*start_node, kNoIncomingHeading);
+  const std::uint32_t start_state = StateIndex(endpoints.start_node, kNoIncomingHeading);
   std::vector<std::uint8_t> visited(
       static_cast<std::size_t>(device_board.header.represented_states), 0);
   std::vector<std::uint32_t> reversed_nodes;
@@ -438,7 +502,8 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapsho
                    std::nullopt, untrusted.telemetry);
   }
 
-  std::vector<routing::LayerSegment> segments = CoalesceSegments(request.start_layer, points);
+  std::vector<routing::LayerSegment> segments =
+      routing::CoalesceSegments(request.start_layer, points);
   if (std::optional<routing::RouteFailure> invalid =
           routing::ValidateReconstructedRoute(board, compiled_board, request, segments);
       invalid.has_value()) {
@@ -462,60 +527,14 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapsho
   };
 }
 
-PlanarGpuRouteResult RouteWithPlanarGpuBackend(const board_ir::BoardSnapshot& board,
-                                               const CompiledBoard& compiled_board,
-                                               const routing::CpuRouteRequest& request,
-                                               const PlanarRoutePolicy& policy,
-                                               IPlanarRouteBackend& backend) {
-  if (policy.maximum_rounds == 0) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput, "GPU route round budget must be positive");
-  }
-  if (policy.generator != PlanarGenerator::kBucketedFrontier &&
-      policy.generator != PlanarGenerator::kHeadingAwareSweep) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "GPU route policy names an unknown planar generator");
-  }
-  if (policy.fault_injection != KernelFaultInjection::kNone &&
-      policy.fault_injection != KernelFaultInjection::kGoalPredecessorSelfCycle) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "GPU route policy names an unknown fault injection");
-  }
-  if (std::optional<PlanarGpuFailure> invalid = ValidateRequest(board, compiled_board, request);
-      invalid.has_value()) {
-    return std::move(*invalid);
-  }
-  if (request.start_layer != request.goal_layer) {
-    return Failure(PlanarGpuFailureCode::kUnsupported,
-                   "Planar Phase 2 GPU kernels cannot invent via padstack legality");
-  }
-
+PreparedPlanarCompiledViewResult PreparePlanarCompiledView(const board_ir::BoardSnapshot& board,
+                                                           const CompiledBoard& compiled_board,
+                                                           IPlanarRouteBackend& backend) {
   DeviceCompiledBoardResult flattened = BuildDeviceCompiledBoardV1(board, compiled_board);
   if (std::holds_alternative<PlanarGpuFailure>(flattened)) {
     return std::get<PlanarGpuFailure>(std::move(flattened));
   }
   DeviceCompiledBoardV1 device = std::get<DeviceCompiledBoardV1>(std::move(flattened));
-
-  const std::optional<LatticeIndex> start =
-      geometry_compiler::ExactPointToLatticeIndex(compiled_board.profile(), request.start);
-  const std::optional<LatticeIndex> goal =
-      geometry_compiler::ExactPointToLatticeIndex(compiled_board.profile(), request.goal);
-  if (!start.has_value() || !goal.has_value()) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "GPU route endpoints must lie exactly on the compiler lattice");
-  }
-  const std::optional<std::uint32_t> start_node =
-      FindDeviceNodeIndex(device, request.start_layer, *start);
-  const std::optional<std::uint32_t> goal_node =
-      FindDeviceNodeIndex(device, request.goal_layer, *goal);
-  if (!start_node.has_value() || !goal_node.has_value()) {
-    return Failure(PlanarGpuFailureCode::kInvalidInput,
-                   "GPU route endpoints must both be represented by active sparse tiles");
-  }
-  if (policy.cancellation != nullptr && policy.cancellation->load()) {
-    return Failure(PlanarGpuFailureCode::kCancelled,
-                   "GPU route was cancelled before device upload");
-  }
-
   BackendMetadataResult metadata_result = backend.QueryMetadata();
   if (std::holds_alternative<BackendError>(metadata_result)) {
     return BackendFailure(std::get<BackendError>(metadata_result));
@@ -532,17 +551,50 @@ PlanarGpuRouteResult RouteWithPlanarGpuBackend(const board_ir::BoardSnapshot& bo
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
                    "Backend returned a null uploaded compiled view");
   }
+  return std::unique_ptr<PreparedPlanarCompiledView>(new PreparedPlanarCompiledView(
+      backend, std::move(device), std::move(metadata), std::move(uploaded)));
+}
+
+PlanarGpuRouteResult RouteWithPreparedPlanarGpuBackend(const board_ir::BoardSnapshot& board,
+                                                       const CompiledBoard& compiled_board,
+                                                       const routing::CpuRouteRequest& request,
+                                                       const PlanarRoutePolicy& policy,
+                                                       PreparedPlanarCompiledView& prepared) {
+  if (std::optional<PlanarGpuFailure> invalid =
+          ValidateRouteAdmission(board, compiled_board, request, policy);
+      invalid.has_value()) {
+    return std::move(*invalid);
+  }
+  if (prepared.backend_ == nullptr || prepared.uploaded_ == nullptr) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "Prepared GPU view has no live backend upload");
+  }
+  if (std::optional<PlanarGpuFailure> invalid =
+          ValidatePreparedAssociations(board, compiled_board, prepared.device_board_);
+      invalid.has_value()) {
+    return std::move(*invalid);
+  }
+  DeviceEndpointResult endpoint_result =
+      ResolveDeviceEndpoints(compiled_board, prepared.device_board_, request);
+  if (std::holds_alternative<PlanarGpuFailure>(endpoint_result)) {
+    return std::get<PlanarGpuFailure>(std::move(endpoint_result));
+  }
+  const DeviceEndpoints endpoints = std::get<DeviceEndpoints>(endpoint_result);
+  if (policy.cancellation != nullptr && policy.cancellation->load()) {
+    return Failure(PlanarGpuFailureCode::kCancelled,
+                   "GPU route was cancelled before device execution");
+  }
 
   const BackendExecutionRequest execution_request{
       .generator = policy.generator,
-      .start_node = *start_node,
-      .goal_node = *goal_node,
+      .start_node = endpoints.start_node,
+      .goal_node = endpoints.goal_node,
       .maximum_rounds = policy.maximum_rounds,
       .maximum_device_bytes = policy.maximum_device_bytes,
       .cancellation = policy.cancellation,
-      .fault_injection = policy.fault_injection,
   };
-  ExecutionResult execution_result = backend.ExecuteRoute(*uploaded, execution_request);
+  ExecutionResult execution_result =
+      prepared.backend_->ExecuteRoute(*prepared.uploaded_, execution_request);
   if (std::holds_alternative<BackendError>(execution_result)) {
     return BackendFailure(std::get<BackendError>(execution_result));
   }
@@ -553,36 +605,48 @@ PlanarGpuRouteResult RouteWithPlanarGpuBackend(const board_ir::BoardSnapshot& bo
                    "Backend returned a null route execution");
   }
 
-  ReadbackResult readback_result = backend.ReadbackRoute(*execution);
+  ReadbackResult readback_result = prepared.backend_->ReadbackRoute(*execution);
   if (std::holds_alternative<BackendError>(readback_result)) {
     return BackendFailure(std::get<BackendError>(readback_result));
   }
   UntrustedKernelResult untrusted = std::get<UntrustedKernelResult>(std::move(readback_result));
+  if (std::optional<PlanarGpuFailure> invalid =
+          ValidateKernelTelemetry(prepared.device_board_, policy.generator, untrusted);
+      invalid.has_value()) {
+    return std::move(*invalid);
+  }
   if (std::optional<PlanarGpuFailure> association =
-          ValidateRawAssociations(device, *start_node, *goal_node, policy.generator, untrusted);
+          ValidateRawAssociations(prepared.device_board_, endpoints.start_node, endpoints.goal_node,
+                                  policy.generator, untrusted);
       association.has_value()) {
-    return std::move(*association);
+    return WithTelemetry(std::move(*association), untrusted.telemetry);
   }
   if (std::optional<PlanarGpuFailure> invalid =
           ValidateCompletionTelemetry(untrusted, policy.maximum_rounds);
       invalid.has_value()) {
-    return std::move(*invalid);
+    return WithTelemetry(std::move(*invalid), untrusted.telemetry);
   }
   if (untrusted.completion != KernelCompletion::kReached) {
+    const PredecessorCostValidation predecessor_validation =
+        untrusted.completion == KernelCompletion::kDisconnected
+            ? PredecessorCostValidation::kExact
+            : PredecessorCostValidation::kPartial;
     if (std::optional<PlanarGpuFailure> invalid =
-            ValidateAllPredecessors(compiled_board, device, *start_node, untrusted);
+            ValidateAllPredecessors(compiled_board, prepared.device_board_, endpoints.start_node,
+                                    untrusted, predecessor_validation);
         invalid.has_value()) {
       return WithTelemetry(std::move(*invalid), untrusted.telemetry);
     }
   }
   switch (untrusted.completion) {
     case KernelCompletion::kReached:
-      return ValidateAndReconstructGpuRoute(board, compiled_board, device, request,
-                                            policy.generator, metadata, untrusted);
+      return ValidateAndReconstructGpuRoute(board, compiled_board, prepared.device_board_, request,
+                                            policy.generator, prepared.metadata_, untrusted);
     case KernelCompletion::kDisconnected:
-      if (std::optional<PlanarGpuFailure> invalid = ValidateDisconnectedResult(device, untrusted);
+      if (std::optional<PlanarGpuFailure> invalid =
+              ValidateDisconnectedResult(prepared.device_board_, untrusted);
           invalid.has_value()) {
-        return std::move(*invalid);
+        return WithTelemetry(std::move(*invalid), untrusted.telemetry);
       }
       return Failure(PlanarGpuFailureCode::kDisconnected,
                      "No planar path connects the represented start and goal fields", std::nullopt,
@@ -597,7 +661,36 @@ PlanarGpuRouteResult RouteWithPlanarGpuBackend(const board_ir::BoardSnapshot& bo
                      untrusted.telemetry);
   }
   return Failure(PlanarGpuFailureCode::kInternalInvariant,
-                 "GPU result contains an unknown completion code");
+                 "GPU result contains an unknown completion code", std::nullopt,
+                 untrusted.telemetry, "gpu.completion.unknown.v1");
+}
+
+PlanarGpuRouteResult RouteWithPlanarGpuBackend(const board_ir::BoardSnapshot& board,
+                                               const CompiledBoard& compiled_board,
+                                               const routing::CpuRouteRequest& request,
+                                               const PlanarRoutePolicy& policy,
+                                               IPlanarRouteBackend& backend) {
+  if (std::optional<PlanarGpuFailure> invalid =
+          ValidateRouteAdmission(board, compiled_board, request, policy);
+      invalid.has_value()) {
+    return std::move(*invalid);
+  }
+  if (policy.cancellation != nullptr && policy.cancellation->load()) {
+    return Failure(PlanarGpuFailureCode::kCancelled,
+                   "GPU route was cancelled before device upload");
+  }
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, compiled_board, backend);
+  if (std::holds_alternative<PlanarGpuFailure>(prepared_result)) {
+    return std::get<PlanarGpuFailure>(std::move(prepared_result));
+  }
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+  if (prepared == nullptr) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU preparation returned a null immutable device view");
+  }
+  return RouteWithPreparedPlanarGpuBackend(board, compiled_board, request, policy, *prepared);
 }
 
 }  // namespace apgar::gpu
