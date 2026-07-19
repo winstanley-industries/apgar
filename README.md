@@ -35,7 +35,8 @@ repository.
 
 ## Build
 
-APGAR uses Bazel with Bzlmod and pinned, downloaded LLVM and Python toolchains:
+APGAR uses Bazel with Bzlmod and pinned, downloaded, hermetic LLVM and Python
+toolchains:
 
 ```sh
 bazel lint

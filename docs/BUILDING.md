@@ -1,18 +1,19 @@
 # Building APGAR
 
 Bazel is the canonical APGAR build interface. The repository uses Bzlmod for
-dependency resolution and a downloaded LLVM distribution for C and C++
-compilation.
+dependency resolution and a downloaded, zero-sysroot LLVM toolchain for C and
+C++ compilation.
 
 ## Prerequisites
 
 - Bazelisk, which reads the pinned Bazel version from `.bazelversion`.
 - Network access on the first build so Bazel can fetch checksum-verified module
   and toolchain archives.
-- On macOS, an installed Apple developer SDK selected by `xcode-select`.
 
-No host C or C++ compiler or Python interpreter is required. Bazel downloads
-and selects the LLVM and CPython versions declared in `MODULE.bazel`.
+No host C or C++ compiler, platform SDK, or Python interpreter is required.
+Bazel downloads and selects the LLVM and CPython versions declared in
+`MODULE.bazel`. The LLVM toolchain supplies pinned C and C++ headers, libraries,
+linker inputs, and sanitizer runtimes instead of searching the host system.
 
 Developer-specific Bazel settings may be placed in the ignored
 `.bazelrc.user`, which is imported after the repository defaults.
@@ -63,12 +64,12 @@ language while iterating, use `bazel lint --only cpp`,
 The `//bazel/lint:lint` Python binary runs under downloaded CPython 3.13.13 and
 discovers tracked and untracked, non-ignored files. Its declarative language
 registry invokes pinned tools through the real Bazel binary supplied by
-Bazelisk: LLVM `clang-format` for C, C++, and CUDA; Ruff for Python; and
-ShellCheck for Bash/shell scripts; and Buildifier for Bazel/Starlark. Unit tests
-cover file matching, selection, discovery, command construction, failure
-propagation, and the Python toolchain version. ShellCheck has no in-place fix
-mode, so `bazel lint --fix` runs it as a check after applying other supported
-fixes.
+Bazelisk: the hermetic LLVM `clang-format` for C, C++, and CUDA; Ruff for
+Python; ShellCheck for Bash/shell scripts; and Buildifier for Bazel/Starlark.
+Unit tests cover file matching, selection, discovery, command construction,
+failure propagation, and the Python toolchain version. ShellCheck has no
+in-place fix mode, so `bazel lint --fix` runs it as a check after applying other
+supported fixes.
 
 When a language is added, add a `Linter` entry in `bazel/lint/lint.py` and
 extend `//bazel/lint:lint_test`. A linter declares its file patterns and one or
@@ -78,16 +79,17 @@ supported language without adding another orchestration script.
 ## Hermeticity boundary
 
 The Bazel binary, module graph, LLVM compiler binaries, CPython runtime, lint
-tools, compiler builtin headers, and normal build actions are pinned or
-sandboxed. Toolchain archives are checksum-verified, and Bazel records the
-resolved module graph and extension inputs in `MODULE.bazel.lock`.
+tools, compiler headers, platform headers, C and C++ runtimes, linker inputs,
+and normal build actions are pinned or sandboxed. Toolchain archives are
+checksum-verified, and Bazel records the resolved module graph and extension
+inputs in `MODULE.bazel.lock`.
 
-On macOS, the Apple SDK supplies platform headers, libc++, system libraries, and
-linker integration. Those remain host platform inputs because Apple SDK
-redistribution is constrained. Fully reproducible cross-host macOS artifacts
-will require an explicitly provisioned SDK execution environment. A future
-Linux remote-execution platform can use a pinned sysroot for a fully
-self-contained C++ action environment.
+Linux builds use the toolchain's zero-sysroot mode and default pinned glibc ABI;
+they do not read `/usr/include` or `/usr/lib`. macOS builds use the pinned SDK
+declared by the LLVM module rather than the SDK selected on the build host.
+Bazel's local C++ and Apple C++ toolchain discovery is disabled so an
+incompatible registered toolchain fails resolution instead of silently falling
+back to host tools.
 
 CUDA is intentionally not part of this first foundation. It will be introduced
 as a separately pinned toolchain and execution platform so CPU-only development
@@ -106,7 +108,7 @@ check name or branch-protection rule, set the `APGAR_LINUX_RUNNER` or
 runner. Leave either variable unset to keep that platform on GitHub-hosted
 infrastructure.
 
-The standard GitHub-hosted Linux image does not have enough free space to
-extract the pinned LLVM distribution alongside its archive, so Linux jobs
-remove the image's unused Android SDK before Bazel starts. The cleanup is
+The standard GitHub-hosted Linux image does not have enough free space for the
+LLVM toolchain and its generated runtimes alongside the preinstalled Android
+SDK, so Linux jobs remove that unused SDK before Bazel starts. The cleanup is
 guarded by `runner.environment` and never runs on self-hosted infrastructure.

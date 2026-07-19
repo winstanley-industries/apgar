@@ -52,7 +52,7 @@ LINTERS = {
         paths=frozenset(),
         invocations=(
             Invocation(
-                target="@llvm_toolchain//:clang-format",
+                target="@llvm//tools:clang-format",
                 check_args=("--dry-run", "--Werror"),
                 fix_args=("-i",),
             ),
