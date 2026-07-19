@@ -15,4 +15,13 @@ build:asan --@llvm//config:asan=True
 
 build:ubsan --@llvm//config:ubsan=True
 
+# Phase 2 reference CUDA platform: checksum-pinned CUDA Toolkit 13.0.2, nvcc,
+# hermetic GCC 15.2.0, and native/PTX code for compute capability 12.0. CUDA
+# targets are manual and remain outside default CPU-only //... builds.
+build:cuda --@rules_cuda//cuda:enable=True
+build:cuda --@rules_cuda//cuda:compiler=nvcc
+build:cuda --@rules_cuda//cuda:archs=compute_120:compute_120,sm_120
+build:cuda --extra_toolchains=@apgar_cuda_gcc15//:cc_toolchain
+test:cuda --test_output=all
+
 try-import %workspace%/.bazelrc.user

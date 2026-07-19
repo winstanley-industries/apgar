@@ -1,6 +1,7 @@
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_cuda//cuda:defs.bzl", "cuda_test")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -102,6 +103,16 @@ cc_binary(
     srcs = ["tools/apgar_smoke.cc"],
     copts = APGAR_COPTS,
     deps = [":apgar"],
+)
+
+cuda_test(
+    name = "cuda_smoke_test",
+    size = "small",
+    srcs = ["gpu/cuda/smoke_test.cu"],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
 )
 
 cc_test(
