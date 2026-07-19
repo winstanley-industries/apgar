@@ -304,9 +304,8 @@ using GeneratedDescriptionsResult = std::variant<std::vector<GeneratedDescriptio
   std::vector<GeneratedDescription> descriptions;
 
   CompilerProfile symmetric = BaseProfile(
-      AxisAlignedBox64{.min = Point64{.x = 0, .y = -20},
-                       .max = Point64{.x = 100, .y = 20}},
-      10, 4, 3, DeterministicCosts{.orthogonal_step = 10, .diagonal_step = 14, .bend = 7});
+      AxisAlignedBox64{.min = Point64{.x = 0, .y = -20}, .max = Point64{.x = 100, .y = 20}}, 10, 4,
+      3, DeterministicCosts{.orthogonal_step = 10, .diagonal_step = 14, .bend = 7});
   for (const std::vector<LatticeIndex>& path : {
            std::vector<LatticeIndex>{{0, 0}, {2, 2}, {8, 2}, {10, 0}},
            std::vector<LatticeIndex>{{0, 0}, {2, -2}, {8, -2}, {10, 0}},
@@ -324,9 +323,8 @@ using GeneratedDescriptionsResult = std::variant<std::vector<GeneratedDescriptio
   });
 
   CompilerProfile channels = BaseProfile(
-      AxisAlignedBox64{.min = Point64{.x = 0, .y = -20},
-                       .max = Point64{.x = 120, .y = 20}},
-      10, 5, 3, DeterministicCosts{.orthogonal_step = 11, .diagonal_step = 16, .bend = 9});
+      AxisAlignedBox64{.min = Point64{.x = 0, .y = -20}, .max = Point64{.x = 120, .y = 20}}, 10, 5,
+      3, DeterministicCosts{.orthogonal_step = 11, .diagonal_step = 16, .bend = 9});
   for (std::int64_t channel_y : {-2, 0, 2}) {
     if (std::optional<std::string> error = AddPolyline(
             &channels, {{0, 0}, {2, 0}, {4, channel_y}, {8, channel_y}, {10, 0}, {12, 0}});
@@ -343,9 +341,8 @@ using GeneratedDescriptionsResult = std::variant<std::vector<GeneratedDescriptio
   });
 
   CompilerProfile alternatives = BaseProfile(
-      AxisAlignedBox64{.min = Point64{.x = 0, .y = -40},
-                       .max = Point64{.x = 120, .y = 40}},
-      10, 4, 4, DeterministicCosts{.orthogonal_step = 13, .diagonal_step = 18, .bend = 5});
+      AxisAlignedBox64{.min = Point64{.x = 0, .y = -40}, .max = Point64{.x = 120, .y = 40}}, 10, 4,
+      4, DeterministicCosts{.orthogonal_step = 13, .diagonal_step = 18, .bend = 5});
   if (std::optional<std::string> error = AddInclusiveLine(&alternatives, {0, 0}, {2, 0});
       error.has_value()) {
     return *error;
@@ -476,8 +473,7 @@ PlanarCorpusResult BuildPhase3CandidateCorpus(std::string_view kicad_fixture) {
   if (std::holds_alternative<std::string>(base)) {
     return std::get<std::string>(std::move(base));
   }
-  std::vector<PlanarCorpusCase> corpus =
-      std::get<std::vector<PlanarCorpusCase>>(std::move(base));
+  std::vector<PlanarCorpusCase> corpus = std::get<std::vector<PlanarCorpusCase>>(std::move(base));
   GeneratedDescriptionsResult descriptions = Phase3AdditionalDescriptions();
   if (std::holds_alternative<std::string>(descriptions)) {
     return std::get<std::string>(std::move(descriptions));

@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <variant>
@@ -15,16 +16,22 @@
 
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry_compiler/compiled_board.h"
+#include "apgar/routing/candidate_policy.h"
 #include "apgar/routing/cpu_astar.h"
 
 namespace apgar::gpu {
 
 inline constexpr std::uint32_t kDeviceCompiledBoardSchemaVersion = 1;
+inline constexpr std::uint32_t kDeviceCandidateBatchSchemaVersion = 1;
 inline constexpr std::uint8_t kIncomingHeadingCount = 9;
 inline constexpr std::uint8_t kNoIncomingHeading = 8;
 inline constexpr std::uint32_t kInvalidNodeIndex = std::numeric_limits<std::uint32_t>::max();
 inline constexpr std::uint32_t kInvalidStateIndex = std::numeric_limits<std::uint32_t>::max();
 inline constexpr std::uint64_t kInfiniteRouteCost = std::numeric_limits<std::uint64_t>::max();
+inline constexpr std::uint64_t kBannedResourceAdjustment =
+    std::numeric_limits<std::uint64_t>::max();
+inline constexpr std::uint32_t kCandidateFrontierChunkRounds = 32;
+inline constexpr std::uint32_t kCandidateSweepChunkRounds = 8;
 
 enum class PlanarGenerator : std::uint8_t {
   kBucketedFrontier,
@@ -52,6 +59,34 @@ struct KernelTelemetry {
   double kernel_milliseconds = 0.0;
 
   friend bool operator==(const KernelTelemetry&, const KernelTelemetry&) = default;
+};
+
+// Shared execution telemetry is owned once by a candidate batch. It is not
+// duplicated into each query result.
+struct CandidateBatchTelemetry {
+  std::uint64_t persistent_device_bytes = 0;
+  std::uint64_t batch_device_bytes = 0;
+  std::uint64_t peak_device_bytes = 0;
+  std::uint64_t batch_host_bytes = 0;
+  std::uint64_t kernel_launch_count = 0;
+  std::uint64_t blocking_status_readback_count = 0;
+  std::uint32_t dispatched_rounds = 0;
+  std::uint32_t finalization_launch_count = 0;
+  std::uint32_t chunk_rounds = 0;
+  double kernel_milliseconds = 0.0;
+
+  friend bool operator==(const CandidateBatchTelemetry&, const CandidateBatchTelemetry&) = default;
+};
+
+// Query telemetry contains only work attributable to that query's private
+// workspace. Shared memory, launch, synchronization, and timing telemetry
+// lives on CandidateBatchTelemetry.
+struct CandidateQueryTelemetry {
+  std::uint64_t examined_work = 0;
+  std::uint64_t heading_turn_relaxations = 0;
+  std::uint32_t rounds = 0;
+
+  friend bool operator==(const CandidateQueryTelemetry&, const CandidateQueryTelemetry&) = default;
 };
 
 struct PlanarGpuFailure {
@@ -226,7 +261,102 @@ struct BackendExecutionRequest {
   const std::atomic_bool* cancellation;
 };
 
+// One canonical physical device edge adjustment. physical_edge_index is the
+// source-node-major directed-edge index for one of the four canonical positive
+// directions. Reverse traversal resolves to the same index. UINT64_MAX means
+// banned; every other value is a finite additive transition penalty.
+struct DeviceCandidatePolicyEdgeV1 {
+  std::uint32_t physical_edge_index = kInvalidStateIndex;
+  std::uint32_t reserved = 0;
+  std::uint64_t adjustment = 0;
+
+  friend bool operator==(const DeviceCandidatePolicyEdgeV1&,
+                         const DeviceCandidatePolicyEdgeV1&) = default;
+};
+static_assert(sizeof(DeviceCandidatePolicyEdgeV1) == 16);
+
+// Versioned query record copied once for a query-major batch. All offsets and
+// counts are checked by the host and backend before allocation or launch.
+struct DeviceCandidateBatchQueryV1 {
+  std::uint32_t schema_version = kDeviceCandidateBatchSchemaVersion;
+  std::uint32_t input_ordinal = 0;
+  std::uint64_t batch_id = 0;
+  std::uint64_t query_id = 0;
+  std::uint64_t workspace_owner = 0;
+  std::uint64_t policy_identity = 0;
+  std::uint64_t routing_profile_fingerprint = 0;
+  std::uint32_t start_node = kInvalidNodeIndex;
+  std::uint32_t goal_node = kInvalidNodeIndex;
+  std::uint32_t policy_offset = 0;
+  std::uint32_t policy_count = 0;
+  std::uint64_t workspace_offset = 0;
+  std::uint64_t workspace_state_count = 0;
+  std::uint64_t frontier_state_capacity = 0;
+  std::uint64_t orthogonal_step_surcharge = 0;
+  std::uint64_t diagonal_step_surcharge = 0;
+  std::uint64_t bend_surcharge = 0;
+  std::uint32_t maximum_rounds = 0;
+  PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
+  std::array<std::uint8_t, 3> reserved{};
+
+  friend bool operator==(const DeviceCandidateBatchQueryV1&,
+                         const DeviceCandidateBatchQueryV1&) = default;
+};
+static_assert(sizeof(DeviceCandidateBatchQueryV1) == 120);
+
+// Device-produced result header. It repeats immutable-view, query, policy, and
+// workspace ownership associations before the host interprets any query state.
+struct DeviceCandidateBatchResultV1 {
+  std::uint32_t schema_version = kDeviceCandidateBatchSchemaVersion;
+  std::uint32_t compiler_version = 0;
+  std::uint32_t input_ordinal = 0;
+  std::uint32_t start_node = kInvalidNodeIndex;
+  std::uint32_t goal_node = kInvalidNodeIndex;
+  std::uint32_t goal_state = kInvalidStateIndex;
+  std::uint32_t rounds = 0;
+  PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
+  KernelCompletion completion = KernelCompletion::kDisconnected;
+  std::array<std::uint8_t, 2> reserved{};
+  std::uint64_t batch_id = 0;
+  std::uint64_t query_id = 0;
+  std::uint64_t workspace_owner = 0;
+  std::uint64_t policy_identity = 0;
+  std::uint64_t routing_profile_fingerprint = 0;
+  std::uint64_t source_board_content_hash = 0;
+  std::uint64_t compiler_profile_fingerprint = 0;
+  std::uint64_t rule_bucket_identity = 0;
+  std::uint64_t device_view_fingerprint = 0;
+  std::uint64_t examined_work = 0;
+  std::uint64_t heading_turn_relaxations = 0;
+
+  friend bool operator==(const DeviceCandidateBatchResultV1&,
+                         const DeviceCandidateBatchResultV1&) = default;
+};
+static_assert(sizeof(DeviceCandidateBatchResultV1) == 120);
+
+struct BackendCandidateBatchExecutionRequest {
+  std::uint32_t schema_version = kDeviceCandidateBatchSchemaVersion;
+  std::uint64_t batch_id = 0;
+  PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
+  std::uint32_t maximum_rounds = 0;
+  std::uint64_t maximum_workspace_states_per_query = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximum_frontier_states_per_query = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximum_device_bytes = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximum_host_bytes = std::numeric_limits<std::uint64_t>::max();
+  std::vector<DeviceCandidateBatchQueryV1> queries;
+  std::vector<DeviceCandidatePolicyEdgeV1> policy_edges;
+  const std::atomic_bool* cancellation = nullptr;
+};
+
+// Deterministic logical upper bound for transient host payload owned while a
+// candidate batch is encoded, executed, read back, and partitioned into
+// query-local results. Container allocator overhead is deliberately excluded.
+[[nodiscard]] std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(
+    std::uint64_t query_count, std::uint64_t policy_edge_count,
+    std::uint64_t represented_states) noexcept;
+
 enum class BackendErrorCode : std::uint8_t {
+  kUnsupported,
   kResourceExhausted,
   kBackendFailure,
   kInternalInvariant,
@@ -247,10 +377,35 @@ class PendingRouteExecution {
   virtual ~PendingRouteExecution() = default;
 };
 
+class PendingCandidateBatchExecution {
+ public:
+  virtual ~PendingCandidateBatchExecution() = default;
+};
+
+struct UntrustedCandidateBatchQueryResult {
+  DeviceCandidateBatchResultV1 header;
+  std::vector<std::uint64_t> labels;
+  std::vector<std::uint32_t> predecessors;
+  std::vector<std::uint64_t> state_owners;
+  std::vector<std::uint64_t> predecessor_owners;
+  CandidateQueryTelemetry telemetry;
+};
+
+struct UntrustedCandidateBatchResult {
+  std::uint32_t schema_version = kDeviceCandidateBatchSchemaVersion;
+  std::uint64_t batch_id = 0;
+  PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
+  CandidateBatchTelemetry telemetry;
+  std::vector<UntrustedCandidateBatchQueryResult> queries;
+};
+
 using BackendMetadataResult = std::variant<BackendMetadata, BackendError>;
 using UploadResult = std::variant<std::unique_ptr<UploadedCompiledView>, BackendError>;
 using ExecutionResult = std::variant<std::unique_ptr<PendingRouteExecution>, BackendError>;
 using ReadbackResult = std::variant<UntrustedKernelResult, BackendError>;
+using CandidateBatchExecutionResult =
+    std::variant<std::unique_ptr<PendingCandidateBatchExecution>, BackendError>;
+using CandidateBatchReadbackResult = std::variant<UntrustedCandidateBatchResult, BackendError>;
 
 // Semantic backend seam: implementations upload an immutable compiled view,
 // execute one bounded route job, and read back an explicitly untrusted result.
@@ -264,6 +419,14 @@ class IPlanarRouteBackend {
   [[nodiscard]] virtual ExecutionResult ExecuteRoute(const UploadedCompiledView& board,
                                                      const BackendExecutionRequest& request) = 0;
   [[nodiscard]] virtual ReadbackResult ReadbackRoute(const PendingRouteExecution& execution) = 0;
+
+  // CUDA overrides these with one query-major allocation and batched launches.
+  // The default implementation is explicitly unsupported so existing narrow
+  // test doubles do not need to pretend to implement batching.
+  [[nodiscard]] virtual CandidateBatchExecutionResult ExecuteCandidateBatch(
+      const UploadedCompiledView& board, const BackendCandidateBatchExecutionRequest& request);
+  [[nodiscard]] virtual CandidateBatchReadbackResult ReadbackCandidateBatch(
+      const PendingCandidateBatchExecution& execution);
 };
 
 struct PlanarGpuRoute {
@@ -273,6 +436,7 @@ struct PlanarGpuRoute {
   std::uint64_t rule_bucket_identity = 0;
   std::uint64_t device_view_fingerprint = 0;
   PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
+  std::uint64_t policy_identity = 0;
   BackendMetadata backend;
   std::uint64_t total_cost = 0;
   std::vector<board_ir::Point64> lattice_path;
@@ -306,6 +470,7 @@ class PreparedPlanarCompiledView {
       const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
       const routing::CpuRouteRequest& request, const PlanarRoutePolicy& policy,
       PreparedPlanarCompiledView& prepared);
+  friend struct PreparedBatchAccess;
 
   PreparedPlanarCompiledView(IPlanarRouteBackend& backend, DeviceCompiledBoardV1 device_board,
                              BackendMetadata metadata,
@@ -320,6 +485,46 @@ class PreparedPlanarCompiledView {
   BackendMetadata metadata_;
   std::unique_ptr<UploadedCompiledView> uploaded_;
 };
+
+struct PlanarCandidateBatchQuery {
+  std::uint64_t query_id = 0;
+  std::uint32_t input_ordinal = 0;
+  routing::PlanarRouteRequest request;
+
+  friend bool operator==(const PlanarCandidateBatchQuery&,
+                         const PlanarCandidateBatchQuery&) = default;
+};
+
+struct PlanarCandidateBatchPolicy {
+  std::uint32_t schema_version = kDeviceCandidateBatchSchemaVersion;
+  std::uint64_t batch_id = 0;
+  PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
+  std::uint32_t maximum_rounds = 100'000;
+  std::uint64_t maximum_workspace_states_per_query = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximum_frontier_states_per_query = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximum_device_bytes = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximum_host_bytes = std::numeric_limits<std::uint64_t>::max();
+  const std::atomic_bool* cancellation = nullptr;
+};
+
+struct PlanarCandidateBatchItem {
+  std::uint64_t query_id = 0;
+  std::uint32_t input_ordinal = 0;
+  std::uint64_t policy_identity = 0;
+  PlanarGpuRouteResult result;
+};
+
+struct PlanarCandidateBatch {
+  std::uint32_t schema_version = kDeviceCandidateBatchSchemaVersion;
+  std::uint64_t batch_id = 0;
+  std::uint64_t device_view_fingerprint = 0;
+  PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
+  BackendMetadata backend;
+  CandidateBatchTelemetry telemetry;
+  std::vector<PlanarCandidateBatchItem> items;
+};
+
+using PlanarCandidateBatchResult = std::variant<PlanarCandidateBatch, PlanarGpuFailure>;
 
 [[nodiscard]] PreparedPlanarCompiledViewResult PreparePlanarCompiledView(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
@@ -340,6 +545,19 @@ class PreparedPlanarCompiledView {
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     const routing::CpuRouteRequest& request, const PlanarRoutePolicy& policy,
     PreparedPlanarCompiledView& prepared);
+
+// Executes all admitted queries against one already uploaded immutable device
+// view. Output is always sorted by unique query_id; invalid or unsupported
+// queries retain query-local structured failures while compatible peers run.
+[[nodiscard]] PlanarCandidateBatchResult RouteCandidateBatchWithPreparedPlanarGpuBackend(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    std::span<const PlanarCandidateBatchQuery> queries, const PlanarCandidateBatchPolicy& policy,
+    PreparedPlanarCompiledView& prepared);
+
+[[nodiscard]] PlanarCandidateBatchResult RouteCandidateBatchWithPlanarGpuBackend(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    std::span<const PlanarCandidateBatchQuery> queries, const PlanarCandidateBatchPolicy& policy,
+    IPlanarRouteBackend& backend);
 
 }  // namespace apgar::gpu
 

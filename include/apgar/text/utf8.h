@@ -62,6 +62,24 @@ namespace apgar::text {
   return true;
 }
 
+// Returns the largest prefix no longer than max_bytes that ends on a UTF-8
+// code-point boundary. Callers validate the complete input first.
+[[nodiscard]] inline std::size_t Utf8PrefixBytes(std::string_view value,
+                                                 std::size_t max_bytes) noexcept {
+  if (value.size() <= max_bytes) {
+    return value.size();
+  }
+  std::size_t prefix = max_bytes;
+  while (prefix > 0) {
+    const std::uint8_t next = static_cast<std::uint8_t>(value[prefix]);
+    if (next < 0x80U || next > 0xbfU) {
+      break;
+    }
+    --prefix;
+  }
+  return prefix;
+}
+
 }  // namespace apgar::text
 
 #endif  // APGAR_TEXT_UTF8_H_

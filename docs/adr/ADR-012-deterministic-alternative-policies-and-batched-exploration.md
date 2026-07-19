@@ -42,6 +42,15 @@ identity, so they cannot detect cross-query contamination.
 - Batch workspaces are disjoint checked query-major slices. One ordinary query
   failure cannot overwrite another query. Device-produced result ownership is
   validated before reconstruction.
+- Host preflight validates and classifies each query's ordinal, routing request,
+  and normalized policy before backend metadata discovery or upload. A shared
+  backend failure applies only to queries that survived preflight; deterministic
+  invalid or unsupported peer results are retained.
+- Aggregate normalized policy resources are bounded to one million per v1
+  input batch. A separate checked logical host-memory budget covers encoded and
+  retained query/policy envelopes plus simultaneous flat and partitioned
+  readback workspaces. Overflow, configured-budget failure, and host allocation
+  failure are explicit `ResourceExhausted` outcomes.
 - The frontier evolves into a bounded deterministic heuristic A*-style
   explorer with an admissible policy-aware heuristic and stable
   `(query, f, g, state, heading)` winner key. It does not use a conventional
@@ -53,6 +62,10 @@ identity, so they cannot detect cross-query contamination.
   resource bounds. Results are ordered by unique query identity. Cancellation
   is sampled at bounded launch boundaries and preserves deterministic completed
   versus cancelled outcomes.
+- Shared telemetry records dispatched rounds and the optional unfinished-query
+  finalization launch independently of untrusted per-query headers. Batch-wide
+  launch/readback accounting uses only that shared envelope; a corrupt query
+  completion or round value is rejected locally without invalidating peers.
 - CPU A* remains the correctness oracle, production default, small-job and
   unsupported-policy fallback until a reproducible end-to-end bakeoff supports
   another dispatch decision.
@@ -61,8 +74,9 @@ identity, so they cannot detect cross-query contamination.
 
 - One prepared upload can support many semantically identical CPU/GPU policy
   comparisons without policy-specific board uploads.
-- Query-major label/predecessor/departure storage increases bounded batch VRAM;
-  memory accounting and smaller-batch recovery are required.
+- Query-major label/predecessor/departure storage increases bounded batch VRAM
+  and host readback memory; separate deterministic accounting and smaller-batch
+  recovery are required.
 - Frontier and sweep may return different equal-cost geometry, but each forced
   backend must be repeatable and match CPU reachability/failure and optimal
   scalar cost under the identical policy.

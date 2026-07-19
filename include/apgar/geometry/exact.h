@@ -31,6 +31,21 @@ struct SegmentClearanceResult {
     board_ir::Segment64 segment, const board_ir::AxisAlignedBox64& obstacle,
     board_ir::DbCoord min_distance);
 
+// Compares the minimum Euclidean distance between two closed centerline
+// segments with min_distance. Equality satisfies clearance. This is the exact
+// swept-trace self-clearance authority when min_distance is the sum of the two
+// trace half-widths.
+[[nodiscard]] SegmentClearanceResult SegmentToSegmentClearanceAtLeast(
+    board_ir::Segment64 first, board_ir::Segment64 second, board_ir::DbCoord min_distance);
+
+// Compares the complete swept trace envelope against a closed box without
+// rounding an odd nominal width. The required centerline distance is
+// nominal_width / 2 + clearance, evaluated exactly in half-DBU units.
+// Boundary equality satisfies clearance.
+[[nodiscard]] SegmentClearanceResult SweptTraceClearanceAtLeast(
+    board_ir::Segment64 centerline, const board_ir::AxisAlignedBox64& obstacle,
+    board_ir::DbCoord nominal_width, board_ir::DbCoord clearance);
+
 enum class MovementViolationCode : std::uint8_t {
   kNone,
   kCoordinateOutOfRange,

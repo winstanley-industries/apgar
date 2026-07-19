@@ -5,8 +5,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
+#include <new>
 #include <optional>
 #include <ranges>
+#include <set>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
@@ -41,8 +46,32 @@ static_assert(kNoIncomingHeading == routing::kNoIncomingDirection);
   return failure;
 }
 
+[[nodiscard]] KernelTelemetry QueryKernelTelemetry(
+    const CandidateQueryTelemetry& telemetry) noexcept {
+  return KernelTelemetry{
+      .examined_work = telemetry.examined_work,
+      .heading_turn_relaxations = telemetry.heading_turn_relaxations,
+      .rounds = telemetry.rounds,
+  };
+}
+
+[[nodiscard]] KernelTelemetry CombinedKernelTelemetry(const CandidateBatchTelemetry& batch,
+                                                      const KernelTelemetry& query) noexcept {
+  return KernelTelemetry{
+      .persistent_device_bytes = batch.persistent_device_bytes,
+      .batch_device_bytes = batch.batch_device_bytes,
+      .peak_device_bytes = batch.peak_device_bytes,
+      .examined_work = query.examined_work,
+      .heading_turn_relaxations = query.heading_turn_relaxations,
+      .rounds = query.rounds,
+      .kernel_milliseconds = batch.kernel_milliseconds,
+  };
+}
+
 [[nodiscard]] PlanarGpuFailure BackendFailure(const BackendError& error) {
   switch (error.code) {
+    case BackendErrorCode::kUnsupported:
+      return Failure(PlanarGpuFailureCode::kUnsupported, error.detail);
     case BackendErrorCode::kResourceExhausted:
       return Failure(PlanarGpuFailureCode::kResourceExhausted, error.detail);
     case BackendErrorCode::kBackendFailure:
@@ -237,7 +266,8 @@ enum class PredecessorCostValidation : std::uint8_t {
 
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidateAllPredecessors(
     const CompiledBoard& compiled, const DeviceCompiledBoardV1& device, std::uint32_t start_node,
-    const UntrustedKernelResult& untrusted, PredecessorCostValidation cost_validation) {
+    const UntrustedKernelResult& untrusted, PredecessorCostValidation cost_validation,
+    const routing::CandidateGenerationPolicy* candidate_policy = nullptr) {
   const std::uint64_t state_count = device.header.represented_states;
   if (untrusted.labels.size() != state_count || untrusted.predecessors.size() != state_count) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
@@ -318,8 +348,28 @@ enum class PredecessorCostValidation : std::uint8_t {
       return Failure(PlanarGpuFailureCode::kInternalInvariant,
                      "GPU finite state follows an unreachable predecessor");
     }
-    const std::optional<std::uint64_t> expected = routing::CheckedAdd(
-        predecessor_label, routing::StepCost(compiled.profile(), direction, predecessor_heading));
+    std::optional<std::uint64_t> transition_cost;
+    if (candidate_policy == nullptr) {
+      transition_cost = routing::StepCost(compiled.profile(), direction, predecessor_heading);
+    } else {
+      const DeviceNodeV1& predecessor_device_node = device.nodes[predecessor_node];
+      const std::optional<routing::EdgeResourceKey> resource =
+          routing::CanonicalPhysicalEdgeResource(
+              predecessor_device_node.layer,
+              LatticeIndex{.x = predecessor_device_node.lattice_x,
+                           .y = predecessor_device_node.lattice_y},
+              direction);
+      if (!resource.has_value() || routing::PolicyBansResource(*candidate_policy, *resource)) {
+        return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                       "GPU predecessor traverses a banned or unaddressable resource", std::nullopt,
+                       std::nullopt, "gpu.policy.banned_predecessor.v1");
+      }
+      transition_cost = routing::StepCostUnderPolicy(
+          compiled.profile(), direction, predecessor_heading, *candidate_policy, *resource);
+    }
+    const std::optional<std::uint64_t> expected =
+        transition_cost.has_value() ? routing::CheckedAdd(predecessor_label, *transition_cost)
+                                    : std::nullopt;
     const bool invalid_cost =
         !expected.has_value() ||
         (cost_validation == PredecessorCostValidation::kExact ? *expected != label
@@ -372,6 +422,16 @@ enum class PredecessorCostValidation : std::uint8_t {
   return std::nullopt;
 }
 
+[[nodiscard]] PlanarGpuFailure CandidatePolicyFailure(const routing::CandidatePolicyError& error) {
+  if (error.code == routing::CandidatePolicyErrorCode::kUnsupportedSchema ||
+      error.code == routing::CandidatePolicyErrorCode::kUnsupportedObjective) {
+    return Failure(PlanarGpuFailureCode::kUnsupported,
+                   "GPU candidate policy is unsupported: " + error.detail);
+  }
+  return Failure(PlanarGpuFailureCode::kInvalidInput,
+                 "GPU candidate policy is invalid: " + error.detail);
+}
+
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidatePreparedAssociations(
     const board_ir::BoardSnapshot& board, const CompiledBoard& compiled,
     const DeviceCompiledBoardV1& device) {
@@ -392,13 +452,53 @@ enum class PredecessorCostValidation : std::uint8_t {
 
 }  // namespace
 
-PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapshot& board,
-                                                    const CompiledBoard& compiled_board,
-                                                    const DeviceCompiledBoardV1& device_board,
-                                                    const routing::CpuRouteRequest& request,
-                                                    PlanarGenerator generator,
-                                                    const BackendMetadata& backend,
-                                                    const UntrustedKernelResult& untrusted) {
+std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(
+    std::uint64_t query_count, std::uint64_t policy_edge_count,
+    std::uint64_t represented_states) noexcept {
+  if (policy_edge_count > routing::kMaximumPolicyResourceEntries) {
+    return std::nullopt;
+  }
+  // Logical peak payload. The query term covers the normalized host request,
+  // encoded backend request, retained execution request, result header, status
+  // words, and fixed query/result envelopes. Each normalized policy resource
+  // retains at most 40 host bytes in addition to its 16-byte device encoding.
+  // Readback temporarily owns one flat state workspace and one partitioned
+  // query-local copy, hence the factor of two.
+  constexpr UWide kPerQueryEnvelopeBytes = 3U * sizeof(DeviceCandidateBatchQueryV1) +
+                                           sizeof(DeviceCandidateBatchResultV1) +
+                                           2U * sizeof(std::uint32_t) + 128U;
+  constexpr UWide kPerPolicyEdgeBytes = sizeof(DeviceCandidatePolicyEdgeV1) + 40U;
+  constexpr UWide kPerStateWorkspaceBytes =
+      sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2U * sizeof(std::uint64_t);
+  const UWide total_states = static_cast<UWide>(query_count) * represented_states;
+  const UWide bytes = static_cast<UWide>(query_count) * kPerQueryEnvelopeBytes +
+                      static_cast<UWide>(policy_edge_count) * kPerPolicyEdgeBytes +
+                      2U * total_states * kPerStateWorkspaceBytes;
+  if (bytes > std::numeric_limits<std::uint64_t>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint64_t>(bytes);
+}
+
+CandidateBatchExecutionResult IPlanarRouteBackend::ExecuteCandidateBatch(
+    const UploadedCompiledView&, const BackendCandidateBatchExecutionRequest&) {
+  return BackendError{.code = BackendErrorCode::kUnsupported,
+                      .detail = "Backend does not implement candidate-batch execution"};
+}
+
+CandidateBatchReadbackResult IPlanarRouteBackend::ReadbackCandidateBatch(
+    const PendingCandidateBatchExecution&) {
+  return BackendError{.code = BackendErrorCode::kUnsupported,
+                      .detail = "Backend does not implement candidate-batch readback"};
+}
+
+PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    const DeviceCompiledBoardV1& device_board, const routing::CpuRouteRequest& request,
+    PlanarGenerator generator, const BackendMetadata& backend,
+    const UntrustedKernelResult& untrusted,
+    const routing::NormalizedCandidateGenerationPolicy* candidate_policy,
+    bool batch_telemetry_validated = false) {
   if (generator != PlanarGenerator::kBucketedFrontier &&
       generator != PlanarGenerator::kHeadingAwareSweep) {
     return Failure(PlanarGpuFailureCode::kInvalidInput,
@@ -410,10 +510,12 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapsho
     return std::get<PlanarGpuFailure>(std::move(endpoint_result));
   }
   const DeviceEndpoints endpoints = std::get<DeviceEndpoints>(endpoint_result);
-  if (std::optional<PlanarGpuFailure> invalid =
-          ValidateKernelTelemetry(device_board, generator, untrusted);
-      invalid.has_value()) {
-    return std::move(*invalid);
+  if (!batch_telemetry_validated) {
+    if (std::optional<PlanarGpuFailure> invalid =
+            ValidateKernelTelemetry(device_board, generator, untrusted);
+        invalid.has_value()) {
+      return std::move(*invalid);
+    }
   }
   if (std::optional<PlanarGpuFailure> association = ValidateRawAssociations(
           device_board, endpoints.start_node, endpoints.goal_node, generator, untrusted);
@@ -425,9 +527,10 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapsho
                    "Route reconstruction requires a reached GPU result", std::nullopt,
                    untrusted.telemetry);
   }
-  if (std::optional<PlanarGpuFailure> invalid =
-          ValidateAllPredecessors(compiled_board, device_board, endpoints.start_node, untrusted,
-                                  PredecessorCostValidation::kExact);
+  if (std::optional<PlanarGpuFailure> invalid = ValidateAllPredecessors(
+          compiled_board, device_board, endpoints.start_node, untrusted,
+          PredecessorCostValidation::kExact,
+          candidate_policy == nullptr ? nullptr : &candidate_policy->policy);
       invalid.has_value()) {
     return WithTelemetry(std::move(*invalid), untrusted.telemetry);
   }
@@ -519,12 +622,24 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapsho
       .rule_bucket_identity = untrusted.rule_bucket_identity,
       .device_view_fingerprint = untrusted.device_view_fingerprint,
       .generator = generator,
+      .policy_identity = candidate_policy == nullptr ? 0 : candidate_policy->identity,
       .backend = backend,
       .total_cost = best_goal_cost,
       .lattice_path = std::move(points),
       .segments = std::move(segments),
       .telemetry = untrusted.telemetry,
   };
+}
+
+PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapshot& board,
+                                                    const CompiledBoard& compiled_board,
+                                                    const DeviceCompiledBoardV1& device_board,
+                                                    const routing::CpuRouteRequest& request,
+                                                    PlanarGenerator generator,
+                                                    const BackendMetadata& backend,
+                                                    const UntrustedKernelResult& untrusted) {
+  return ValidateAndReconstructGpuRouteWithPolicy(board, compiled_board, device_board, request,
+                                                  generator, backend, untrusted, nullptr, false);
 }
 
 PreparedPlanarCompiledViewResult PreparePlanarCompiledView(const board_ir::BoardSnapshot& board,
@@ -564,6 +679,49 @@ PlanarGpuRouteResult RouteWithPreparedPlanarGpuBackend(const board_ir::BoardSnap
           ValidateRouteAdmission(board, compiled_board, request, policy);
       invalid.has_value()) {
     return std::move(*invalid);
+  }
+  routing::CandidatePolicyResult normalized_result =
+      routing::NormalizeCandidateGenerationPolicy(compiled_board, request.candidate_policy);
+  if (std::holds_alternative<routing::CandidatePolicyError>(normalized_result)) {
+    return CandidatePolicyFailure(std::get<routing::CandidatePolicyError>(normalized_result));
+  }
+  const routing::NormalizedCandidateGenerationPolicy normalized_policy =
+      std::get<routing::NormalizedCandidateGenerationPolicy>(std::move(normalized_result));
+  if (request.candidate_policy != routing::CandidateGenerationPolicy{}) {
+    const std::uint64_t identity = normalized_policy.identity;
+    const PlanarCandidateBatchQuery batch_query{
+        .query_id = 1,
+        .input_ordinal = request.candidate_policy.candidate_ordinal,
+        .request = request,
+    };
+    const PlanarCandidateBatchPolicy batch_policy{
+        .batch_id = identity == 0 ? 1 : identity,
+        .generator = policy.generator,
+        .maximum_rounds = policy.maximum_rounds,
+        .maximum_device_bytes = policy.maximum_device_bytes,
+        .cancellation = policy.cancellation,
+    };
+    PlanarCandidateBatchResult batch = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+        board, compiled_board, std::span(&batch_query, 1), batch_policy, prepared);
+    if (std::holds_alternative<PlanarGpuFailure>(batch)) {
+      return std::get<PlanarGpuFailure>(std::move(batch));
+    }
+    PlanarCandidateBatch& completed = std::get<PlanarCandidateBatch>(batch);
+    if (completed.items.size() != 1) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "GPU batch-of-one returned a non-unit result count");
+    }
+    PlanarGpuRouteResult result = std::move(completed.items.front().result);
+    if (std::holds_alternative<PlanarGpuRoute>(result)) {
+      PlanarGpuRoute& route = std::get<PlanarGpuRoute>(result);
+      route.telemetry = CombinedKernelTelemetry(completed.telemetry, route.telemetry);
+    } else {
+      PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(result);
+      if (failure.telemetry.has_value()) {
+        failure.telemetry = CombinedKernelTelemetry(completed.telemetry, *failure.telemetry);
+      }
+    }
+    return result;
   }
   if (prepared.backend_ == nullptr || prepared.uploaded_ == nullptr) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
@@ -640,8 +798,9 @@ PlanarGpuRouteResult RouteWithPreparedPlanarGpuBackend(const board_ir::BoardSnap
   }
   switch (untrusted.completion) {
     case KernelCompletion::kReached:
-      return ValidateAndReconstructGpuRoute(board, compiled_board, prepared.device_board_, request,
-                                            policy.generator, prepared.metadata_, untrusted);
+      return ValidateAndReconstructGpuRouteWithPolicy(board, compiled_board, prepared.device_board_,
+                                                      request, policy.generator, prepared.metadata_,
+                                                      untrusted, &normalized_policy, true);
     case KernelCompletion::kDisconnected:
       if (std::optional<PlanarGpuFailure> invalid =
               ValidateDisconnectedResult(prepared.device_board_, untrusted);
@@ -691,6 +850,799 @@ PlanarGpuRouteResult RouteWithPlanarGpuBackend(const board_ir::BoardSnapshot& bo
                    "GPU preparation returned a null immutable device view");
   }
   return RouteWithPreparedPlanarGpuBackend(board, compiled_board, request, policy, *prepared);
+}
+
+struct PreparedBatchAccess {
+  [[nodiscard]] static IPlanarRouteBackend* Backend(PreparedPlanarCompiledView& prepared) {
+    return prepared.backend_;
+  }
+  [[nodiscard]] static UploadedCompiledView* Upload(PreparedPlanarCompiledView& prepared) {
+    return prepared.uploaded_.get();
+  }
+  [[nodiscard]] static const DeviceCompiledBoardV1& Device(
+      const PreparedPlanarCompiledView& prepared) {
+    return prepared.device_board_;
+  }
+  [[nodiscard]] static const BackendMetadata& Metadata(const PreparedPlanarCompiledView& prepared) {
+    return prepared.metadata_;
+  }
+};
+
+namespace {
+
+struct AdmittedCandidateBatchQuery {
+  std::size_t item_index = 0;
+  routing::NormalizedCandidateGenerationPolicy normalized_policy;
+  DeviceEndpoints endpoints;
+  DeviceCandidateBatchQueryV1 device_query;
+};
+
+struct HostAdmittedCandidateBatchQuery {
+  std::size_t item_index = 0;
+  routing::NormalizedCandidateGenerationPolicy normalized_policy;
+};
+
+struct CandidateBatchHostPreflight {
+  std::vector<const PlanarCandidateBatchQuery*> ordered;
+  std::vector<PlanarCandidateBatchItem> items;
+  std::vector<HostAdmittedCandidateBatchQuery> admitted;
+  std::uint64_t aggregate_policy_edges = 0;
+};
+
+using CandidateBatchHostPreflightResult =
+    std::variant<CandidateBatchHostPreflight, PlanarGpuFailure>;
+
+[[nodiscard]] std::optional<PlanarGpuFailure> ValidateCandidateBatchShape(
+    std::span<const PlanarCandidateBatchQuery> queries, const PlanarCandidateBatchPolicy& policy) {
+  if (policy.schema_version != kDeviceCandidateBatchSchemaVersion) {
+    return Failure(PlanarGpuFailureCode::kUnsupported,
+                   "GPU candidate batch schema version is unsupported");
+  }
+  if (policy.batch_id == 0 || queries.empty() ||
+      queries.size() > routing::kMaximumAlternativePolicyCount || policy.maximum_rounds == 0 ||
+      (policy.generator != PlanarGenerator::kBucketedFrontier &&
+       policy.generator != PlanarGenerator::kHeadingAwareSweep)) {
+    return Failure(PlanarGpuFailureCode::kInvalidInput,
+                   "GPU candidate batch requires bounded queries, nonzero identity and round "
+                   "budget, and a known forced generator");
+  }
+  std::vector<std::uint64_t> query_ids;
+  query_ids.reserve(queries.size());
+  for (const PlanarCandidateBatchQuery& query : queries) {
+    if (query.query_id == 0) {
+      return Failure(PlanarGpuFailureCode::kInvalidInput,
+                     "GPU candidate batch query identities must be nonzero");
+    }
+    query_ids.push_back(query.query_id);
+  }
+  std::ranges::sort(query_ids);
+  if (std::ranges::adjacent_find(query_ids) != query_ids.end()) {
+    return Failure(PlanarGpuFailureCode::kInvalidInput,
+                   "GPU candidate batch query identities must be unique");
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] CandidateBatchHostPreflightResult PreflightCandidateBatch(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    std::span<const PlanarCandidateBatchQuery> queries, const PlanarCandidateBatchPolicy& policy) {
+  if (std::optional<PlanarGpuFailure> invalid = ValidateCandidateBatchShape(queries, policy);
+      invalid.has_value()) {
+    return std::move(*invalid);
+  }
+  const UWide represented_states_wide =
+      static_cast<UWide>(compiled_board.telemetry().represented_nodes) * kIncomingHeadingCount;
+  if (represented_states_wide > std::numeric_limits<std::uint64_t>::max()) {
+    return Failure(PlanarGpuFailureCode::kResourceExhausted,
+                   "GPU candidate batch host-state accounting overflowed uint64");
+  }
+  const std::uint64_t represented_states = static_cast<std::uint64_t>(represented_states_wide);
+  const std::optional<std::uint64_t> minimum_host_bytes =
+      EstimateCandidateBatchHostBytesV1(queries.size(), 0, represented_states);
+  if (!minimum_host_bytes.has_value() || *minimum_host_bytes > policy.maximum_host_bytes) {
+    return Failure(PlanarGpuFailureCode::kResourceExhausted,
+                   "GPU candidate batch exceeds the deterministic host-memory budget");
+  }
+
+  CandidateBatchHostPreflight preflight;
+  preflight.ordered.reserve(queries.size());
+  for (const PlanarCandidateBatchQuery& query : queries) {
+    preflight.ordered.push_back(&query);
+  }
+  std::ranges::sort(preflight.ordered, [](const PlanarCandidateBatchQuery* left,
+                                          const PlanarCandidateBatchQuery* right) {
+    return left->query_id < right->query_id;
+  });
+  preflight.items.reserve(preflight.ordered.size());
+  preflight.admitted.reserve(preflight.ordered.size());
+  const PlanarRoutePolicy route_policy{
+      .generator = policy.generator,
+      .maximum_rounds = policy.maximum_rounds,
+      .maximum_device_bytes = policy.maximum_device_bytes,
+      .cancellation = policy.cancellation,
+  };
+  UWide aggregate_policy_edges = 0;
+  for (const PlanarCandidateBatchQuery* query_pointer : preflight.ordered) {
+    const PlanarCandidateBatchQuery& query = *query_pointer;
+    const std::size_t item_index = preflight.items.size();
+    PlanarCandidateBatchItem item{
+        .query_id = query.query_id,
+        .input_ordinal = query.input_ordinal,
+        .result = Failure(PlanarGpuFailureCode::kInternalInvariant,
+                          "GPU candidate batch query was not classified"),
+    };
+    if (query.input_ordinal != query.request.candidate_policy.candidate_ordinal) {
+      item.result = Failure(PlanarGpuFailureCode::kInvalidInput,
+                            "GPU candidate query ordinal differs from its policy provenance");
+    } else if (std::optional<PlanarGpuFailure> invalid =
+                   ValidateRouteAdmission(board, compiled_board, query.request, route_policy);
+               invalid.has_value()) {
+      item.result = std::move(*invalid);
+    } else {
+      routing::CandidatePolicyResult normalized = routing::NormalizeCandidateGenerationPolicy(
+          compiled_board, query.request.candidate_policy);
+      if (std::holds_alternative<routing::CandidatePolicyError>(normalized)) {
+        item.result = CandidatePolicyFailure(std::get<routing::CandidatePolicyError>(normalized));
+      } else {
+        routing::NormalizedCandidateGenerationPolicy normalized_policy =
+            std::get<routing::NormalizedCandidateGenerationPolicy>(std::move(normalized));
+        item.policy_identity = normalized_policy.identity;
+        aggregate_policy_edges += normalized_policy.policy.banned_resources.size();
+        aggregate_policy_edges += normalized_policy.policy.resource_penalties.size();
+        if (aggregate_policy_edges > routing::kMaximumPolicyResourceEntries) {
+          return Failure(
+              PlanarGpuFailureCode::kResourceExhausted,
+              "GPU candidate batch aggregate normalized policy entries exceed the v1 bound");
+        }
+        const std::optional<std::uint64_t> host_bytes = EstimateCandidateBatchHostBytesV1(
+            queries.size(), static_cast<std::uint64_t>(aggregate_policy_edges), represented_states);
+        if (!host_bytes.has_value() || *host_bytes > policy.maximum_host_bytes) {
+          return Failure(PlanarGpuFailureCode::kResourceExhausted,
+                         "GPU candidate batch exceeds the deterministic host-memory budget");
+        }
+        preflight.admitted.push_back(HostAdmittedCandidateBatchQuery{
+            .item_index = item_index,
+            .normalized_policy = std::move(normalized_policy),
+        });
+      }
+    }
+    preflight.items.push_back(std::move(item));
+  }
+  preflight.aggregate_policy_edges = static_cast<std::uint64_t>(aggregate_policy_edges);
+  return preflight;
+}
+
+[[nodiscard]] PlanarCandidateBatch BuildUnexecutedBatch(CandidateBatchHostPreflight preflight,
+                                                        const PlanarCandidateBatchPolicy& policy,
+                                                        const PlanarGpuFailure& admitted_failure,
+                                                        std::string reason) {
+  PlanarCandidateBatch output{
+      .batch_id = policy.batch_id,
+      .generator = policy.generator,
+      .backend =
+          BackendMetadata{
+              .backend = "not-executed",
+              .device_name = std::move(reason),
+              .device_uuid = "none",
+          },
+      .telemetry = {},
+      .items = std::move(preflight.items),
+  };
+  for (const HostAdmittedCandidateBatchQuery& admitted : preflight.admitted) {
+    output.items[admitted.item_index].result = admitted_failure;
+  }
+  return output;
+}
+
+[[nodiscard]] std::optional<std::uint32_t> PhysicalDeviceEdgeIndex(
+    const DeviceCompiledBoardV1& device, const routing::EdgeResourceKey& resource) {
+  const std::uint8_t direction = static_cast<std::uint8_t>(resource.direction);
+  if (direction >= 4) {
+    return std::nullopt;
+  }
+  const std::optional<std::uint32_t> node = FindDeviceNodeIndex(
+      device, resource.layer, LatticeIndex{.x = resource.lattice_x, .y = resource.lattice_y});
+  if (!node.has_value() ||
+      (device.nodes[*node].legal_edges & geometry_compiler::MaskFor(resource.direction)) == 0) {
+    return std::nullopt;
+  }
+  const UWide physical = static_cast<UWide>(*node) * 8 + direction;
+  if (physical >= kInvalidStateIndex) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint32_t>(physical);
+}
+
+[[nodiscard]] std::optional<PlanarGpuFailure> AppendDevicePolicyEdges(
+    const DeviceCompiledBoardV1& device,
+    const routing::NormalizedCandidateGenerationPolicy& normalized,
+    std::vector<DeviceCandidatePolicyEdgeV1>* edges, std::uint32_t* offset, std::uint32_t* count) {
+  if (edges->size() > std::numeric_limits<std::uint32_t>::max()) {
+    return Failure(PlanarGpuFailureCode::kResourceExhausted,
+                   "GPU candidate batch policy-edge offset exceeds uint32 bounds");
+  }
+  *offset = static_cast<std::uint32_t>(edges->size());
+  for (const routing::EdgeResourceKey& resource : normalized.policy.banned_resources) {
+    const std::optional<std::uint32_t> physical = PhysicalDeviceEdgeIndex(device, resource);
+    if (!physical.has_value()) {
+      edges->resize(*offset);
+      return Failure(PlanarGpuFailureCode::kValidationFailed,
+                     "Normalized GPU candidate ban does not resolve to one compiled device edge");
+    }
+    edges->push_back(DeviceCandidatePolicyEdgeV1{
+        .physical_edge_index = *physical,
+        .adjustment = kBannedResourceAdjustment,
+    });
+  }
+  for (const routing::ResourcePenalty& penalty : normalized.policy.resource_penalties) {
+    const std::optional<std::uint32_t> physical = PhysicalDeviceEdgeIndex(device, penalty.resource);
+    if (!physical.has_value()) {
+      edges->resize(*offset);
+      return Failure(
+          PlanarGpuFailureCode::kValidationFailed,
+          "Normalized GPU candidate penalty does not resolve to one compiled device edge");
+    }
+    edges->push_back(DeviceCandidatePolicyEdgeV1{
+        .physical_edge_index = *physical,
+        .adjustment = penalty.additional_cost,
+    });
+  }
+  const std::size_t slice_count = edges->size() - *offset;
+  if (slice_count != 0) {
+    std::ranges::sort(edges->begin() + *offset, edges->end(), {},
+                      &DeviceCandidatePolicyEdgeV1::physical_edge_index);
+  }
+  if (slice_count > std::numeric_limits<std::uint32_t>::max()) {
+    edges->resize(*offset);
+    return Failure(PlanarGpuFailureCode::kResourceExhausted,
+                   "GPU candidate batch policy-edge count exceeds uint32 bounds");
+  }
+  for (std::size_t index = *offset + 1; index < edges->size(); ++index) {
+    if ((*edges)[index - 1].physical_edge_index == (*edges)[index].physical_edge_index) {
+      edges->resize(*offset);
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "Normalized GPU candidate policy maps multiple actions to one physical edge");
+    }
+  }
+  *count = static_cast<std::uint32_t>(slice_count);
+  return std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::uint64_t> ExpectedCandidateBatchBytes(
+    const DeviceCompiledBoardV1& device, const BackendCandidateBatchExecutionRequest& request) {
+  UWide bytes = static_cast<UWide>(request.queries.size()) *
+                (sizeof(DeviceCandidateBatchQueryV1) + sizeof(DeviceCandidateBatchResultV1) +
+                 sizeof(std::uint32_t));
+  bytes += static_cast<UWide>(request.policy_edges.size()) * sizeof(DeviceCandidatePolicyEdgeV1);
+  const UWide total_states =
+      static_cast<UWide>(device.header.represented_states) * request.queries.size();
+  bytes +=
+      total_states * (sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t));
+  if (request.generator == PlanarGenerator::kBucketedFrontier) {
+    bytes += total_states * sizeof(std::uint8_t);
+  } else {
+    const UWide departure_count =
+        static_cast<UWide>(device.header.represented_nodes) * 8 * request.queries.size();
+    bytes += departure_count * sizeof(std::uint64_t);
+    bytes += static_cast<UWide>(request.queries.size()) * sizeof(std::uint32_t);
+  }
+  if (bytes > std::numeric_limits<std::uint64_t>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint64_t>(bytes);
+}
+
+[[nodiscard]] std::optional<PlanarGpuFailure> ValidateCandidateBatchEnvelope(
+    const DeviceCompiledBoardV1& device, const DeviceCandidateBatchQueryV1& expected,
+    const UntrustedCandidateBatchQueryResult& untrusted, std::uint32_t maximum_rounds,
+    std::uint32_t dispatched_rounds, std::uint32_t finalization_launch_count) {
+  const DeviceCandidateBatchResultV1& header = untrusted.header;
+  const KernelTelemetry query_telemetry = QueryKernelTelemetry(untrusted.telemetry);
+  if (header.schema_version != kDeviceCandidateBatchSchemaVersion ||
+      header.compiler_version != device.header.compiler_version ||
+      header.input_ordinal != expected.input_ordinal || header.start_node != expected.start_node ||
+      header.goal_node != expected.goal_node || header.generator != expected.generator ||
+      header.batch_id != expected.batch_id || header.query_id != expected.query_id ||
+      header.workspace_owner != expected.workspace_owner ||
+      header.policy_identity != expected.policy_identity ||
+      header.routing_profile_fingerprint != expected.routing_profile_fingerprint ||
+      header.source_board_content_hash != device.header.source_board_content_hash ||
+      header.compiler_profile_fingerprint != device.header.compiler_profile_fingerprint ||
+      header.rule_bucket_identity != device.header.rule_bucket_identity ||
+      header.device_view_fingerprint != device.header.device_view_fingerprint ||
+      std::ranges::any_of(header.reserved, [](std::uint8_t byte) { return byte != 0; })) {
+    return Failure(PlanarGpuFailureCode::kValidationFailed,
+                   "GPU candidate batch result associations do not match its immutable query "
+                   "workspace");
+  }
+  const std::uint64_t state_count = device.header.represented_states;
+  if (untrusted.labels.size() != state_count || untrusted.predecessors.size() != state_count ||
+      untrusted.state_owners.size() != state_count ||
+      untrusted.predecessor_owners.size() != state_count) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU candidate batch query-major workspace has invalid array bounds",
+                   std::nullopt, query_telemetry, "gpu.batch.workspace.bounds.v1");
+  }
+  if (std::ranges::any_of(untrusted.state_owners,
+                          [&](std::uint64_t owner) { return owner != expected.workspace_owner; }) ||
+      std::ranges::any_of(untrusted.predecessor_owners,
+                          [&](std::uint64_t owner) { return owner != expected.workspace_owner; })) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU candidate batch workspace contains foreign query ownership", std::nullopt,
+                   query_telemetry, "gpu.batch.workspace.owner.v1");
+  }
+  if (untrusted.telemetry.rounds != header.rounds || header.rounds > dispatched_rounds) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU candidate query round telemetry disagrees with its result header or "
+                   "shared dispatch envelope",
+                   std::nullopt, query_telemetry, "gpu.batch.query.telemetry.v1");
+  }
+  if ((header.completion == KernelCompletion::kBudgetExhausted ||
+       header.completion == KernelCompletion::kCancelled) &&
+      finalization_launch_count != 1) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU unfinished query completion lacks its shared finalization launch",
+                   std::nullopt, query_telemetry, "gpu.batch.query.telemetry.v1");
+  }
+  UWide maximum_examined = 0;
+  UWide maximum_turns = 0;
+  if (expected.generator == PlanarGenerator::kBucketedFrontier) {
+    maximum_examined = static_cast<UWide>(untrusted.telemetry.rounds) * 8U;
+    maximum_turns = 0;
+  } else if (expected.generator == PlanarGenerator::kHeadingAwareSweep) {
+    maximum_examined =
+        static_cast<UWide>(untrusted.telemetry.rounds) * device.header.represented_nodes * 8U;
+    maximum_turns = maximum_examined * 8U;
+  }
+  if (untrusted.telemetry.examined_work > maximum_examined ||
+      untrusted.telemetry.heading_turn_relaxations > maximum_turns) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU candidate query work telemetry exceeds deterministic bounds", std::nullopt,
+                   query_telemetry, "gpu.batch.query.telemetry.v1");
+  }
+  UntrustedKernelResult completion_view;
+  completion_view.completion = header.completion;
+  completion_view.telemetry = query_telemetry;
+  return ValidateCompletionTelemetry(completion_view, maximum_rounds);
+}
+
+[[nodiscard]] std::optional<PlanarGpuFailure> ValidateCandidateBatchTelemetry(
+    const DeviceCompiledBoardV1& device, const BackendCandidateBatchExecutionRequest& request,
+    std::uint64_t expected_batch_bytes, std::uint64_t expected_host_bytes,
+    const UntrustedCandidateBatchResult& untrusted) {
+  const CandidateBatchTelemetry& telemetry = untrusted.telemetry;
+  if (telemetry.persistent_device_bytes != device.header.estimated_persistent_device_bytes ||
+      telemetry.batch_device_bytes != expected_batch_bytes ||
+      telemetry.batch_host_bytes != expected_host_bytes) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU candidate batch device or host memory telemetry disagrees with "
+                   "deterministic accounting",
+                   std::nullopt, std::nullopt, "gpu.batch.memory.accounting.v1");
+  }
+  const std::optional<std::uint64_t> peak =
+      routing::CheckedAdd(telemetry.persistent_device_bytes, telemetry.batch_device_bytes);
+  const std::uint32_t expected_chunk_rounds =
+      request.generator == PlanarGenerator::kBucketedFrontier ? kCandidateFrontierChunkRounds
+                                                              : kCandidateSweepChunkRounds;
+  if (!peak.has_value() || telemetry.peak_device_bytes != *peak ||
+      !std::isfinite(telemetry.kernel_milliseconds) || telemetry.kernel_milliseconds < 0.0 ||
+      telemetry.chunk_rounds != expected_chunk_rounds ||
+      telemetry.dispatched_rounds > request.maximum_rounds ||
+      telemetry.finalization_launch_count > 1 ||
+      (telemetry.dispatched_rounds == 0 && telemetry.finalization_launch_count != 1)) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU candidate batch peak, timing, or chunk telemetry is invalid", std::nullopt,
+                   std::nullopt, "gpu.batch.telemetry.v1");
+  }
+
+  const std::uint64_t expected_readbacks =
+      telemetry.dispatched_rounds == 0
+          ? 0
+          : (static_cast<std::uint64_t>(telemetry.dispatched_rounds) + expected_chunk_rounds - 1U) /
+                expected_chunk_rounds;
+  UWide expected_launches = 2U;  // initialization and stable predecessor selection
+  if (request.generator == PlanarGenerator::kBucketedFrontier) {
+    expected_launches += expected_readbacks;
+  } else {
+    const UWide kernels_per_round = device.runs.empty() ? 3U : 4U;
+    expected_launches += static_cast<UWide>(telemetry.dispatched_rounds) * kernels_per_round;
+  }
+  expected_launches += telemetry.finalization_launch_count;
+  if (expected_launches > std::numeric_limits<std::uint64_t>::max() ||
+      telemetry.kernel_launch_count != static_cast<std::uint64_t>(expected_launches) ||
+      telemetry.blocking_status_readback_count != expected_readbacks) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU candidate batch launch or blocking-readback telemetry is invalid",
+                   std::nullopt, std::nullopt, "gpu.batch.telemetry.v1");
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] UntrustedKernelResult QueryKernelView(
+    const UntrustedCandidateBatchQueryResult& query) {
+  const DeviceCandidateBatchResultV1& header = query.header;
+  return UntrustedKernelResult{
+      .schema_version = kDeviceCompiledBoardSchemaVersion,
+      .source_board_content_hash = header.source_board_content_hash,
+      .compiler_profile_fingerprint = header.compiler_profile_fingerprint,
+      .compiler_version = header.compiler_version,
+      .rule_bucket_identity = header.rule_bucket_identity,
+      .device_view_fingerprint = header.device_view_fingerprint,
+      .generator = header.generator,
+      .completion = header.completion,
+      .start_node = header.start_node,
+      .goal_node = header.goal_node,
+      .goal_state = header.goal_state,
+      .labels = query.labels,
+      .predecessors = query.predecessors,
+      .telemetry = QueryKernelTelemetry(query.telemetry),
+  };
+}
+
+void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitted,
+                             const PlanarGpuFailure& failure, PlanarCandidateBatch* output) {
+  for (const AdmittedCandidateBatchQuery& query : admitted) {
+    output->items[query.item_index].result = failure;
+  }
+}
+
+}  // namespace
+
+[[nodiscard]] static PlanarCandidateBatchResult RouteCandidateBatchWithPreparedPreflight(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    const PlanarCandidateBatchPolicy& policy, PreparedPlanarCompiledView& prepared,
+    CandidateBatchHostPreflight preflight) {
+  IPlanarRouteBackend* backend = PreparedBatchAccess::Backend(prepared);
+  UploadedCompiledView* upload = PreparedBatchAccess::Upload(prepared);
+  const DeviceCompiledBoardV1& device = PreparedBatchAccess::Device(prepared);
+  if (backend == nullptr || upload == nullptr) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "Prepared GPU candidate batch has no live backend upload");
+  }
+  if (std::optional<PlanarGpuFailure> invalid =
+          ValidatePreparedAssociations(board, compiled_board, device);
+      invalid.has_value()) {
+    return std::move(*invalid);
+  }
+
+  PlanarCandidateBatch output{
+      .batch_id = policy.batch_id,
+      .device_view_fingerprint = device.header.device_view_fingerprint,
+      .generator = policy.generator,
+      .backend = PreparedBatchAccess::Metadata(prepared),
+      .telemetry = {},
+      .items = std::move(preflight.items),
+  };
+  std::vector<AdmittedCandidateBatchQuery> admitted;
+  admitted.reserve(preflight.admitted.size());
+  BackendCandidateBatchExecutionRequest backend_request{
+      .batch_id = policy.batch_id,
+      .generator = policy.generator,
+      .maximum_rounds = policy.maximum_rounds,
+      .maximum_workspace_states_per_query = policy.maximum_workspace_states_per_query,
+      .maximum_frontier_states_per_query = policy.maximum_frontier_states_per_query,
+      .maximum_device_bytes = policy.maximum_device_bytes,
+      .maximum_host_bytes = policy.maximum_host_bytes,
+      .queries = {},
+      .policy_edges = {},
+      .cancellation = policy.cancellation,
+  };
+
+  for (HostAdmittedCandidateBatchQuery& host_admitted : preflight.admitted) {
+    const std::size_t item_index = host_admitted.item_index;
+    const PlanarCandidateBatchQuery& query = *preflight.ordered[item_index];
+    routing::NormalizedCandidateGenerationPolicy normalized =
+        std::move(host_admitted.normalized_policy);
+    DeviceEndpointResult endpoint_result =
+        ResolveDeviceEndpoints(compiled_board, device, query.request);
+    if (std::holds_alternative<PlanarGpuFailure>(endpoint_result)) {
+      output.items[item_index].result = std::get<PlanarGpuFailure>(std::move(endpoint_result));
+      continue;
+    }
+    const DeviceEndpoints endpoints = std::get<DeviceEndpoints>(endpoint_result);
+    std::uint32_t policy_offset = 0;
+    std::uint32_t policy_count = 0;
+    if (std::optional<PlanarGpuFailure> invalid = AppendDevicePolicyEdges(
+            device, normalized, &backend_request.policy_edges, &policy_offset, &policy_count);
+        invalid.has_value()) {
+      output.items[item_index].result = std::move(*invalid);
+      continue;
+    }
+    const UWide workspace_offset =
+        static_cast<UWide>(admitted.size()) * device.header.represented_states;
+    if (workspace_offset > std::numeric_limits<std::uint64_t>::max()) {
+      output.items[item_index].result =
+          Failure(PlanarGpuFailureCode::kResourceExhausted,
+                  "GPU candidate batch workspace offset overflows uint64");
+      backend_request.policy_edges.resize(policy_offset);
+      continue;
+    }
+    // query_id is already required to be unique and nonzero, making it a
+    // collision-free deterministic workspace owner within the batch.
+    const std::uint64_t owner = query.query_id;
+    DeviceCandidateBatchQueryV1 device_query{
+        .input_ordinal = query.input_ordinal,
+        .batch_id = policy.batch_id,
+        .query_id = query.query_id,
+        .workspace_owner = owner,
+        .policy_identity = normalized.identity,
+        .routing_profile_fingerprint =
+            routing::FingerprintRoutingProfile(board.data().routing_profile),
+        .start_node = endpoints.start_node,
+        .goal_node = endpoints.goal_node,
+        .policy_offset = policy_offset,
+        .policy_count = policy_count,
+        .workspace_offset = static_cast<std::uint64_t>(workspace_offset),
+        .workspace_state_count = device.header.represented_states,
+        .frontier_state_capacity = policy.generator == PlanarGenerator::kBucketedFrontier
+                                       ? device.header.represented_states
+                                       : 0,
+        .orthogonal_step_surcharge = normalized.policy.orthogonal_step_surcharge,
+        .diagonal_step_surcharge = normalized.policy.diagonal_step_surcharge,
+        .bend_surcharge = normalized.policy.bend_surcharge,
+        .maximum_rounds = policy.maximum_rounds,
+        .generator = policy.generator,
+    };
+    backend_request.queries.push_back(device_query);
+    admitted.push_back(AdmittedCandidateBatchQuery{
+        .item_index = item_index,
+        .normalized_policy = std::move(normalized),
+        .endpoints = endpoints,
+        .device_query = device_query,
+    });
+  }
+  if (admitted.empty()) {
+    return output;
+  }
+  if (policy.maximum_workspace_states_per_query < device.header.represented_states) {
+    SetAdmittedBatchFailure(
+        admitted,
+        Failure(PlanarGpuFailureCode::kResourceExhausted,
+                "GPU candidate batch exceeds the per-query workspace-state budget"),
+        &output);
+    return output;
+  }
+  if (policy.generator == PlanarGenerator::kBucketedFrontier &&
+      policy.maximum_frontier_states_per_query < device.header.represented_states) {
+    SetAdmittedBatchFailure(
+        admitted,
+        Failure(PlanarGpuFailureCode::kResourceExhausted,
+                "GPU candidate frontier exceeds the per-query frontier-state capacity"),
+        &output);
+    return output;
+  }
+  if (policy.cancellation != nullptr && policy.cancellation->load()) {
+    SetAdmittedBatchFailure(admitted,
+                            Failure(PlanarGpuFailureCode::kCancelled,
+                                    "GPU candidate batch was cancelled before device execution"),
+                            &output);
+    return output;
+  }
+  const std::optional<std::uint64_t> expected_batch_bytes =
+      ExpectedCandidateBatchBytes(device, backend_request);
+  if (!expected_batch_bytes.has_value()) {
+    SetAdmittedBatchFailure(
+        admitted,
+        Failure(PlanarGpuFailureCode::kResourceExhausted,
+                "GPU candidate batch deterministic memory accounting overflowed uint64"),
+        &output);
+    return output;
+  }
+  const std::optional<std::uint64_t> expected_host_bytes = EstimateCandidateBatchHostBytesV1(
+      backend_request.queries.size(), backend_request.policy_edges.size(),
+      device.header.represented_states);
+  if (!expected_host_bytes.has_value() || *expected_host_bytes > policy.maximum_host_bytes) {
+    SetAdmittedBatchFailure(
+        admitted,
+        Failure(PlanarGpuFailureCode::kResourceExhausted,
+                "GPU candidate batch exceeds the deterministic host-memory budget"),
+        &output);
+    return output;
+  }
+
+  CandidateBatchExecutionResult execution_result =
+      backend->ExecuteCandidateBatch(*upload, backend_request);
+  if (std::holds_alternative<BackendError>(execution_result)) {
+    SetAdmittedBatchFailure(admitted, BackendFailure(std::get<BackendError>(execution_result)),
+                            &output);
+    return output;
+  }
+  std::unique_ptr<PendingCandidateBatchExecution> execution =
+      std::get<std::unique_ptr<PendingCandidateBatchExecution>>(std::move(execution_result));
+  if (execution == nullptr) {
+    SetAdmittedBatchFailure(admitted,
+                            Failure(PlanarGpuFailureCode::kInternalInvariant,
+                                    "Backend returned a null candidate-batch execution"),
+                            &output);
+    return output;
+  }
+  CandidateBatchReadbackResult readback_result = backend->ReadbackCandidateBatch(*execution);
+  if (std::holds_alternative<BackendError>(readback_result)) {
+    SetAdmittedBatchFailure(admitted, BackendFailure(std::get<BackendError>(readback_result)),
+                            &output);
+    return output;
+  }
+  UntrustedCandidateBatchResult readback =
+      std::get<UntrustedCandidateBatchResult>(std::move(readback_result));
+  if (readback.schema_version != kDeviceCandidateBatchSchemaVersion ||
+      readback.batch_id != policy.batch_id || readback.generator != policy.generator) {
+    SetAdmittedBatchFailure(
+        admitted,
+        Failure(PlanarGpuFailureCode::kValidationFailed,
+                "GPU candidate batch readback associations do not match the execution request"),
+        &output);
+    return output;
+  }
+
+  std::set<std::uint64_t> admitted_query_ids;
+  for (const AdmittedCandidateBatchQuery& query : admitted) {
+    admitted_query_ids.insert(query.device_query.query_id);
+  }
+  const bool foreign_query =
+      std::ranges::any_of(readback.queries, [&](const UntrustedCandidateBatchQueryResult& query) {
+        return !admitted_query_ids.contains(query.header.query_id);
+      });
+  if (readback.queries.size() != admitted.size() || foreign_query) {
+    SetAdmittedBatchFailure(
+        admitted,
+        Failure(PlanarGpuFailureCode::kInternalInvariant,
+                "GPU candidate batch returned an extra, foreign, or missing query result",
+                std::nullopt, std::nullopt, "gpu.batch.query.identity.v1"),
+        &output);
+    return output;
+  }
+  if (std::optional<PlanarGpuFailure> invalid = ValidateCandidateBatchTelemetry(
+          device, backend_request, *expected_batch_bytes, *expected_host_bytes, readback);
+      invalid.has_value()) {
+    SetAdmittedBatchFailure(admitted, *invalid, &output);
+    return output;
+  }
+  output.telemetry = readback.telemetry;
+
+  std::map<std::uint64_t, const UntrustedCandidateBatchQueryResult*> by_query;
+  std::set<std::uint64_t> duplicate_query_ids;
+  for (const UntrustedCandidateBatchQueryResult& query : readback.queries) {
+    if (!by_query.emplace(query.header.query_id, &query).second) {
+      duplicate_query_ids.insert(query.header.query_id);
+    }
+  }
+  for (const AdmittedCandidateBatchQuery& admitted_query : admitted) {
+    PlanarCandidateBatchItem& item = output.items[admitted_query.item_index];
+    const auto found = by_query.find(admitted_query.device_query.query_id);
+    if (found == by_query.end() ||
+        duplicate_query_ids.contains(admitted_query.device_query.query_id)) {
+      item.result = Failure(PlanarGpuFailureCode::kInternalInvariant,
+                            "GPU candidate batch omitted or duplicated a query result",
+                            std::nullopt, std::nullopt, "gpu.batch.query.identity.v1");
+      continue;
+    }
+    const UntrustedCandidateBatchQueryResult& untrusted = *found->second;
+    if (std::optional<PlanarGpuFailure> invalid = ValidateCandidateBatchEnvelope(
+            device, admitted_query.device_query, untrusted, policy.maximum_rounds,
+            readback.telemetry.dispatched_rounds, readback.telemetry.finalization_launch_count);
+        invalid.has_value()) {
+      item.result = std::move(*invalid);
+      continue;
+    }
+    UntrustedKernelResult kernel = QueryKernelView(untrusted);
+    if (kernel.completion != KernelCompletion::kReached) {
+      const PredecessorCostValidation predecessor_validation =
+          kernel.completion == KernelCompletion::kDisconnected
+              ? PredecessorCostValidation::kExact
+              : PredecessorCostValidation::kPartial;
+      if (std::optional<PlanarGpuFailure> invalid = ValidateAllPredecessors(
+              compiled_board, device, admitted_query.endpoints.start_node, kernel,
+              predecessor_validation, &admitted_query.normalized_policy.policy);
+          invalid.has_value()) {
+        item.result = WithTelemetry(std::move(*invalid), kernel.telemetry);
+        continue;
+      }
+    }
+    switch (kernel.completion) {
+      case KernelCompletion::kReached:
+        item.result = ValidateAndReconstructGpuRouteWithPolicy(
+            board, compiled_board, device, preflight.ordered[admitted_query.item_index]->request,
+            policy.generator, PreparedBatchAccess::Metadata(prepared), kernel,
+            &admitted_query.normalized_policy, true);
+        break;
+      case KernelCompletion::kDisconnected:
+        if (std::optional<PlanarGpuFailure> invalid = ValidateDisconnectedResult(device, kernel);
+            invalid.has_value()) {
+          item.result = WithTelemetry(std::move(*invalid), kernel.telemetry);
+        } else {
+          item.result = Failure(PlanarGpuFailureCode::kDisconnected,
+                                "No planar path connects this candidate query under its policy",
+                                std::nullopt, kernel.telemetry);
+        }
+        break;
+      case KernelCompletion::kBudgetExhausted:
+        item.result = Failure(PlanarGpuFailureCode::kResourceExhausted,
+                              "GPU candidate query did not converge within its round budget",
+                              std::nullopt, kernel.telemetry);
+        break;
+      case KernelCompletion::kCancelled:
+        item.result = Failure(PlanarGpuFailureCode::kCancelled,
+                              "GPU candidate query was cancelled at a bounded batch boundary",
+                              std::nullopt, kernel.telemetry);
+        break;
+    }
+  }
+  return output;
+}
+
+PlanarCandidateBatchResult RouteCandidateBatchWithPreparedPlanarGpuBackend(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    std::span<const PlanarCandidateBatchQuery> queries, const PlanarCandidateBatchPolicy& policy,
+    PreparedPlanarCompiledView& prepared) {
+  try {
+    CandidateBatchHostPreflightResult preflight_result =
+        PreflightCandidateBatch(board, compiled_board, queries, policy);
+    if (std::holds_alternative<PlanarGpuFailure>(preflight_result)) {
+      return std::get<PlanarGpuFailure>(std::move(preflight_result));
+    }
+    return RouteCandidateBatchWithPreparedPreflight(
+        board, compiled_board, policy, prepared,
+        std::get<CandidateBatchHostPreflight>(std::move(preflight_result)));
+  } catch (const std::bad_alloc&) {
+    return Failure(PlanarGpuFailureCode::kResourceExhausted,
+                   "GPU candidate batch host allocation failed during prepared execution");
+  } catch (const std::length_error&) {
+    return Failure(PlanarGpuFailureCode::kResourceExhausted,
+                   "GPU candidate batch host container capacity was exceeded during prepared "
+                   "execution");
+  }
+}
+
+PlanarCandidateBatchResult RouteCandidateBatchWithPlanarGpuBackend(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    std::span<const PlanarCandidateBatchQuery> queries, const PlanarCandidateBatchPolicy& policy,
+    IPlanarRouteBackend& backend) {
+  try {
+    CandidateBatchHostPreflightResult preflight_result =
+        PreflightCandidateBatch(board, compiled_board, queries, policy);
+    if (std::holds_alternative<PlanarGpuFailure>(preflight_result)) {
+      return std::get<PlanarGpuFailure>(std::move(preflight_result));
+    }
+    CandidateBatchHostPreflight preflight =
+        std::get<CandidateBatchHostPreflight>(std::move(preflight_result));
+    if (policy.cancellation != nullptr && policy.cancellation->load()) {
+      return BuildUnexecutedBatch(std::move(preflight), policy,
+                                  Failure(PlanarGpuFailureCode::kCancelled,
+                                          "GPU candidate query was cancelled before device upload"),
+                                  "cancelled-before-upload");
+    }
+    if (preflight.admitted.empty()) {
+      return BuildUnexecutedBatch(std::move(preflight), policy,
+                                  Failure(PlanarGpuFailureCode::kInternalInvariant,
+                                          "GPU candidate query unexpectedly remained admitted"),
+                                  "no-admitted-queries");
+    }
+    PreparedPlanarCompiledViewResult prepared_result =
+        PreparePlanarCompiledView(board, compiled_board, backend);
+    if (std::holds_alternative<PlanarGpuFailure>(prepared_result)) {
+      const PlanarGpuFailure preparation_failure =
+          std::get<PlanarGpuFailure>(std::move(prepared_result));
+      return BuildUnexecutedBatch(std::move(preflight), policy, preparation_failure,
+                                  "preparation-failed");
+    }
+    std::unique_ptr<PreparedPlanarCompiledView> prepared =
+        std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+    if (prepared == nullptr) {
+      return BuildUnexecutedBatch(
+          std::move(preflight), policy,
+          Failure(PlanarGpuFailureCode::kInternalInvariant,
+                  "GPU candidate batch preparation returned a null device view"),
+          "preparation-returned-null");
+    }
+    return RouteCandidateBatchWithPreparedPreflight(board, compiled_board, policy, *prepared,
+                                                    std::move(preflight));
+  } catch (const std::bad_alloc&) {
+    return Failure(PlanarGpuFailureCode::kResourceExhausted,
+                   "GPU candidate batch host allocation failed before completion");
+  } catch (const std::length_error&) {
+    return Failure(PlanarGpuFailureCode::kResourceExhausted,
+                   "GPU candidate batch host container capacity was exceeded before completion");
+  }
 }
 
 }  // namespace apgar::gpu

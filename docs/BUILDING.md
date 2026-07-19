@@ -143,6 +143,28 @@ geometry fingerprints, and per-route owned device memory to Google Benchmark's
 JSON. `--benchmark_dry_run` is useful only for bring-up and does not produce
 publishable measurements.
 
+Phase 3 candidate evidence additionally binds the exact source commit into the
+manual benchmark binary at analysis time. Supply the same full lowercase commit
+to Bazel and to the runtime evidence label:
+
+```sh
+bazel run --config=cuda --config=benchmark \
+  --define=APGAR_COMMIT=EXACT_40_CHARACTER_COMMIT \
+  //:phase3_candidate_benchmark -- \
+  --apgar_commit=EXACT_40_CHARACTER_COMMIT \
+  --apgar_nvidia_kmd_driver=DRIVER_VERSION_FROM_NVIDIA_SMI \
+  --benchmark_out=/tmp/apgar-phase3-candidate-bakeoff.json \
+  --benchmark_out_format=json
+```
+
+Obtain the KMD label with
+`nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits` immediately
+before the run. The binary rejects missing, malformed, duplicate, or mismatched
+evidence labels. Its
+`process_lifetime_peak_rss_bytes` counter is the process-global `RUSAGE_SELF`
+high-water mark and is not attributable to one benchmark row; deterministic
+owned host payload and device-memory counters remain the subsystem comparisons.
+
 ## Continuous integration
 
 GitHub Actions runs lint, build, and test checks on Ubuntu and build and test

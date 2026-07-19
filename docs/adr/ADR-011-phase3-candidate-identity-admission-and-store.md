@@ -37,27 +37,46 @@ now.
   resource-accounted, signed/deduplicated, and stored stages. It independently
   verifies intended terminals, ordering/connectivity, signed coordinates,
   H/V/45 headings, exact swept Board IR clearance, associations, policy scalar
-  cost, metrics, physical-edge resources, canonical form, signatures,
-  checksum, and memory accounting.
+  cost, policy-independent intrinsic base cost, metrics, physical-edge
+  resources, canonical form, signatures, checksum, and memory accounting.
 - CompiledBoard and generator/GPU results may reject or guide work but cannot
   prove admission legality. Every exact rejection retains a versioned
   structured diagnostic.
 - Physical resources v1 are collision-free structured canonical compiled-edge
-  spans. Reverse traversal names the same capacity unit. This is deliberately
-  narrower than the future allocator resource vocabulary.
+  spans with unit usage. Reverse traversal names the same capacity unit, and a
+  candidate that reuses a physical edge is rejected as noncanonical. Phase 3
+  costs are nonnegative, so this removes useless loops without losing a
+  shortest-path alternative. This is deliberately narrower than the future
+  allocator resource vocabulary.
+- Canonical line geometry visits each same-layer path vertex once and permits
+  only consecutive lines to share their ordered endpoint. Every nonconsecutive
+  same-layer swept trace pair requires exact centerline distance at least the
+  nominal trace width; equality is legal. Crossings, point self-touches, and
+  sub-width separation fail exact admission. Positive-length collinear overlap
+  remains classified later as repeated physical-edge resource use.
+- Exact self-clearance uses a deterministic x-bound sweep with a v1 maximum of
+  `1,000,000` broad-phase pair inspections per admission. Candidate pairs count
+  before layer, adjacency, and y-bound filtering once reached by the sweep;
+  attempting the next pair fails with structured `BudgetExhausted` evidence.
+  The hostile-test seam may only reduce this production cap.
 - Geometry and resource signatures are versioned 128-bit lookup accelerators.
   Signature matches always receive canonical equality checks before duplicate
   classification.
 - The store enforces positive per-net candidate-count and logical-byte budgets,
   deterministic ranking/enumeration/pruning, resource and geometry diversity,
   and metric dominance. Immutable candidates are separate from mutable store
-  metadata.
+  metadata. A store instance binds to one complete Board/compiler/routing/rule
+  association set and rejects association drift rather than mixing stale and
+  current candidates under the same net identity.
 - CAN-002 is represented by owner-scoped retention pins. A pinned candidate is
   never pruned; Phase 3 does not define worlds, selection, congestion, or
   prices.
-- Concurrent batch admission is serialized at publication and uses stable
-  total keys. Externally visible results do not depend on worker scheduling,
-  pointer identity, or unordered-container iteration.
+- Concurrent generation publishes through one explicit batch, which is sorted
+  and serialized using stable total keys. Batch results do not depend on worker
+  completion order, pointer identity, or unordered-container iteration.
+  Separate single-item calls are race-safe and linearizable, but bounded
+  retention is intentionally not specified as commutative across unknown
+  future calls; schedule-independent callers must form a batch.
 
 ## Consequences
 
@@ -67,9 +86,12 @@ now.
   Phase 3 benchmarks must report that cost separately from GPU execution.
 - Candidate IDs, signatures, and checksums have distinct roles. None may be
   used alone as collision-proof equality or legality evidence.
+- Candidate ranking and Pareto dominance compare the independently
+  reconstructed intrinsic base cost and quality vector. Scalar policy costs
+  remain authoritative for identical-policy CPU/GPU differential checks but
+  are not compared across alternative objective identities.
 - Resource spans are sufficient for the Phase 3 diversity experiment but do
   not implement Phase 4 allocator capacities, portals, prices, worlds, or
   column generation.
 - The reserved via tag preserves format evolution while keeping exact
   through-via routing an explicit remaining M1 gap.
-

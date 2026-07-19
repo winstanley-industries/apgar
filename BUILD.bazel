@@ -121,6 +121,39 @@ cc_library(
 )
 
 cc_library(
+    name = "candidate_contract",
+    srcs = ["src/candidates/route_candidate.cc"],
+    hdrs = ["include/apgar/candidates/route_candidate.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":exact_geometry",
+        ":geometry_compiler",
+        ":planar_route",
+        ":utf8",
+    ],
+)
+
+cc_library(
+    name = "candidate_store",
+    srcs = ["src/candidates/candidate_store.cc"],
+    hdrs = ["include/apgar/candidates/candidate_store.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":geometry_compiler",
+    ],
+)
+
+cc_library(
     name = "gpu_planar_router",
     srcs = [
         "src/gpu/device_board.cc",
@@ -132,6 +165,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":board_ir",
+        ":candidate_policy",
         ":cpu_astar",
         ":geometry_compiler",
         ":planar_route",
@@ -179,6 +213,12 @@ cc_library(
         ":kicad_fixture_adapter",
         ":planar_route",
     ],
+)
+
+cc_library(
+    name = "phase3_commit",
+    hdrs = ["include/apgar/benchmark/phase3_commit.h"],
+    strip_include_prefix = "include",
 )
 
 cc_library(
@@ -250,6 +290,63 @@ cc_binary(
 )
 
 cc_binary(
+    name = "candidate_replay",
+    srcs = ["tools/candidate_replay.cc"],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/candidates/resource_footprint_mismatch_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":planar_benchmark_corpus",
+        ":tool_runfiles",
+    ],
+)
+
+cc_test(
+    name = "candidate_replay_test",
+    size = "small",
+    srcs = ["tools/candidate_replay.cc"],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/candidates/resource_footprint_mismatch_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":planar_benchmark_corpus",
+        ":tool_runfiles",
+    ],
+)
+
+cc_test(
+    name = "candidate_replay_parser_test",
+    size = "small",
+    srcs = ["tools/candidate_replay.cc"],
+    args = ["--self-test-parser"],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/candidates/resource_footprint_mismatch_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":planar_benchmark_corpus",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
     name = "planar_benchmark",
     srcs = ["tools/planar_benchmark.cc"],
     copts = APGAR_COPTS,
@@ -265,6 +362,35 @@ cc_binary(
         ":cuda_planar_route_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
+        ":tool_runfiles",
+        "@google_benchmark//:benchmark",
+    ],
+)
+
+cc_binary(
+    name = "phase3_candidate_benchmark",
+    srcs = ["tools/phase3_candidate_benchmark.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/m1_exactness.kicad_pcb"],
+    linkopts = ["-pthread"],
+    local_defines = ["APGAR_PHASE3_BUILT_COMMIT=\\\"$(APGAR_COMMIT)\\\""],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":cuda_planar_route_backend",
+        ":geometry_compiler",
+        ":gpu_planar_router",
+        ":phase3_commit",
+        ":planar_benchmark_corpus",
+        ":planar_route",
         ":tool_runfiles",
         "@google_benchmark//:benchmark",
     ],
@@ -377,6 +503,7 @@ cc_test(
     name = "cuda_planar_route_test",
     size = "small",
     srcs = [
+        "tests/gpu/cuda_candidate_batch_test.cc",
         "tests/gpu/cuda_route_test.cc",
         "tests/support/board_builder.h",
         "tests/support/compiler_builder.h",
@@ -392,12 +519,27 @@ cc_test(
     target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     deps = [
         ":board_ir",
+        ":candidate_policy",
         ":cpu_astar",
         ":cuda_planar_route_backend",
         ":geometry_compiler",
         ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase3_commit_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase3_commit_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":phase3_commit",
         "@googletest//:gtest_main",
     ],
 )
@@ -416,6 +558,54 @@ cc_test(
     deps = [
         ":board_ir",
         ":candidate_policy",
+        ":geometry_compiler",
+        ":planar_route",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "route_candidate_test",
+    size = "small",
+    srcs = [
+        "tests/candidates/route_candidate_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":planar_route",
+        ":utf8",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "candidate_store_test",
+    size = "small",
+    srcs = [
+        "tests/candidates/candidate_store_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
         ":geometry_compiler",
         ":planar_route",
         "@googletest//:gtest_main",

@@ -15,7 +15,10 @@ namespace apgar::routing {
 
 inline constexpr std::uint8_t kNoIncomingDirection = 8;
 
-struct CpuRouteRequest {
+// Backend-neutral immutable request shared by the CPU oracle and every planar
+// GPU candidate explorer. The legacy alias below remains source-compatible
+// with the Phase 1/2 CPU API.
+struct PlanarRouteRequest {
   board_ir::EntityRef net;
   board_ir::Point64 start;
   board_ir::Point64 goal;
@@ -23,8 +26,10 @@ struct CpuRouteRequest {
   board_ir::LayerId goal_layer;
   CandidateGenerationPolicy candidate_policy;
 
-  friend bool operator==(const CpuRouteRequest&, const CpuRouteRequest&) = default;
+  friend bool operator==(const PlanarRouteRequest&, const PlanarRouteRequest&) = default;
 };
+
+using CpuRouteRequest = PlanarRouteRequest;
 
 struct LayerSegment {
   board_ir::LayerId layer;
@@ -64,7 +69,7 @@ enum class TwoTerminalRequestIssue : std::uint8_t {
   kMissingTerminal,
 };
 
-using TwoTerminalRequestResult = std::variant<CpuRouteRequest, TwoTerminalRequestIssue>;
+using TwoTerminalRequestResult = std::variant<PlanarRouteRequest, TwoTerminalRequestIssue>;
 
 [[nodiscard]] TwoTerminalRequestResult BuildTwoTerminalRouteRequest(
     const board_ir::BoardSnapshot& board, board_ir::LayerId start_layer,

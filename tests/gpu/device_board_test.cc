@@ -1,9 +1,11 @@
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -443,6 +445,143 @@ TEST(GpuPreparedViewTest, ReusesOneUploadAndRejectsStaleBoardAssociation) {
       stale_board, compiled, request, PlanarRoutePolicy{}, *prepared);
   ExpectFailureCode(stale, PlanarGpuFailureCode::kValidationFailed);
   EXPECT_EQ(backend.executions, 2U);
+}
+
+TEST(GpuCandidateBatchHostTest, EmptyDefaultPolicyReachesBackendWithoutUndefinedPointerMath) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
+  ScriptedBackend backend(StraightEastResult(compiled, &device, request, false));
+
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, compiled, backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+  ASSERT_NE(prepared, nullptr);
+
+  const PlanarCandidateBatchQuery query{
+      .query_id = 1,
+      .input_ordinal = 0,
+      .request = request,
+  };
+  const PlanarCandidateBatchResult result = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, std::span(&query, 1), PlanarCandidateBatchPolicy{.batch_id = 1}, *prepared);
+
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result));
+  const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
+  ASSERT_EQ(batch.items.size(), 1U);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items.front().result));
+  EXPECT_EQ(std::get<PlanarGpuFailure>(batch.items.front().result).code,
+            PlanarGpuFailureCode::kUnsupported);
+}
+
+TEST(GpuCandidateBatchHostTest, ValidatesEnvelopeAndCancelsItemsBeforeBackendDiscovery) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
+  const PlanarCandidateBatchQuery query{
+      .query_id = 7,
+      .input_ordinal = 0,
+      .request = request,
+  };
+
+  ScriptedBackend invalid_backend(StraightEastResult(compiled, &device, request, false), true);
+  PlanarCandidateBatchPolicy unsupported_policy{.batch_id = 1};
+  ++unsupported_policy.schema_version;
+  const PlanarCandidateBatchResult unsupported = RouteCandidateBatchWithPlanarGpuBackend(
+      board, compiled, std::span(&query, 1), unsupported_policy, invalid_backend);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(unsupported));
+  EXPECT_EQ(std::get<PlanarGpuFailure>(unsupported).code, PlanarGpuFailureCode::kUnsupported);
+  EXPECT_EQ(invalid_backend.metadata_queries, 0U);
+
+  std::atomic_bool cancellation = true;
+  ScriptedBackend cancelled_backend(StraightEastResult(compiled, &device, request, false), true);
+  const PlanarCandidateBatchResult cancelled =
+      RouteCandidateBatchWithPlanarGpuBackend(board, compiled, std::span(&query, 1),
+                                              PlanarCandidateBatchPolicy{
+                                                  .batch_id = 2,
+                                                  .cancellation = &cancellation,
+                                              },
+                                              cancelled_backend);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(cancelled));
+  const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(cancelled);
+  ASSERT_EQ(batch.items.size(), 1U);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items.front().result));
+  EXPECT_EQ(std::get<PlanarGpuFailure>(batch.items.front().result).code,
+            PlanarGpuFailureCode::kCancelled);
+  EXPECT_EQ(cancelled_backend.metadata_queries, 0U);
+}
+
+TEST(GpuCandidateBatchHostTest, PreservesInvalidPeersWhenPreparedUploadDiscoveryFails) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
+  const std::vector<PlanarCandidateBatchQuery> queries{
+      PlanarCandidateBatchQuery{
+          .query_id = 9,
+          .input_ordinal = 0,
+          .request = request,
+      },
+      PlanarCandidateBatchQuery{
+          .query_id = 3,
+          .input_ordinal = 1,
+          .request = request,
+      },
+  };
+  ScriptedBackend backend(StraightEastResult(compiled, &device, request, false), true);
+
+  const PlanarCandidateBatchResult result = RouteCandidateBatchWithPlanarGpuBackend(
+      board, compiled, queries, PlanarCandidateBatchPolicy{.batch_id = 31}, backend);
+
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result));
+  const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
+  ASSERT_EQ(batch.items.size(), 2U);
+  EXPECT_EQ(batch.items[0].query_id, 3U);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[0].result));
+  EXPECT_EQ(std::get<PlanarGpuFailure>(batch.items[0].result).code,
+            PlanarGpuFailureCode::kInvalidInput);
+  EXPECT_EQ(batch.items[1].query_id, 9U);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[1].result));
+  EXPECT_EQ(std::get<PlanarGpuFailure>(batch.items[1].result).code,
+            PlanarGpuFailureCode::kBackendFailure);
+  EXPECT_EQ(backend.metadata_queries, 1U);
+  EXPECT_EQ(backend.uploads, 0U);
+}
+
+TEST(GpuCandidateBatchHostTest, EnforcesLogicalHostAndAggregatePolicyBoundsBeforeDiscovery) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
+  const PlanarCandidateBatchQuery query{
+      .query_id = 7,
+      .input_ordinal = 0,
+      .request = request,
+  };
+  ScriptedBackend backend(StraightEastResult(compiled, &device, request, false), true);
+
+  const PlanarCandidateBatchResult result =
+      RouteCandidateBatchWithPlanarGpuBackend(board, compiled, std::span(&query, 1),
+                                              PlanarCandidateBatchPolicy{
+                                                  .batch_id = 32,
+                                                  .maximum_host_bytes = 1,
+                                              },
+                                              backend);
+
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(result));
+  EXPECT_EQ(std::get<PlanarGpuFailure>(result).code, PlanarGpuFailureCode::kResourceExhausted);
+  EXPECT_EQ(backend.metadata_queries, 0U);
+  EXPECT_EQ(backend.uploads, 0U);
+  EXPECT_FALSE(EstimateCandidateBatchHostBytesV1(1, routing::kMaximumPolicyResourceEntries + 1, 1)
+                   .has_value());
+  EXPECT_FALSE(EstimateCandidateBatchHostBytesV1(std::numeric_limits<std::uint64_t>::max(),
+                                                 routing::kMaximumPolicyResourceEntries,
+                                                 std::numeric_limits<std::uint64_t>::max())
+                   .has_value());
 }
 
 TEST(GpuUntrustedResultTest, ExactSweptGeometryRejectsStructurallyValidFalseFreePath) {
