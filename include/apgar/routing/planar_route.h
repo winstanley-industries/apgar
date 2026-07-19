@@ -9,6 +9,7 @@
 
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry_compiler/compiled_board.h"
+#include "apgar/routing/candidate_policy.h"
 
 namespace apgar::routing {
 
@@ -20,6 +21,7 @@ struct CpuRouteRequest {
   board_ir::Point64 goal;
   board_ir::LayerId start_layer;
   board_ir::LayerId goal_layer;
+  CandidateGenerationPolicy candidate_policy;
 
   friend bool operator==(const CpuRouteRequest&, const CpuRouteRequest&) = default;
 };

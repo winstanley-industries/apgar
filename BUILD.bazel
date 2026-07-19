@@ -78,6 +78,19 @@ cc_library(
 )
 
 cc_library(
+    name = "candidate_policy",
+    srcs = ["src/routing/candidate_policy.cc"],
+    hdrs = ["include/apgar/routing/candidate_policy.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":geometry_compiler",
+    ],
+)
+
+cc_library(
     name = "planar_route",
     srcs = ["src/routing/planar_route.cc"],
     hdrs = ["include/apgar/routing/planar_route.h"],
@@ -86,6 +99,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":board_ir",
+        ":candidate_policy",
         ":geometry_compiler",
     ],
 )
@@ -99,6 +113,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":board_ir",
+        ":candidate_policy",
         ":exact_geometry",
         ":geometry_compiler",
         ":planar_route",
@@ -388,6 +403,26 @@ cc_test(
 )
 
 cc_test(
+    name = "candidate_policy_test",
+    size = "small",
+    srcs = [
+        "tests/routing/candidate_policy_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":geometry_compiler",
+        ":planar_route",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "cpu_astar_test",
     size = "small",
     srcs = [
@@ -401,6 +436,7 @@ cc_test(
     data = ["tests/fixtures/m1_exactness.kicad_pcb"],
     deps = [
         ":board_ir",
+        ":candidate_policy",
         ":cpu_astar",
         ":geometry_compiler",
         ":kicad_fixture_adapter",

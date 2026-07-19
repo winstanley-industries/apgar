@@ -125,12 +125,31 @@ struct QueueGreater {
                  "Route-request admission validator returned an unknown issue");
 }
 
+[[nodiscard]] RouteFailure PolicyFailure(const CandidatePolicyError& error) {
+  switch (error.code) {
+    case CandidatePolicyErrorCode::kUnsupportedSchema:
+    case CandidatePolicyErrorCode::kUnsupportedObjective:
+      return Failure(RouteFailureCode::kUnsupportedPolicy,
+                     "CPU candidate policy is unsupported: " + error.detail);
+    case CandidatePolicyErrorCode::kInvalidResource:
+    case CandidatePolicyErrorCode::kConflictingResourceAction:
+    case CandidatePolicyErrorCode::kTooManyResources:
+    case CandidatePolicyErrorCode::kCostOverflow:
+    case CandidatePolicyErrorCode::kInvalidAlternativeSchedule:
+      return Failure(RouteFailureCode::kInvalidRequest,
+                     "CPU candidate policy is invalid: " + error.detail);
+  }
+  return Failure(RouteFailureCode::kInternalInvariant,
+                 "Candidate-policy normalization returned an unknown error");
+}
+
 [[nodiscard]] std::uint64_t AbsoluteDifference(std::int64_t left, std::int64_t right) noexcept {
   const Wide difference = static_cast<Wide>(left) - right;
   return static_cast<std::uint64_t>(difference < 0 ? -difference : difference);
 }
 
-[[nodiscard]] std::uint64_t Heuristic(const CompilerProfile& profile, LatticeIndex point,
+[[nodiscard]] std::uint64_t Heuristic(const CompilerProfile& profile,
+                                      const CandidateGenerationPolicy& policy, LatticeIndex point,
                                       LatticeIndex goal) noexcept {
   const std::uint64_t delta_x = AbsoluteDifference(point.x, goal.x);
   const std::uint64_t delta_y = AbsoluteDifference(point.y, goal.y);
@@ -140,35 +159,38 @@ struct QueueGreater {
                          static_cast<board_ir::HeadingMask>(board_ir::Heading::kVertical)) != 0;
   const bool diagonal = (profile.heading_mask &
                          static_cast<board_ir::HeadingMask>(board_ir::Heading::kDiagonal45)) != 0;
+  const std::uint64_t orthogonal_step =
+      static_cast<std::uint64_t>(profile.costs.orthogonal_step) + policy.orthogonal_step_surcharge;
+  const std::uint64_t diagonal_step =
+      static_cast<std::uint64_t>(profile.costs.diagonal_step) + policy.diagonal_step_surcharge;
 
   UWide estimate = 0;
   if (horizontal && vertical) {
     if (diagonal) {
-      if (profile.costs.diagonal_step < profile.costs.orthogonal_step) {
+      if (diagonal_step < orthogonal_step) {
         // Cheap alternating diagonals can make axial progress for less than an
         // orthogonal step. max(dx, dy) * diagonal_cost is a deliberately
         // relaxed lower bound that remains admissible across parity and bends.
-        estimate = static_cast<UWide>(std::max(delta_x, delta_y)) * profile.costs.diagonal_step;
+        estimate = static_cast<UWide>(std::max(delta_x, delta_y)) * diagonal_step;
       } else {
         const std::uint64_t diagonal_steps = std::min(delta_x, delta_y);
         const std::uint64_t orthogonal_steps = std::max(delta_x, delta_y) - diagonal_steps;
-        const std::uint64_t effective_diagonal =
-            std::min<std::uint64_t>(profile.costs.diagonal_step,
-                                    static_cast<std::uint64_t>(profile.costs.orthogonal_step) * 2);
+        const std::uint64_t effective_diagonal = static_cast<std::uint64_t>(
+            std::min<UWide>(diagonal_step, static_cast<UWide>(orthogonal_step) * 2U));
         estimate = static_cast<UWide>(diagonal_steps) * effective_diagonal +
-                   static_cast<UWide>(orthogonal_steps) * profile.costs.orthogonal_step;
+                   static_cast<UWide>(orthogonal_steps) * orthogonal_step;
       }
     } else {
-      estimate = static_cast<UWide>(delta_x + delta_y) * profile.costs.orthogonal_step;
+      estimate = (static_cast<UWide>(delta_x) + delta_y) * orthogonal_step;
     }
   } else if (horizontal && !vertical && !diagonal) {
-    estimate = static_cast<UWide>(delta_x) * profile.costs.orthogonal_step;
+    estimate = static_cast<UWide>(delta_x) * orthogonal_step;
   } else if (vertical && !horizontal && !diagonal) {
-    estimate = static_cast<UWide>(delta_y) * profile.costs.orthogonal_step;
+    estimate = static_cast<UWide>(delta_y) * orthogonal_step;
   } else if (diagonal) {
-    std::uint64_t minimum_step_cost = profile.costs.diagonal_step;
+    std::uint64_t minimum_step_cost = diagonal_step;
     if (horizontal || vertical) {
-      minimum_step_cost = std::min<std::uint64_t>(minimum_step_cost, profile.costs.orthogonal_step);
+      minimum_step_cost = std::min(minimum_step_cost, orthogonal_step);
     }
     estimate = static_cast<UWide>(std::max(delta_x, delta_y)) * minimum_step_cost;
   } else {
@@ -238,6 +260,11 @@ std::optional<RouteFailure> ValidateReconstructedRoute(const board_ir::BoardSnap
       invalid.has_value()) {
     return AdmissionFailure(*invalid);
   }
+  CandidatePolicyResult normalized_policy =
+      NormalizeCandidateGenerationPolicy(compiled_board, request.candidate_policy);
+  if (std::holds_alternative<CandidatePolicyError>(normalized_policy)) {
+    return PolicyFailure(std::get<CandidatePolicyError>(normalized_policy));
+  }
   return ValidateExactSegments(board, request, segments);
 }
 
@@ -273,6 +300,14 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
   const ResolvedPlanarEndpoints& endpoints = std::get<ResolvedPlanarEndpoints>(endpoint_result);
   const LatticeIndex& start = endpoints.start;
   const LatticeIndex& goal = endpoints.goal;
+  CandidatePolicyResult normalized_policy_result =
+      NormalizeCandidateGenerationPolicy(compiled_board, request.candidate_policy);
+  if (std::holds_alternative<CandidatePolicyError>(normalized_policy_result)) {
+    return PolicyFailure(std::get<CandidatePolicyError>(normalized_policy_result));
+  }
+  const NormalizedCandidateGenerationPolicy& normalized_policy =
+      std::get<NormalizedCandidateGenerationPolicy>(normalized_policy_result);
+  const CandidateGenerationPolicy& policy = normalized_policy.policy;
 
   const SearchState start_state{
       .x = start.x,
@@ -284,7 +319,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       std::min<std::uint64_t>(compiled_board.telemetry().represented_nodes * 2, 1'000'000)));
   records.emplace(start_state, SearchRecord{.cost = 0, .predecessor = std::nullopt});
   std::priority_queue<QueueItem, std::vector<QueueItem>, QueueGreater> queue;
-  const std::uint64_t start_heuristic = Heuristic(profile, start, goal);
+  const std::uint64_t start_heuristic = Heuristic(profile, policy, start, goal);
   std::uint64_t sequence = 0;
   queue.push(QueueItem{.estimated_total = start_heuristic,
                        .heuristic = start_heuristic,
@@ -334,6 +369,16 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
         continue;
       }
       ++telemetry.attempted_relaxations;
+      const std::optional<EdgeResourceKey> resource = CanonicalPhysicalEdgeResource(
+          request.start_layer, LatticeIndex{.x = current.state.x, .y = current.state.y}, direction);
+      if (!resource.has_value()) {
+        return Failure(RouteFailureCode::kInternalInvariant,
+                       "A* could not canonicalize a compiled physical edge", std::nullopt,
+                       telemetry);
+      }
+      if (PolicyBansResource(policy, *resource)) {
+        continue;
+      }
       const DirectionDelta delta = geometry_compiler::DeltaFor(direction);
       const SearchState neighbor{
           .x = current.state.x + delta.x,
@@ -345,8 +390,14 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                        "Compiled legal edge points outside the represented sparse field",
                        std::nullopt, telemetry);
       }
-      const std::optional<std::uint64_t> next_cost =
-          CheckedAdd(current.cost, StepCost(profile, direction, current.state.incoming_direction));
+      const std::optional<std::uint64_t> transition_cost = StepCostUnderPolicy(
+          profile, direction, current.state.incoming_direction, policy, *resource);
+      if (!transition_cost.has_value()) {
+        return Failure(RouteFailureCode::kInternalInvariant,
+                       "A normalized candidate policy produced an overflowing transition cost",
+                       std::nullopt, telemetry);
+      }
+      const std::optional<std::uint64_t> next_cost = CheckedAdd(current.cost, *transition_cost);
       if (!next_cost.has_value()) {
         return Failure(RouteFailureCode::kResourceExhausted,
                        "Integer route cost overflowed the validated search envelope", std::nullopt,
@@ -360,7 +411,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                                SearchRecord{.cost = *next_cost, .predecessor = current.state});
       ++telemetry.accepted_relaxations;
       const std::uint64_t heuristic =
-          Heuristic(profile, LatticeIndex{.x = neighbor.x, .y = neighbor.y}, goal);
+          Heuristic(profile, policy, LatticeIndex{.x = neighbor.x, .y = neighbor.y}, goal);
       queue.push(QueueItem{
           .estimated_total = EstimatedTotal(*next_cost, heuristic),
           .heuristic = heuristic,
@@ -431,8 +482,23 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                      "A* reconstruction does not follow adjacent compiled legal edges",
                      std::nullopt, telemetry);
     }
-    const std::optional<std::uint64_t> next_cost =
-        CheckedAdd(reconstructed_cost, StepCost(profile, *direction, incoming_direction));
+    const std::optional<EdgeResourceKey> resource = CanonicalPhysicalEdgeResource(
+        request.start_layer,
+        LatticeIndex{.x = reversed_states[index - 1].x, .y = reversed_states[index - 1].y},
+        *direction);
+    if (!resource.has_value() || PolicyBansResource(policy, *resource)) {
+      return Failure(RouteFailureCode::kInternalInvariant,
+                     "A* reconstruction traverses an invalid or banned physical resource",
+                     std::nullopt, telemetry);
+    }
+    const std::optional<std::uint64_t> transition_cost =
+        StepCostUnderPolicy(profile, *direction, incoming_direction, policy, *resource);
+    if (!transition_cost.has_value()) {
+      return Failure(RouteFailureCode::kInternalInvariant,
+                     "A normalized candidate policy overflowed during reconstruction", std::nullopt,
+                     telemetry);
+    }
+    const std::optional<std::uint64_t> next_cost = CheckedAdd(reconstructed_cost, *transition_cost);
     if (!next_cost.has_value()) {
       return Failure(RouteFailureCode::kResourceExhausted,
                      "Reconstructed integer route cost overflowed", std::nullopt, telemetry);
@@ -458,6 +524,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       .compiler_profile_fingerprint = compiled_board.compiler_profile_fingerprint(),
       .compiler_version = compiled_board.compiler_version(),
       .rule_bucket_identity = compiled_board.rule_bucket().identity,
+      .candidate_policy_identity = normalized_policy.identity,
       .total_cost = reconstructed_cost,
       .lattice_path = std::move(points),
       .segments = std::move(segments),

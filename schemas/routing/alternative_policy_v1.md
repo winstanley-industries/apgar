@@ -82,3 +82,16 @@ generator. Results are ordered by query identity. Repeating an identical batch
 on the same supported backend/device class must produce identical per-query
 outcome, scalar cost, geometry, and ordering.
 
+The backend-neutral schedule is bounded to 1,000,000 policies and to 1,000,000
+aggregate generated resource entries. Candidate zero is the normalized base
+policy. Later candidates repeat this four-mode cycle with checked strength
+increments and deterministic resource cycling:
+
+1. length-biased objective with equal orthogonal/diagonal step surcharge;
+2. bend-biased objective with step and bend surcharges;
+3. resource-diverse objective with one finite resource penalty; and
+4. resource-diverse objective with one resource ban.
+
+Candidate ordinals increase without wrapping and every normalized policy
+identity must be unique. Counts, increments, ordinal overflow, aggregate entry
+bounds, absent resources, or an identity collision fail before execution.

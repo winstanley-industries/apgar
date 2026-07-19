@@ -21,6 +21,7 @@ enum class RouteFailureCode : std::uint8_t {
   kValidationFailed,
   kResourceExhausted,
   kInternalInvariant,
+  kUnsupportedPolicy,
 };
 
 struct CpuRouteTelemetry {
@@ -48,6 +49,7 @@ struct CpuRoute {
   std::uint64_t compiler_profile_fingerprint;
   std::uint32_t compiler_version;
   std::uint64_t rule_bucket_identity;
+  std::uint64_t candidate_policy_identity;
   std::uint64_t total_cost;
   std::vector<board_ir::Point64> lattice_path;
   std::vector<LayerSegment> segments;

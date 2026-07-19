@@ -31,6 +31,11 @@ identity, so they cannot detect cross-query contamination.
 - Policies cannot modify Board IR, CompiledBoard, resource usage, prices, or
   another query. Unsupported schema/objective/backend combinations fail
   explicitly and may use CPU fallback only with identical semantics.
+- The v1 deterministic k-policy schedule retains the base policy first, then
+  cycles length surcharge, bend surcharge, one resource penalty, and one
+  resource ban with checked deterministic strength/resource selection. Policy
+  count and aggregate generated resource entries are each bounded to one
+  million.
 - DeviceCompiledBoard v1 remains the immutable prepared board upload. A
   separately versioned batch query/result protocol carries query, policy,
   workspace-owner, bounds, completion, and telemetry associations.
@@ -66,4 +71,3 @@ identity, so they cannot detect cross-query contamination.
   execution, readback, exact admission, and end-to-end costs.
 - This decision does not promote a GPU production generator and does not add
   allocator prices, worlds, selection, vias, portals, or legalization.
-

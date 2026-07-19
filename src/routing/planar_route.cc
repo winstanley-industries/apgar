@@ -98,6 +98,7 @@ TwoTerminalRequestResult BuildTwoTerminalRouteRequest(const board_ir::BoardSnaps
       .goal = second->center,
       .start_layer = start_layer,
       .goal_layer = goal_layer,
+      .candidate_policy = CandidateGenerationPolicy{},
   };
 }
 

@@ -106,6 +106,8 @@ void AddPoint(apgar::board_ir::StableHashBuilder* hash, apgar::board_ir::Point64
       return "resource_exhausted";
     case RouteFailureCode::kInternalInvariant:
       return "invariant";
+    case RouteFailureCode::kUnsupportedPolicy:
+      return "unsupported";
   }
   return "unknown";
 }
