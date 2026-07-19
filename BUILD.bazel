@@ -1,7 +1,7 @@
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
-load("@rules_cuda//cuda:defs.bzl", "cuda_test")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library", "cuda_test")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -70,6 +70,40 @@ cc_library(
 )
 
 cc_library(
+    name = "gpu_planar_router",
+    srcs = [
+        "src/gpu/device_board.cc",
+        "src/gpu/planar_router.cc",
+    ],
+    hdrs = ["include/apgar/gpu/planar_router.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":cpu_astar",
+        ":geometry_compiler",
+    ],
+)
+
+cuda_library(
+    name = "cuda_planar_route_backend",
+    srcs = ["gpu/cuda/planar_router.cu"],
+    copts = ["-std=c++20"],
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+    deps = [":cuda_planar_route_backend_api"],
+)
+
+cc_library(
+    name = "cuda_planar_route_backend_api",
+    hdrs = ["include/apgar/gpu/cuda_backend.h"],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [":gpu_planar_router"],
+)
+
+cc_library(
     name = "kicad_fixture_adapter",
     srcs = ["src/adapters/kicad_fixture.cc"],
     hdrs = ["include/apgar/adapters/kicad_fixture.h"],
@@ -94,6 +128,7 @@ cc_library(
         ":cpu_astar",
         ":exact_geometry",
         ":geometry_compiler",
+        ":gpu_planar_router",
         ":kicad_fixture_adapter",
     ],
 )
@@ -160,6 +195,48 @@ cc_test(
         ":board_ir",
         ":exact_geometry",
         ":geometry_compiler",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "device_compiled_board_test",
+    size = "small",
+    srcs = [
+        "tests/gpu/device_board_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":geometry_compiler",
+        ":gpu_planar_router",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cuda_planar_route_test",
+    size = "small",
+    srcs = [
+        "tests/gpu/cuda_route_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    deps = [
+        ":board_ir",
+        ":cpu_astar",
+        ":cuda_planar_route_backend",
+        ":geometry_compiler",
+        ":gpu_planar_router",
         "@googletest//:gtest_main",
     ],
 )
