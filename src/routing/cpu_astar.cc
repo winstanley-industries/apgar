@@ -74,8 +74,10 @@ struct QueueGreater {
 };
 
 [[nodiscard]] RouteFailure Failure(RouteFailureCode code, std::string detail,
-                                   std::optional<board_ir::EntityRef> obstacle = std::nullopt) {
-  return RouteFailure{.code = code, .detail = std::move(detail), .obstacle = obstacle};
+                                   std::optional<board_ir::EntityRef> obstacle = std::nullopt,
+                                   std::optional<CpuRouteTelemetry> telemetry = std::nullopt) {
+  return RouteFailure{
+      .code = code, .detail = std::move(detail), .obstacle = obstacle, .telemetry = telemetry};
 }
 
 [[nodiscard]] std::optional<RouteFailure> ValidateAssociation(const board_ir::BoardSnapshot& board,
@@ -455,7 +457,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
 
   if (!goal_state.has_value()) {
     return Failure(RouteFailureCode::kDisconnected,
-                   "No planar path connects the represented start and goal fields");
+                   "No planar path connects the represented start and goal fields", std::nullopt,
+                   telemetry);
   }
 
   std::vector<SearchState> reversed_states;

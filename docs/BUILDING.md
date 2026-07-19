@@ -110,6 +110,24 @@ requires a Linux x86-64 host and a driver capable of running the pinned toolkit
 and the configured compute capability; this does not change the supported
 hosts for default CPU-only builds.
 
+Phase 2 dispatch measurements use the pinned Google Benchmark 1.9.5 module,
+not a repository-local timing loop. Run the optimized harness with an explicit
+source commit and ask Google Benchmark to write its JSON report:
+
+```sh
+bazel run --config=cuda --config=benchmark //:planar_benchmark -- \
+  --apgar_commit=EXACT_COMMIT \
+  --benchmark_out=/tmp/apgar-planar-bakeoff.json \
+  --benchmark_out_format=json
+```
+
+The harness programmatically fixes 20 repetitions, a 0.02-second minimum
+measurement time, a 0.01-second Google Benchmark warm-up, wall-clock timing,
+and microsecond output. APGAR counters add differential semantics, work,
+rounds, kernel time, deterministic geometry fingerprints, and owned device
+memory to Google Benchmark's JSON. `--benchmark_dry_run` is useful only for
+bring-up and does not produce publishable measurements.
+
 ## Continuous integration
 
 GitHub Actions runs lint, build, and test checks on Ubuntu and build and test

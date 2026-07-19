@@ -11,6 +11,9 @@ test --spawn_strategy=sandboxed
 build:debug --compilation_mode=dbg
 build:release --compilation_mode=opt
 
+# Published measurements use optimized APGAR and Google Benchmark binaries.
+build:benchmark --compilation_mode=opt
+
 build:asan --@llvm//config:asan=True
 
 build:ubsan --@llvm//config:ubsan=True

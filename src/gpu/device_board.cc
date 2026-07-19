@@ -32,7 +32,10 @@ struct NodeKey {
 };
 
 [[nodiscard]] PlanarGpuFailure Failure(PlanarGpuFailureCode code, std::string detail) {
-  return PlanarGpuFailure{.code = code, .detail = std::move(detail), .obstacle = std::nullopt};
+  return PlanarGpuFailure{.code = code,
+                          .detail = std::move(detail),
+                          .obstacle = std::nullopt,
+                          .telemetry = std::nullopt};
 }
 
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidateAssociation(

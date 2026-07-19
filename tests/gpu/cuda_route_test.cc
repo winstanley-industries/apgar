@@ -1,9 +1,14 @@
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <memory>
+#include <string>
 #include <utility>
 #include <variant>
 
+#include "apgar/benchmark/planar_corpus.h"
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "apgar/gpu/cuda_backend.h"
@@ -65,6 +70,19 @@ using routing::CpuRouteResult;
   std::unique_ptr<IPlanarRouteBackend> backend = CreateCudaPlanarRouteBackend();
   EXPECT_NE(backend, nullptr);
   return RouteWithPlanarGpuBackend(board, compiled, request, policy, *backend);
+}
+
+[[nodiscard]] std::string ReadFixture() {
+  const char* test_srcdir = std::getenv("TEST_SRCDIR");
+  const char* test_workspace = std::getenv("TEST_WORKSPACE");
+  if (test_srcdir == nullptr || test_workspace == nullptr) {
+    return {};
+  }
+  std::ifstream input(std::string(test_srcdir) + "/" + test_workspace +
+                      "/tests/fixtures/m1_exactness.kicad_pcb");
+  return input
+             ? std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>())
+             : std::string{};
 }
 
 void ExpectDifferentialSuccess(const BoardSnapshot& board, const CompiledBoard& compiled,
@@ -189,6 +207,49 @@ TEST(CudaPlanarRouteTest, InjectedPredecessorCycleIsAnInvariantFailure) {
 
   ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(result));
   EXPECT_EQ(std::get<PlanarGpuFailure>(result).code, PlanarGpuFailureCode::kInternalInvariant);
+}
+
+TEST(CudaPlanarDifferentialTest, ForcedGeneratorsMatchCpuAcrossVersionedBakeoffCorpus) {
+  benchmark::PlanarCorpusResult corpus_result = benchmark::BuildPlanarBakeoffCorpus(ReadFixture());
+  ASSERT_TRUE(std::holds_alternative<std::vector<benchmark::PlanarCorpusCase>>(corpus_result))
+      << (std::holds_alternative<std::string>(corpus_result) ? std::get<std::string>(corpus_result)
+                                                             : "");
+  const std::vector<benchmark::PlanarCorpusCase>& corpus =
+      std::get<std::vector<benchmark::PlanarCorpusCase>>(corpus_result);
+  ASSERT_EQ(corpus.size(), 8U);
+
+  for (const benchmark::PlanarCorpusCase& test_case : corpus) {
+    SCOPED_TRACE(test_case.name);
+    const CpuRouteResult cpu =
+        routing::RouteWithCpuAStar(test_case.board, test_case.compiled_board, test_case.request);
+    for (PlanarGenerator generator :
+         {PlanarGenerator::kBucketedFrontier, PlanarGenerator::kHeadingAwareSweep}) {
+      const PlanarRoutePolicy policy{.generator = generator};
+      const PlanarGpuRouteResult first =
+          Route(test_case.board, test_case.compiled_board, test_case.request, policy);
+      const PlanarGpuRouteResult second =
+          Route(test_case.board, test_case.compiled_board, test_case.request, policy);
+      if (std::holds_alternative<CpuRoute>(cpu)) {
+        ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(first))
+            << std::get<PlanarGpuFailure>(first).detail;
+        ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(second))
+            << std::get<PlanarGpuFailure>(second).detail;
+        const PlanarGpuRoute& first_route = std::get<PlanarGpuRoute>(first);
+        const PlanarGpuRoute& second_route = std::get<PlanarGpuRoute>(second);
+        EXPECT_EQ(first_route.total_cost, std::get<CpuRoute>(cpu).total_cost);
+        EXPECT_EQ(first_route.total_cost, second_route.total_cost);
+        EXPECT_EQ(first_route.lattice_path, second_route.lattice_path);
+        EXPECT_EQ(first_route.segments, second_route.segments);
+      } else {
+        ASSERT_EQ(std::get<routing::RouteFailure>(cpu).code,
+                  routing::RouteFailureCode::kDisconnected);
+        ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(first));
+        ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(second));
+        EXPECT_EQ(std::get<PlanarGpuFailure>(first).code, PlanarGpuFailureCode::kDisconnected);
+        EXPECT_EQ(std::get<PlanarGpuFailure>(second).code, PlanarGpuFailureCode::kDisconnected);
+      }
+    }
+  }
 }
 
 }  // namespace

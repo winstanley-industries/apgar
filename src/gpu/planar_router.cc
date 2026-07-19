@@ -23,8 +23,10 @@ using geometry_compiler::DirectionDelta;
 using geometry_compiler::LatticeIndex;
 
 [[nodiscard]] PlanarGpuFailure Failure(PlanarGpuFailureCode code, std::string detail,
-                                       std::optional<board_ir::EntityRef> obstacle = std::nullopt) {
-  return PlanarGpuFailure{.code = code, .detail = std::move(detail), .obstacle = obstacle};
+                                       std::optional<board_ir::EntityRef> obstacle = std::nullopt,
+                                       std::optional<KernelTelemetry> telemetry = std::nullopt) {
+  return PlanarGpuFailure{
+      .code = code, .detail = std::move(detail), .obstacle = obstacle, .telemetry = telemetry};
 }
 
 [[nodiscard]] PlanarGpuFailure BackendFailure(const BackendError& error) {
@@ -501,13 +503,16 @@ PlanarGpuRouteResult RouteWithPlanarGpuBackend(const board_ir::BoardSnapshot& bo
         return std::move(*invalid);
       }
       return Failure(PlanarGpuFailureCode::kDisconnected,
-                     "No planar path connects the represented start and goal fields");
+                     "No planar path connects the represented start and goal fields", std::nullopt,
+                     untrusted.telemetry);
     case KernelCompletion::kBudgetExhausted:
       return Failure(PlanarGpuFailureCode::kResourceExhausted,
-                     "GPU route did not converge within the configured round budget");
+                     "GPU route did not converge within the configured round budget", std::nullopt,
+                     untrusted.telemetry);
     case KernelCompletion::kCancelled:
       return Failure(PlanarGpuFailureCode::kCancelled,
-                     "GPU route was cancelled at a bounded launch boundary");
+                     "GPU route was cancelled at a bounded launch boundary", std::nullopt,
+                     untrusted.telemetry);
   }
   return Failure(PlanarGpuFailureCode::kInternalInvariant,
                  "GPU result contains an unknown completion code");

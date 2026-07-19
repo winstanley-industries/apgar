@@ -39,14 +39,6 @@ enum class RouteFailureCode : std::uint8_t {
   kInternalInvariant,
 };
 
-struct RouteFailure {
-  RouteFailureCode code;
-  std::string detail;
-  std::optional<board_ir::EntityRef> obstacle;
-
-  friend bool operator==(const RouteFailure&, const RouteFailure&) = default;
-};
-
 struct CpuRouteTelemetry {
   std::uint64_t queue_pops = 0;
   std::uint64_t expanded_states = 0;
@@ -56,6 +48,15 @@ struct CpuRouteTelemetry {
   std::uint64_t peak_queue_size = 0;
 
   friend bool operator==(const CpuRouteTelemetry&, const CpuRouteTelemetry&) = default;
+};
+
+struct RouteFailure {
+  RouteFailureCode code;
+  std::string detail;
+  std::optional<board_ir::EntityRef> obstacle;
+  std::optional<CpuRouteTelemetry> telemetry;
+
+  friend bool operator==(const RouteFailure&, const RouteFailure&) = default;
 };
 
 struct CpuRoute {

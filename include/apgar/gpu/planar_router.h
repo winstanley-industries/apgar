@@ -41,10 +41,23 @@ enum class PlanarGpuFailureCode : std::uint8_t {
   kInternalInvariant,
 };
 
+struct KernelTelemetry {
+  std::uint64_t persistent_device_bytes = 0;
+  std::uint64_t batch_device_bytes = 0;
+  std::uint64_t peak_device_bytes = 0;
+  std::uint64_t examined_work = 0;
+  std::uint64_t heading_turn_relaxations = 0;
+  std::uint32_t rounds = 0;
+  double kernel_milliseconds = 0.0;
+
+  friend bool operator==(const KernelTelemetry&, const KernelTelemetry&) = default;
+};
+
 struct PlanarGpuFailure {
   PlanarGpuFailureCode code;
   std::string detail;
   std::optional<board_ir::EntityRef> obstacle;
+  std::optional<KernelTelemetry> telemetry;
 
   friend bool operator==(const PlanarGpuFailure&, const PlanarGpuFailure&) = default;
 };
@@ -150,18 +163,6 @@ struct BackendMetadata {
   std::uint64_t global_memory_bytes = 0;
 
   friend bool operator==(const BackendMetadata&, const BackendMetadata&) = default;
-};
-
-struct KernelTelemetry {
-  std::uint64_t persistent_device_bytes = 0;
-  std::uint64_t batch_device_bytes = 0;
-  std::uint64_t peak_device_bytes = 0;
-  std::uint64_t examined_work = 0;
-  std::uint64_t heading_turn_relaxations = 0;
-  std::uint32_t rounds = 0;
-  double kernel_milliseconds = 0.0;
-
-  friend bool operator==(const KernelTelemetry&, const KernelTelemetry&) = default;
 };
 
 enum class KernelCompletion : std::uint8_t {

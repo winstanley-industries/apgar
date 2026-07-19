@@ -104,6 +104,21 @@ cc_library(
 )
 
 cc_library(
+    name = "planar_benchmark_corpus",
+    srcs = ["src/benchmark/planar_corpus.cc"],
+    hdrs = ["include/apgar/benchmark/planar_corpus.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":kicad_fixture_adapter",
+    ],
+)
+
+cc_library(
     name = "kicad_fixture_adapter",
     srcs = ["src/adapters/kicad_fixture.cc"],
     hdrs = ["include/apgar/adapters/kicad_fixture.h"],
@@ -158,6 +173,25 @@ cc_binary(
         ":geometry_compiler",
         ":gpu_planar_router",
         ":kicad_fixture_adapter",
+    ],
+)
+
+cc_binary(
+    name = "planar_benchmark",
+    srcs = ["tools/planar_benchmark.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/m1_exactness.kicad_pcb"],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    deps = [
+        ":board_ir",
+        ":cpu_astar",
+        ":cuda_planar_route_backend",
+        ":gpu_planar_router",
+        ":planar_benchmark_corpus",
+        "@google_benchmark//:benchmark",
     ],
 )
 
@@ -270,6 +304,7 @@ cc_test(
         "tests/support/google_test.h",
     ],
     copts = APGAR_COPTS,
+    data = ["tests/fixtures/m1_exactness.kicad_pcb"],
     tags = [
         "manual",
         "requires-gpu",
@@ -280,6 +315,7 @@ cc_test(
         ":cuda_planar_route_backend",
         ":geometry_compiler",
         ":gpu_planar_router",
+        ":planar_benchmark_corpus",
         "@googletest//:gtest_main",
     ],
 )
