@@ -374,11 +374,16 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                        .cost = 0,
                        .state = start_state,
                        .sequence = sequence++});
+  CpuRouteTelemetry telemetry{
+      .peak_record_count = records.size(),
+      .peak_queue_size = queue.size(),
+  };
 
   std::optional<SearchState> goal_state;
   while (!queue.empty()) {
     const QueueItem current = queue.top();
     queue.pop();
+    ++telemetry.queue_pops;
     const auto current_record = records.find(current.state);
     if (current_record == records.end() || current_record->second.cost != current.cost) {
       continue;
@@ -387,6 +392,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       goal_state = current.state;
       break;
     }
+    ++telemetry.expanded_states;
 
     const geometry_compiler::CompiledNode* current_node =
         compiled_board.FindNode(request.start_layer, current.state.x, current.state.y);
@@ -408,6 +414,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       if (!mask_is_legal) {
         continue;
       }
+      ++telemetry.attempted_relaxations;
       const DirectionDelta delta = geometry_compiler::DeltaFor(direction);
       const SearchState neighbor{
           .x = current.state.x + delta.x,
@@ -430,6 +437,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       }
       records.insert_or_assign(neighbor,
                                SearchRecord{.cost = *next_cost, .predecessor = current.state});
+      ++telemetry.accepted_relaxations;
       const std::uint64_t heuristic =
           Heuristic(profile, LatticeIndex{.x = neighbor.x, .y = neighbor.y}, *goal);
       queue.push(QueueItem{
@@ -439,6 +447,9 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
           .state = neighbor,
           .sequence = sequence++,
       });
+      telemetry.peak_record_count =
+          std::max<std::uint64_t>(telemetry.peak_record_count, records.size());
+      telemetry.peak_queue_size = std::max<std::uint64_t>(telemetry.peak_queue_size, queue.size());
     }
   }
 
@@ -522,6 +533,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       .total_cost = reconstructed_cost,
       .lattice_path = std::move(points),
       .segments = std::move(segments),
+      .telemetry = telemetry,
   };
 }
 

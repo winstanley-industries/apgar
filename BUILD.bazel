@@ -140,6 +140,49 @@ cc_binary(
     deps = [":apgar"],
 )
 
+cc_binary(
+    name = "gpu_replay",
+    srcs = ["tools/gpu_replay.cc"],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/gpu/goal_predecessor_self_cycle_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    deps = [
+        ":board_ir",
+        ":cuda_planar_route_backend",
+        ":geometry_compiler",
+        ":gpu_planar_router",
+        ":kicad_fixture_adapter",
+    ],
+)
+
+cc_test(
+    name = "gpu_replay_test",
+    size = "small",
+    srcs = ["tools/gpu_replay.cc"],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/gpu/goal_predecessor_self_cycle_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    deps = [
+        ":board_ir",
+        ":cuda_planar_route_backend",
+        ":geometry_compiler",
+        ":gpu_planar_router",
+        ":kicad_fixture_adapter",
+    ],
+)
+
 cuda_test(
     name = "cuda_smoke_test",
     size = "small",

@@ -47,6 +47,17 @@ struct RouteFailure {
   friend bool operator==(const RouteFailure&, const RouteFailure&) = default;
 };
 
+struct CpuRouteTelemetry {
+  std::uint64_t queue_pops = 0;
+  std::uint64_t expanded_states = 0;
+  std::uint64_t attempted_relaxations = 0;
+  std::uint64_t accepted_relaxations = 0;
+  std::uint64_t peak_record_count = 0;
+  std::uint64_t peak_queue_size = 0;
+
+  friend bool operator==(const CpuRouteTelemetry&, const CpuRouteTelemetry&) = default;
+};
+
 struct CpuRoute {
   std::uint64_t source_board_content_hash;
   std::uint64_t compiler_profile_fingerprint;
@@ -55,6 +66,7 @@ struct CpuRoute {
   std::uint64_t total_cost;
   std::vector<board_ir::Point64> lattice_path;
   std::vector<LayerSegment> segments;
+  CpuRouteTelemetry telemetry;
 
   friend bool operator==(const CpuRoute&, const CpuRoute&) = default;
 };
