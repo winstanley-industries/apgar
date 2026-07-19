@@ -173,6 +173,122 @@ GPU-only execution/readback comparisons and frontier won 31. Complete
 end-to-end work reversed the count: frontier won 38 GPU-only comparisons and
 sweep won 28. Both remain experimental forced backends.
 
+## Performance interpretation: why CUDA did not cross over
+
+The negative dispatch result is not evidence that the RTX 5080 performed route
+propagation slowly in every case. In several sweep rows, the CUDA execution
+envelope was much shorter than either the complete execution/readback stage or
+the best parallel CPU search. The current correctness-first pipeline loses that
+device-side advantage while allocating, transferring, partitioning,
+reconstructing, and validating complete query workspaces.
+
+Representative `k=128` medians are:
+
+| Case and GPU generator | CUDA event envelope | GPU execution/readback | Approximate time outside event | Exact admission/store | GPU end to end | Best CPU end to end |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Dense corridors, sweep | 0.385 ms | 11.097 ms | 10.712 ms | 3.221 ms | 17.531 ms | 5.582 ms |
+| KiCad fixture, sweep | 0.720 ms | 29.195 ms | 28.474 ms | 3.637 ms | 34.052 ms | 7.962 ms |
+| Cross-tile edges, frontier | 0.619 ms | 1.823 ms | 1.204 ms | 3.138 ms | 5.410 ms | 5.293 ms |
+
+The outside-event values are explanatory differences between independently
+registered aggregate medians, not additive profiler attribution. The CUDA
+event itself covers initialization, search chunks, blocking status copies,
+finalization when needed, and predecessor selection. It excludes per-batch
+allocation and input upload, complete result readback, host reconstruction and
+validation, and teardown. No Nsight occupancy, transfer-bandwidth, or stall
+profile was recorded, so the following explanations combine measured stage
+envelopes with directly inspected implementation structure.
+
+### Source-supported explanations
+
+1. A prepared upload shares immutable CompiledBoard nodes and directional runs,
+   but not transient query state. Every batch separately allocates queries,
+   policies, result headers, labels, predecessors, two ownership arrays,
+   status, and generator-specific frontier or sweep storage. Those allocations
+   and their release are included in execution wall time but begin before and
+   end after the CUDA event.
+2. Every query returns its complete label, predecessor, state-owner, and
+   predecessor-owner arrays. Readback first owns flat batch arrays and then
+   copies them into query-local vectors, which is why the deterministic host
+   formula contains two complete state workspaces. The dense `k=128` batch
+   accounts for 14,984,648 host bytes; KiCad accounts for 45,047,240 bytes.
+3. The host treats those arrays as hostile. It checks batch/query associations,
+   ownership of every state, telemetry bounds, every finite predecessor and
+   transition cost, stable goal selection, and reconstructed geometry before
+   exact candidate admission. This trust boundary is required; transferring
+   and materializing the entire workspace is an implementation choice.
+4. The frontier assigns one 256-thread block to each query. For each A*-style
+   round, that block scans the query's complete state slice, performs a stable
+   minimum reduction, and uses one thread to relax the winning state's legal
+   edges. It prioritizes bounded deterministic behavior over a compact active
+   frontier. It also blocks for query-status readback after each 32-round
+   chunk: dense `k=128` required 19 such readbacks and KiCad required 58.
+5. Sweep exposes substantially more regular parallel work, but one eight-round
+   chunk still uses initialization, four launches per round on boards with
+   runs, one blocking status readback, and final predecessor selection. Its 34
+   launches completed quickly in the two examples above; full-workspace
+   handling, rather than propagation, dominated their wall time.
+6. Exact Board IR admission and deterministic store publication are mandatory
+   backend-neutral work. They create an end-to-end floor even when GPU search
+   becomes faster. Prepared flatten/upload adds another 0.413 ms at the median
+   measured case, although execution/readback rows already prove upload is not
+   the only missing crossover cost.
+7. Much of the generated work did not become stored value. Across the six CPU
+   policy prefixes, 2,317 reachable routes produced 115 retained candidates.
+   At KiCad `k=128`, all 128 queries reached but only two candidates survived
+   exact admission, collision-safe deduplication, and retention. CPU generation
+   also pays for discarded alternatives, but it returns compact routes rather
+   than a complete accelerator workspace for each one.
+
+Batching nevertheless worked in the intended direction. The geometric-mean
+frontier and sweep end-to-end ratios improved from 26.398x and 19.686x at
+`k=4` to 1.991x and 1.929x at `k=128`. This is evidence of amortization, but no
+measured crossover through `k=128`.
+
+### Prioritized future hypotheses
+
+These are unmeasured hypotheses, not dispatch conclusions:
+
+1. **Compact sweep output.** Reconstruct a bounded compact path on the device
+   and read back query headers plus path primitives instead of four complete
+   state arrays. CPU exact geometry, cost, resource, and candidate admission
+   remain authoritative. A GPU `Unreachable` result still requires a CPU oracle
+   confirmation or another independently validated proof; compact output must
+   not weaken the trust boundary.
+2. **Persistent batch workspaces.** Reuse capacity-bounded labels, ownership,
+   status, and sweep buffers across batches sharing one prepared view. Measure
+   allocation, input encoding/upload, device execution, output transfer, host
+   validation, reconstruction, and release as separate Google Benchmark
+   scopes before attributing improvement.
+3. **Fewer host boundaries.** Evaluate a persistent sweep kernel, CUDA Graph,
+   or another deterministic chunk schedule that reduces launches and blocking
+   status copies while preserving bounded cancellation and query-local partial
+   failure semantics.
+4. **A real compact frontier.** Replace full-state winner scans with the
+   architecture's intended stable integer buckets, delta-stepping, or bounded
+   multi-queue experiment. Match the CPU policy-aware admissible heuristic more
+   closely and retain stable external ordering and scalar-cost differential
+   checks.
+5. **Larger multi-net batches.** Test hundreds or thousands of compatible
+   independent net/policy queries against one prepared board rather than only
+   one net's `k <= 128` alternatives. This remains candidate generation; it
+   does not introduce Phase 4 prices, worlds, or allocation.
+6. **Pipeline overlap.** Overlap exact CPU admission of batch N with GPU
+   exploration of batch N+1. Report latency and throughput separately so
+   overlap does not hide upload, validation, or admission work.
+7. **Higher-value policy schedules.** Improve resource-distinct candidate yield
+   using the measured diversity feedback. A future header-first transfer may
+   use untrusted signatures only to prioritize detailed readback; a signature
+   match must never suppress a candidate. Canonical material still has to reach
+   the CPU for collision-safe equality and exact admission before any omission.
+
+The first follow-up vertical slice should combine persistent bounded workspaces
+with compact sweep readback. Sweep already provides the strongest measured
+device-side signal, and that slice directly attacks the largest observed gap
+without changing production dispatch or exact legality authority. Any future
+promotion still requires a new exact-commit bakeoff over the complete latency,
+throughput, quality, memory, determinism, and failure-semantics gates.
+
 ## Candidate admission and diversity
 
 The following totals use the sequential CPU end-to-end view so identical
