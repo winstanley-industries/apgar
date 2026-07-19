@@ -34,6 +34,7 @@ struct NodeKey {
 [[nodiscard]] PlanarGpuFailure Failure(PlanarGpuFailureCode code, std::string detail) {
   return PlanarGpuFailure{.code = code,
                           .detail = std::move(detail),
+                          .invariant_id = {},
                           .obstacle = std::nullopt,
                           .telemetry = std::nullopt};
 }

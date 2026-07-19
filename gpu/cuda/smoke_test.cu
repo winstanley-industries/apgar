@@ -1,11 +1,26 @@
 #include <cuda_runtime.h>
+#include <link.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <string_view>
 
 namespace {
+
+struct DynamicRuntimeAudit {
+  bool found_gcc_runtime = false;
+};
+
+int AuditDynamicRuntime(dl_phdr_info* info, std::size_t, void* opaque) {
+  const std::string_view name = info->dlpi_name == nullptr ? "" : info->dlpi_name;
+  if (name.find("libstdc++.so") != std::string_view::npos ||
+      name.find("libgcc_s.so") != std::string_view::npos) {
+    static_cast<DynamicRuntimeAudit*>(opaque)->found_gcc_runtime = true;
+  }
+  return 0;
+}
 
 __global__ void DeterministicTransform(const std::uint32_t* input, std::uint32_t* output,
                                        std::size_t count) {
@@ -26,6 +41,14 @@ __global__ void DeterministicTransform(const std::uint32_t* input, std::uint32_t
 }  // namespace
 
 int main() {
+  DynamicRuntimeAudit runtime_audit;
+  dl_iterate_phdr(AuditDynamicRuntime, &runtime_audit);
+  if (runtime_audit.found_gcc_runtime) {
+    std::cerr << "CUDA executable loaded a dynamic GCC runtime instead of the pinned static "
+                 "toolchain runtime\n";
+    return 1;
+  }
+
   int device_count = 0;
   if (!Check(cudaGetDeviceCount(&device_count), "cudaGetDeviceCount") || device_count < 1) {
     std::cerr << "No CUDA device is available\n";
@@ -86,6 +109,6 @@ int main() {
             << "\" compute_capability=" << properties.major << '.' << properties.minor
             << " runtime=" << runtime_version << " driver=" << driver_version
             << " global_memory_bytes=" << properties.totalGlobalMem
-            << " deterministic_oracle=pass\n";
+            << " deterministic_oracle=pass gcc_runtime=static\n";
   return 0;
 }

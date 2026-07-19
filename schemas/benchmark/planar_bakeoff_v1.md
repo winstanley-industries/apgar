@@ -2,7 +2,12 @@
 
 The Phase 2 machine-readable result is Google Benchmark 1.9.5 JSON. APGAR adds
 context keys prefixed `apgar_` for the exact commit, corpus version, timing and
-warm-up policy, pinned CUDA/host toolchains, and backend/device metadata.
+warm-up policy, pinned CUDA/nvcc/benchmark C++ toolchains, and backend/device
+metadata. The CPU A* baseline is part of the CUDA-linked benchmark executable,
+so its C++ toolchain is the recorded benchmark GCC toolchain rather than the
+repository's default CPU-only LLVM configuration.
+The context also records the fixed no-RNG seed policy, CPU baseline, host OS,
+kernel, architecture, CPU model, and component-level nvcc/cudart builds.
 Each `apgar_case_<name>` value fixes the family, Board IR hash,
 compiler-profile fingerprint, represented nodes and legal edges, lattice step,
 tile dimensions, heading mask, and orthogonal/diagonal/bend costs.

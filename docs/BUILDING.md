@@ -94,7 +94,10 @@ back to host tools.
 CUDA is an opt-in Phase 2 execution platform. `--config=cuda` selects
 checksum-pinned CUDA Toolkit 13.0.2 redistributable components, a
 checksum-pinned GCC 15.2.0 host compiler and sysroot, and native plus PTX code
-for compute capability 12.0. Neither CUDA nor GCC is read from the host.
+for compute capability 12.0. The pinned libstdc++ and libgcc runtimes are linked
+statically into CUDA executables; neither CUDA nor any GCC compiler, headers,
+link inputs, or runtime library is read from the host. Host glibc and the NVIDIA
+kernel driver remain part of the declared Linux execution ABI.
 CUDA targets carry the `manual` and `requires-gpu` tags, so default `//...`
 builds remain CPU-only on Linux and macOS.
 
@@ -104,8 +107,9 @@ Run the platform smoke test before any other CUDA target:
 bazel test --config=cuda //:cuda_smoke_test
 ```
 
-The smoke test reports backend/device/runtime metadata and compares a
-deterministic device result with a CPU oracle. CUDA execution currently
+The smoke test reports backend/device/runtime metadata, rejects a dynamically
+loaded libstdc++ or libgcc, and compares a deterministic device result with a
+CPU oracle. CUDA execution currently
 requires a Linux x86-64 host and a driver capable of running the pinned toolkit
 and the configured compute capability; this does not change the supported
 hosts for default CPU-only builds.

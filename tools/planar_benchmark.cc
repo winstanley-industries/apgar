@@ -1,4 +1,5 @@
 #include <benchmark/benchmark.h>
+#include <sys/utsname.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -66,6 +67,32 @@ struct BenchmarkContext {
     return std::nullopt;
   }
   return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+[[nodiscard]] std::optional<std::string> ReadHostFile(std::string_view path) {
+  std::ifstream input(std::string(path), std::ios::binary);
+  if (!input) {
+    return std::nullopt;
+  }
+  return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+[[nodiscard]] std::optional<std::string> LineValue(std::string_view contents,
+                                                   std::string_view key) {
+  const std::size_t key_offset = contents.find(key);
+  if (key_offset == std::string_view::npos) {
+    return std::nullopt;
+  }
+  std::string_view value = contents.substr(key_offset + key.size());
+  value = value.substr(0, value.find('\n'));
+  while (!value.empty() && (value.front() == ' ' || value.front() == '\t' || value.front() == ':' ||
+                            value.front() == '"')) {
+    value.remove_prefix(1);
+  }
+  while (!value.empty() && (value.back() == ' ' || value.back() == '\t' || value.back() == '"')) {
+    value.remove_suffix(1);
+  }
+  return std::string(value);
 }
 
 void AddPoint(apgar::board_ir::StableHashBuilder* hash, apgar::board_ir::Point64 point) {
@@ -342,6 +369,8 @@ void AddContext(const std::string& commit, const BenchmarkContext& context) {
   benchmark::AddCustomContext("apgar_commit", commit);
   benchmark::AddCustomContext("apgar_corpus_version",
                               std::to_string(apgar::benchmark::kPlanarBakeoffCorpusVersion));
+  benchmark::AddCustomContext("apgar_baseline", "cpu_astar");
+  benchmark::AddCustomContext("apgar_seed", "none_fixed_corpus_v1");
   benchmark::AddCustomContext("apgar_timing_scope",
                               "full_route_including_upload_reconstruction_validation");
   benchmark::AddCustomContext("apgar_repetitions", std::to_string(kBenchmarkRepetitions));
@@ -358,8 +387,32 @@ void AddContext(const std::string& commit, const BenchmarkContext& context) {
   benchmark::AddCustomContext("apgar_global_memory_bytes",
                               std::to_string(metadata.global_memory_bytes));
   benchmark::AddCustomContext("apgar_cuda_toolkit", "13.0.2 checksum-pinned redistributables");
+  benchmark::AddCustomContext("apgar_nvcc_build", "13.0.88 checksum-pinned redistributable");
+  benchmark::AddCustomContext("apgar_cudart_build", "13.0.96 checksum-pinned redistributable");
+  benchmark::AddCustomContext("apgar_benchmark_cpp_toolchain",
+                              "GCC 15.2.0 checksum-pinned distribution/sysroot");
   benchmark::AddCustomContext("apgar_cuda_host_toolchain",
                               "GCC 15.2.0 checksum-pinned distribution/sysroot");
+  struct utsname host{};
+  if (uname(&host) == 0) {
+    benchmark::AddCustomContext("apgar_host_kernel",
+                                std::string(host.sysname) + " " + host.release);
+    benchmark::AddCustomContext("apgar_host_architecture", host.machine);
+  }
+  if (const std::optional<std::string> os_release = ReadHostFile("/etc/os-release");
+      os_release.has_value()) {
+    if (const std::optional<std::string> pretty_name = LineValue(*os_release, "PRETTY_NAME=");
+        pretty_name.has_value()) {
+      benchmark::AddCustomContext("apgar_host_os", *pretty_name);
+    }
+  }
+  if (const std::optional<std::string> cpu_info = ReadHostFile("/proc/cpuinfo");
+      cpu_info.has_value()) {
+    if (const std::optional<std::string> model = LineValue(*cpu_info, "model name");
+        model.has_value()) {
+      benchmark::AddCustomContext("apgar_cpu_model", *model);
+    }
+  }
   for (const apgar::benchmark::PlanarCorpusCase& test_case : context.corpus) {
     const apgar::geometry_compiler::CompilerProfile& profile = test_case.compiled_board.profile();
     benchmark::AddCustomContext(

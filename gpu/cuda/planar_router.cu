@@ -109,9 +109,30 @@ class CudaPendingRouteExecution final : public PendingRouteExecution {
   BackendExecutionRequest request{};
   KernelCompletion completion = KernelCompletion::kDisconnected;
   KernelTelemetry telemetry;
+  DeviceBuffer<DeviceResultHeaderV1> result_header;
   DeviceBuffer<std::uint64_t> labels;
   DeviceBuffer<std::uint32_t> predecessors;
 };
+
+__global__ void InitializeResultHeader(const DeviceCompiledHeaderV1* compiled,
+                                       DeviceResultHeaderV1* result, std::uint32_t start_node,
+                                       std::uint32_t goal_node, PlanarGenerator generator) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+  result->schema_version = compiled->schema_version;
+  result->compiler_version = compiled->compiler_version;
+  result->start_node = start_node;
+  result->goal_node = goal_node;
+  result->source_board_content_hash = compiled->source_board_content_hash;
+  result->compiler_profile_fingerprint = compiled->compiler_profile_fingerprint;
+  result->rule_bucket_identity = compiled->rule_bucket_identity;
+  result->device_view_fingerprint = compiled->device_view_fingerprint;
+  result->generator = generator;
+  for (std::uint8_t& byte : result->reserved) {
+    byte = 0;
+  }
+}
 
 __device__ std::uint64_t DeviceStepCost(const DeviceCompiledHeaderV1& header,
                                         std::uint8_t direction, std::uint8_t incoming_heading) {
@@ -136,7 +157,7 @@ __device__ bool DeviceCheckedAdd(std::uint64_t left, std::uint64_t right, std::u
 }
 
 __global__ void InitializeSearch(std::uint64_t* labels, std::uint32_t* predecessors,
-                                 std::uint8_t* active, std::uint64_t state_count,
+                                 std::uint32_t* active, std::uint64_t state_count,
                                  std::uint32_t start_state) {
   const std::uint64_t state = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (state >= state_count) {
@@ -150,19 +171,20 @@ __global__ void InitializeSearch(std::uint64_t* labels, std::uint32_t* predecess
 }
 
 __global__ void FrontierRelax(const DeviceNodeV1* nodes, DeviceCompiledHeaderV1 header,
-                              const std::uint8_t* current_active, std::uint8_t* next_active,
+                              const std::uint32_t* current_active, std::uint32_t* next_active,
                               std::uint64_t* labels, std::uint64_t bucket_upper,
                               std::uint64_t* minimum_next_label, std::uint64_t* examined_work) {
   const std::uint64_t state = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (state >= header.represented_states || current_active[state] == 0) {
     return;
   }
-  const std::uint64_t label = labels[state];
+  const std::uint64_t label = static_cast<std::uint64_t>(
+      atomicAdd(reinterpret_cast<unsigned long long*>(&labels[state]), 0ULL));
   if (label == kInfiniteRouteCost) {
     return;
   }
   if (label > bucket_upper) {
-    next_active[state] = 1;
+    atomicExch(&next_active[state], 1U);
     atomicMin(reinterpret_cast<unsigned long long*>(minimum_next_label),
               static_cast<unsigned long long>(label));
     return;
@@ -186,7 +208,7 @@ __global__ void FrontierRelax(const DeviceNodeV1* nodes, DeviceCompiledHeaderV1 
         atomicMin(reinterpret_cast<unsigned long long*>(&labels[target_state]),
                   static_cast<unsigned long long>(candidate));
     if (candidate < previous) {
-      next_active[target_state] = 1;
+      atomicExch(&next_active[target_state], 1U);
       atomicMin(reinterpret_cast<unsigned long long*>(minimum_next_label),
                 static_cast<unsigned long long>(candidate));
     }
@@ -331,7 +353,14 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
 
 [[nodiscard]] std::optional<BackendError> InitializeExecution(
     const CudaUploadedCompiledView& uploaded, CudaPendingRouteExecution& execution,
-    std::uint8_t* active) {
+    std::uint32_t* active) {
+  InitializeResultHeader<<<1, 1>>>(uploaded.device_header.get(), execution.result_header.get(),
+                                   execution.request.start_node, execution.request.goal_node,
+                                   execution.request.generator);
+  if (std::optional<BackendError> error = CheckLaunch("InitializeResultHeader launch");
+      error.has_value()) {
+    return error;
+  }
   const std::uint64_t state_count = uploaded.header.represented_states;
   InitializeSearch<<<BlockCount(state_count), kThreadsPerBlock>>>(
       execution.labels.get(), execution.predecessors.get(), active, state_count,
@@ -345,6 +374,18 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
       uploaded.nodes.get(), uploaded.header, execution.request.start_node, execution.labels.get(),
       execution.predecessors.get());
   return CheckLaunch("SelectStablePredecessors launch");
+}
+
+[[nodiscard]] std::optional<BackendError> FinishExecution(const CudaUploadedCompiledView& uploaded,
+                                                          CudaPendingRouteExecution& execution) {
+  if (std::optional<BackendError> error = SelectPredecessors(uploaded, execution);
+      error.has_value()) {
+    return error;
+  }
+  if (execution.request.cancellation != nullptr && execution.request.cancellation->load()) {
+    execution.completion = KernelCompletion::kCancelled;
+  }
+  return std::nullopt;
 }
 
 [[nodiscard]] std::optional<BackendError> DetermineCompletion(CudaPendingRouteExecution& execution,
@@ -372,8 +413,8 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
                                                       CudaPendingRouteExecution& execution,
                                                       std::uint64_t* batch_bytes) {
   const std::uint64_t state_count = uploaded.header.represented_states;
-  DeviceBuffer<std::uint8_t> first_active;
-  DeviceBuffer<std::uint8_t> second_active;
+  DeviceBuffer<std::uint32_t> first_active;
+  DeviceBuffer<std::uint32_t> second_active;
   DeviceBuffer<std::uint64_t> minimum_next;
   DeviceBuffer<std::uint64_t> examined;
   if (std::optional<BackendError> error =
@@ -402,8 +443,8 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
     return error;
   }
 
-  std::uint8_t* current = first_active.get();
-  std::uint8_t* next = second_active.get();
+  std::uint32_t* current = first_active.get();
+  std::uint32_t* next = second_active.get();
   std::uint64_t bucket_upper = 0;
   const std::uint64_t delta = std::min<std::uint64_t>(uploaded.header.costs.orthogonal_step,
                                                       uploaded.header.costs.diagonal_step);
@@ -413,7 +454,8 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
       execution.completion = KernelCompletion::kCancelled;
       break;
     }
-    if (const cudaError_t status = cudaMemset(next, 0, state_count); status != cudaSuccess) {
+    if (const cudaError_t status = cudaMemset(next, 0, state_count * sizeof(std::uint32_t));
+        status != cudaSuccess) {
       return CudaError("cudaMemset(frontier next)", status);
     }
     if (const cudaError_t status = cudaMemset(minimum_next.get(), 0xff, sizeof(std::uint64_t));
@@ -445,6 +487,10 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
     }
     execution.telemetry.examined_work += round_work;
     execution.telemetry.rounds = round + 1;
+    if (execution.request.cancellation != nullptr && execution.request.cancellation->load()) {
+      execution.completion = KernelCompletion::kCancelled;
+      break;
+    }
     if (next_label == kInfiniteRouteCost) {
       converged = true;
       break;
@@ -462,7 +508,7 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
       error.has_value()) {
     return error;
   }
-  return SelectPredecessors(uploaded, execution);
+  return FinishExecution(uploaded, execution);
 }
 
 [[nodiscard]] std::optional<BackendError> RunSweep(const CudaUploadedCompiledView& uploaded,
@@ -543,6 +589,10 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
     }
     execution.telemetry.examined_work += round_work;
     execution.telemetry.rounds = round + 1;
+    if (execution.request.cancellation != nullptr && execution.request.cancellation->load()) {
+      execution.completion = KernelCompletion::kCancelled;
+      break;
+    }
     if (round_changed == 0) {
       converged = true;
       break;
@@ -562,23 +612,28 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
       error.has_value()) {
     return error;
   }
-  return SelectPredecessors(uploaded, execution);
+  return FinishExecution(uploaded, execution);
 }
 
 class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
  public:
   [[nodiscard]] BackendMetadataResult QueryMetadata() const override {
+    int device = 0;
+    cudaError_t status = cudaGetDevice(&device);
+    if (status != cudaSuccess) {
+      return CudaError("cudaGetDevice", status);
+    }
     int count = 0;
-    cudaError_t status = cudaGetDeviceCount(&count);
+    status = cudaGetDeviceCount(&count);
     if (status != cudaSuccess) {
       return CudaError("cudaGetDeviceCount", status);
     }
-    if (count < 1) {
+    if (count < 1 || device < 0 || device >= count) {
       return BackendError{.code = BackendErrorCode::kBackendFailure,
-                          .detail = "No CUDA device is available"};
+                          .detail = "No current CUDA device is available"};
     }
     cudaDeviceProp properties{};
-    status = cudaGetDeviceProperties(&properties, 0);
+    status = cudaGetDeviceProperties(&properties, device);
     if (status != cudaSuccess) {
       return CudaError("cudaGetDeviceProperties", status);
     }
@@ -697,16 +752,24 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
       return BackendError{.code = BackendErrorCode::kInternalInvariant,
                           .detail = "CUDA execute received invalid endpoint or budget bounds"};
     }
+    if ((request.generator != PlanarGenerator::kBucketedFrontier &&
+         request.generator != PlanarGenerator::kHeadingAwareSweep) ||
+        (request.fault_injection != KernelFaultInjection::kNone &&
+         request.fault_injection != KernelFaultInjection::kGoalPredecessorSelfCycle)) {
+      return BackendError{.code = BackendErrorCode::kInternalInvariant,
+                          .detail = "CUDA execute received an unknown generator or fault"};
+    }
 
     auto execution = std::make_unique<CudaPendingRouteExecution>();
     execution->header = uploaded->header;
     execution->request = request;
     const std::uint64_t state_count = uploaded->header.represented_states;
-    const std::uint64_t base_batch_bytes =
-        state_count * sizeof(std::uint64_t) + state_count * sizeof(std::uint32_t);
+    const std::uint64_t base_batch_bytes = sizeof(DeviceResultHeaderV1) +
+                                           state_count * sizeof(std::uint64_t) +
+                                           state_count * sizeof(std::uint32_t);
     const std::uint64_t algorithm_bytes =
         request.generator == PlanarGenerator::kBucketedFrontier
-            ? state_count * 2 * sizeof(std::uint8_t) + 2 * sizeof(std::uint64_t)
+            ? state_count * 2 * sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t)
             : uploaded->header.represented_nodes * 8 * sizeof(std::uint64_t) +
                   2 * sizeof(std::uint64_t) + sizeof(std::uint32_t);
     const std::uint64_t batch_budget = base_batch_bytes + algorithm_bytes;
@@ -715,6 +778,11 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
             request.maximum_device_bytes - uploaded->header.estimated_persistent_device_bytes) {
       return BackendError{.code = BackendErrorCode::kResourceExhausted,
                           .detail = "CUDA route exceeds the deterministic device-memory budget"};
+    }
+    if (std::optional<BackendError> error =
+            execution->result_header.Allocate(1, "cudaMalloc(route result header)");
+        error.has_value()) {
+      return std::move(*error);
     }
     if (std::optional<BackendError> error =
             execution->labels.Allocate(state_count, "cudaMalloc(route labels)");
@@ -745,7 +813,8 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
       return CudaError("cudaEventRecord(start)", status);
     }
 
-    std::uint64_t batch_bytes = execution->labels.bytes() + execution->predecessors.bytes();
+    std::uint64_t batch_bytes = execution->result_header.bytes() + execution->labels.bytes() +
+                                execution->predecessors.bytes();
     std::optional<BackendError> run_error;
     switch (request.generator) {
       case PlanarGenerator::kBucketedFrontier:
@@ -775,6 +844,9 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
     if (run_error.has_value()) {
       return std::move(*run_error);
     }
+    if (request.cancellation != nullptr && request.cancellation->load()) {
+      execution->completion = KernelCompletion::kCancelled;
+    }
 
     execution->telemetry.persistent_device_bytes =
         uploaded->header.estimated_persistent_device_bytes;
@@ -790,21 +862,29 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
       return BackendError{.code = BackendErrorCode::kInternalInvariant,
                           .detail = "CUDA readback received a job from another backend"};
     }
+    DeviceResultHeaderV1 result_header;
+    cudaError_t status = cudaMemcpy(&result_header, execution->result_header.get(),
+                                    sizeof(result_header), cudaMemcpyDeviceToHost);
+    if (status != cudaSuccess) {
+      return CudaError("cudaMemcpy(route result header)", status);
+    }
     UntrustedKernelResult result{
-        .source_board_content_hash = execution->header.source_board_content_hash,
-        .compiler_profile_fingerprint = execution->header.compiler_profile_fingerprint,
-        .compiler_version = execution->header.compiler_version,
-        .rule_bucket_identity = execution->header.rule_bucket_identity,
-        .device_view_fingerprint = execution->header.device_view_fingerprint,
+        .schema_version = result_header.schema_version,
+        .source_board_content_hash = result_header.source_board_content_hash,
+        .compiler_profile_fingerprint = result_header.compiler_profile_fingerprint,
+        .compiler_version = result_header.compiler_version,
+        .rule_bucket_identity = result_header.rule_bucket_identity,
+        .device_view_fingerprint = result_header.device_view_fingerprint,
+        .generator = result_header.generator,
         .completion = execution->completion,
-        .start_node = execution->request.start_node,
-        .goal_node = execution->request.goal_node,
+        .start_node = result_header.start_node,
+        .goal_node = result_header.goal_node,
         .telemetry = execution->telemetry,
     };
     result.labels.resize(execution->labels.count());
     result.predecessors.resize(execution->predecessors.count());
-    cudaError_t status = cudaMemcpy(result.labels.data(), execution->labels.get(),
-                                    execution->labels.bytes(), cudaMemcpyDeviceToHost);
+    status = cudaMemcpy(result.labels.data(), execution->labels.get(), execution->labels.bytes(),
+                        cudaMemcpyDeviceToHost);
     if (status != cudaSuccess) {
       return CudaError("cudaMemcpy(route labels)", status);
     }

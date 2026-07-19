@@ -10,4 +10,5 @@ expected_board_content_hash=1860510029311497781
 expected_profile_fingerprint=8851933838860818274
 expected_device_view_fingerprint=2764614999745307367
 expected_failure=internal_invariant
-checksum_fnv1a64=8528605239735037551
+expected_invariant=gpu.predecessor.self_reference.v1
+checksum_fnv1a64=1840821882380434313

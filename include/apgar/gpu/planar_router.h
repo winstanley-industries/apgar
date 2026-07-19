@@ -56,6 +56,7 @@ struct KernelTelemetry {
 struct PlanarGpuFailure {
   PlanarGpuFailureCode code;
   std::string detail;
+  std::string invariant_id;
   std::optional<board_ir::EntityRef> obstacle;
   std::optional<KernelTelemetry> telemetry;
 
@@ -116,6 +117,22 @@ struct DeviceRunV1 {
   friend bool operator==(const DeviceRunV1&, const DeviceRunV1&) = default;
 };
 static_assert(sizeof(DeviceRunV1) == 12);
+
+struct DeviceResultHeaderV1 {
+  std::uint32_t schema_version = kDeviceCompiledBoardSchemaVersion;
+  std::uint32_t compiler_version = 0;
+  std::uint32_t start_node = kInvalidNodeIndex;
+  std::uint32_t goal_node = kInvalidNodeIndex;
+  std::uint64_t source_board_content_hash = 0;
+  std::uint64_t compiler_profile_fingerprint = 0;
+  std::uint64_t rule_bucket_identity = 0;
+  std::uint64_t device_view_fingerprint = 0;
+  PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
+  std::array<std::uint8_t, 7> reserved{};
+
+  friend bool operator==(const DeviceResultHeaderV1&, const DeviceResultHeaderV1&) = default;
+};
+static_assert(sizeof(DeviceResultHeaderV1) == 56);
 
 struct DeviceCompiledBoardV1 {
   DeviceCompiledHeaderV1 header;
@@ -179,6 +196,7 @@ struct UntrustedKernelResult {
   std::uint32_t compiler_version = 0;
   std::uint64_t rule_bucket_identity = 0;
   std::uint64_t device_view_fingerprint = 0;
+  PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
   KernelCompletion completion = KernelCompletion::kDisconnected;
   std::uint32_t start_node = kInvalidNodeIndex;
   std::uint32_t goal_node = kInvalidNodeIndex;

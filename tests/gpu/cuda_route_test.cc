@@ -206,7 +206,10 @@ TEST(CudaPlanarRouteTest, InjectedPredecessorCycleIsAnInvariantFailure) {
   const PlanarGpuRouteResult result = Route(board, compiled, Request(board), policy);
 
   ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(result));
-  EXPECT_EQ(std::get<PlanarGpuFailure>(result).code, PlanarGpuFailureCode::kInternalInvariant);
+  const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(result);
+  EXPECT_EQ(failure.code, PlanarGpuFailureCode::kInternalInvariant);
+  EXPECT_EQ(failure.invariant_id, "gpu.predecessor.self_reference.v1");
+  EXPECT_TRUE(failure.telemetry.has_value());
 }
 
 TEST(CudaPlanarDifferentialTest, ForcedGeneratorsMatchCpuAcrossVersionedBakeoffCorpus) {

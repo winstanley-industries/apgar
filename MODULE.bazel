@@ -57,7 +57,15 @@ cuda_gcc = use_extension("@gcc_toolchain//toolchain:module_extensions.bzl", "gcc
 cuda_gcc.toolchain(
     name = "apgar_cuda_gcc15",
     enable_fortran = False,
-    extra_ldflags = ["-lstdc++"],
+    # The extension links with gcc rather than g++, so name libstdc++
+    # explicitly and keep it inside a static linker-state bracket. The CUDA
+    # config also selects static libgcc; neither GCC runtime may resolve from
+    # the host at execution time.
+    extra_ldflags = [
+        "-Wl,-Bstatic",
+        "-lstdc++",
+        "-Wl,-Bdynamic",
+    ],
     gcc_version = "15.2.0",
     target_arch = "x86_64",
 )

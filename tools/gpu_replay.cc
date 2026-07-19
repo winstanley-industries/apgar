@@ -39,6 +39,7 @@ struct ReplayArtifact {
   std::uint64_t expected_board_hash = 0;
   std::uint64_t expected_profile_fingerprint = 0;
   std::uint64_t expected_device_fingerprint = 0;
+  std::string expected_invariant;
 };
 
 [[nodiscard]] std::optional<std::string> ReadFile(const std::string& path) {
@@ -75,6 +76,10 @@ template <typename Integer>
 
 [[nodiscard]] std::optional<ReplayArtifact> ParseArtifact(std::string_view contents,
                                                           std::string* error) {
+  if (contents.empty() || contents.back() != '\n') {
+    *error = "canonical replay must end every line with LF";
+    return std::nullopt;
+  }
   const std::size_t checksum_start = contents.rfind("checksum_fnv1a64=");
   if (checksum_start == std::string_view::npos || checksum_start == 0 ||
       contents[checksum_start - 1] != '\n') {
@@ -83,9 +88,7 @@ template <typename Integer>
   }
   const std::string_view payload = contents.substr(0, checksum_start);
   std::string_view checksum_text = contents.substr(checksum_start + 17);
-  if (!checksum_text.empty() && checksum_text.back() == '\n') {
-    checksum_text.remove_suffix(1);
-  }
+  checksum_text.remove_suffix(1);
   std::uint64_t recorded_checksum = 0;
   if (!ParseUnsigned(checksum_text, &recorded_checksum) ||
       apgar::board_ir::StableHashString(payload) != recorded_checksum) {
@@ -107,6 +110,7 @@ template <typename Integer>
       "expected_profile_fingerprint=",
       "expected_device_view_fingerprint=",
       "expected_failure=",
+      "expected_invariant=",
   };
   std::size_t offset = 0;
   for (std::string_view key : kKeys) {
@@ -129,7 +133,7 @@ template <typename Integer>
   }
   if (values[0] != "apgar_gpu_invariant_replay" || values[1] != "1" ||
       values[4] != "bucketed_frontier" || values[5] != "goal_predecessor_self_cycle" ||
-      values[11] != "internal_invariant") {
+      values[11] != "internal_invariant" || values[12] != "gpu.predecessor.self_reference.v1") {
     *error = "replay format, schema, generator, fault, or expected outcome is unsupported";
     return std::nullopt;
   }
@@ -138,6 +142,7 @@ template <typename Integer>
   artifact.fixture = values[2];
   artifact.generator = apgar::gpu::PlanarGenerator::kBucketedFrontier;
   artifact.fault = apgar::gpu::KernelFaultInjection::kGoalPredecessorSelfCycle;
+  artifact.expected_invariant = std::string(values[12]);
   if (!ParseUnsigned(values[3], &artifact.fixture_checksum) ||
       !ParseUnsigned(values[6], &artifact.layer) ||
       !ParseUnsigned(values[7], &artifact.maximum_rounds) || artifact.maximum_rounds == 0 ||
@@ -254,12 +259,14 @@ int Replay(std::string_view artifact_path) {
                                             *backend);
   if (!std::holds_alternative<apgar::gpu::PlanarGpuFailure>(result) ||
       std::get<apgar::gpu::PlanarGpuFailure>(result).code !=
-          apgar::gpu::PlanarGpuFailureCode::kInternalInvariant) {
+          apgar::gpu::PlanarGpuFailureCode::kInternalInvariant ||
+      std::get<apgar::gpu::PlanarGpuFailure>(result).invariant_id != artifact->expected_invariant) {
     std::cerr << "expected GPU invariant failure was not reproduced\n";
     return 1;
   }
   const apgar::gpu::BackendMetadataResult metadata = backend->QueryMetadata();
-  std::cout << "reproduced=internal_invariant artifact_schema=1";
+  std::cout << "reproduced=internal_invariant invariant=" << artifact->expected_invariant
+            << " artifact_schema=1";
   if (std::holds_alternative<apgar::gpu::BackendMetadata>(metadata)) {
     const apgar::gpu::BackendMetadata& value = std::get<apgar::gpu::BackendMetadata>(metadata);
     std::cout << " backend=" << value.backend << " device=\"" << value.device_name << "\""
