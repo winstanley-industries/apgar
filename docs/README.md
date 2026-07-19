@@ -27,10 +27,19 @@ architecture explicitly.
 - `adr/ADR-009-m1-sparse-field-and-planar-reference-semantics.md`: accepted
   sparse active-region, directional-edge, telemetry, and planar CPU reference
   semantics for Phase 1.
+- `adr/ADR-010-phase2-planar-gpu-bakeoff.md`: accepted hermetic CUDA,
+  backend-validation, benchmark-evidence, and current planar dispatch decisions.
+- `../benchmarks/phase2_planar_dispatch_report.md`: reproducible Phase 2 CPU,
+  CUDA frontier, and CUDA sweep dispatch evidence.
 - `../schemas/board_ir/v1.md`: normalized M1 Board IR entities,
   canonicalization, fingerprinting, and deliberate schema limits.
 - `../schemas/compiled_board/v1.md`: versioned CompilerProfile, rule bucket,
   sparse directional field, telemetry, and CPU reference consumption contract.
+- `../schemas/device_compiled_board/v1.md`: versioned immutable GPU device view
+  and stable incoming-heading state indexing.
+- `../schemas/gpu_replay/v1.md`: checksummed GPU invariant replay contract.
+- `../schemas/benchmark/planar_bakeoff_v1.md`: Google Benchmark JSON and APGAR
+  domain-counter contract for Phase 2 dispatch evidence.
 
 ## Change policy
 

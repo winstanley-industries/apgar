@@ -1,6 +1,7 @@
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library", "cuda_test")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -10,6 +11,28 @@ APGAR_COPTS = [
     "-Wextra",
     "-Wpedantic",
 ]
+
+config_setting(
+    name = "asan_enabled",
+    flag_values = {"@llvm//config:asan": "True"},
+)
+
+config_setting(
+    name = "ubsan_enabled",
+    flag_values = {"@llvm//config:ubsan": "True"},
+)
+
+# The CUDA host/device boundary cannot currently be instrumented end-to-end by
+# the pinned LLVM sanitizer runtimes. Reject the combination at analysis time
+# instead of silently presenting a partially instrumented CUDA build as a
+# sanitizer result.
+CUDA_SANITIZER_COMPATIBILITY = select({
+    ":asan_enabled": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+}) + select({
+    ":ubsan_enabled": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+})
 
 cc_library(
     name = "utf8",
@@ -55,6 +78,19 @@ cc_library(
 )
 
 cc_library(
+    name = "planar_route",
+    srcs = ["src/routing/planar_route.cc"],
+    hdrs = ["include/apgar/routing/planar_route.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":geometry_compiler",
+    ],
+)
+
+cc_library(
     name = "cpu_astar",
     srcs = ["src/routing/cpu_astar.cc"],
     hdrs = ["include/apgar/routing/cpu_astar.h"],
@@ -65,7 +101,77 @@ cc_library(
         ":board_ir",
         ":exact_geometry",
         ":geometry_compiler",
+        ":planar_route",
     ],
+)
+
+cc_library(
+    name = "gpu_planar_router",
+    srcs = [
+        "src/gpu/device_board.cc",
+        "src/gpu/planar_router.cc",
+    ],
+    hdrs = ["include/apgar/gpu/planar_router.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":planar_route",
+    ],
+)
+
+cc_library(
+    name = "gpu_fault_injecting_backend",
+    srcs = ["src/gpu/fault_injecting_backend.cc"],
+    hdrs = ["include/apgar/gpu/fault_injecting_backend.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    deps = [":gpu_planar_router"],
+)
+
+cuda_library(
+    name = "cuda_planar_route_backend",
+    srcs = ["gpu/cuda/planar_router.cu"],
+    copts = ["-std=c++20"],
+    tags = ["manual"],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [":cuda_planar_route_backend_api"],
+)
+
+cc_library(
+    name = "cuda_planar_route_backend_api",
+    hdrs = ["include/apgar/gpu/cuda_backend.h"],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [":gpu_planar_router"],
+)
+
+cc_library(
+    name = "planar_benchmark_corpus",
+    srcs = ["src/benchmark/planar_corpus.cc"],
+    hdrs = ["include/apgar/benchmark/planar_corpus.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":kicad_fixture_adapter",
+        ":planar_route",
+    ],
+)
+
+cc_library(
+    name = "tool_runfiles",
+    srcs = ["src/tooling/runfiles.cc"],
+    hdrs = ["include/apgar/tooling/runfiles.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
 )
 
 cc_library(
@@ -93,6 +199,7 @@ cc_library(
         ":cpu_astar",
         ":exact_geometry",
         ":geometry_compiler",
+        ":gpu_planar_router",
         ":kicad_fixture_adapter",
     ],
 )
@@ -102,6 +209,85 @@ cc_binary(
     srcs = ["tools/apgar_smoke.cc"],
     copts = APGAR_COPTS,
     deps = [":apgar"],
+)
+
+cc_binary(
+    name = "gpu_replay",
+    srcs = ["tools/gpu_replay.cc"],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/gpu/goal_predecessor_self_cycle_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
+    deps = [
+        ":board_ir",
+        ":cuda_planar_route_backend",
+        ":gpu_fault_injecting_backend",
+        ":gpu_planar_router",
+        ":planar_benchmark_corpus",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "planar_benchmark",
+    srcs = ["tools/planar_benchmark.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/m1_exactness.kicad_pcb"],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
+    deps = [
+        ":board_ir",
+        ":cpu_astar",
+        ":cuda_planar_route_backend",
+        ":gpu_planar_router",
+        ":planar_benchmark_corpus",
+        ":tool_runfiles",
+        "@google_benchmark//:benchmark",
+    ],
+)
+
+cc_test(
+    name = "gpu_replay_test",
+    size = "small",
+    srcs = ["tools/gpu_replay.cc"],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/gpu/goal_predecessor_self_cycle_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
+    deps = [
+        ":board_ir",
+        ":cuda_planar_route_backend",
+        ":gpu_fault_injecting_backend",
+        ":gpu_planar_router",
+        ":planar_benchmark_corpus",
+        ":tool_runfiles",
+    ],
+)
+
+cuda_test(
+    name = "cuda_smoke_test",
+    size = "small",
+    srcs = ["gpu/cuda/smoke_test.cu"],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
 )
 
 cc_test(
@@ -154,6 +340,54 @@ cc_test(
 )
 
 cc_test(
+    name = "device_compiled_board_test",
+    size = "small",
+    srcs = [
+        "tests/gpu/device_board_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":geometry_compiler",
+        ":gpu_planar_router",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cuda_planar_route_test",
+    size = "small",
+    srcs = [
+        "tests/gpu/cuda_route_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/m1_exactness.kicad_pcb"],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
+    deps = [
+        ":board_ir",
+        ":cpu_astar",
+        ":cuda_planar_route_backend",
+        ":geometry_compiler",
+        ":gpu_fault_injecting_backend",
+        ":gpu_planar_router",
+        ":planar_benchmark_corpus",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "cpu_astar_test",
     size = "small",
     srcs = [
@@ -161,6 +395,7 @@ cc_test(
         "tests/support/board_builder.h",
         "tests/support/compiler_builder.h",
         "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
     ],
     copts = APGAR_COPTS,
     data = ["tests/fixtures/m1_exactness.kicad_pcb"],

@@ -40,6 +40,14 @@ bazel test --config=asan //...
 bazel test --config=ubsan //...
 ```
 
+The ASan and UBSan configurations instrument the pinned LLVM CPU toolchain.
+CUDA targets are explicitly incompatible with either sanitizer configuration:
+the pinned CUDA compiler and NVIDIA driver boundary cannot currently be
+instrumented end-to-end by those runtimes. Bazel therefore rejects commands
+that combine `--config=cuda` with `--config=asan` or `--config=ubsan`, rather
+than silently producing a partially instrumented result. Run the CPU sanitizer
+gates above and the CUDA differential/replay gates separately.
+
 When changing `MODULE.bazel`, update and inspect `MODULE.bazel.lock` with a
 successful build or `bazel mod deps`. In validation and CI, use
 `--lockfile_mode=error` to reject an out-of-date lockfile:
@@ -91,9 +99,49 @@ Bazel's local C++ and Apple C++ toolchain discovery is disabled so an
 incompatible registered toolchain fails resolution instead of silently falling
 back to host tools.
 
-CUDA is intentionally not part of this first foundation. It will be introduced
-as a separately pinned toolchain and execution platform so CPU-only development
-and CI do not depend on a local CUDA installation or GPU.
+CUDA is an opt-in Phase 2 execution platform. `--config=cuda` selects
+checksum-pinned CUDA Toolkit 13.0.2 redistributable components, a
+checksum-pinned GCC 15.2.0 host compiler and sysroot, and native plus PTX code
+for compute capability 12.0. The pinned libstdc++ and libgcc runtimes are linked
+statically into CUDA executables; neither CUDA nor any GCC compiler, headers,
+link inputs, or runtime library is read from the host. Host glibc and the NVIDIA
+kernel driver remain part of the declared Linux execution ABI.
+CUDA targets carry the `manual` and `requires-gpu` tags, so default `//...`
+builds remain CPU-only on Linux and macOS.
+
+Run the platform smoke test before any other CUDA target:
+
+```sh
+bazel test --config=cuda //:cuda_smoke_test
+```
+
+The smoke test reports backend/device/runtime metadata, rejects a dynamically
+loaded libstdc++ or libgcc, and compares a deterministic device result with a
+CPU oracle. CUDA execution currently
+requires a Linux x86-64 host and a driver capable of running the pinned toolkit
+and the configured compute capability; this does not change the supported
+hosts for default CPU-only builds.
+
+Phase 2 dispatch measurements use the pinned Google Benchmark 1.9.5 module,
+not a repository-local timing loop. Run the optimized harness with an explicit
+source commit and ask Google Benchmark to write its JSON report:
+
+```sh
+bazel run --config=cuda --config=benchmark //:planar_benchmark -- \
+  --apgar_commit=EXACT_COMMIT \
+  --benchmark_out=/tmp/apgar-planar-bakeoff.json \
+  --benchmark_out_format=json
+```
+
+The harness programmatically fixes 20 repetitions, a 0.02-second minimum
+measurement time, a 0.01-second Google Benchmark warm-up, wall-clock timing,
+and microsecond output. Each corpus CompiledBoard is uploaded once before
+timing; the measured GPU scope is execution, readback, reconstruction, and
+untrusted-result validation against that immutable prepared view. APGAR
+counters add differential semantics, work, rounds, kernel time, deterministic
+geometry fingerprints, and per-route owned device memory to Google Benchmark's
+JSON. `--benchmark_dry_run` is useful only for bring-up and does not produce
+publishable measurements.
 
 ## Continuous integration
 

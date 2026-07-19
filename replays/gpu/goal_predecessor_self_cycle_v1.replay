@@ -1,0 +1,14 @@
+format=apgar_gpu_invariant_replay
+schema_version=1
+fixture=tests/fixtures/m1_exactness.kicad_pcb
+fixture_checksum_fnv1a64=15781378684595989985
+generator=bucketed_frontier
+fault=goal_predecessor_self_cycle
+layer=0
+maximum_rounds=100000
+expected_board_content_hash=1860510029311497781
+expected_profile_fingerprint=8851933838860818274
+expected_device_view_fingerprint=2764614999745307367
+expected_failure=internal_invariant
+expected_invariant=gpu.predecessor.self_reference.v1
+checksum_fnv1a64=1840821882380434313
