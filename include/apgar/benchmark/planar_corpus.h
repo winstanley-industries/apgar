@@ -13,6 +13,7 @@
 namespace apgar::benchmark {
 
 inline constexpr std::uint32_t kPlanarBakeoffCorpusVersion = 1;
+inline constexpr std::uint32_t kPhase3CandidateCorpusVersion = 1;
 
 struct PlanarCorpusCase {
   std::string name;
@@ -33,6 +34,11 @@ using PlanarCorpusResult = std::variant<std::vector<PlanarCorpusCase>, std::stri
 // Builds the fixed Phase 2 planar corpus. The KiCad contents are supplied by
 // the caller so tests and benchmarks use Bazel runfiles rather than host paths.
 [[nodiscard]] PlanarCorpusResult BuildPlanarBakeoffCorpus(std::string_view kicad_fixture);
+
+// Extends the exact Phase 2 corpus with symmetric dual-corridor,
+// multi-channel/resource-bottleneck, and ban/penalty-driven alternative cases.
+// Existing cases retain their version-1 identities and ordering.
+[[nodiscard]] PlanarCorpusResult BuildPhase3CandidateCorpus(std::string_view kicad_fixture);
 
 }  // namespace apgar::benchmark
 
