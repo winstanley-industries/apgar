@@ -35,10 +35,10 @@ make the supported device build difficult to reproduce.
   experimental planar generators. Every result is reconstructed and validated
   on the host; neither generator is legality authority.
 - Current production dispatch remains CPU A*. On the Phase 2 corpus, CPU A*
-  has the lowest full-route median time in all eight cases. Sweep has the lowest
-  time of the two GPU prototypes in all eight cases and is the preferred GPU
-  research path. Frontier remains a useful correctness and contention stress
-  prototype.
+  has the lowest prepared-route median time in all eight cases. Sweep has the
+  lowest time of the two GPU prototypes in all eight cases and is the preferred
+  GPU research path. Frontier remains a useful correctness and contention
+  stress prototype.
 - Dispatch measurements use the pinned Google Benchmark 1.9.5 module. The
   published evidence is the aggregate-only Google Benchmark JSON artifact and
   its human-readable report; APGAR does not implement a parallel timing or
@@ -51,8 +51,8 @@ make the supported device build difficult to reproduce.
   NVIDIA kernel driver and GPU.
 - The benchmark result is deliberately negative: the current GPU prototypes do
   not justify dispatching these small and medium planar fields away from CPU A*.
-- Sweep is not promoted to a general speed winner. Candidate batching, reuse,
-  larger fields, and later candidate-store integration require new evidence.
+- Sweep is not promoted to a general speed winner. Candidate batching, larger
+  fields, and later candidate-store integration require new evidence.
 - Both CUDA generators must continue to match CPU reachability/failure
   semantics and optimal scalar cost, remain deterministic on the supported
   backend/device class, and pass hostile-result validation and replay tests.
@@ -62,7 +62,7 @@ make the supported device build difficult to reproduce.
 ## Evidence
 
 The decision is based on commit
-`9ff2f9143c78774218bdda4e9900b27823a25d5c`, corpus v1, an NVIDIA GeForce RTX
+`a2b73bdd256b2d4f7165ff3d1fe77d3c5ad0159d`, corpus v1, an NVIDIA GeForce RTX
 5080 (compute capability 12.0), and the fixed warm-up/repetition policy recorded
 in `benchmarks/phase2_planar_dispatch_report.md` and
-`benchmarks/results/phase2_planar_bakeoff_9ff2f91.json`.
+`benchmarks/results/phase2_planar_bakeoff_a2b73bd.json`.

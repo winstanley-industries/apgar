@@ -4,15 +4,15 @@
 
 Keep CPU A* as the default dispatcher for the current conservative planar
 fields. CUDA sweep is the better of the two GPU prototypes in all eight corpus
-cases, but CPU A* has the lowest full-route median in every case. CUDA frontier
+cases, but CPU A* has the lowest prepared-route median in every case. CUDA frontier
 remains useful as a deterministic correctness and contention-stress prototype.
 
 This is a correct negative performance result. It does not claim that a GPU
-cannot win on later, larger, reused, or batched workloads.
+cannot win on later, larger, or batched workloads.
 
 ## Reproduction identity
 
-- APGAR commit: `9ff2f9143c78774218bdda4e9900b27823a25d5c`
+- APGAR commit: `a2b73bdd256b2d4f7165ff3d1fe77d3c5ad0159d`
 - Corpus/schema: planar bakeoff v1
 - Host: Ubuntu 26.04 under WSL2, x86-64, kernel
   `6.18.33.2-microsoft-standard-WSL2`
@@ -37,14 +37,14 @@ The exact command was:
 
 ```sh
 bazel run --config=cuda --config=benchmark //:planar_benchmark -- \
-  --apgar_commit=9ff2f9143c78774218bdda4e9900b27823a25d5c \
-  --benchmark_out=/home/adam/code/apgar/benchmarks/results/phase2_planar_bakeoff_9ff2f91.json \
+  --apgar_commit=a2b73bdd256b2d4f7165ff3d1fe77d3c5ad0159d \
+  --benchmark_out=/home/adam/code/apgar/benchmarks/results/phase2_planar_bakeoff_a2b73bd.json \
   --benchmark_out_format=json \
   --benchmark_format=console
 ```
 
 The machine-readable result is
-`benchmarks/results/phase2_planar_bakeoff_9ff2f91.json`. It records all hardware,
+`benchmarks/results/phase2_planar_bakeoff_a2b73bd.json`. It records all hardware,
 backend, toolchain, corpus, and policy fields required by
 `schemas/benchmark/planar_bakeoff_v1.md`.
 
@@ -54,14 +54,17 @@ Google Benchmark owns iteration selection, warm-up, timing, repetitions, and
 aggregate statistics. Each forced generator/case uses real time in
 microseconds, a 0.02-second minimum measurement interval, a 0.01-second warm-up,
 and 20 repetitions. The artifact publishes mean, median, standard deviation,
-and coefficient of variation only. The timed scope is a complete route call,
-including CompiledBoard upload, kernel execution, reconstruction, and untrusted
+and coefficient of variation only. Each corpus CompiledBoard is flattened and
+uploaded once before timing. Frontier and sweep reuse that immutable prepared
+view; the timed GPU scope is execution, readback, reconstruction, and untrusted
 result validation.
 
 APGAR contributes domain counters, not an independent timing framework:
 reachability, failure class, optimal scalar cost, deterministic geometry hash,
-examined work, convergence rounds, kernel time, and peak APGAR-owned device
-bytes. Owned bytes exclude CUDA driver and allocator-pool overhead.
+examined work, convergence rounds, kernel time, and peak route-owned device
+bytes. Per-row owned bytes are that row's immutable view plus batch allocation;
+they exclude CUDA driver/allocator-pool overhead and unrelated corpus views
+resident in the benchmark harness.
 
 ## Corpus configuration
 
@@ -81,35 +84,36 @@ fingerprint for every case.
 
 ## Median results
 
-Full-route time and kernel time are milliseconds. Work is expanded CPU states
-or examined GPU state/edge work. VRAM is peak APGAR-owned device bytes.
+Prepared-route time and kernel time are milliseconds. Work is expanded CPU
+states or examined GPU state/edge work. VRAM is peak per-route owned device
+bytes as defined above.
 
-| Case | Generator | Full route ms | Kernel ms | Work | Rounds | VRAM bytes | Reach/cost |
+| Case | Generator | Prepared route ms | Kernel ms | Work | Rounds | VRAM bytes | Reach/cost |
 |---|---|---:|---:|---:|---:|---:|---:|
 | dense corridors | CPU A* | 0.014 | - | 20 | - | - | yes/140 |
-|  | CUDA frontier | 4.937 | 4.097 | 12,385 | 29 | 64,268 | yes/140 |
-|  | CUDA sweep | 1.428 | 0.617 | 6,640 | 4 | 62,424 | yes/140 |
+|  | CUDA frontier | 3.244 | 3.060 | 12,385 | 29 | 64,268 | yes/140 |
+|  | CUDA sweep | 0.710 | 0.534 | 6,640 | 4 | 62,420 | yes/140 |
 | sparse regions | CPU A* | 0.003 | - | 14 | - | - | yes/149 |
-|  | CUDA frontier | 3.419 | 2.679 | 39 | 20 | 3,036 | yes/149 |
-|  | CUDA sweep | 1.629 | 0.897 | 120 | 6 | 2,952 | yes/149 |
+|  | CUDA frontier | 2.238 | 2.074 | 39 | 20 | 3,036 | yes/149 |
+|  | CUDA sweep | 0.910 | 0.743 | 120 | 6 | 2,948 | yes/149 |
 | fragmented runs | CPU A* | 0.003 | - | 16 | - | - | yes/454 |
-|  | CUDA frontier | 2.544 | 1.809 | 39 | 13 | 3,196 | yes/454 |
-|  | CUDA sweep | 2.268 | 1.574 | 220 | 11 | 3,112 | yes/454 |
-| high-turn maze | CPU A* | 0.011 | - | 62 | - | - | yes/1,148 |
-|  | CUDA frontier | 8.783 | 8.081 | 135 | 61 | 9,052 | yes/1,148 |
-|  | CUDA sweep | 2.304 | 1.538 | 748 | 11 | 8,776 | yes/1,148 |
-| cross-tile edges | CPU A* | 0.007 | - | 10 | - | - | yes/50 |
-|  | CUDA frontier | 2.691 | 1.935 | 1,117 | 14 | 9,908 | yes/50 |
-|  | CUDA sweep | 1.424 | 0.655 | 736 | 4 | 9,648 | yes/50 |
+|  | CUDA frontier | 1.578 | 1.394 | 39 | 13 | 3,196 | yes/454 |
+|  | CUDA sweep | 1.422 | 1.257 | 220 | 11 | 3,108 | yes/454 |
+| high-turn maze | CPU A* | 0.012 | - | 62 | - | - | yes/1,148 |
+|  | CUDA frontier | 6.410 | 6.237 | 135 | 61 | 9,052 | yes/1,148 |
+|  | CUDA sweep | 1.421 | 1.255 | 748 | 11 | 8,772 | yes/1,148 |
+| cross-tile edges | CPU A* | 0.008 | - | 10 | - | - | yes/50 |
+|  | CUDA frontier | 1.693 | 1.531 | 1,117 | 14 | 9,908 | yes/50 |
+|  | CUDA sweep | 0.738 | 0.561 | 736 | 4 | 9,644 | yes/50 |
 | negative coordinates | CPU A* | 0.007 | - | 10 | - | - | yes/370 |
-|  | CUDA frontier | 3.083 | 2.291 | 3,340 | 16 | 21,596 | yes/370 |
-|  | CUDA sweep | 1.452 | 0.673 | 1,936 | 4 | 21,000 | yes/370 |
+|  | CUDA frontier | 1.899 | 1.733 | 3,340 | 16 | 21,596 | yes/370 |
+|  | CUDA sweep | 0.689 | 0.525 | 1,936 | 4 | 20,996 | yes/370 |
 | disconnected fields | CPU A* | 0.001 | - | 9 | - | - | no/disconnected |
-|  | CUDA frontier | 1.690 | 0.921 | 15 | 6 | 2,720 | no/disconnected |
-|  | CUDA sweep | 1.284 | 0.537 | 48 | 3 | 2,644 | no/disconnected |
-| KiCad fixture | CPU A* | 0.371 | - | 758 | - | - | yes/37,168 |
-|  | CUDA frontier | 7.014 | 5.954 | 30,752 | 43 | 188,692 | yes/37,168 |
-|  | CUDA sweep | 1.873 | 0.898 | 24,816 | 6 | 183,120 | yes/37,168 |
+|  | CUDA frontier | 0.905 | 0.733 | 15 | 6 | 2,720 | no/disconnected |
+|  | CUDA sweep | 0.588 | 0.430 | 48 | 3 | 2,640 | no/disconnected |
+| KiCad fixture | CPU A* | 0.396 | - | 758 | - | - | yes/37,168 |
+|  | CUDA frontier | 4.561 | 4.343 | 30,752 | 43 | 188,692 | yes/37,168 |
+|  | CUDA sweep | 0.980 | 0.750 | 24,816 | 6 | 183,116 | yes/37,168 |
 
 All 24 forced generator/case combinations reported deterministic results.
 Both CUDA generators matched CPU reachability/failure semantics and optimal
@@ -117,10 +121,11 @@ scalar cost in every case. No benchmark failures occurred. The disconnected
 case consistently reported canonical failure code 3 rather than resource or
 round-budget exhaustion.
 
-On the largest current fixture, CPU A* is about 5.0 times faster than sweep and
-18.9 times faster than frontier by full-route median; sweep is about 3.7 times
-faster than frontier. Upload and host validation dominate enough of these
-small-to-medium workloads that kernel-only timing is not a valid dispatch
+On the largest current fixture, CPU A* is about 2.5 times faster than sweep and
+11.5 times faster than frontier by prepared-route median; sweep is about 4.7
+times faster than frontier. Even after upload is removed from the timed scope,
+kernel launch/execution, readback, reconstruction, and validation leave both
+GPU prototypes slower than CPU A*. Kernel-only timing is not a valid dispatch
 metric.
 
 ## Scope and dispatch conclusion
