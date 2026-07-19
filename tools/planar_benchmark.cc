@@ -290,7 +290,8 @@ void Configure(benchmark::Benchmark* registered) {
       ->MinTime(kBenchmarkMinimumSeconds)
       ->MinWarmUpTime(kBenchmarkWarmupSeconds)
       ->Repetitions(kBenchmarkRepetitions)
-      ->DisplayAggregatesOnly(true);
+      ->DisplayAggregatesOnly(true)
+      ->ReportAggregatesOnly(true);
 }
 
 [[nodiscard]] std::optional<std::string> ExtractCommit(int* argc, char** argv) {
@@ -359,6 +360,22 @@ void AddContext(const std::string& commit, const BenchmarkContext& context) {
   benchmark::AddCustomContext("apgar_cuda_toolkit", "13.0.2 checksum-pinned redistributables");
   benchmark::AddCustomContext("apgar_cuda_host_toolchain",
                               "GCC 15.2.0 checksum-pinned distribution/sysroot");
+  for (const apgar::benchmark::PlanarCorpusCase& test_case : context.corpus) {
+    const apgar::geometry_compiler::CompilerProfile& profile = test_case.compiled_board.profile();
+    benchmark::AddCustomContext(
+        "apgar_case_" + test_case.name,
+        "family=" + test_case.family + ";board_hash=" +
+            std::to_string(test_case.board.content_hash()) + ";profile_fingerprint=" +
+            std::to_string(test_case.compiled_board.compiler_profile_fingerprint()) + ";nodes=" +
+            std::to_string(test_case.compiled_board.telemetry().represented_nodes) + ";edges=" +
+            std::to_string(test_case.compiled_board.telemetry().legal_directional_edges) +
+            ";step=" + std::to_string(profile.lattice_step) +
+            ";tile=" + std::to_string(profile.tile_width_nodes) + "x" +
+            std::to_string(profile.tile_height_nodes) +
+            ";heading_mask=" + std::to_string(profile.heading_mask) +
+            ";costs=" + std::to_string(profile.costs.orthogonal_step) + "," +
+            std::to_string(profile.costs.diagonal_step) + "," + std::to_string(profile.costs.bend));
+  }
 }
 
 void RegisterBenchmarks(BenchmarkContext* context) {
