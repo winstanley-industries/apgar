@@ -59,7 +59,8 @@ Prepared and cold full-pipeline rows use the production batch candidate
 adapter. It builds one bounded sorted query-ID membership index and then
 preserves every per-item immutable seal, query/policy attribution, batch,
 generator, backend, device, route-association, and authenticated-CUDA check.
-The index's eight-byte logical payload per validated batch item is included in
+The index's eight-byte logical payload per validated batch item overlaps the
+completed draft vector and is included in that phase of
 `peak_deterministic_host_bytes`; caller-owned request views and allocator
 bookkeeping remain outside that logical-payload metric.
 The legacy one-item adapter retains its standalone membership scan; canonical

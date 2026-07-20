@@ -431,6 +431,26 @@ py_binary(
     python_version = "3.13",
 )
 
+py_binary(
+    name = "phase3_followup_evidence_validator",
+    srcs = ["tools/validate_phase3_followup_evidence.py"],
+    legacy_create_init = 0,
+    main = "tools/validate_phase3_followup_evidence.py",
+    python_version = "3.13",
+)
+
+py_test(
+    name = "phase3_followup_evidence_corruption_test",
+    size = "small",
+    srcs = [
+        "tools/validate_phase3_followup_evidence.py",
+        "tools/validate_phase3_followup_evidence_test.py",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase3_followup_evidence_test.py",
+    python_version = "3.13",
+)
+
 py_test(
     name = "phase3_evidence_test",
     size = "small",

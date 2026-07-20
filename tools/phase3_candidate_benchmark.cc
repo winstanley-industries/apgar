@@ -1003,7 +1003,8 @@ void PublishPairwiseDiversity(std::span<const apgar::candidates::StoredCandidate
   const std::uint64_t batch_conversion_phase =
       SaturatingAdd(route_phase, gpu_batch_adapter_index_bytes);
   const std::uint64_t draft_to_store_phase = SaturatingAdd(
-      SaturatingAdd(route_phase, draft_payload_bytes), observation.rejection_logical_bytes);
+      SaturatingAdd(SaturatingAdd(route_phase, gpu_batch_adapter_index_bytes), draft_payload_bytes),
+      observation.rejection_logical_bytes);
   const std::uint64_t stored_phase =
       SaturatingAdd(SaturatingAdd(route_phase, observation.accepted_logical_bytes),
                     observation.rejection_logical_bytes);
