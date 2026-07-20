@@ -1,3 +1,5 @@
+try-import %workspace%/.bazelrc.user
+
 common --announce_rc
 common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 common --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1
@@ -13,6 +15,8 @@ build:release --compilation_mode=opt
 
 # Published measurements use optimized APGAR and Google Benchmark binaries.
 build:benchmark --compilation_mode=opt
+build:benchmark --stamp
+build:benchmark --workspace_status_command=./tools/workspace_status.sh
 
 build:asan --@llvm//config:asan=True
 
@@ -31,5 +35,3 @@ build:cuda --extra_toolchains=@apgar_cuda_gcc15//:cc_toolchain
 build:cuda --linkopt=-static-libstdc++
 build:cuda --linkopt=-static-libgcc
 test:cuda --test_output=all
-
-try-import %workspace%/.bazelrc.user

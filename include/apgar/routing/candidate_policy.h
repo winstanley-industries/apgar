@@ -45,6 +45,12 @@ struct ResourcePenalty {
   friend auto operator<=>(const ResourcePenalty&, const ResourcePenalty&) = default;
 };
 
+// DeviceCandidateBatch host-memory schema v1 reserves 40 bytes of
+// normalization scratch per submitted resource entry. Keep layout growth from
+// silently invalidating that deterministic upper bound.
+static_assert(sizeof(EdgeResourceKey) <= 40);
+static_assert(sizeof(ResourcePenalty) <= 40);
+
 struct CandidateGenerationPolicy {
   std::uint32_t schema_version = kCandidateGenerationPolicySchemaVersion;
   CandidateObjective objective = CandidateObjective::kBaseScalarCost;
@@ -120,8 +126,16 @@ using CandidatePolicyBatchResult =
 [[nodiscard]] std::uint64_t FingerprintRoutingProfile(
     const board_ir::RoutingProfile& profile) noexcept;
 
+// Public policy containers are untrusted until this O(1) shape check passes.
+// Callers that own a copy, hash, sort, or walk policy resources must perform
+// this check first. Normalization performs the check internally before making
+// its canonical owned copy.
+[[nodiscard]] bool CandidateGenerationPolicyShapeIsWithinV1Bounds(
+    const CandidateGenerationPolicy& policy) noexcept;
+
 [[nodiscard]] CandidatePolicyResult NormalizeCandidateGenerationPolicy(
-    const geometry_compiler::CompiledBoard& board, CandidateGenerationPolicy policy);
+    const geometry_compiler::CompiledBoard& board,
+    const CandidateGenerationPolicy& submitted_policy);
 
 [[nodiscard]] CandidatePolicyBatchResult BuildDeterministicAlternativePolicies(
     const geometry_compiler::CompiledBoard& board, CandidateGenerationPolicy base_policy,

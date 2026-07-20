@@ -462,6 +462,7 @@ public:
 - **GEN-003** Every candidate MUST include provenance sufficient to reproduce it.
 - **GEN-004** Generators SHOULD support banned or penalized resource sets to produce diverse alternatives.
 - **GEN-005** Generators MUST NOT mutate global resource usage while searching.
+- **GEN-006** Generator identity and backend provenance MUST be derived at a trusted producer-adapter boundary, not accepted from caller-selected metadata. A CPU adapter MUST require opaque evidence sealed by the actual CPU A* result path and bound to its exact associations, policy, cost, and geometry before stamping CPU provenance; deliberately malformed-route resealing is restricted to a source-private Bazel `testonly` dependency. A GPU candidate adapter MUST require immutable opaque host-validation evidence bound to the batch, query, policy, immutable device view, and reconstructed route, plus authentication that the prepared view was produced by the exact final supported GPU-backend type, before it can stamp GPU provenance. The authentication decision MUST live in an always-linked core implementation; an optional backend library MUST NOT receive an otherwise-undefined public friend or seal-minting hook. Generic backends and wrappers remain ineligible even when they report GPU-looking metadata or forward work to a real GPU. Public result fields alone are not such evidence.
 
 ### 12.2 Heading-aware sweep router
 
@@ -562,6 +563,15 @@ Candidate count is not a useful metric without diversity. APGAR maintains exact 
 - **CAN-001** Candidate stores MUST enforce per-net memory budgets.
 - **CAN-002** Pruning MUST preserve candidates currently selected by retained world states.
 - **CAN-003** A candidate rejected by exact DRC MUST retain a structured failure record to improve later generation.
+- **CAN-004** Candidates produced concurrently for one deterministic invocation
+  MUST cross one explicit stable admission transaction boundary. Within that
+  transaction, insertion, diagnostics, ranking, deduplication, and pruning MUST
+  be independent of worker completion order. Separate store calls are separate
+  ordered mutations: their linearization order is part of the invocation input,
+  so bounded retention is not required to be commutative across calls. A caller
+  requiring schedule-independent publication MUST collect the outputs and use
+  one batch; it MUST NOT race individual admissions and call that one
+  deterministic invocation.
 
 ## 14. Global Allocator
 
@@ -805,6 +815,11 @@ public:
 - Jobs are cancelled at bounded batch boundaries; long kernels require split launch design.
 - A failed device job never partially commits board geometry.
 - CPU fallback may continue from persistent candidates and exact state when semantics match.
+- Concurrent candidate workers publish one invocation through the stable batch
+  boundary required by CAN-004. The store serializes distinct transactions and
+  exposes linearizable snapshots; mutex acquisition order between distinct
+  transactions is semantic ordering, not an implicit scheduler-independent
+  merge.
 
 ## 24. Security and Robustness
 
@@ -954,6 +969,12 @@ OrthoRoute's documented full-lattice estimates illustrate why APGAR should avoid
 
 - Architecture decisions are recorded as ADRs with status, rationale, alternatives, and consequences.
 - Every performance claim includes a corpus, configuration, hardware, and exact commit ID.
+- A published benchmark source identity is a reproducibility binding under the
+  canonical checked-in Bazel invocation on a trusted runner, not a
+  cryptographic attestation against an operator who controls the Bazel command,
+  executable search path, workspace-status command, or repository metadata.
+  Such overrides define a different, untrusted build and require independent CI
+  or build-provenance attestation before publication.
 - Every new GPU optimization requires differential tests against a reference path.
 - Every serialized schema change has compatibility tests.
 - Every new route-quality objective includes an explainable metric and regression visualization.

@@ -18,6 +18,7 @@ evidence does not justify GPU promotion.
 | Field | Recorded value |
 | --- | --- |
 | Source commit | `eee37945ba005e535c6dde549e083ffca7cd249d` |
+| Evidence manifest | `benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json` |
 | Machine result | `benchmarks/results/phase3_candidate_bakeoff_eee3794.json` |
 | Result SHA-256 | `2e8e4beff7b1e6f281f5b170e9f7253403925a013e95a620f888f8395f0a6462` |
 | Result schema | `phase3_candidate_bakeoff_v1` |
@@ -27,6 +28,11 @@ evidence does not justify GPU promotion.
 | Repetitions | 20; minimum 20 ms per repeat; 10 ms warm-up |
 | Reported time | median real time; all rows use microseconds |
 | Parallel CPU workers | 32 logical workers maximum |
+
+The evidence manifest binds the exact bytes of the machine result, this report,
+and ADR-013 with independent SHA-256 digests. The evidence validator verifies
+those digests before recomputing the published correctness and dispatch
+summaries.
 
 The exact reproduction command was:
 

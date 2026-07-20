@@ -12,6 +12,7 @@
 
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry_compiler/compiled_board.h"
+#include "apgar/gpu/planar_router.h"
 #include "apgar/routing/candidate_policy.h"
 #include "apgar/routing/cpu_astar.h"
 #include "apgar/text/utf8.h"
@@ -49,11 +50,6 @@ static_assert(std::is_const_v<
   return std::get<CandidateRejection>(result);
 }
 
-[[nodiscard]] CandidateProvenance CpuProvenance(const routing::CandidateGenerationPolicy& policy,
-                                                std::uint64_t query_identity = 1) {
-  return test_support::CpuCandidateProvenance(policy, 17, query_identity);
-}
-
 [[nodiscard]] GeneratedRouteCandidate DraftFromSegments(const BoardSnapshot& board,
                                                         const CompiledBoard& compiled,
                                                         const CpuRouteRequest& request,
@@ -61,12 +57,26 @@ static_assert(std::is_const_v<
                                                         std::uint64_t reported_cost,
                                                         std::uint64_t query_identity = 1) {
   const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
-  const CandidateDraftBuildResult result = BuildGeneratedCandidateFromPlanarRoute(
-      board, compiled, request, policy, AssociationsFor(board, compiled), policy.identity,
-      reported_cost, segments, CpuProvenance(policy.policy, query_identity));
+  const CandidateAssociations associations = AssociationsFor(board, compiled);
+  routing::CpuRoute route{
+      .source_board_content_hash = associations.board_content_hash,
+      .compiler_profile_fingerprint = associations.compiler_profile_fingerprint,
+      .compiler_version = associations.geometry_compiler_version,
+      .rule_bucket_identity = associations.rule_bucket_identity,
+      .candidate_policy_identity = policy.identity,
+      .total_cost = reported_cost,
+      .lattice_path = {},
+      .segments = std::vector<LayerSegment>(segments.begin(), segments.end()),
+      .telemetry = {},
+      .producer_evidence = {},
+  };
+  test_support::CpuRouteFaultDecorator::Reseal(route);
+  const CandidateDraftBuildResult result = BuildGeneratedCandidateFromCpuRoute(
+      board, compiled, request, policy, route,
+      CandidateSchedulingIdentity{.batch_identity = 17, .query_identity = query_identity});
   EXPECT_TRUE(std::holds_alternative<GeneratedRouteCandidate>(result))
-      << (std::holds_alternative<CandidateBuildError>(result)
-              ? std::get<CandidateBuildError>(result).detail
+      << (std::holds_alternative<CandidateRejection>(result)
+              ? std::get<CandidateRejection>(result).detail
               : std::string{});
   if (!std::holds_alternative<GeneratedRouteCandidate>(result)) {
     std::abort();
@@ -184,6 +194,7 @@ TEST(RouteCandidateTest, CanonicalV1IdentitySignaturesChecksumAndBytesHaveGolden
       .resource_signature = {},
       .payload_checksum = 0,
       .logical_bytes = 0,
+      .producer_evidence = {},
   };
   candidate.id = DeriveCandidateId(candidate.net, candidate.associations, candidate.policy_identity,
                                    candidate.provenance);
@@ -292,6 +303,7 @@ TEST(RouteCandidateTest, EntityRefZeroIsAcceptedAndRetainedInRejections) {
   draft.payload_checksum = 0;
   std::get<ExactLinePrimitive>(draft.geometry.front()).centerline.start.x =
       board_ir::kMaxAbsDbCoord + 1;
+  const std::uint64_t expected_rejection_checksum = ComputeCandidatePayloadChecksum(draft);
   const CandidateAdmissionResult rejected = AdmitRouteCandidate(
       CandidateAdmissionContext{.board = board, .compiled_board = compiled, .request = request},
       std::move(draft));
@@ -299,7 +311,7 @@ TEST(RouteCandidateTest, EntityRefZeroIsAcceptedAndRetainedInRejections) {
   ASSERT_TRUE(rejection.net.has_value());
   EXPECT_EQ(*rejection.net, kZeroNet);
   ASSERT_TRUE(rejection.candidate_payload_checksum.has_value());
-  EXPECT_EQ(*rejection.candidate_payload_checksum, 0U);
+  EXPECT_EQ(*rejection.candidate_payload_checksum, expected_rejection_checksum);
 }
 
 TEST(RouteCandidateTest, NorthWestResourcesCoalesceInAscendingCanonicalKeyOrder) {
@@ -369,7 +381,7 @@ TEST(RouteCandidateTest, BoundaryEqualityPassesAndOneDbuClearanceViolationFails)
   EXPECT_EQ(rejection.code, CandidateRejectionCode::kExactValidation);
   EXPECT_EQ(rejection.invariant_id, "candidate.geometry.swept_clearance.v1");
   EXPECT_EQ(rejection.policy_identity, expected_policy_identity);
-  EXPECT_TRUE(rejection.obstacle.has_value());
+  EXPECT_TRUE(rejection.conflicting_entity.has_value());
 }
 
 TEST(RouteCandidateTest, UnintendedTerminalSweptEqualityAndOneDbuPerturbationAreExact) {
@@ -415,6 +427,7 @@ TEST(RouteCandidateTest, UnintendedTerminalSweptEqualityAndOneDbuPerturbationAre
       std::move(equality));
   const CandidateRejection& rejection = Rejection(result);
   EXPECT_EQ(rejection.invariant_id, "candidate.terminals.unintended.v1");
+  EXPECT_EQ(rejection.conflicting_entity, kOtherTerminal);
 }
 
 TEST(RouteCandidateTest, RejectionDiagnosticTruncationPreservesUtf8Boundaries) {
@@ -645,8 +658,10 @@ TEST(RouteCandidateTest, RepeatedVerticesAndNonconsecutiveCrossingsFailExactAdmi
       ExactLinePrimitive{.layer = 0,
                          .centerline = {.start = {.x = 100, .y = 20}, .end = {.x = 100, .y = 0}}},
   };
+  GeneratedRouteCandidate crossing_for_budget = crossing;
   const CandidateAdmissionResult exhausted =
-      AdmitRouteCandidateWithReducedSelfClearanceBudgetForTesting(context, crossing, 0);
+      AdmitRouteCandidateWithReducedSelfClearanceBudgetForTesting(
+          context, std::move(crossing_for_budget), 0);
   const CandidateRejection& budget_rejection = Rejection(exhausted);
   EXPECT_EQ(budget_rejection.code, CandidateRejectionCode::kBudgetExhausted);
   EXPECT_EQ(budget_rejection.invariant_id, "candidate.geometry.self_clearance_pair_budget.v1");
@@ -711,6 +726,338 @@ TEST(RouteCandidateTest, IntrinsicBaseCostIgnoresRequestLocalPolicySurcharges) {
       candidate)));
 }
 
+TEST(RouteCandidateTest, CpuBuilderDerivesCpuOnlyProvenanceFromTypedEvidence) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
+  const routing::CpuRoute route = test_support::CpuRouteForCandidate(board, compiled, request);
+
+  const CandidateDraftBuildResult result = BuildGeneratedCandidateFromCpuRoute(
+      board, compiled, request, policy, route,
+      CandidateSchedulingIdentity{.batch_identity = 91, .query_identity = 93});
+  ASSERT_TRUE(std::holds_alternative<GeneratedRouteCandidate>(result));
+  const CandidateProvenance& provenance = std::get<GeneratedRouteCandidate>(result).provenance;
+  EXPECT_EQ(provenance.generator, CandidateGeneratorKind::kCpuAStar);
+  EXPECT_EQ(provenance.backend, CandidateBackendKind::kCpu);
+  EXPECT_EQ(provenance.supported_device_class, "cpu-reference-v1");
+  EXPECT_EQ(provenance.batch_identity, 91U);
+  EXPECT_EQ(provenance.query_identity, 93U);
+
+  const CandidateDraftBuildResult invalid_scheduling = BuildGeneratedCandidateFromCpuRoute(
+      board, compiled, request, policy, route,
+      CandidateSchedulingIdentity{.batch_identity = 0, .query_identity = 93});
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(invalid_scheduling));
+  const CandidateRejection& rejection = std::get<CandidateRejection>(invalid_scheduling);
+  EXPECT_EQ(rejection.invariant_id, "candidate.builder.scheduling_identity.v1");
+  EXPECT_EQ(rejection.provenance.generator, CandidateGeneratorKind::kCpuAStar);
+  EXPECT_EQ(rejection.provenance.backend, CandidateBackendKind::kCpu);
+
+  routing::CpuRoute caller_fabricated = route;
+  caller_fabricated.producer_evidence = {};
+  const CandidateDraftBuildResult unauthenticated = BuildGeneratedCandidateFromCpuRoute(
+      board, compiled, request, policy, caller_fabricated,
+      CandidateSchedulingIdentity{.batch_identity = 91, .query_identity = 93});
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(unauthenticated));
+  EXPECT_EQ(std::get<CandidateRejection>(unauthenticated).invariant_id,
+            "candidate.builder.cpu_producer_authentication.v1");
+
+  routing::CpuRoute stale_route = route;
+  ++stale_route.source_board_content_hash;
+  test_support::CpuRouteFaultDecorator::Reseal(stale_route);
+  const CandidateDraftBuildResult stale = BuildGeneratedCandidateFromCpuRoute(
+      board, compiled, request, policy, stale_route,
+      CandidateSchedulingIdentity{.batch_identity = 91, .query_identity = 93});
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(stale));
+  const CandidateRejection& stale_rejection = std::get<CandidateRejection>(stale);
+  EXPECT_EQ(stale_rejection.invariant_id, "candidate.builder.planar_route_association.v1");
+  EXPECT_EQ(stale_rejection.associations.board_content_hash, stale_route.source_board_content_hash);
+  EXPECT_TRUE(stale_rejection.candidate_id.has_value());
+  EXPECT_TRUE(stale_rejection.candidate_payload_checksum.has_value());
+}
+
+TEST(RouteCandidateTest, AdmissionRejectsCpuPayloadRelabeledAsCudaProvenance) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  GeneratedRouteCandidate forged = CandidateDraft(board, compiled, request);
+  forged.provenance.generator = CandidateGeneratorKind::kCudaSweep;
+  forged.provenance.backend = CandidateBackendKind::kCuda;
+  forged.provenance.supported_device_class = "cuda-cc-12.0";
+  forged.id =
+      DeriveCandidateId(forged.net, forged.associations, forged.policy_identity, forged.provenance);
+  ASSERT_FALSE(FinalizeGeneratedCandidateDraft(forged).has_value());
+
+  const CandidateAdmissionResult result = AdmitRouteCandidate(
+      CandidateAdmissionContext{.board = board, .compiled_board = compiled, .request = request},
+      std::move(forged));
+
+  const CandidateRejection& rejection = Rejection(result);
+  EXPECT_EQ(rejection.code, CandidateRejectionCode::kAssociationMismatch);
+  EXPECT_EQ(rejection.invariant_id, "candidate.provenance.producer_authentication.v1");
+  EXPECT_EQ(rejection.provenance.generator, CandidateGeneratorKind::kCudaSweep);
+  EXPECT_EQ(rejection.provenance.backend, CandidateBackendKind::kCuda);
+}
+
+TEST(RouteCandidateTest, RejectionChecksumIsIndependentlyRecomputedForBoundedPayload) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  GeneratedRouteCandidate corrupt = CandidateDraft(board, compiled, request);
+  ++corrupt.metrics.scalar_policy_cost;
+  corrupt.payload_checksum = 0xfeedU;
+  const std::uint64_t expected_checksum = ComputeCandidatePayloadChecksum(corrupt);
+  ASSERT_NE(expected_checksum, corrupt.payload_checksum);
+
+  const CandidateAdmissionResult result = AdmitRouteCandidate(
+      CandidateAdmissionContext{.board = board, .compiled_board = compiled, .request = request},
+      std::move(corrupt));
+
+  const CandidateRejection& rejection = Rejection(result);
+  EXPECT_EQ(rejection.invariant_id, "candidate.metrics.scalar_cost.v1");
+  EXPECT_EQ(rejection.candidate_payload_checksum, expected_checksum);
+  EXPECT_NE(rejection.candidate_payload_checksum, 0xfeedU);
+}
+
+TEST(RouteCandidateTest, CandidateShapePreflightRejectsBulkBeforeChecksumming) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  const CandidateAdmissionContext context{
+      .board = board, .compiled_board = compiled, .request = request};
+
+  GeneratedRouteCandidate geometry = CandidateDraft(board, compiled, request);
+  geometry.geometry.resize(kMaximumCandidatePrimitives + 1U);
+  geometry.payload_checksum = 0x1111U;
+  const CandidateAdmissionResult geometry_result =
+      AdmitRouteCandidate(context, std::move(geometry));
+  const CandidateRejection& geometry_rejection = Rejection(geometry_result);
+  EXPECT_EQ(geometry_rejection.invariant_id, "candidate.geometry.primitive_count.v1");
+  EXPECT_FALSE(geometry_rejection.candidate_payload_checksum.has_value());
+
+  GeneratedRouteCandidate resources = CandidateDraft(board, compiled, request);
+  resources.resources.resize(kMaximumCandidateResourceSpans + 1U);
+  resources.payload_checksum = 0x2222U;
+  const CandidateAdmissionResult resource_result =
+      AdmitRouteCandidate(context, std::move(resources));
+  const CandidateRejection& resource_rejection = Rejection(resource_result);
+  EXPECT_EQ(resource_rejection.invariant_id, "candidate.resources.span_count.v1");
+  EXPECT_FALSE(resource_rejection.candidate_payload_checksum.has_value());
+
+  GeneratedRouteCandidate device_class = CandidateDraft(board, compiled, request);
+  device_class.provenance.supported_device_class.assign(kMaximumCandidateDiagnosticBytes + 1U, 'd');
+  device_class.payload_checksum = 0x3333U;
+  const CandidateAdmissionResult device_result =
+      AdmitRouteCandidate(context, std::move(device_class));
+  const CandidateRejection& device_rejection = Rejection(device_result);
+  EXPECT_EQ(device_rejection.invariant_id, "candidate.provenance.device_class_bytes.v1");
+  EXPECT_FALSE(device_rejection.candidate_payload_checksum.has_value());
+  EXPECT_EQ(device_rejection.provenance.supported_device_class, "invalid-device-class");
+}
+
+TEST(RouteCandidateTest, ExpandedResourceMaterializationHasDeterministicSchemaBound) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  GeneratedRouteCandidate generated = CandidateDraft(board, compiled, request);
+  const std::uint64_t expanded_edges =
+      generated.metrics.orthogonal_step_count + generated.metrics.diagonal_step_count;
+  ASSERT_GT(expanded_edges, 0U);
+  const std::uint64_t reduced_budget = expanded_edges - 1U;
+
+  const CandidateAdmissionResult result =
+      AdmitRouteCandidateWithReducedResourceEdgeBudgetForTesting(
+          CandidateAdmissionContext{.board = board, .compiled_board = compiled, .request = request},
+          std::move(generated), reduced_budget);
+
+  const CandidateRejection& rejection = Rejection(result);
+  EXPECT_EQ(rejection.stage, CandidateLifecycleStage::kResourceAccounted);
+  EXPECT_EQ(rejection.code, CandidateRejectionCode::kBudgetExhausted);
+  EXPECT_EQ(rejection.invariant_id, "candidate.resources.expanded_edge_budget.v1");
+  EXPECT_EQ(rejection.expected_value, reduced_budget);
+  EXPECT_EQ(rejection.actual_value, expanded_edges);
+}
+
+TEST(RouteCandidateTest, OversizedPolicyBulkIsRejectedBeforeBuilderOrAdmissionChecksumming) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  routing::NormalizedCandidateGenerationPolicy forged_policy = NormalizePolicy(compiled, request);
+  const routing::CpuRoute route = test_support::CpuRouteForCandidate(board, compiled, request);
+  forged_policy.policy.banned_resources.resize(routing::kMaximumPolicyResourceEntries + 1U);
+  ASSERT_FALSE(routing::CandidateGenerationPolicyShapeIsWithinV1Bounds(forged_policy.policy));
+
+  const CandidateDraftBuildResult built = BuildGeneratedCandidateFromCpuRoute(
+      board, compiled, request, forged_policy, route,
+      CandidateSchedulingIdentity{.batch_identity = 131, .query_identity = 137});
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(built));
+  const CandidateRejection& builder_rejection = std::get<CandidateRejection>(built);
+  EXPECT_EQ(builder_rejection.invariant_id, "candidate.policy.resource_entry_count.v1");
+  EXPECT_EQ(builder_rejection.expected_value, routing::kMaximumPolicyResourceEntries);
+  EXPECT_EQ(builder_rejection.actual_value, routing::kMaximumPolicyResourceEntries + 1U);
+  EXPECT_FALSE(builder_rejection.candidate_payload_checksum.has_value());
+
+  forged_policy.policy.banned_resources.clear();
+  forged_policy.policy.banned_resources.shrink_to_fit();
+  GeneratedRouteCandidate generated = CandidateDraft(board, compiled, request);
+  generated.policy.resource_penalties.resize(routing::kMaximumPolicyResourceEntries + 1U);
+  generated.payload_checksum = 0xfeedU;
+  const CandidateAdmissionResult admitted = AdmitRouteCandidate(
+      CandidateAdmissionContext{.board = board, .compiled_board = compiled, .request = request},
+      std::move(generated));
+  const CandidateRejection& admission_rejection = Rejection(admitted);
+  EXPECT_EQ(admission_rejection.invariant_id, "candidate.policy.resource_entry_count.v1");
+  EXPECT_EQ(admission_rejection.expected_value, routing::kMaximumPolicyResourceEntries);
+  EXPECT_EQ(admission_rejection.actual_value, routing::kMaximumPolicyResourceEntries + 1U);
+  EXPECT_FALSE(admission_rejection.candidate_payload_checksum.has_value());
+}
+
+TEST(RouteCandidateTest, GpuBatchItemsCannotBeFabricatedAsValidatedEvidence) {
+  static_assert(std::is_final_v<gpu::CudaPlanarRouteBackend>);
+  static_assert(!std::is_default_constructible_v<gpu::CudaPlanarRouteBackend>);
+  static_assert(!std::is_aggregate_v<gpu::PlanarCandidateBatchItem>);
+  static_assert(!std::is_default_constructible_v<gpu::PlanarCandidateBatchItem>);
+  static_assert(!std::is_constructible_v<gpu::PlanarCandidateBatchItem, std::uint64_t,
+                                         std::uint32_t, std::uint64_t, gpu::PlanarGpuRouteResult>);
+  SUCCEED();
+}
+
+TEST(RouteCandidateTest, BuilderFailuresRetainVersionedExactAndResourceDiagnostics) {
+  const auto build = [](const BoardSnapshot& board, const CompiledBoard& compiled,
+                        const CpuRouteRequest& request, std::vector<LayerSegment> segments,
+                        std::uint64_t total_cost) -> CandidateDraftBuildResult {
+    const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
+    const CandidateAssociations associations = AssociationsFor(board, compiled);
+    routing::CpuRoute route{
+        .source_board_content_hash = associations.board_content_hash,
+        .compiler_profile_fingerprint = associations.compiler_profile_fingerprint,
+        .compiler_version = associations.geometry_compiler_version,
+        .rule_bucket_identity = associations.rule_bucket_identity,
+        .candidate_policy_identity = policy.identity,
+        .total_cost = total_cost,
+        .lattice_path = {},
+        .segments = std::move(segments),
+        .telemetry = {},
+        .producer_evidence = {},
+    };
+    test_support::CpuRouteFaultDecorator::Reseal(route);
+    return BuildGeneratedCandidateFromCpuRoute(
+        board, compiled, request, policy, route,
+        CandidateSchedulingIdentity{.batch_identity = 107, .query_identity = 109});
+  };
+
+  const BoardSnapshot blocked_board = Snapshot();
+  const CompiledBoard blocked_compiled =
+      Compile(blocked_board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest blocked_request = TwoTerminalRequest(blocked_board, 0, 0);
+  CandidateDraftBuildResult exact = build(
+      blocked_board, blocked_compiled, blocked_request,
+      {LayerSegment{.layer = 0,
+                    .centerline = {.start = blocked_request.start, .end = blocked_request.goal}}},
+      100);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(exact));
+  const CandidateRejection& exact_rejection = std::get<CandidateRejection>(exact);
+  EXPECT_EQ(exact_rejection.stage, CandidateLifecycleStage::kExactValidated);
+  EXPECT_EQ(exact_rejection.invariant_id, "candidate.geometry.swept_clearance.v1");
+  EXPECT_TRUE(exact_rejection.candidate_id.has_value());
+  EXPECT_TRUE(exact_rejection.net.has_value());
+  EXPECT_TRUE(exact_rejection.primitive_witness_index.has_value());
+  EXPECT_TRUE(exact_rejection.conflicting_entity.has_value());
+  EXPECT_TRUE(exact_rejection.candidate_payload_checksum.has_value());
+  EXPECT_GT(exact_rejection.logical_bytes, 0U);
+
+  BoardData clear_data = test_support::ValidM1BoardData();
+  clear_data.obstacles.clear();
+  const BoardSnapshot clear_board = Snapshot(std::move(clear_data));
+  const CompiledBoard clear_compiled =
+      Compile(clear_board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest clear_request = TwoTerminalRequest(clear_board, 0, 0);
+  CandidateDraftBuildResult resource = build(
+      clear_board, clear_compiled, clear_request,
+      {
+          LayerSegment{.layer = 0,
+                       .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 15, .y = 15}}},
+          LayerSegment{.layer = 0,
+                       .centerline = {.start = {.x = 15, .y = 15}, .end = {.x = 85, .y = 15}}},
+          LayerSegment{.layer = 0,
+                       .centerline = {.start = {.x = 85, .y = 15}, .end = {.x = 100, .y = 0}}},
+      },
+      0);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(resource));
+  const CandidateRejection& resource_rejection = std::get<CandidateRejection>(resource);
+  EXPECT_EQ(resource_rejection.stage, CandidateLifecycleStage::kResourceAccounted);
+  EXPECT_EQ(resource_rejection.invariant_id, "candidate.resources.lattice_alignment.v1");
+  EXPECT_TRUE(resource_rejection.primitive_witness_index.has_value());
+  EXPECT_TRUE(resource_rejection.candidate_payload_checksum.has_value());
+  EXPECT_GT(resource_rejection.logical_bytes, 0U);
+
+  geometry_compiler::CompilerProfile sparse_profile = test_support::DefaultCompilerProfile({0});
+  sparse_profile.active_regions = {
+      geometry_compiler::ActiveRegion{
+          .layer = 0, .bounds = {.min = {.x = 0, .y = 0}, .max = {.x = 10, .y = 0}}},
+      geometry_compiler::ActiveRegion{
+          .layer = 0, .bounds = {.min = {.x = 90, .y = 0}, .max = {.x = 100, .y = 0}}},
+  };
+  const CompiledBoard sparse_compiled = Compile(clear_board, std::move(sparse_profile));
+  CandidateDraftBuildResult sparse =
+      build(clear_board, sparse_compiled, clear_request,
+            {LayerSegment{.layer = 0,
+                          .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 100, .y = 0}}}},
+            100);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(sparse));
+  const CandidateRejection& sparse_rejection = std::get<CandidateRejection>(sparse);
+  EXPECT_EQ(sparse_rejection.code, CandidateRejectionCode::kResourceMismatch);
+  EXPECT_EQ(sparse_rejection.invariant_id, "candidate.resources.compiled_edge.v1");
+}
+
+TEST(RouteCandidateTest, BuilderChecksPrimitiveBoundBeforeDraftAllocation) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
+  const CandidateAssociations associations = AssociationsFor(board, compiled);
+  const auto build_count = [&](std::size_t count) {
+    routing::CpuRoute route{
+        .source_board_content_hash = associations.board_content_hash,
+        .compiler_profile_fingerprint = associations.compiler_profile_fingerprint,
+        .compiler_version = associations.geometry_compiler_version,
+        .rule_bucket_identity = associations.rule_bucket_identity,
+        .candidate_policy_identity = policy.identity,
+        .total_cost = 0,
+        .lattice_path = {},
+        .segments = std::vector<LayerSegment>(
+            count,
+            LayerSegment{.layer = 0,
+                         .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 10, .y = 0}}}),
+        .telemetry = {},
+        .producer_evidence = {},
+    };
+    test_support::CpuRouteFaultDecorator::Reseal(route);
+    return BuildGeneratedCandidateFromCpuRoute(
+        board, compiled, request, policy, route,
+        CandidateSchedulingIdentity{.batch_identity = 113, .query_identity = 127});
+  };
+
+  const CandidateDraftBuildResult at_max = build_count(kMaximumCandidatePrimitives);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(at_max));
+  EXPECT_NE(std::get<CandidateRejection>(at_max).invariant_id,
+            "candidate.geometry.primitive_count.v1");
+
+  const CandidateDraftBuildResult over_max = build_count(kMaximumCandidatePrimitives + 1U);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(over_max));
+  const CandidateRejection& rejection = std::get<CandidateRejection>(over_max);
+  EXPECT_EQ(rejection.stage, CandidateLifecycleStage::kNormalized);
+  EXPECT_EQ(rejection.invariant_id, "candidate.geometry.primitive_count.v1");
+  EXPECT_EQ(rejection.expected_value, kMaximumCandidatePrimitives);
+  EXPECT_EQ(rejection.actual_value, kMaximumCandidatePrimitives + 1U);
+  EXPECT_FALSE(rejection.candidate_payload_checksum.has_value());
+  EXPECT_GT(rejection.logical_bytes, 0U);
+}
+
 TEST(RouteCandidateTest, BuilderRejectsPolicyMisattributionEvenWhenGeometryAndCostMatch) {
   BoardData data = test_support::ValidM1BoardData();
   data.obstacles.clear();
@@ -726,9 +1073,10 @@ TEST(RouteCandidateTest, BuilderRejectsPolicyMisattributionEvenWhenGeometryAndCo
       NormalizePolicy(compiled, request);
   ASSERT_NE(first_policy.identity, second_policy.identity);
   const CandidateDraftBuildResult result = BuildGeneratedCandidateFromCpuRoute(
-      board, compiled, request, second_policy, route, CpuProvenance(second_policy.policy));
-  ASSERT_TRUE(std::holds_alternative<CandidateBuildError>(result));
-  EXPECT_EQ(std::get<CandidateBuildError>(result).invariant_id,
+      board, compiled, request, second_policy, route,
+      CandidateSchedulingIdentity{.batch_identity = 17, .query_identity = 1});
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(result));
+  EXPECT_EQ(std::get<CandidateRejection>(result).invariant_id,
             "candidate.builder.planar_route_policy_association.v1");
 }
 

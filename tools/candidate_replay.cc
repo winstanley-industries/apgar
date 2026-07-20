@@ -136,7 +136,7 @@ template <typename Integer>
   if (values[0] != "apgar_candidate_failure_replay" || values[1] != "1" || values[4] != "1" ||
       values[5] != "1" || values[6] != "1" || values[7] != "1" || values[8] != "0" ||
       values[9] != "1" || values[10] != "1" || values[11] != "1" || values[12] != "cpu_astar" ||
-      values[13] != "1" || values[14] != "cpu" || values[15] != "cpu-reference" ||
+      values[13] != "1" || values[14] != "cpu" || values[15] != "cpu-reference-v1" ||
       values[16] != "resource_edge_count_increment" || values[30] != "resource_accounted" ||
       values[31] != "resource_mismatch" || values[32] != "candidate.resources.equivalence.v1") {
     *error =
@@ -206,18 +206,12 @@ template <typename Integer>
       apgar::candidates::BuildGeneratedCandidateFromCpuRoute(
           replay_case.board, replay_case.compiled_board, replay_case.request, policy,
           std::get<apgar::routing::CpuRoute>(route_result),
-          apgar::candidates::CandidateProvenance{
-              .generator = apgar::candidates::CandidateGeneratorKind::kCpuAStar,
-              .generator_version = 1,
-              .backend = apgar::candidates::CandidateBackendKind::kCpu,
-              .supported_device_class = "cpu-reference",
-              .deterministic_seed = seed,
+          apgar::candidates::CandidateSchedulingIdentity{
               .batch_identity = batch_identity,
               .query_identity = query_identity,
-              .candidate_ordinal = candidate_ordinal,
           });
   if (!std::holds_alternative<apgar::candidates::GeneratedRouteCandidate>(draft_result)) {
-    *error = std::get<apgar::candidates::CandidateBuildError>(draft_result).detail;
+    *error = std::get<apgar::candidates::CandidateRejection>(draft_result).detail;
     return std::nullopt;
   }
   apgar::candidates::GeneratedRouteCandidate generated =
@@ -228,7 +222,7 @@ template <typename Integer>
     return std::nullopt;
   }
   ++generated.resources.front().edge_count;
-  if (const std::optional<apgar::candidates::CandidateBuildError> finalize_error =
+  if (const std::optional<apgar::candidates::CandidateRejection> finalize_error =
           apgar::candidates::FinalizeGeneratedCandidateDraft(generated);
       finalize_error.has_value()) {
     *error = finalize_error->detail;
@@ -262,7 +256,7 @@ template <typename Integer>
          << "generator=cpu_astar\n"
          << "generator_version=1\n"
          << "backend=cpu\n"
-         << "supported_device_class=cpu-reference\n"
+         << "supported_device_class=cpu-reference-v1\n"
          << "fault=resource_edge_count_increment\n"
          << "layer=" << faulty.replay_case.request.start_layer << '\n'
          << "deterministic_seed=" << candidate.provenance.deterministic_seed << '\n'
@@ -342,7 +336,7 @@ int Replay(std::string_view artifact_path) {
       candidate.provenance.generator != apgar::candidates::CandidateGeneratorKind::kCpuAStar ||
       candidate.provenance.generator_version != 1 ||
       candidate.provenance.backend != apgar::candidates::CandidateBackendKind::kCpu ||
-      candidate.provenance.supported_device_class != "cpu-reference" ||
+      candidate.provenance.supported_device_class != "cpu-reference-v1" ||
       candidate.associations.board_content_hash != artifact->board_hash ||
       candidate.associations.compiler_profile_fingerprint != artifact->profile_fingerprint ||
       candidate.associations.routing_profile_fingerprint != artifact->routing_profile_fingerprint ||

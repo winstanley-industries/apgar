@@ -4,14 +4,17 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "apgar/benchmark/planar_corpus.h"
 #include "apgar/board_ir/board.h"
+#include "apgar/candidates/gpu_candidate_adapter.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "apgar/gpu/cuda_backend.h"
+#include "apgar/gpu/fault_injecting_backend.h"
 #include "apgar/gpu/planar_router.h"
 #include "apgar/routing/candidate_policy.h"
 #include "apgar/routing/cpu_astar.h"
@@ -124,15 +127,15 @@ void ExpectCpuDifferential(const BoardSnapshot& board, const CompiledBoard& comp
                                               : kCandidateSweepChunkRounds);
   for (const PlanarCandidateBatchItem& item : batch.items) {
     const CpuRouteResult cpu =
-        routing::RouteWithCpuAStar(board, compiled, RequestForQuery(queries, item.query_id));
+        routing::RouteWithCpuAStar(board, compiled, RequestForQuery(queries, item.query_id()));
     if (std::holds_alternative<CpuRoute>(cpu)) {
-      ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(item.result))
-          << std::get<PlanarGpuFailure>(item.result).detail;
+      ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(item.result()))
+          << std::get<PlanarGpuFailure>(item.result()).detail;
       const CpuRoute& cpu_route = std::get<CpuRoute>(cpu);
-      const PlanarGpuRoute& gpu_route = std::get<PlanarGpuRoute>(item.result);
+      const PlanarGpuRoute& gpu_route = std::get<PlanarGpuRoute>(item.result());
       EXPECT_EQ(gpu_route.total_cost, cpu_route.total_cost);
       EXPECT_EQ(gpu_route.policy_identity, cpu_route.candidate_policy_identity);
-      EXPECT_EQ(item.policy_identity, cpu_route.candidate_policy_identity);
+      EXPECT_EQ(item.policy_identity(), cpu_route.candidate_policy_identity);
       EXPECT_EQ(gpu_route.backend.backend, "cuda");
       EXPECT_EQ(gpu_route.telemetry.persistent_device_bytes, 0U);
       EXPECT_EQ(gpu_route.telemetry.batch_device_bytes, 0U);
@@ -141,8 +144,8 @@ void ExpectCpuDifferential(const BoardSnapshot& board, const CompiledBoard& comp
     } else {
       ASSERT_EQ(std::get<routing::RouteFailure>(cpu).code,
                 routing::RouteFailureCode::kDisconnected);
-      ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(item.result));
-      const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(item.result);
+      ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(item.result()));
+      const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(item.result());
       EXPECT_EQ(failure.code, PlanarGpuFailureCode::kDisconnected);
       ASSERT_TRUE(failure.telemetry.has_value());
       EXPECT_EQ(failure.telemetry->persistent_device_bytes, 0U);
@@ -168,13 +171,13 @@ void ExpectRepeatableBatch(const PlanarCandidateBatch& first, const PlanarCandid
   for (std::size_t index = 0; index < first.items.size(); ++index) {
     const PlanarCandidateBatchItem& left = first.items[index];
     const PlanarCandidateBatchItem& right = second.items[index];
-    EXPECT_EQ(left.query_id, right.query_id);
-    EXPECT_EQ(left.input_ordinal, right.input_ordinal);
-    EXPECT_EQ(left.policy_identity, right.policy_identity);
-    ASSERT_EQ(left.result.index(), right.result.index());
-    if (std::holds_alternative<PlanarGpuRoute>(left.result)) {
-      const PlanarGpuRoute& left_route = std::get<PlanarGpuRoute>(left.result);
-      const PlanarGpuRoute& right_route = std::get<PlanarGpuRoute>(right.result);
+    EXPECT_EQ(left.query_id(), right.query_id());
+    EXPECT_EQ(left.input_ordinal(), right.input_ordinal());
+    EXPECT_EQ(left.policy_identity(), right.policy_identity());
+    ASSERT_EQ(left.result().index(), right.result().index());
+    if (std::holds_alternative<PlanarGpuRoute>(left.result())) {
+      const PlanarGpuRoute& left_route = std::get<PlanarGpuRoute>(left.result());
+      const PlanarGpuRoute& right_route = std::get<PlanarGpuRoute>(right.result());
       EXPECT_EQ(left_route.total_cost, right_route.total_cost);
       EXPECT_EQ(left_route.lattice_path, right_route.lattice_path);
       EXPECT_EQ(left_route.segments, right_route.segments);
@@ -184,8 +187,8 @@ void ExpectRepeatableBatch(const PlanarCandidateBatch& first, const PlanarCandid
                 right_route.telemetry.heading_turn_relaxations);
       EXPECT_EQ(left_route.telemetry.rounds, right_route.telemetry.rounds);
     } else {
-      EXPECT_EQ(std::get<PlanarGpuFailure>(left.result).code,
-                std::get<PlanarGpuFailure>(right.result).code);
+      EXPECT_EQ(std::get<PlanarGpuFailure>(left.result()).code,
+                std::get<PlanarGpuFailure>(right.result()).code);
     }
   }
 }
@@ -365,6 +368,168 @@ TEST(CudaCandidateBatchTest, SingleQueryApiDelegatesNonDefaultPolicyToBatchOfOne
   }
 }
 
+TEST(CudaCandidateBatchTest, SealedBatchItemAuthenticatesCudaCandidateProvenance) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  CpuRouteRequest request = TwoTerminalRequest(board);
+  request.candidate_policy.deterministic_seed = 0x7345;
+  request.candidate_policy.candidate_ordinal = 7;
+  const routing::CandidatePolicyResult normalized_result =
+      routing::NormalizeCandidateGenerationPolicy(compiled, request.candidate_policy);
+  ASSERT_TRUE(
+      std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(normalized_result));
+  const routing::NormalizedCandidateGenerationPolicy& normalized =
+      std::get<routing::NormalizedCandidateGenerationPolicy>(normalized_result);
+
+  std::unique_ptr<IPlanarRouteBackend> backend = CreateCudaPlanarRouteBackend();
+  ASSERT_NE(backend, nullptr);
+  PreparedPlanarCompiledViewResult prepared_result =
+      PrepareCudaPlanarCompiledView(board, compiled, *backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+  ASSERT_NE(prepared, nullptr);
+
+  const PlanarCandidateBatchQuery query{
+      .query_id = 0x73450001,
+      .input_ordinal = 19,
+      .request = request,
+  };
+  const PlanarCandidateBatchResult result = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, std::span(&query, 1),
+      PlanarCandidateBatchPolicy{
+          .batch_id = 0x73450002,
+          .generator = PlanarGenerator::kHeadingAwareSweep,
+      },
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result))
+      << std::get<PlanarGpuFailure>(result).detail;
+  const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
+  ASSERT_EQ(batch.items.size(), 1U);
+  const PlanarCandidateBatchItem& item = batch.items.front();
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(item.result()))
+      << std::get<PlanarGpuFailure>(item.result()).detail;
+  EXPECT_TRUE(item.has_validated_route_evidence());
+  EXPECT_TRUE(item.has_authenticated_cuda_producer_evidence());
+  EXPECT_EQ(item.validated_batch_schema_version(), kDeviceCandidateBatchSchemaVersion);
+  EXPECT_EQ(item.validated_batch_id(), batch.batch_id);
+
+  PlanarCandidateBatchItem copied_item = item;
+  const std::uint64_t sealed_policy_identity = copied_item.policy_identity();
+  EXPECT_FALSE(copied_item.SetUnsealedPolicyIdentity(sealed_policy_identity + 1));
+  EXPECT_FALSE(copied_item.SetUnsealedResult(PlanarGpuFailure{
+      .code = PlanarGpuFailureCode::kBackendFailure,
+      .detail = "hostile post-validation replacement",
+      .invariant_id = "test.hostile.sealed_mutation",
+      .obstacle = std::nullopt,
+      .telemetry = std::nullopt,
+  }));
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(copied_item.result()));
+  EXPECT_EQ(copied_item.policy_identity(), sealed_policy_identity);
+  EXPECT_EQ(std::get<PlanarGpuRoute>(copied_item.result()).total_cost,
+            std::get<PlanarGpuRoute>(item.result()).total_cost);
+
+  const candidates::CandidateDraftBuildResult built =
+      candidates::BuildGeneratedCandidateFromGpuBatchItem(board, compiled, query, normalized, batch,
+                                                          item);
+  ASSERT_TRUE(std::holds_alternative<candidates::GeneratedRouteCandidate>(built));
+  const candidates::CandidateProvenance& provenance =
+      std::get<candidates::GeneratedRouteCandidate>(built).provenance;
+  EXPECT_EQ(provenance.generator, candidates::CandidateGeneratorKind::kCudaSweep);
+  EXPECT_EQ(provenance.backend, candidates::CandidateBackendKind::kCuda);
+  EXPECT_EQ(provenance.batch_identity, batch.batch_id);
+  EXPECT_EQ(provenance.query_identity, query.query_id);
+  EXPECT_EQ(provenance.candidate_ordinal, request.candidate_policy.candidate_ordinal);
+
+  PlanarCandidateBatchQuery swapped_query = query;
+  ++swapped_query.query_id;
+  const candidates::CandidateDraftBuildResult swapped =
+      candidates::BuildGeneratedCandidateFromGpuBatchItem(board, compiled, swapped_query,
+                                                          normalized, batch, item);
+  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(swapped));
+  EXPECT_EQ(std::get<candidates::CandidateRejection>(swapped).invariant_id,
+            "candidate.builder.gpu_query_attribution.v1");
+
+  routing::NormalizedCandidateGenerationPolicy oversized_policy = normalized;
+  oversized_policy.policy.banned_resources.resize(routing::kMaximumPolicyResourceEntries + 1U);
+  const candidates::CandidateDraftBuildResult oversized =
+      candidates::BuildGeneratedCandidateFromGpuBatchItem(board, compiled, query, oversized_policy,
+                                                          batch, item);
+  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(oversized));
+  const candidates::CandidateRejection& oversized_rejection =
+      std::get<candidates::CandidateRejection>(oversized);
+  EXPECT_EQ(oversized_rejection.invariant_id, "candidate.policy.resource_entry_count.v1");
+  EXPECT_EQ(oversized_rejection.expected_value, routing::kMaximumPolicyResourceEntries);
+  EXPECT_EQ(oversized_rejection.actual_value, routing::kMaximumPolicyResourceEntries + 1U);
+  EXPECT_FALSE(oversized_rejection.candidate_payload_checksum.has_value());
+}
+
+TEST(CudaCandidateBatchTest, GenericCudaLookingWrapperCannotMintCudaCandidateProvenance) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  CpuRouteRequest request = TwoTerminalRequest(board);
+  request.candidate_policy.deterministic_seed = 0x5a17;
+  request.candidate_policy.candidate_ordinal = 3;
+  const routing::CandidatePolicyResult normalized_result =
+      routing::NormalizeCandidateGenerationPolicy(compiled, request.candidate_policy);
+  ASSERT_TRUE(
+      std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(normalized_result));
+  const routing::NormalizedCandidateGenerationPolicy& normalized =
+      std::get<routing::NormalizedCandidateGenerationPolicy>(normalized_result);
+
+  std::unique_ptr<IPlanarRouteBackend> cuda_backend = CreateCudaPlanarRouteBackend();
+  ASSERT_NE(cuda_backend, nullptr);
+  std::unique_ptr<IPlanarRouteBackend> wrapper = CreateFaultInjectingCandidateBatchBackend(
+      *cuda_backend, UntrustedCandidateBatchResultFault::kNone);
+  ASSERT_NE(wrapper, nullptr);
+
+  const PreparedPlanarCompiledViewResult authenticated_attempt =
+      PrepareCudaPlanarCompiledView(board, compiled, *wrapper);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(authenticated_attempt));
+  const PlanarGpuFailure& authentication_failure =
+      std::get<PlanarGpuFailure>(authenticated_attempt);
+  EXPECT_EQ(authentication_failure.code, PlanarGpuFailureCode::kUnsupported);
+  EXPECT_EQ(authentication_failure.invariant_id, "gpu.producer.authentication.v1");
+
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, compiled, *wrapper);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+  ASSERT_NE(prepared, nullptr);
+  EXPECT_FALSE(prepared->has_authenticated_cuda_producer());
+
+  const PlanarCandidateBatchQuery query{
+      .query_id = 0x5a170001,
+      .input_ordinal = 4,
+      .request = request,
+  };
+  const PlanarCandidateBatchResult result = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, std::span(&query, 1),
+      PlanarCandidateBatchPolicy{
+          .batch_id = 0x5a170002,
+          .generator = PlanarGenerator::kHeadingAwareSweep,
+      },
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result))
+      << std::get<PlanarGpuFailure>(result).detail;
+  const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
+  ASSERT_EQ(batch.items.size(), 1U);
+  const PlanarCandidateBatchItem& item = batch.items.front();
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(item.result()))
+      << std::get<PlanarGpuFailure>(item.result()).detail;
+  EXPECT_TRUE(item.has_validated_route_evidence());
+  EXPECT_FALSE(item.has_authenticated_cuda_producer_evidence());
+
+  const candidates::CandidateDraftBuildResult built =
+      candidates::BuildGeneratedCandidateFromGpuBatchItem(board, compiled, query, normalized, batch,
+                                                          item);
+  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(built));
+  const candidates::CandidateRejection& rejection = std::get<candidates::CandidateRejection>(built);
+  EXPECT_EQ(rejection.code, candidates::CandidateRejectionCode::kUnsupported);
+  EXPECT_EQ(rejection.invariant_id, "candidate.builder.gpu_producer_authentication.v1");
+}
+
 TEST(CudaCandidateBatchTest, IsolatesIncompatibleCancellationAndResourceOutcomes) {
   const BoardSnapshot board = Snapshot();
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile());
@@ -393,10 +558,17 @@ TEST(CudaCandidateBatchTest, IsolatesIncompatibleCancellationAndResourceOutcomes
   ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(mixed_result));
   const PlanarCandidateBatch& mixed_batch = std::get<PlanarCandidateBatch>(mixed_result);
   ASSERT_EQ(mixed_batch.items.size(), 2U);
-  EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(mixed_batch.items[0].result));
-  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(mixed_batch.items[1].result));
-  EXPECT_EQ(std::get<PlanarGpuFailure>(mixed_batch.items[1].result).code,
+  EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(mixed_batch.items[0].result()));
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(mixed_batch.items[1].result()));
+  EXPECT_EQ(std::get<PlanarGpuFailure>(mixed_batch.items[1].result()).code,
             PlanarGpuFailureCode::kUnsupported);
+  const routing::CandidatePolicyResult normalized_incompatible =
+      routing::NormalizeCandidateGenerationPolicy(compiled, incompatible.candidate_policy);
+  ASSERT_TRUE(std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(
+      normalized_incompatible));
+  EXPECT_EQ(
+      mixed_batch.items[1].policy_identity(),
+      std::get<routing::NormalizedCandidateGenerationPolicy>(normalized_incompatible).identity);
 
   std::atomic_bool cancellation = true;
   PlanarCandidateBatchResult cancelled = RouteCandidateBatchWithPreparedPlanarGpuBackend(
@@ -407,9 +579,9 @@ TEST(CudaCandidateBatchTest, IsolatesIncompatibleCancellationAndResourceOutcomes
       *prepared);
   ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(cancelled));
   ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(
-      std::get<PlanarCandidateBatch>(cancelled).items.front().result));
+      std::get<PlanarCandidateBatch>(cancelled).items.front().result()));
   EXPECT_EQ(
-      std::get<PlanarGpuFailure>(std::get<PlanarCandidateBatch>(cancelled).items.front().result)
+      std::get<PlanarGpuFailure>(std::get<PlanarCandidateBatch>(cancelled).items.front().result())
           .code,
       PlanarGpuFailureCode::kCancelled);
 
@@ -421,9 +593,9 @@ TEST(CudaCandidateBatchTest, IsolatesIncompatibleCancellationAndResourceOutcomes
       *prepared);
   ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(workspace));
   ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(
-      std::get<PlanarCandidateBatch>(workspace).items.front().result));
+      std::get<PlanarCandidateBatch>(workspace).items.front().result()));
   EXPECT_EQ(
-      std::get<PlanarGpuFailure>(std::get<PlanarCandidateBatch>(workspace).items.front().result)
+      std::get<PlanarGpuFailure>(std::get<PlanarCandidateBatch>(workspace).items.front().result())
           .code,
       PlanarGpuFailureCode::kResourceExhausted);
 
@@ -434,8 +606,8 @@ TEST(CudaCandidateBatchTest, IsolatesIncompatibleCancellationAndResourceOutcomes
       *prepared);
   ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(rounds));
   const PlanarCandidateBatch& rounds_batch = std::get<PlanarCandidateBatch>(rounds);
-  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(rounds_batch.items.front().result));
-  EXPECT_EQ(std::get<PlanarGpuFailure>(rounds_batch.items.front().result).code,
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(rounds_batch.items.front().result()));
+  EXPECT_EQ(std::get<PlanarGpuFailure>(rounds_batch.items.front().result()).code,
             PlanarGpuFailureCode::kResourceExhausted);
   EXPECT_EQ(rounds_batch.telemetry.chunk_rounds, kCandidateFrontierChunkRounds);
   EXPECT_EQ(rounds_batch.telemetry.blocking_status_readback_count, 1U);
@@ -463,9 +635,9 @@ TEST(CudaCandidateBatchTest, RejectsOneForeignWorkspaceOwnerWithoutContaminating
     ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result));
     const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
     ASSERT_EQ(batch.items.size(), 2U);
-    EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(batch.items[0].result));
-    ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[1].result));
-    const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(batch.items[1].result);
+    EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(batch.items[0].result()));
+    ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[1].result()));
+    const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(batch.items[1].result());
     EXPECT_EQ(failure.code, PlanarGpuFailureCode::kInternalInvariant);
     EXPECT_EQ(failure.invariant_id, "gpu.batch.workspace.owner.v1");
   }
@@ -489,9 +661,9 @@ TEST(CudaCandidateBatchTest, RejectsForgedPredecessorAndForeignExtraResult) {
         corrupting);
     ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result));
     const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
-    EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(batch.items[0].result));
-    ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[1].result));
-    EXPECT_EQ(std::get<PlanarGpuFailure>(batch.items[1].result).code,
+    EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(batch.items[0].result()));
+    ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[1].result()));
+    EXPECT_EQ(std::get<PlanarGpuFailure>(batch.items[1].result()).code,
               PlanarGpuFailureCode::kInternalInvariant);
   }
 
@@ -507,8 +679,8 @@ TEST(CudaCandidateBatchTest, RejectsForgedPredecessorAndForeignExtraResult) {
     ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result));
     const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
     for (const PlanarCandidateBatchItem& item : batch.items) {
-      ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(item.result));
-      const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(item.result);
+      ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(item.result()));
+      const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(item.result());
       EXPECT_EQ(failure.code, PlanarGpuFailureCode::kInternalInvariant);
       EXPECT_EQ(failure.invariant_id, "gpu.batch.query.identity.v1");
     }
@@ -532,9 +704,9 @@ TEST(CudaCandidateBatchTest, RejectsCrossQueryLabelContaminationWithoutRejecting
   ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result));
   const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
   ASSERT_EQ(batch.items.size(), 2U);
-  EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(batch.items[0].result));
-  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[1].result));
-  EXPECT_EQ(std::get<PlanarGpuFailure>(batch.items[1].result).code,
+  EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(batch.items[0].result()));
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[1].result()));
+  EXPECT_EQ(std::get<PlanarGpuFailure>(batch.items[1].result()).code,
             PlanarGpuFailureCode::kInternalInvariant);
 }
 
@@ -561,8 +733,8 @@ TEST(CudaCandidateBatchTest, RejectsCorruptedSharedTelemetryForTheWholeBatch) {
     EXPECT_EQ(batch.telemetry, CandidateBatchTelemetry{});
     ASSERT_EQ(batch.items.size(), queries.size());
     for (const PlanarCandidateBatchItem& item : batch.items) {
-      ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(item.result));
-      const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(item.result);
+      ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(item.result()));
+      const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(item.result());
       EXPECT_EQ(failure.code, PlanarGpuFailureCode::kInternalInvariant);
       EXPECT_EQ(failure.invariant_id, expected_invariant);
     }
@@ -590,9 +762,9 @@ TEST(CudaCandidateBatchTest, RejectsCorruptedQueryTelemetryWithoutRejectingPeer)
     ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result));
     const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
     ASSERT_EQ(batch.items.size(), 2U);
-    EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(batch.items[0].result));
-    ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[1].result));
-    const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(batch.items[1].result);
+    EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(batch.items[0].result()));
+    ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[1].result()));
+    const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(batch.items[1].result());
     EXPECT_EQ(failure.code, PlanarGpuFailureCode::kInternalInvariant);
     EXPECT_EQ(failure.invariant_id, "gpu.batch.query.telemetry.v1");
   }
@@ -615,6 +787,70 @@ TEST(CudaCandidateBatchTest, RejectsDuplicateOrZeroQueryIdentityBeforeExecution)
       *backend);
   ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(result));
   EXPECT_EQ(std::get<PlanarGpuFailure>(result).code, PlanarGpuFailureCode::kInvalidInput);
+}
+
+TEST(CudaCandidateBatchTest, InputOrdinalsAreIndependentOfNonzeroBasePolicySchedule) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  routing::CandidateGenerationPolicy base_policy;
+  base_policy.deterministic_seed = 0xabcdef;
+  base_policy.candidate_ordinal = 11;
+  const routing::CandidatePolicyBatchResult schedule =
+      routing::BuildDeterministicAlternativePolicies(
+          compiled, base_policy,
+          routing::DeterministicAlternativePolicySchedule{
+              .candidate_count = 5,
+              .step_surcharge_increment = 2,
+              .bend_surcharge_increment = 3,
+              .resource_penalty_increment = 5,
+              .alternative_resources = {FirstCanonicalResource(device)},
+          });
+  ASSERT_TRUE(
+      std::holds_alternative<std::vector<routing::NormalizedCandidateGenerationPolicy>>(schedule));
+  const std::vector<routing::NormalizedCandidateGenerationPolicy>& policies =
+      std::get<std::vector<routing::NormalizedCandidateGenerationPolicy>>(schedule);
+  std::vector<PlanarCandidateBatchQuery> queries;
+  queries.reserve(policies.size());
+  for (std::size_t index = 0; index < policies.size(); ++index) {
+    CpuRouteRequest request = TwoTerminalRequest(board);
+    request.candidate_policy = policies[index].policy;
+    queries.push_back(PlanarCandidateBatchQuery{
+        .query_id = 100U - index,
+        .input_ordinal = static_cast<std::uint32_t>(index),
+        .request = std::move(request),
+    });
+  }
+
+  std::unique_ptr<IPlanarRouteBackend> backend = CreateCudaPlanarRouteBackend();
+  ASSERT_NE(backend, nullptr);
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, compiled, *backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+  ASSERT_NE(prepared, nullptr);
+
+  std::uint64_t batch_id = 0x9100;
+  for (PlanarGenerator generator :
+       {PlanarGenerator::kBucketedFrontier, PlanarGenerator::kHeadingAwareSweep}) {
+    const PlanarCandidateBatchResult result = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+        board, compiled, queries,
+        PlanarCandidateBatchPolicy{.batch_id = batch_id++, .generator = generator}, *prepared);
+    ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result))
+        << std::get<PlanarGpuFailure>(result).detail;
+    const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
+    ExpectCpuDifferential(board, compiled, queries, batch);
+    for (const PlanarCandidateBatchItem& item : batch.items) {
+      const CpuRouteRequest& request = RequestForQuery(queries, item.query_id());
+      EXPECT_NE(item.input_ordinal(), request.candidate_policy.candidate_ordinal);
+      const routing::CandidatePolicyResult normalized =
+          routing::NormalizeCandidateGenerationPolicy(compiled, request.candidate_policy);
+      ASSERT_TRUE(std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(normalized));
+      EXPECT_EQ(item.policy_identity(),
+                std::get<routing::NormalizedCandidateGenerationPolicy>(normalized).identity);
+    }
+  }
 }
 
 TEST(CudaCandidateBatchDifferentialTest, ForcedGeneratorsMatchEveryPhase3CorpusCase) {
@@ -756,8 +992,8 @@ TEST(CudaCandidateBatchDifferentialTest,
       ExpectCpuDifferential(test_case.board, test_case.compiled_board, queries, first_batch);
       ExpectRepeatableBatch(first_batch, std::get<PlanarCandidateBatch>(second));
       for (const PlanarCandidateBatchItem& item : first_batch.items) {
-        ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(item.result));
-        EXPECT_NE(std::get<PlanarGpuRoute>(item.result).lattice_path, base.lattice_path);
+        ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(item.result()));
+        EXPECT_NE(std::get<PlanarGpuRoute>(item.result()).lattice_path, base.lattice_path);
       }
     }
   }

@@ -350,10 +350,23 @@ struct BackendCandidateBatchExecutionRequest {
 
 // Deterministic logical upper bound for transient host payload owned while a
 // candidate batch is encoded, executed, read back, and partitioned into
-// query-local results. Container allocator overhead is deliberately excluded.
+// query-local results. input_query_count includes retained preflight failures;
+// admitted_query_count includes only queries allocated execution/readback
+// workspaces. Container allocator overhead is deliberately excluded.
+[[nodiscard]] std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(
+    std::uint64_t input_query_count, std::uint64_t admitted_query_count,
+    std::uint64_t policy_edge_count, std::uint64_t represented_states) noexcept;
+
+// All-input-admitted convenience form used by a backend after preflight.
 [[nodiscard]] std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(
     std::uint64_t query_count, std::uint64_t policy_edge_count,
     std::uint64_t represented_states) noexcept;
+
+// Peak of the earlier host-preflight phase: retained per-input classification
+// envelopes plus normalized-policy scratch for every individually shape-valid
+// submitted policy. This phase is checked before policy normalization.
+[[nodiscard]] std::optional<std::uint64_t> EstimateCandidateBatchPolicyPreflightHostBytesV1(
+    std::uint64_t input_query_count, std::uint64_t submitted_policy_entry_count) noexcept;
 
 enum class BackendErrorCode : std::uint8_t {
   kUnsupported,
@@ -429,6 +442,46 @@ class IPlanarRouteBackend {
       const PendingCandidateBatchExecution& execution);
 };
 
+// Exact final producer type used by the always-linked core authentication
+// boundary. CUDA implementation details remain behind the backend interface;
+// construction and delegate binding are available only to the hermetic CUDA
+// factory. Generic callers cannot subclass or inject a delegate into this
+// wrapper.
+class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
+ public:
+  ~CudaPlanarRouteBackend() override = default;
+
+  [[nodiscard]] BackendMetadataResult QueryMetadata() const override {
+    return implementation_->QueryMetadata();
+  }
+  [[nodiscard]] UploadResult UploadCompiledView(const DeviceCompiledBoardV1& board) override {
+    return implementation_->UploadCompiledView(board);
+  }
+  [[nodiscard]] ExecutionResult ExecuteRoute(const UploadedCompiledView& board,
+                                             const BackendExecutionRequest& request) override {
+    return implementation_->ExecuteRoute(board, request);
+  }
+  [[nodiscard]] ReadbackResult ReadbackRoute(const PendingRouteExecution& execution) override {
+    return implementation_->ReadbackRoute(execution);
+  }
+  [[nodiscard]] CandidateBatchExecutionResult ExecuteCandidateBatch(
+      const UploadedCompiledView& board,
+      const BackendCandidateBatchExecutionRequest& request) override {
+    return implementation_->ExecuteCandidateBatch(board, request);
+  }
+  [[nodiscard]] CandidateBatchReadbackResult ReadbackCandidateBatch(
+      const PendingCandidateBatchExecution& execution) override {
+    return implementation_->ReadbackCandidateBatch(execution);
+  }
+
+ private:
+  CudaPlanarRouteBackend();
+
+  std::unique_ptr<IPlanarRouteBackend> implementation_;
+
+  friend std::unique_ptr<IPlanarRouteBackend> CreateCudaPlanarRouteBackend();
+};
+
 struct PlanarGpuRoute {
   std::uint64_t source_board_content_hash = 0;
   std::uint64_t compiler_profile_fingerprint = 0;
@@ -462,16 +515,25 @@ class PreparedPlanarCompiledView {
   PreparedPlanarCompiledView(PreparedPlanarCompiledView&&) = delete;
   PreparedPlanarCompiledView& operator=(PreparedPlanarCompiledView&&) = delete;
 
+  [[nodiscard]] IPlanarRouteBackend& backend() const noexcept { return *backend_; }
+  [[nodiscard]] const DeviceCompiledBoardV1& device_board() const noexcept { return device_board_; }
+  [[nodiscard]] const BackendMetadata& metadata() const noexcept { return metadata_; }
+  [[nodiscard]] const UploadedCompiledView& uploaded() const noexcept { return *uploaded_; }
+  [[nodiscard]] bool has_authenticated_cuda_producer() const noexcept {
+    return authenticated_cuda_producer_;
+  }
+
  private:
   friend PreparedPlanarCompiledViewResult PreparePlanarCompiledView(
+      const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+      IPlanarRouteBackend& backend);
+  friend PreparedPlanarCompiledViewResult PrepareCudaPlanarCompiledView(
       const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
       IPlanarRouteBackend& backend);
   friend PlanarGpuRouteResult RouteWithPreparedPlanarGpuBackend(
       const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
       const routing::CpuRouteRequest& request, const PlanarRoutePolicy& policy,
       PreparedPlanarCompiledView& prepared);
-  friend struct PreparedBatchAccess;
-
   PreparedPlanarCompiledView(IPlanarRouteBackend& backend, DeviceCompiledBoardV1 device_board,
                              BackendMetadata metadata,
                              std::unique_ptr<UploadedCompiledView> uploaded)
@@ -480,14 +542,16 @@ class PreparedPlanarCompiledView {
         metadata_(std::move(metadata)),
         uploaded_(std::move(uploaded)) {}
 
-  IPlanarRouteBackend* backend_;
-  DeviceCompiledBoardV1 device_board_;
-  BackendMetadata metadata_;
+  IPlanarRouteBackend* const backend_;
+  const DeviceCompiledBoardV1 device_board_;
+  const BackendMetadata metadata_;
   std::unique_ptr<UploadedCompiledView> uploaded_;
+  bool authenticated_cuda_producer_ = false;
 };
 
 struct PlanarCandidateBatchQuery {
   std::uint64_t query_id = 0;
+  // Opaque caller/list correlation; independent of policy candidate_ordinal.
   std::uint32_t input_ordinal = 0;
   routing::PlanarRouteRequest request;
 
@@ -507,12 +571,7 @@ struct PlanarCandidateBatchPolicy {
   const std::atomic_bool* cancellation = nullptr;
 };
 
-struct PlanarCandidateBatchItem {
-  std::uint64_t query_id = 0;
-  std::uint32_t input_ordinal = 0;
-  std::uint64_t policy_identity = 0;
-  PlanarGpuRouteResult result;
-};
+class PlanarCandidateBatchItem;
 
 struct PlanarCandidateBatch {
   std::uint32_t schema_version = kDeviceCandidateBatchSchemaVersion;
@@ -526,7 +585,63 @@ struct PlanarCandidateBatch {
 
 using PlanarCandidateBatchResult = std::variant<PlanarCandidateBatch, PlanarGpuFailure>;
 
+struct PlanarCandidateBatchItemEvidence;
+
+// A public item can be inspected and copied. Construction/mutation helpers can
+// create only unsealed diagnostic state. Once a reached item is sealed, every
+// accessor reads a separately allocated truly-const evidence snapshot; public
+// mutation helpers cannot alter it. The snapshot records whether execution came
+// through the concrete checksum-pinned CUDA producer boundary. Candidate
+// provenance adapters require both host validation and producer authentication.
+class PlanarCandidateBatchItem {
+ public:
+  PlanarCandidateBatchItem(const PlanarCandidateBatchItem&) = default;
+  PlanarCandidateBatchItem(PlanarCandidateBatchItem&&) noexcept = default;
+  PlanarCandidateBatchItem& operator=(const PlanarCandidateBatchItem&) = default;
+  PlanarCandidateBatchItem& operator=(PlanarCandidateBatchItem&&) noexcept = default;
+
+  [[nodiscard]] static PlanarCandidateBatchItem CreateUnsealed(std::uint64_t query_id,
+                                                               std::uint32_t input_ordinal,
+                                                               PlanarGpuRouteResult result);
+  [[nodiscard]] bool SetUnsealedPolicyIdentity(std::uint64_t policy_identity) noexcept;
+  [[nodiscard]] bool SetUnsealedResult(PlanarGpuRouteResult result) noexcept;
+  [[nodiscard]] PlanarGpuRouteResult TakeResult();
+
+  [[nodiscard]] std::uint64_t query_id() const noexcept;
+  [[nodiscard]] std::uint32_t input_ordinal() const noexcept;
+  [[nodiscard]] std::uint64_t policy_identity() const noexcept;
+  [[nodiscard]] const PlanarGpuRouteResult& result() const noexcept;
+  [[nodiscard]] bool has_validated_route_evidence() const noexcept;
+  [[nodiscard]] bool has_authenticated_cuda_producer_evidence() const noexcept;
+  [[nodiscard]] std::uint32_t validated_batch_schema_version() const noexcept;
+  [[nodiscard]] std::uint64_t validated_batch_id() const noexcept;
+
+ private:
+  PlanarCandidateBatchItem() = default;
+  void SealValidatedRoute(std::uint32_t schema_version, std::uint64_t batch_id,
+                          bool authenticated_cuda_producer);
+
+  std::uint64_t query_id_ = 0;
+  std::uint32_t input_ordinal_ = 0;
+  std::uint64_t policy_identity_ = 0;
+  PlanarGpuRouteResult result_;
+  std::shared_ptr<const PlanarCandidateBatchItemEvidence> evidence_;
+
+  friend PlanarCandidateBatchResult RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+      std::span<const PlanarCandidateBatchQuery> queries, const PlanarCandidateBatchPolicy& policy,
+      PreparedPlanarCompiledView& prepared);
+  friend PlanarCandidateBatchResult RouteCandidateBatchWithPlanarGpuBackend(
+      const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+      std::span<const PlanarCandidateBatchQuery> queries, const PlanarCandidateBatchPolicy& policy,
+      IPlanarRouteBackend& backend);
+};
+
 [[nodiscard]] PreparedPlanarCompiledViewResult PreparePlanarCompiledView(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    IPlanarRouteBackend& backend);
+
+[[nodiscard]] PreparedPlanarCompiledViewResult PrepareCudaPlanarCompiledView(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     IPlanarRouteBackend& backend);
 

@@ -210,6 +210,14 @@ TEST(CandidatePolicyTest, RejectsInvalidConflictingUnsupportedAndOverflowingPoli
   path_bound_overflow.orthogonal_step_surcharge = std::numeric_limits<std::uint64_t>::max();
   EXPECT_EQ(PolicyError(NormalizeCandidateGenerationPolicy(compiled, path_bound_overflow)).code,
             CandidatePolicyErrorCode::kCostOverflow);
+
+  CandidateGenerationPolicy oversized;
+  oversized.banned_resources.resize(kMaximumPolicyResourceEntries);
+  EXPECT_TRUE(CandidateGenerationPolicyShapeIsWithinV1Bounds(oversized));
+  oversized.banned_resources.emplace_back();
+  EXPECT_FALSE(CandidateGenerationPolicyShapeIsWithinV1Bounds(oversized));
+  EXPECT_EQ(PolicyError(NormalizeCandidateGenerationPolicy(compiled, oversized)).code,
+            CandidatePolicyErrorCode::kTooManyResources);
 }
 
 TEST(CandidatePolicyTest, StepCostUsesSurchargesBendsAndCanonicalResourcePenalty) {

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <ranges>
@@ -18,6 +19,7 @@
 
 #include "apgar/board_ir/stable_hash.h"
 #include "apgar/geometry/exact.h"
+#include "src/routing/cpu_astar_internal.h"
 
 namespace apgar::routing {
 namespace {
@@ -245,6 +247,18 @@ struct QueueGreater {
 }
 
 }  // namespace
+
+bool CpuRouteHasAuthenticatedAStarEvidence(const CpuRoute& route) noexcept {
+  const std::shared_ptr<const CpuRouteProducerEvidence>& evidence =
+      route.producer_evidence.evidence;
+  return evidence != nullptr &&
+         evidence->source_board_content_hash == route.source_board_content_hash &&
+         evidence->compiler_profile_fingerprint == route.compiler_profile_fingerprint &&
+         evidence->compiler_version == route.compiler_version &&
+         evidence->rule_bucket_identity == route.rule_bucket_identity &&
+         evidence->candidate_policy_identity == route.candidate_policy_identity &&
+         evidence->total_cost == route.total_cost && evidence->segments == route.segments;
+}
 
 std::optional<RouteFailure> ValidateReconstructedRoute(const board_ir::BoardSnapshot& board,
                                                        const CompiledBoard& compiled_board,
@@ -519,7 +533,7 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
     return std::move(*invalid);
   }
 
-  return CpuRoute{
+  CpuRoute route{
       .source_board_content_hash = compiled_board.source_board_content_hash(),
       .compiler_profile_fingerprint = compiled_board.compiler_profile_fingerprint(),
       .compiler_version = compiled_board.compiler_version(),
@@ -529,7 +543,19 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       .lattice_path = std::move(points),
       .segments = std::move(segments),
       .telemetry = telemetry,
+      .producer_evidence = {},
   };
+  route.producer_evidence.evidence =
+      std::make_shared<const CpuRouteProducerEvidence>(CpuRouteProducerEvidence{
+          .source_board_content_hash = route.source_board_content_hash,
+          .compiler_profile_fingerprint = route.compiler_profile_fingerprint,
+          .compiler_version = route.compiler_version,
+          .rule_bucket_identity = route.rule_bucket_identity,
+          .candidate_policy_identity = route.candidate_policy_identity,
+          .total_cost = route.total_cost,
+          .segments = route.segments,
+      });
+  return route;
 }
 
 }  // namespace apgar::routing

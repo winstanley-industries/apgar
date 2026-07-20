@@ -39,18 +39,59 @@ identity, so they cannot detect cross-query contamination.
 - DeviceCompiledBoard v1 remains the immutable prepared board upload. A
   separately versioned batch query/result protocol carries query, policy,
   workspace-owner, bounds, completion, and telemetry associations.
+- Public helpers can construct and update only unsealed diagnostic items. After
+  complete untrusted-result validation and reconstruction, the host moves a
+  reached result into a separately allocated, truly const evidence snapshot
+  bound to the schema and batch identity. Copies share that snapshot and public
+  mutation attempts fail. Public batch fields are checked for consistency but
+  cannot by themselves manufacture GPU provenance; failure items remain
+  unsealed. CUDA candidate provenance also requires explicit preparation by an
+  always-linked core check of the exact final CUDA wrapper type. That wrapper's
+  construction and delegate binding are private to the CUDA factory; generic
+  backends and wrappers cannot acquire producer authentication, including
+  wrappers that forward to the real CUDA backend and expose identical metadata.
 - Batch workspaces are disjoint checked query-major slices. One ordinary query
   failure cannot overwrite another query. Device-produced result ownership is
   validated before reconstruction.
-- Host preflight validates and classifies each query's ordinal, routing request,
-  and normalized policy before backend metadata discovery or upload. A shared
-  backend failure applies only to queries that survived preflight; deterministic
-  invalid or unsupported peer results are retained.
-- Aggregate normalized policy resources are bounded to one million per v1
-  input batch. A separate checked logical host-memory budget covers encoded and
-  retained query/policy envelopes plus simultaneous flat and partitioned
-  readback workspaces. Overflow, configured-budget failure, and host allocation
-  failure are explicit `ResourceExhausted` outcomes.
+- Host preflight normalizes every independently valid candidate policy before
+  classifying its routing request and compiled endpoint representation, and
+  retains that policy identity even when the request is invalid, unsupported,
+  off-lattice, or outside the represented sparse field. `input_ordinal` is
+  caller correlation only and is independent of the policy's provenance
+  `candidate_ordinal`. Preflight occurs before backend metadata discovery or
+  upload. Resolved compiled endpoints are carried into device-query encoding
+  rather than semantically resolved a second time. A shared backend failure
+  applies only to queries that survived preflight; deterministic invalid or
+  unsupported peer results are retained. Prepared execution follows the same
+  rule: if no query survives preflight, the result is returned without
+  inspecting the prepared view, and an unavailable or association-mismatched
+  prepared view fails only the admitted survivors.
+- Submitted resources from all individually shape-valid policies are summed in
+  O(query count) and bounded to one million before any valid policy is copied,
+  sorted, iterated, or hashed. Exceeding that work bound is one outer
+  `ResourceExhausted` outcome; this is an explicit peer-retention exception
+  because deriving policy identities would itself exceed the declared bound.
+  Individually invalid shapes remain cheap query-local failures when the valid
+  aggregate fits. The pre-normalization host peak is the fixed all-input
+  classification/result envelope plus 40 bytes for each such submitted entry.
+  Policy normalization compacts owned vectors in place, and compile-time layout
+  checks keep both resource-key and penalty records within that 40-byte schema
+  bound. This peak is checked before normalization and is not added to the later
+  phase peak. Aggregate normalized policy resources are independently
+  bounded to one million per v1 device-admitted batch. A separate checked
+  logical host-memory budget covers a
+  small classification/result envelope for every input plus encoded policies
+  and simultaneous flat and partitioned readback workspaces only for queries
+  admitted to execution. An allocation-free check proves that the minimum
+  all-input classification/result envelope fits before uniqueness, output, or
+  admission bookkeeping is allocated. If it does not fit, the API returns one
+  outer `ResourceExhausted` because per-query results cannot be retained within
+  the declared cap. Once that minimum is affordable, classification precedes
+  complete accounting. Aggregate or configured-budget exhaustion marks
+  otherwise admitted queries `ResourceExhausted`, preserves already-classified
+  invalid or unsupported peers, and prevents backend discovery when no
+  executable query remains. Host allocation failure remains an explicit
+  `ResourceExhausted` outcome.
 - The frontier evolves into a bounded deterministic heuristic A*-style
   explorer with an admissible policy-aware heuristic and stable
   `(query, f, g, state, heading)` winner key. It does not use a conventional
@@ -66,6 +107,23 @@ identity, so they cannot detect cross-query contamination.
   finalization launch independently of untrusted per-query headers. Batch-wide
   launch/readback accounting uses only that shared envelope; a corrupt query
   completion or round value is rejected locally without invalidating peers.
+- GPU `Disconnected` is a negative claim and is never accepted from labels and
+  predecessors alone. After structural validation, CPU A* must independently
+  return `Disconnected` under the identical normalized policy. A CPU-reachable
+  result rejects the GPU output as `gpu.disconnected.cpu_reachable.v1`; an
+  oracle failure yields its corresponding non-disconnected structured outcome.
+- The public untrusted-result reconstruction seam always normalizes and applies
+  the request's complete policy, including bans, penalties, objective
+  surcharges, and policy identity. It has no policy-free validation mode.
+- Every candidate-batch trust-boundary invariant introduced in Phase 3 has a
+  checksummed GPU Candidate-Batch Replay v1 artifact and a replay/test-only
+  decorator scenario. This includes the CPU-oracle disconnection check; the six
+  workspace, ownership, query/batch telemetry, memory-accounting, and identity
+  classes; and rejection of a host-valid CUDA-looking wrapper that lacks
+  concrete producer authentication.
+  `bazel test --config=cuda //:gpu_batch_replay_test` reproduces all eight exact
+  invariant/outcome identifiers without exposing fault controls to production
+  generator policy.
 - CPU A* remains the correctness oracle, production default, small-job and
   unsupported-policy fallback until a reproducible end-to-end bakeoff supports
   another dispatch decision.

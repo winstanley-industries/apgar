@@ -1674,7 +1674,7 @@ struct CandidateBatchAllocation {
   return std::nullopt;
 }
 
-class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
+class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
  public:
   [[nodiscard]] BackendMetadataResult QueryMetadata() const override {
     int device = 0;
@@ -2369,8 +2369,11 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
 
 }  // namespace
 
+CudaPlanarRouteBackend::CudaPlanarRouteBackend()
+    : implementation_(std::make_unique<CudaPlanarRouteBackendImpl>()) {}
+
 std::unique_ptr<IPlanarRouteBackend> CreateCudaPlanarRouteBackend() {
-  return std::make_unique<CudaPlanarRouteBackend>();
+  return std::unique_ptr<IPlanarRouteBackend>(new CudaPlanarRouteBackend());
 }
 
 }  // namespace apgar::gpu

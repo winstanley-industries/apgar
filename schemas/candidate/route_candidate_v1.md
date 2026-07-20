@@ -42,6 +42,80 @@ Stable one-byte provenance tags are:
 Unknown provenance tags are incompatible. A CPU A* generator must name the CPU
 backend; both CUDA generators must name the CUDA backend.
 
+`supported_device_class` is valid UTF-8, non-empty for an accepted candidate,
+and at most 1,024 encoded bytes. This is a schema-v1 compatibility bound, not
+an implementation string-capacity choice.
+
+Generator provenance is not caller-selectable metadata. The CPU-route builder
+accepts only explicit nonzero batch/query scheduling identities and derives
+`CPU A*`, generator version `1`, `CPU`, and `cpu-reference-v1` itself. The GPU
+builder accepts a successful route only together with its validated
+DeviceCandidateBatch v1 batch, query, and item envelope; it independently
+matches batch ID, query ID, input ordinal, policy identity, generator, backend
+metadata, supported CUDA device class, immutable device-view fingerprint, and
+route associations before deriving provenance. Public helpers may construct or
+mutate only unsealed diagnostic items. A successful item becomes an opaque host
+capability when validation moves its result into a separately allocated,
+truly-const evidence snapshot bound to the DeviceCandidateBatch schema version
+and batch ID; copies share that immutable snapshot, and later public mutation
+attempts fail. The snapshot must also record producer authentication from the
+explicit preparation boundary. The authentication implementation is part of
+the always-linked core and accepts only the exact final CUDA wrapper type; that
+wrapper has private construction and delegate binding supplied by the
+checksum-pinned CUDA factory. Generic backends and wrappers are ineligible even
+when their metadata says `cuda` or they forward execution to the real CUDA
+backend. Public batch metadata is consistency context and cannot authenticate a
+route by itself. A
+genuinely sealed item remains usable only with the one uniquely matching query
+identity in the matching batch envelope. A CPU route cannot claim CUDA
+provenance, caller-created metadata cannot fabricate authenticated GPU
+evidence, and moving a genuine GPU item under another query is an association
+rejection. `input_ordinal` identifies request scheduling only; it is not
+required to equal the policy's `candidate_ordinal`.
+
+The CPU route accepted by that builder is itself an opaque exact capability:
+`RouteWithCpuAStar` seals its Board/compiler/rule associations, normalized
+policy identity, scalar cost, and exact segment sequence. A public `CpuRoute`
+aggregate without that evidence, or any mutation of a sealed semantic field,
+is rejected with `candidate.builder.cpu_producer_authentication.v1`. Test code
+may reseal deliberately injected routes only by depending on the source-private
+Bazel `testonly` decorator library; production targets and installed public
+headers expose no evidence mint. APGAR implementation code intentionally
+depending on source-private headers is inside this C++ trust boundary; hostile
+runtime inputs and clients of the supported public dependency graph are not.
+
+Both typed builders also seal the complete finalized GeneratedRouteCandidate
+payload in an immutable evidence snapshot. Direct admission compares every
+public field with that snapshot after independent exact validation. A copied
+CPU draft relabeled as CUDA, a GPU draft moved under another provenance, or an
+otherwise-valid caller rewrite fails
+`candidate.provenance.producer_authentication.v1`. Producer evidence is a
+transient in-process capability: it is excluded from serialization and logical
+bytes and stripped before the accepted immutable RouteCandidate is stored.
+
+Concrete CUDA preparation rejects an ineligible backend with GPU invariant
+`gpu.producer.authentication.v1`. If a generic backend nevertheless produces a
+host-valid reached item, candidate construction rejects it as `unsupported`
+with candidate invariant
+`candidate.builder.gpu_producer_authentication.v1`; host validation and
+producer authentication are independent requirements.
+
+## Candidate identity v1
+
+Candidate ID is derived, not caller-assigned. Two independently
+domain-separated FNV-1a64 hashes encode, in order: net entity ID/generation;
+Board content hash, compiler-profile fingerprint, geometry-compiler version,
+routing-profile fingerprint, and rule-bucket identity; verified policy
+identity; then generator tag, generator version, backend tag,
+supported-device-class length/bytes, deterministic seed, batch identity, query
+identity, and candidate ordinal. Fixed-width integers use the canonical
+little-endian encoding below.
+
+Domain `APGAR-CANDIDATE-ID-V1-A` produces the high half and domain
+`APGAR-CANDIDATE-ID-V1-B` produces the low half. If both halves are zero, v1
+sets the low half to one; every other pair is unchanged. Candidate-ID hashes
+provide stable identity but are not collision-proof equality evidence.
+
 ## Geometry v1
 
 The ordered primitive union reserves these stable tags:
@@ -100,7 +174,8 @@ count, and positive unsigned 32-bit usage units. Adjacent compatible spans are
 maximally coalesced in ascending physical-resource-key order. East,
 north-east, and north spans advance in their named direction; north-west spans
 advance south-east between stored canonical edge sources so their keys remain
-ascending. V1 usage is exactly one per traversed edge. A repeated
+ascending. The vector contains at most 1,000,000 spans. V1 usage is exactly one
+per traversed edge. A repeated
 physical edge is rejected with `candidate.resources.reused_edge.v1` rather
 than encoded with multiplicity: all Phase 3 transition costs are nonnegative,
 so a shortest-path candidate containing such a loop can be strictly simplified
@@ -110,6 +185,16 @@ Admission expands the geometry against the associated CompiledBoard, derives
 the collision-free atomic resource keys, recompresses them, and requires exact
 equality with the supplied footprint. Hash equality is never accepted as
 footprint equality.
+
+Exact reconstruction materializes at most 1,000,000 atomic physical edges per
+candidate before sorting and recompression. Attempting the next edge returns
+`BudgetExhausted` with
+`candidate.resources.expanded_edge_budget.v1`, the fixed limit, attempted
+count, and primitive witness. A long segment on a large CompiledBoard therefore
+cannot bypass bounded admission work merely because it would compress to one
+span. Geometry within that schema bound but absent from a sparse or
+false-blocked CompiledBoard is `ResourceMismatch` with
+`candidate.resources.compiled_edge.v1`, not arithmetic overflow.
 
 ## Metrics and constraints
 
@@ -182,6 +267,35 @@ no such extension fields.
 counts and every element, but excluding allocator metadata, capacities,
 indices, mutexes, store metadata, and source Board/CompiledBoard storage. Count
 and multiplication overflow is rejected before allocation or iteration.
+The public planar-route builders check the incoming segment count against the
+1,000,000-primitive limit before reserving or copying draft geometry.
+They also check the supplied normalized policy's banned and penalized resource
+counts in O(1) before copying or hashing either vector. CPU and GPU builders and
+direct exact admission reject an over-limit policy with
+`candidate.policy.resource_entry_count.v1`; the rejection deliberately omits a
+candidate-payload checksum because the invalid bulk payload is never walked.
+This O(1) safety preflight precedes other builder and direct-admission
+diagnostics.
+
+The complete direct-admission shape precedence is policy resource entries,
+geometry primitive count, resource-span count, then supported-device-class
+encoded bytes. Limits are respectively 1,000,000, 1,000,000, 1,000,000, and
+1,024. Equality with each limit proceeds; limit plus one fails with the
+corresponding invariant `candidate.policy.resource_entry_count.v1`,
+`candidate.geometry.primitive_count.v1`,
+`candidate.resources.span_count.v1`, or
+`candidate.provenance.device_class_bytes.v1`. A failed shape preflight is
+diagnosed without walking or hashing that bulk payload and therefore omits
+`candidate_payload_checksum`, regardless of a nonzero checksum claimed by the
+input. For every bounded rejection, the checksum is independently recomputed
+from the actual available draft fields; the claimed checksum is never adopted
+as rejection evidence.
+
+Public direct admission has two ownership forms. The lvalue form performs the
+complete O(1) shape preflight by reference before making one bounded owned
+copy. The rvalue form performs the same checks before consuming the caller's
+payload. Implementation parameter passing may not reintroduce a bulk copy
+before these checks.
 
 `RouteCandidateTest.CanonicalV1IdentitySignaturesChecksumAndBytesHaveGoldenValues`
 is the v1 conformance vector. It fixes candidate identity, both signatures,

@@ -18,6 +18,17 @@ Unknown schema versions and objective identifiers are unsupported. Candidate
 ordinal participates in provenance and identity even when two ordinals have
 otherwise identical search semantics.
 
+The two public resource containers are untrusted input. Each count and their
+aggregate count must be at most 1,000,000. Normalization checks those three
+conditions from container sizes in O(1), before copying, sorting, iterating, or
+fingerprinting any resource entry. Only a policy that passes this shape
+preflight may be copied into the owned normalized representation or passed to
+the policy-identity hash. A forged `NormalizedCandidateGenerationPolicy` does
+not bypass the same preflight at CPU/GPU candidate builders or exact candidate
+admission. The shape failure takes precedence over schema/objective and other
+semantic diagnostics because interpreting an incompatible bulk payload is not
+required to reject it safely.
+
 ## Planar resource key
 
 Phase 3 v1 names one physical compiled edge with a collision-free structured

@@ -36,6 +36,15 @@ TEST(Phase3CommitTest, RequiresRuntimeEvidenceLabelToMatchBuiltSource) {
   EXPECT_FALSE(CommitMatchesBuiltSource(kBuiltCommit, "01234567"));
 }
 
+TEST(Phase3CommitTest, PublishableSourceMustBeStampedCleanAndMatching) {
+  constexpr std::string_view kBuiltCommit = "0123456789abcdef0123456789abcdef01234567";
+  EXPECT_TRUE(IsPublishableBenchmarkSource(kBuiltCommit, kBuiltCommit, true, false));
+  EXPECT_FALSE(IsPublishableBenchmarkSource(kBuiltCommit, kBuiltCommit, false, false));
+  EXPECT_FALSE(IsPublishableBenchmarkSource(kBuiltCommit, kBuiltCommit, true, true));
+  EXPECT_FALSE(IsPublishableBenchmarkSource("1123456789abcdef0123456789abcdef01234567",
+                                            kBuiltCommit, true, false));
+}
+
 TEST(Phase3CommitTest, ValidatesOperatorRecordedDriverVersionLabels) {
   EXPECT_TRUE(IsDriverVersionLabel("610.62"));
   EXPECT_TRUE(IsDriverVersionLabel("1"));

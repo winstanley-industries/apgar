@@ -5,6 +5,7 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -24,7 +25,10 @@ inline constexpr std::uint16_t kRouteCandidateSchemaMajor = 1;
 inline constexpr std::uint16_t kRouteCandidateSchemaMinor = 0;
 inline constexpr std::uint32_t kCandidateGeometrySchemaVersion = 1;
 inline constexpr std::uint32_t kCandidateResourceSchemaVersion = 1;
+inline constexpr std::uint32_t kCandidateRejectionSchemaVersion = 1;
 inline constexpr std::uint64_t kMaximumCandidatePrimitives = 1'000'000;
+inline constexpr std::uint64_t kMaximumCandidateResourceSpans = 1'000'000;
+inline constexpr std::uint64_t kMaximumCandidateExpandedResourceEdges = 1'000'000;
 inline constexpr std::uint64_t kMaximumCandidateSelfClearancePairChecks = 1'000'000;
 inline constexpr std::size_t kMaximumCandidateDiagnosticBytes = 1024;
 
@@ -42,6 +46,25 @@ using CandidateId = Hash128;
 using CandidateSignature = Hash128;
 
 struct RouteCandidateAdmissionFactory;
+struct GeneratedRouteCandidateProducerFactory;
+struct CandidateProducerEvidence;
+
+// Copyable opaque capability. Callers may move/copy/reset a handle, but only
+// typed producer adapters can create evidence and admission requires an exact
+// payload match, so moving a handle between drafts cannot authenticate either.
+class CandidateProducerEvidenceHandle {
+ public:
+  CandidateProducerEvidenceHandle() = default;
+  CandidateProducerEvidenceHandle(const CandidateProducerEvidenceHandle&) = default;
+  CandidateProducerEvidenceHandle(CandidateProducerEvidenceHandle&&) noexcept = default;
+  CandidateProducerEvidenceHandle& operator=(const CandidateProducerEvidenceHandle&) = default;
+  CandidateProducerEvidenceHandle& operator=(CandidateProducerEvidenceHandle&&) noexcept = default;
+
+ private:
+  std::shared_ptr<const CandidateProducerEvidence> evidence_;
+
+  friend struct GeneratedRouteCandidateProducerFactory;
+};
 
 struct CandidateAssociations {
   std::uint64_t board_content_hash = 0;
@@ -152,7 +175,10 @@ struct ConstraintAssessment {
 
 // Generator-owned and intentionally mutable until it crosses admission. Every
 // derived field is independently recomputed before an immutable RouteCandidate
-// can be constructed.
+// can be constructed. Successful typed builders additionally attach private,
+// exact producer evidence. Public mutation cannot relabel one producer as
+// another: admission compares the complete finalized payload with that
+// immutable evidence before accepting it.
 struct GeneratedRouteCandidate {
   std::uint16_t schema_major = kRouteCandidateSchemaMajor;
   std::uint16_t schema_minor = kRouteCandidateSchemaMinor;
@@ -173,8 +199,9 @@ struct GeneratedRouteCandidate {
   CandidateSignature resource_signature;
   std::uint64_t payload_checksum = 0;
   std::uint64_t logical_bytes = 0;
+  CandidateProducerEvidenceHandle producer_evidence;
 
-  friend bool operator==(const GeneratedRouteCandidate&, const GeneratedRouteCandidate&) = default;
+  friend bool operator==(const GeneratedRouteCandidate&, const GeneratedRouteCandidate&);
 };
 
 class RouteCandidate {
@@ -229,7 +256,7 @@ enum class CandidateRejectionCode : std::uint8_t {
 };
 
 struct CandidateRejection {
-  std::uint32_t schema_version = 1;
+  std::uint32_t schema_version = kCandidateRejectionSchemaVersion;
   std::optional<CandidateId> candidate_id;
   std::optional<board_ir::EntityRef> net;
   CandidateLifecycleStage stage = CandidateLifecycleStage::kGenerated;
@@ -242,7 +269,7 @@ struct CandidateRejection {
   std::optional<std::uint64_t> resource_witness_index;
   std::optional<std::uint64_t> expected_value;
   std::optional<std::uint64_t> actual_value;
-  std::optional<board_ir::EntityRef> obstacle;
+  std::optional<board_ir::EntityRef> conflicting_entity;
   std::optional<std::uint64_t> candidate_payload_checksum;
   std::string detail;
   std::uint64_t logical_bytes = 0;
@@ -258,15 +285,18 @@ struct CandidateAdmissionContext {
 
 using CandidateAdmissionResult = std::variant<RouteCandidate, CandidateRejection>;
 
-struct CandidateBuildError {
-  CandidateRejectionCode code = CandidateRejectionCode::kInvalidInput;
-  std::string invariant_id;
-  std::string detail;
+// Batch/query identities describe deterministic scheduling and remain distinct
+// from a policy's candidate ordinal. Generator/backend/device provenance is
+// derived by typed evidence builders rather than accepted from callers.
+struct CandidateSchedulingIdentity {
+  std::uint64_t batch_identity = 0;
+  std::uint64_t query_identity = 0;
 
-  friend bool operator==(const CandidateBuildError&, const CandidateBuildError&) = default;
+  friend bool operator==(const CandidateSchedulingIdentity&,
+                         const CandidateSchedulingIdentity&) = default;
 };
 
-using CandidateDraftBuildResult = std::variant<GeneratedRouteCandidate, CandidateBuildError>;
+using CandidateDraftBuildResult = std::variant<GeneratedRouteCandidate, CandidateRejection>;
 
 [[nodiscard]] CandidateAssociations AssociationsFor(
     const board_ir::BoardSnapshot& board,
@@ -288,37 +318,47 @@ using CandidateDraftBuildResult = std::variant<GeneratedRouteCandidate, Candidat
 [[nodiscard]] std::optional<std::uint64_t> ComputeRejectionLogicalBytes(
     const CandidateRejection& rejection) noexcept;
 
+// Validates the public Candidate Rejection v1 envelope and recomputes its
+// canonical logical-byte count. Malformed external records are replaced by one
+// bounded candidate.rejection.ingestion.v1 diagnostic rather than retained as
+// if they were valid schema-v1 evidence. The envelope and O(1) text-size bounds
+// are checked by reference before any caller-owned string is copied.
+[[nodiscard]] CandidateRejection CanonicalizeCandidateRejectionV1(
+    const CandidateRejection& submitted_rejection);
+
 // Populates signatures, checksum, and logical bytes for a canonical draft.
 // Admission still recomputes and checks each value independently.
-[[nodiscard]] std::optional<CandidateBuildError> FinalizeGeneratedCandidateDraft(
+[[nodiscard]] std::optional<CandidateRejection> FinalizeGeneratedCandidateDraft(
     GeneratedRouteCandidate& candidate) noexcept;
 
-// Public deterministic seam used by CPU/GPU generation, benchmarks, and
-// replay decorators. The supplied planar result associations, policy identity,
-// scalar cost, and geometry are independently checked; this seam provides no
-// fault-injection behavior.
-[[nodiscard]] CandidateDraftBuildResult BuildGeneratedCandidateFromPlanarRoute(
-    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
-    const routing::PlanarRouteRequest& request,
-    const routing::NormalizedCandidateGenerationPolicy& normalized_policy,
-    const CandidateAssociations& route_associations, std::uint64_t route_policy_identity,
-    std::uint64_t reported_scalar_cost, std::span<const routing::LayerSegment> segments,
-    CandidateProvenance provenance);
-
+// CPU evidence cannot claim GPU provenance. The builder derives the CPU A*,
+// CPU backend, and cpu-reference-v1 fields and accepts only scheduling IDs.
 [[nodiscard]] CandidateDraftBuildResult BuildGeneratedCandidateFromCpuRoute(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     const routing::CpuRouteRequest& request,
     const routing::NormalizedCandidateGenerationPolicy& normalized_policy,
-    const routing::CpuRoute& route, CandidateProvenance provenance);
+    const routing::CpuRoute& route, CandidateSchedulingIdentity scheduling);
 
+// Lvalue admission performs every O(1) payload-shape check by reference before
+// making a bounded owned copy. Rvalue admission checks before consuming the
+// caller-owned payload. Neither public seam performs an implicit hostile bulk
+// copy before shape preflight.
+[[nodiscard]] CandidateAdmissionResult AdmitRouteCandidate(
+    const CandidateAdmissionContext& context, const GeneratedRouteCandidate& generated);
 [[nodiscard]] CandidateAdmissionResult AdmitRouteCandidate(const CandidateAdmissionContext& context,
-                                                           GeneratedRouteCandidate generated);
+                                                           GeneratedRouteCandidate&& generated);
 
 // Test-only hostile-input seam. The supplied budget is clamped to the fixed
 // production maximum and therefore cannot weaken admission bounds.
 [[nodiscard]] CandidateAdmissionResult AdmitRouteCandidateWithReducedSelfClearanceBudgetForTesting(
-    const CandidateAdmissionContext& context, GeneratedRouteCandidate generated,
+    const CandidateAdmissionContext& context, GeneratedRouteCandidate&& generated,
     std::uint64_t maximum_pair_checks);
+
+// Test/replay decorator seam for the production expanded-resource bound. The
+// supplied value is clamped to the fixed schema-v1 maximum.
+[[nodiscard]] CandidateAdmissionResult AdmitRouteCandidateWithReducedResourceEdgeBudgetForTesting(
+    const CandidateAdmissionContext& context, GeneratedRouteCandidate&& generated,
+    std::uint64_t maximum_expanded_resource_edges);
 
 [[nodiscard]] bool CanonicalGeometryEqual(const RouteCandidate& left,
                                           const RouteCandidate& right) noexcept;

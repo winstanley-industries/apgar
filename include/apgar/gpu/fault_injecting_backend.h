@@ -15,8 +15,25 @@ enum class UntrustedResultFault : std::uint8_t {
   kGoalPredecessorSelfCycle,
 };
 
+// Replay/test-only corruption of one batched candidate readback. These faults
+// model distinct host trust-boundary invariant classes; they are deliberately
+// absent from production generator policy and concrete CUDA backends.
+enum class UntrustedCandidateBatchResultFault : std::uint8_t {
+  kNone,
+  kWorkspaceBounds,
+  kWorkspaceOwner,
+  kQueryTelemetry,
+  kMemoryAccounting,
+  kBatchTelemetry,
+  kQueryIdentity,
+  kFalseDisconnected,
+};
+
 [[nodiscard]] std::unique_ptr<IPlanarRouteBackend> CreateFaultInjectingPlanarRouteBackend(
     IPlanarRouteBackend& inner, UntrustedResultFault fault);
+
+[[nodiscard]] std::unique_ptr<IPlanarRouteBackend> CreateFaultInjectingCandidateBatchBackend(
+    IPlanarRouteBackend& inner, UntrustedCandidateBatchResultFault fault);
 
 }  // namespace apgar::gpu
 

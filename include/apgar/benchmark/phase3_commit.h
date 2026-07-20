@@ -27,6 +27,14 @@ inline constexpr std::size_t kMaximumDriverVersionLabelCharacters = 32;
          runtime_commit == built_commit;
 }
 
+[[nodiscard]] constexpr bool IsPublishableBenchmarkSource(std::string_view runtime_commit,
+                                                          std::string_view built_commit,
+                                                          bool source_stamped,
+                                                          bool built_from_dirty_tree) noexcept {
+  return source_stamped && !built_from_dirty_tree &&
+         CommitMatchesBuiltSource(runtime_commit, built_commit);
+}
+
 [[nodiscard]] constexpr bool IsDriverVersionLabel(std::string_view version) noexcept {
   if (version.empty() || version.size() > kMaximumDriverVersionLabelCharacters ||
       version.front() == '.' || version.back() == '.') {

@@ -2,6 +2,9 @@ load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library", "cuda_test")
+load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_test.bzl", "py_test")
+load("//bazel:source_stamp.bzl", "source_stamp_header")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -106,7 +109,10 @@ cc_library(
 
 cc_library(
     name = "cpu_astar",
-    srcs = ["src/routing/cpu_astar.cc"],
+    srcs = [
+        "src/routing/cpu_astar.cc",
+        "src/routing/cpu_astar_internal.h",
+    ],
     hdrs = ["include/apgar/routing/cpu_astar.h"],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",
@@ -121,8 +127,20 @@ cc_library(
 )
 
 cc_library(
+    name = "cpu_route_evidence_test_support",
+    testonly = True,
+    srcs = ["tests/support/cpu_route_evidence_test_access.cc"],
+    hdrs = ["tests/support/cpu_route_evidence_test_access.h"],
+    copts = APGAR_COPTS,
+    deps = [":cpu_astar"],
+)
+
+cc_library(
     name = "candidate_contract",
-    srcs = ["src/candidates/route_candidate.cc"],
+    srcs = [
+        "src/candidates/route_candidate.cc",
+        "src/candidates/route_candidate_internal.h",
+    ],
     hdrs = ["include/apgar/candidates/route_candidate.h"],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",
@@ -173,6 +191,26 @@ cc_library(
 )
 
 cc_library(
+    name = "gpu_candidate_adapter",
+    srcs = [
+        "src/candidates/gpu_candidate_adapter.cc",
+        "src/candidates/route_candidate_internal.h",
+    ],
+    hdrs = ["include/apgar/candidates/gpu_candidate_adapter.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":geometry_compiler",
+        ":gpu_planar_router",
+        ":planar_route",
+    ],
+)
+
+cc_library(
     name = "gpu_fault_injecting_backend",
     srcs = ["src/gpu/fault_injecting_backend.cc"],
     hdrs = ["include/apgar/gpu/fault_injecting_backend.h"],
@@ -218,6 +256,17 @@ cc_library(
 cc_library(
     name = "phase3_commit",
     hdrs = ["include/apgar/benchmark/phase3_commit.h"],
+    strip_include_prefix = "include",
+)
+
+source_stamp_header(
+    name = "phase3_source_stamp_header",
+    out = "include/apgar/benchmark/phase3_source_stamp.h",
+)
+
+cc_library(
+    name = "phase3_source_stamp",
+    hdrs = [":phase3_source_stamp_header"],
     strip_include_prefix = "include",
 )
 
@@ -290,6 +339,38 @@ cc_binary(
 )
 
 cc_binary(
+    name = "gpu_batch_replay",
+    srcs = ["tools/gpu_batch_replay.cc"],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/gpu/batch_false_disconnected_v1.replay",
+        "replays/gpu/batch_memory_accounting_v1.replay",
+        "replays/gpu/batch_query_identity_v1.replay",
+        "replays/gpu/batch_query_telemetry_v1.replay",
+        "replays/gpu/batch_telemetry_v1.replay",
+        "replays/gpu/batch_unauthenticated_cuda_producer_v1.replay",
+        "replays/gpu/batch_workspace_bounds_v1.replay",
+        "replays/gpu/batch_workspace_owner_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":cuda_planar_route_backend",
+        ":gpu_candidate_adapter",
+        ":gpu_fault_injecting_backend",
+        ":gpu_planar_router",
+        ":planar_benchmark_corpus",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
     name = "candidate_replay",
     srcs = ["tools/candidate_replay.cc"],
     copts = APGAR_COPTS,
@@ -305,6 +386,47 @@ cc_binary(
         ":planar_benchmark_corpus",
         ":tool_runfiles",
     ],
+)
+
+py_binary(
+    name = "phase3_evidence_validator",
+    srcs = ["tools/validate_phase3_evidence.py"],
+    legacy_create_init = 0,
+    main = "tools/validate_phase3_evidence.py",
+    python_version = "3.13",
+)
+
+py_test(
+    name = "phase3_evidence_test",
+    size = "small",
+    srcs = ["tools/validate_phase3_evidence.py"],
+    data = [
+        "benchmarks/phase3_candidate_dispatch_diversity_report.md",
+        "benchmarks/results/phase3_candidate_bakeoff_eee3794.json",
+        "benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json",
+        "docs/adr/ADR-013-phase3-candidate-dispatch-conclusions.md",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase3_evidence.py",
+    python_version = "3.13",
+)
+
+py_test(
+    name = "phase3_evidence_corruption_test",
+    size = "small",
+    srcs = [
+        "tools/validate_phase3_evidence.py",
+        "tools/validate_phase3_evidence_test.py",
+    ],
+    data = [
+        "benchmarks/phase3_candidate_dispatch_diversity_report.md",
+        "benchmarks/results/phase3_candidate_bakeoff_eee3794.json",
+        "benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json",
+        "docs/adr/ADR-013-phase3-candidate-dispatch-conclusions.md",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase3_evidence_test.py",
+    python_version = "3.13",
 )
 
 cc_test(
@@ -373,7 +495,6 @@ cc_binary(
     copts = APGAR_COPTS,
     data = ["tests/fixtures/m1_exactness.kicad_pcb"],
     linkopts = ["-pthread"],
-    local_defines = ["APGAR_PHASE3_BUILT_COMMIT=\\\"$(APGAR_COMMIT)\\\""],
     tags = [
         "manual",
         "requires-gpu",
@@ -387,8 +508,10 @@ cc_binary(
         ":cpu_astar",
         ":cuda_planar_route_backend",
         ":geometry_compiler",
+        ":gpu_candidate_adapter",
         ":gpu_planar_router",
         ":phase3_commit",
+        ":phase3_source_stamp",
         ":planar_benchmark_corpus",
         ":planar_route",
         ":tool_runfiles",
@@ -413,6 +536,39 @@ cc_test(
     deps = [
         ":board_ir",
         ":cuda_planar_route_backend",
+        ":gpu_fault_injecting_backend",
+        ":gpu_planar_router",
+        ":planar_benchmark_corpus",
+        ":tool_runfiles",
+    ],
+)
+
+cc_test(
+    name = "gpu_batch_replay_test",
+    size = "small",
+    srcs = ["tools/gpu_batch_replay.cc"],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/gpu/batch_false_disconnected_v1.replay",
+        "replays/gpu/batch_memory_accounting_v1.replay",
+        "replays/gpu/batch_query_identity_v1.replay",
+        "replays/gpu/batch_query_telemetry_v1.replay",
+        "replays/gpu/batch_telemetry_v1.replay",
+        "replays/gpu/batch_unauthenticated_cuda_producer_v1.replay",
+        "replays/gpu/batch_workspace_bounds_v1.replay",
+        "replays/gpu/batch_workspace_owner_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":cuda_planar_route_backend",
+        ":gpu_candidate_adapter",
         ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
@@ -519,10 +675,12 @@ cc_test(
     target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     deps = [
         ":board_ir",
+        ":candidate_contract",
         ":candidate_policy",
         ":cpu_astar",
         ":cuda_planar_route_backend",
         ":geometry_compiler",
+        ":gpu_candidate_adapter",
         ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
@@ -581,9 +739,35 @@ cc_test(
         ":candidate_contract",
         ":candidate_policy",
         ":cpu_astar",
+        ":cpu_route_evidence_test_support",
         ":geometry_compiler",
+        ":gpu_planar_router",
         ":planar_route",
         ":utf8",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "route_candidate_property_test",
+    size = "small",
+    srcs = [
+        "tests/candidates/route_candidate_property_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":cpu_route_evidence_test_support",
+        ":geometry_compiler",
+        ":planar_route",
         "@googletest//:gtest_main",
     ],
 )
@@ -606,6 +790,7 @@ cc_test(
         ":candidate_policy",
         ":candidate_store",
         ":cpu_astar",
+        ":cpu_route_evidence_test_support",
         ":geometry_compiler",
         ":planar_route",
         "@googletest//:gtest_main",

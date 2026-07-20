@@ -9,9 +9,18 @@
 #include "apgar/candidates/route_candidate.h"
 #include "apgar/routing/candidate_policy.h"
 #include "apgar/routing/cpu_astar.h"
+#include "tests/support/cpu_route_evidence_test_access.h"
 #include "tests/support/google_test.h"
 
 namespace apgar::test_support {
+
+// Explicit test-only fault decorator. Production code has no resealing API;
+// tests that inject exact route/cost/association failures must opt into this
+// seam after constructing or mutating a CpuRoute payload.
+class CpuRouteFaultDecorator {
+ public:
+  static void Reseal(routing::CpuRoute& route) { ResealCpuRouteEvidenceForTest(route); }
+};
 
 [[nodiscard]] inline routing::NormalizedCandidateGenerationPolicy NormalizePolicy(
     const geometry_compiler::CompiledBoard& compiled, const routing::CpuRouteRequest& request) {
@@ -22,21 +31,6 @@ namespace apgar::test_support {
     std::abort();
   }
   return std::get<routing::NormalizedCandidateGenerationPolicy>(std::move(result));
-}
-
-[[nodiscard]] inline candidates::CandidateProvenance CpuCandidateProvenance(
-    const routing::CandidateGenerationPolicy& policy, std::uint64_t batch_identity = 1,
-    std::uint64_t query_identity = 1) {
-  return candidates::CandidateProvenance{
-      .generator = candidates::CandidateGeneratorKind::kCpuAStar,
-      .generator_version = 1,
-      .backend = candidates::CandidateBackendKind::kCpu,
-      .supported_device_class = "cpu-reference-v1",
-      .deterministic_seed = policy.deterministic_seed,
-      .batch_identity = batch_identity,
-      .query_identity = query_identity,
-      .candidate_ordinal = policy.candidate_ordinal,
-  };
 }
 
 [[nodiscard]] inline routing::CpuRoute CpuRouteForCandidate(
@@ -61,10 +55,11 @@ namespace apgar::test_support {
   const routing::CpuRoute route = CpuRouteForCandidate(board, compiled, request);
   candidates::CandidateDraftBuildResult result = candidates::BuildGeneratedCandidateFromCpuRoute(
       board, compiled, request, policy, route,
-      CpuCandidateProvenance(policy.policy, batch_identity, query_identity));
+      candidates::CandidateSchedulingIdentity{.batch_identity = batch_identity,
+                                              .query_identity = query_identity});
   EXPECT_TRUE(std::holds_alternative<candidates::GeneratedRouteCandidate>(result))
-      << (std::holds_alternative<candidates::CandidateBuildError>(result)
-              ? std::get<candidates::CandidateBuildError>(result).detail
+      << (std::holds_alternative<candidates::CandidateRejection>(result)
+              ? std::get<candidates::CandidateRejection>(result).detail
               : std::string{});
   if (!std::holds_alternative<candidates::GeneratedRouteCandidate>(result)) {
     std::abort();

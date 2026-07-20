@@ -18,6 +18,10 @@ The evidence is the Google Benchmark v1 artifact
 `benchmarks/results/phase3_candidate_bakeoff_eee3794.json`, SHA-256
 `2e8e4beff7b1e6f281f5b170e9f7253403925a013e95a620f888f8395f0a6462`,
 built from exact source commit `eee37945ba005e535c6dde549e083ffca7cd249d`.
+The canonical
+`benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json` binds the exact
+bytes of that artifact, the human report, and this ADR with independent SHA-256
+digests; validation checks those digests before recomputing the conclusions.
 It covers eleven versioned corpus cases, candidate-pool requests of 4 through
 128, sequential and parallel CPU A*, batched CUDA heuristic frontier, and
 batched CUDA sweep. Each benchmark uses twenty repetitions, a 20 ms minimum

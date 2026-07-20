@@ -167,24 +167,34 @@ std::uint64_t FingerprintRoutingProfile(const board_ir::RoutingProfile& profile)
   return hash.Finish();
 }
 
+bool CandidateGenerationPolicyShapeIsWithinV1Bounds(
+    const CandidateGenerationPolicy& policy) noexcept {
+  const std::size_t banned_count = policy.banned_resources.size();
+  const std::size_t penalty_count = policy.resource_penalties.size();
+  return banned_count <= kMaximumPolicyResourceEntries &&
+         penalty_count <= kMaximumPolicyResourceEntries &&
+         banned_count <= kMaximumPolicyResourceEntries - penalty_count;
+}
+
 CandidatePolicyResult NormalizeCandidateGenerationPolicy(
-    const geometry_compiler::CompiledBoard& board, CandidateGenerationPolicy policy) {
-  if (policy.schema_version != kCandidateGenerationPolicySchemaVersion) {
-    return Error(CandidatePolicyErrorCode::kUnsupportedSchema,
-                 "Candidate policy schema version is unsupported");
-  }
-  if (!ObjectiveIsSupported(policy.objective)) {
-    return Error(CandidatePolicyErrorCode::kUnsupportedObjective,
-                 "Candidate policy objective is unsupported");
-  }
-  if (policy.banned_resources.size() > kMaximumPolicyResourceEntries ||
-      policy.resource_penalties.size() > kMaximumPolicyResourceEntries ||
-      policy.banned_resources.size() >
-          kMaximumPolicyResourceEntries - policy.resource_penalties.size()) {
+    const geometry_compiler::CompiledBoard& board,
+    const CandidateGenerationPolicy& submitted_policy) {
+  if (!CandidateGenerationPolicyShapeIsWithinV1Bounds(submitted_policy)) {
     return Error(CandidatePolicyErrorCode::kTooManyResources,
                  "Candidate policy exceeds the bounded resource-entry count");
   }
-
+  if (submitted_policy.schema_version != kCandidateGenerationPolicySchemaVersion) {
+    return Error(CandidatePolicyErrorCode::kUnsupportedSchema,
+                 "Candidate policy schema version is unsupported");
+  }
+  if (!ObjectiveIsSupported(submitted_policy.objective)) {
+    return Error(CandidatePolicyErrorCode::kUnsupportedObjective,
+                 "Candidate policy objective is unsupported");
+  }
+  // The public vectors are copied only after their O(1) counts have passed the
+  // schema-v1 shape bound. All subsequent normalization operates on this owned
+  // copy and may safely sort and iterate it.
+  CandidateGenerationPolicy policy = submitted_policy;
   std::ranges::sort(policy.banned_resources);
   policy.banned_resources.erase(std::ranges::unique(policy.banned_resources).begin(),
                                 policy.banned_resources.end());
@@ -196,8 +206,10 @@ CandidatePolicyResult NormalizeCandidateGenerationPolicy(
   }
 
   std::ranges::sort(policy.resource_penalties);
-  std::vector<ResourcePenalty> combined;
-  combined.reserve(policy.resource_penalties.size());
+  // Compact in place. Candidate-batch preflight accounts one owned normalized
+  // ResourcePenalty per submitted entry; allocating a second combination
+  // vector here would violate that deterministic peak-memory contract.
+  std::size_t combined_size = 0;
   for (const ResourcePenalty& penalty : policy.resource_penalties) {
     if (!ResourceExists(board, penalty.resource)) {
       return Error(CandidatePolicyErrorCode::kInvalidResource,
@@ -206,18 +218,22 @@ CandidatePolicyResult NormalizeCandidateGenerationPolicy(
     if (penalty.additional_cost == 0) {
       continue;
     }
-    if (!combined.empty() && combined.back().resource == penalty.resource) {
+    if (combined_size != 0 &&
+        policy.resource_penalties[combined_size - 1].resource == penalty.resource) {
       if (penalty.additional_cost >
-          std::numeric_limits<std::uint64_t>::max() - combined.back().additional_cost) {
+          std::numeric_limits<std::uint64_t>::max() -
+              policy.resource_penalties[combined_size - 1].additional_cost) {
         return Error(CandidatePolicyErrorCode::kCostOverflow,
                      "Duplicate candidate resource penalties overflow uint64");
       }
-      combined.back().additional_cost += penalty.additional_cost;
+      policy.resource_penalties[combined_size - 1].additional_cost += penalty.additional_cost;
     } else {
-      combined.push_back(penalty);
+      policy.resource_penalties[combined_size] = penalty;
+      ++combined_size;
     }
   }
-  policy.resource_penalties = std::move(combined);
+  policy.resource_penalties.erase(policy.resource_penalties.begin() + combined_size,
+                                  policy.resource_penalties.end());
   for (const ResourcePenalty& penalty : policy.resource_penalties) {
     if (std::ranges::binary_search(policy.banned_resources, penalty.resource)) {
       return Error(CandidatePolicyErrorCode::kConflictingResourceAction,

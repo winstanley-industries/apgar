@@ -9,8 +9,9 @@ The artifact fixes fixture identity, Board/compiler/routing/rule associations,
 candidate and policy schema versions, candidate/query identity, deterministic
 seed and ordinal, generator/backend, canonical test-only fault, expected
 rejection stage/code/invariant, and payload checksum. V1 supports candidate
-resource-footprint corruption. A future batched query-ownership replay must
-define its own payload fields before that fault kind is accepted.
+resource-footprint corruption. Batched query ownership, workspace, telemetry,
+memory-accounting, identity, and false-disconnection faults use the separate
+GPU Candidate-Batch Replay v1 contract in `schemas/gpu_batch_replay/v1.md`.
 
 The canonical candidate-admission record uses this exact field order:
 

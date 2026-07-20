@@ -4,6 +4,10 @@ The machine-readable Phase 3 result is pinned Google Benchmark 1.9.5 JSON with
 `apgar_` context and counter keys. No repository-local timing or statistics
 framework may replace Google Benchmark repetition, warm-up, iteration, real
 time, or aggregate statistics.
+The Google-produced `context.library_version` and the APGAR-provided
+`apgar_google_benchmark_version` must both be the string `1.9.5`;
+`json_schema_version` must be the integer `1` and JSON booleans are not
+compatible integer values.
 
 Required context records result/corpus/candidate/policy/batch schema versions,
 the exact commit as 40 lowercase hexadecimal characters,
@@ -40,6 +44,25 @@ individual row; it supplements rather than replaces deterministic subsystem
 accounting. Upload, validation, admission, or failed-query costs must not be
 hidden from end-to-end conclusions.
 
+Every generator/stage run must publish every counter required for that stage on
+all four Google Benchmark aggregates. Median rows additionally satisfy exact
+accounting identities: reached plus failed equals requested; the complete
+failure-class partition equals failed; accepted plus rejected equals reached;
+builder plus store rejections equals rejected; retained pool size equals
+accepted; and peak owned VRAM equals persistent plus batch-owned VRAM. Accepted
+candidate yield and generated-candidate acceptance are derived from those same
+counts. Geometry/resource signature counts describe the deduplicated retained
+pool, and overlap/diversity values remain in `[0, 1]` with diversity equal to
+one minus mean overlap for pools of at least two candidates.
+
+The validator does not accept `differential_match=1` as sufficient evidence.
+For every case and requested policy prefix it independently compares the full
+failure-count partition plus base, minimum, and summed reachable policy scalar
+costs of every generator/stage median to sequential CPU A*. Historical v1 does
+not carry a per-query semantic checksum, so this aggregate comparison is the
+strongest compatible validation and must not be described as proving each
+individual policy identity.
+
 End-to-end rows include transient execution-result, candidate-store, and GPU
 prepared-view teardown in the same timed iteration that creates them. The
 separate prepared-upload row measures preparation, flattening, and upload only;
@@ -49,6 +72,13 @@ The benchmark binary binds the source commit at compile time from the required
 `--define=APGAR_COMMIT=<40 lowercase hex>` Bazel setting and rejects a runtime
 `--apgar_commit` label that does not match. Shape-valid caller text alone is not
 sufficient evidence of the built source revision.
+
+Compatibility note: the v1 mechanism did not actually meet that final
+requirement because both the build definition and runtime label were
+caller-controlled. This schema is frozen for validating historical artifacts;
+new publishable evidence MUST use v2's clean VCS workspace stamp and canonical
+invocation contract. A v1 artifact may preserve historical measurements, but
+its commit label is not independently authenticated source identity.
 
 `examined_states` uses a generator-specific, deterministic state unit: CPU A*
 reports expanded states, CUDA frontier reports closed winner states (excluding
@@ -64,6 +94,14 @@ identify 8-round departure/run-parallel chunks. The batch telemetry counters
 are authoritative for launch and synchronization counts. `rounds_maximum` is a
 query progress metric and must not be presented as a kernel-launch or blocking
 readback count.
+CPU rows report zero for GPU-owned memory, CUDA timing, launches, readbacks,
+dispatch rounds, finalization, and chunk counters. GPU rows report prepared-view
+persistent bytes consistently, peak bytes as persistent plus batch bytes, and
+one blocking status readback per dispatched chunk. Frontier launches are the
+two fixed initialization/predecessor launches plus one launch per chunk and an
+optional finalization launch. Sweep launches are the two fixed launches plus
+three kernels per dispatched round when the compiled board has no runs or four
+when it has runs, plus the optional finalization launch.
 
 Dispatch may change from CPU only when reproducible end-to-end evidence,
 quality, memory, determinism, and failure semantics support it. Kernel-only
