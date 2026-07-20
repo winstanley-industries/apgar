@@ -98,6 +98,7 @@ TwoTerminalRequestResult BuildTwoTerminalRouteRequest(const board_ir::BoardSnaps
       .goal = second->center,
       .start_layer = start_layer,
       .goal_layer = goal_layer,
+      .candidate_policy = CandidateGenerationPolicy{},
   };
 }
 
@@ -119,6 +120,15 @@ PlanarEndpointResult ResolvePlanarEndpoints(const geometry_compiler::CompiledBoa
 
 std::optional<std::uint64_t> CheckedAdd(std::uint64_t left, std::uint64_t right) noexcept {
   if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+    return std::nullopt;
+  }
+  return left + right;
+}
+
+std::optional<std::uint64_t> CheckedAddFiniteRouteCost(std::uint64_t left,
+                                                       std::uint64_t right) noexcept {
+  constexpr std::uint64_t kMaximumFiniteRouteCost = std::numeric_limits<std::uint64_t>::max() - 1U;
+  if (left > kMaximumFiniteRouteCost || right > kMaximumFiniteRouteCost - left) {
     return std::nullopt;
   }
   return left + right;

@@ -1,5 +1,4 @@
 #include <benchmark/benchmark.h>
-#include <sys/utsname.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -14,11 +13,12 @@
 #include <variant>
 #include <vector>
 
+#include "apgar/benchmark/phase3_commit.h"
 #include "apgar/benchmark/planar_corpus.h"
-#include "apgar/board_ir/stable_hash.h"
 #include "apgar/gpu/cuda_backend.h"
 #include "apgar/gpu/planar_router.h"
 #include "apgar/tooling/runfiles.h"
+#include "tools/benchmark_support.h"
 
 namespace {
 
@@ -50,45 +50,11 @@ struct BenchmarkContext {
   std::vector<std::unique_ptr<apgar::gpu::PreparedPlanarCompiledView>> prepared_views;
 };
 
-[[nodiscard]] std::optional<std::string> LineValue(std::string_view contents,
-                                                   std::string_view key) {
-  const std::size_t key_offset = contents.find(key);
-  if (key_offset == std::string_view::npos) {
-    return std::nullopt;
-  }
-  std::string_view value = contents.substr(key_offset + key.size());
-  value = value.substr(0, value.find('\n'));
-  while (!value.empty() && (value.front() == ' ' || value.front() == '\t' || value.front() == ':' ||
-                            value.front() == '"')) {
-    value.remove_prefix(1);
-  }
-  while (!value.empty() && (value.back() == ' ' || value.back() == '\t' || value.back() == '"')) {
-    value.remove_suffix(1);
-  }
-  return std::string(value);
-}
-
-void AddPoint(apgar::board_ir::StableHashBuilder* hash, apgar::board_ir::Point64 point) {
-  hash->AddI64(point.x);
-  hash->AddI64(point.y);
-}
-
 [[nodiscard]] std::uint64_t GeometryFingerprint(
     std::span<const apgar::board_ir::Point64> path,
     std::span<const apgar::routing::LayerSegment> segments) {
-  apgar::board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-PHASE2-BENCHMARK-GEOMETRY-V1");
-  hash.AddU64(path.size());
-  for (apgar::board_ir::Point64 point : path) {
-    AddPoint(&hash, point);
-  }
-  hash.AddU64(segments.size());
-  for (const apgar::routing::LayerSegment& segment : segments) {
-    hash.AddI32(segment.layer);
-    AddPoint(&hash, segment.centerline.start);
-    AddPoint(&hash, segment.centerline.end);
-  }
-  return hash.Finish();
+  return apgar::benchmark::tool_support::PlanarGeometryFingerprint(
+      "APGAR-PHASE2-BENCHMARK-GEOMETRY-V1", path, segments);
 }
 
 [[nodiscard]] std::string CpuFailureName(apgar::routing::RouteFailureCode code) {
@@ -106,6 +72,8 @@ void AddPoint(apgar::board_ir::StableHashBuilder* hash, apgar::board_ir::Point64
       return "resource_exhausted";
     case RouteFailureCode::kInternalInvariant:
       return "invariant";
+    case RouteFailureCode::kUnsupportedPolicy:
+      return "unsupported";
   }
   return "unknown";
 }
@@ -293,21 +261,6 @@ void Configure(benchmark::Benchmark* registered) {
       ->ReportAggregatesOnly(true);
 }
 
-[[nodiscard]] std::optional<std::string> ExtractCommit(int* argc, char** argv) {
-  std::optional<std::string> commit;
-  int destination = 1;
-  for (int source = 1; source < *argc; ++source) {
-    const std::string_view argument(argv[source]);
-    if (argument.starts_with("--apgar_commit=")) {
-      commit = argument.substr(15);
-    } else {
-      argv[destination++] = argv[source];
-    }
-  }
-  *argc = destination;
-  return commit;
-}
-
 [[nodiscard]] std::optional<BenchmarkContext> BuildContext() {
   const std::optional<std::string> fixture =
       apgar::tooling::ReadRunfile("tests/fixtures/m1_exactness.kicad_pcb");
@@ -361,26 +314,7 @@ void Configure(benchmark::Benchmark* registered) {
                               "GCC 15.2.0 checksum-pinned distribution/sysroot");
   benchmark::AddCustomContext("apgar_cuda_host_toolchain",
                               "GCC 15.2.0 checksum-pinned distribution/sysroot");
-  struct utsname host{};
-  if (uname(&host) == 0) {
-    benchmark::AddCustomContext("apgar_host_kernel",
-                                std::string(host.sysname) + " " + host.release);
-    benchmark::AddCustomContext("apgar_host_architecture", host.machine);
-  }
-  if (const std::optional<std::string> os_release = apgar::tooling::ReadFile("/etc/os-release");
-      os_release.has_value()) {
-    if (const std::optional<std::string> pretty_name = LineValue(*os_release, "PRETTY_NAME=");
-        pretty_name.has_value()) {
-      benchmark::AddCustomContext("apgar_host_os", *pretty_name);
-    }
-  }
-  if (const std::optional<std::string> cpu_info = apgar::tooling::ReadFile("/proc/cpuinfo");
-      cpu_info.has_value()) {
-    if (const std::optional<std::string> model = LineValue(*cpu_info, "model name");
-        model.has_value()) {
-      benchmark::AddCustomContext("apgar_cpu_model", *model);
-    }
-  }
+  apgar::benchmark::tool_support::AddHostContext();
   for (const apgar::benchmark::PlanarCorpusCase& test_case : context.corpus) {
     const apgar::geometry_compiler::CompilerProfile& profile = test_case.compiled_board.profile();
     benchmark::AddCustomContext(
@@ -439,9 +373,12 @@ void RegisterBenchmarks(BenchmarkContext* context) {
 
 int main(int argc, char** argv) {
   benchmark::MaybeReenterWithoutASLR(argc, argv);
-  const std::optional<std::string> commit = ExtractCommit(&argc, argv);
-  if (!commit.has_value() || commit->empty()) {
-    std::cerr << "planar_benchmark requires --apgar_commit=HEX\n";
+  const apgar::benchmark::tool_support::ExtractedArgument commit =
+      apgar::benchmark::tool_support::ExtractSingleArgument(&argc, argv, "--apgar_commit=");
+  if (commit.duplicate || !commit.value.has_value() ||
+      !apgar::benchmark::IsFullLowercaseGitCommit(*commit.value)) {
+    std::cerr << "planar_benchmark requires one --apgar_commit=<exactly 40 lowercase hexadecimal "
+                 "characters>\n";
     return 2;
   }
   std::optional<BenchmarkContext> context = BuildContext();
@@ -449,7 +386,7 @@ int main(int argc, char** argv) {
     std::cerr << "failed to build Phase 2 benchmark context\n";
     return 2;
   }
-  if (!AddContext(*commit, *context)) {
+  if (!AddContext(*commit.value, *context)) {
     return 2;
   }
   RegisterBenchmarks(&*context);

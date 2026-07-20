@@ -469,9 +469,9 @@ CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile
       profile.costs.bend;
   const UWide maximum_simple_state_path =
       static_cast<UWide>(telemetry.represented_nodes) * kStableDirectionOrder.size();
-  if (maximum_simple_state_path * maximum_step_cost > std::numeric_limits<std::uint64_t>::max()) {
+  if (maximum_simple_state_path * maximum_step_cost >= std::numeric_limits<std::uint64_t>::max()) {
     return Error(CompileErrorCode::kUnrepresentableProfile,
-                 "Profile costs can overflow a deterministic M1 search path");
+                 "Profile costs can overflow or collide with the unreachable route-cost sentinel");
   }
 
   std::vector<SparseTile> tiles;

@@ -16,7 +16,12 @@ Bazel downloads and selects the LLVM and CPython versions declared in
 linker inputs, and sanitizer runtimes instead of searching the host system.
 
 Developer-specific Bazel settings may be placed in the ignored
-`.bazelrc.user`, which is imported after the repository defaults.
+`.bazelrc.user`, which is imported after the ordinary repository defaults.
+The publication-only `benchmark` configuration is declared after that import,
+so its checked-in optimization, stamping, and workspace-status settings retain
+precedence. Explicit command-line options remain later Bazel inputs and define
+a different, noncanonical publication invocation when they override those
+settings.
 
 Install Bazelisk as `bazel` on `PATH`, as the standard Bazelisk packages do.
 Bazelisk delegates to `tools/bazel`; APGAR's wrapper adds repository commands
@@ -115,6 +120,15 @@ Run the platform smoke test before any other CUDA target:
 bazel test --config=cuda //:cuda_smoke_test
 ```
 
+Run the differential and durable replay gates separately from sanitizers:
+
+```sh
+bazel test --config=cuda \
+  //:cuda_planar_route_test \
+  //:gpu_replay_test \
+  //:gpu_batch_replay_test
+```
+
 The smoke test reports backend/device/runtime metadata, rejects a dynamically
 loaded libstdc++ or libgcc, and compares a deterministic device result with a
 CPU oracle. CUDA execution currently
@@ -128,7 +142,7 @@ source commit and ask Google Benchmark to write its JSON report:
 
 ```sh
 bazel run --config=cuda --config=benchmark //:planar_benchmark -- \
-  --apgar_commit=EXACT_COMMIT \
+  --apgar_commit=EXACT_40_CHARACTER_COMMIT \
   --benchmark_out=/tmp/apgar-planar-bakeoff.json \
   --benchmark_out_format=json
 ```
@@ -142,6 +156,51 @@ counters add differential semantics, work, rounds, kernel time, deterministic
 geometry fingerprints, and per-route owned device memory to Google Benchmark's
 JSON. `--benchmark_dry_run` is useful only for bring-up and does not produce
 publishable measurements.
+
+Phase 3 candidate evidence additionally binds the exact source commit and dirty
+state into the manual benchmark binary through Bazel stable workspace status.
+The `benchmark` configuration invokes `tools/workspace_status.sh`; the runtime
+label must match that VCS-derived commit and the source tree must be clean:
+
+```sh
+bazel run --config=cuda --config=benchmark \
+  //:phase3_candidate_benchmark -- \
+  --apgar_commit=EXACT_40_CHARACTER_COMMIT \
+  --apgar_nvidia_kmd_driver=DRIVER_VERSION_FROM_NVIDIA_SMI \
+  --benchmark_out=/tmp/apgar-phase3-candidate-bakeoff.json \
+  --benchmark_out_format=json
+```
+
+The workspace-status command is a publication-time VCS metadata probe; it is
+not a compiler or CUDA toolchain input. It runs only under `--config=benchmark`.
+The benchmark continues to compile and link with the checksum-pinned Bazel C++,
+CUDA, CUDA-host, and Google Benchmark dependencies described below.
+
+The checked-in `.bazelrc` imports `.bazelrc.user` after ordinary developer
+defaults but before defining the benchmark configuration. Developer settings
+therefore retain their normal precedence while a user file cannot replace the
+checked-in benchmark workspace-status command. The status probe resolves the repository that owns the script,
+neutralizes inherited Git work-tree/index/config redirection, disables file
+system monitors and the untracked cache, and treats `assume-unchanged` or
+`skip-worktree` index entries as dirty. The published context identifies this
+as `canonical_checked_in_invocation_v1`.
+
+This binding assumes the documented command is run from a trusted checkout on
+a trusted runner. An operator who controls command-line Bazel options, `PATH`,
+the workspace-status executable, or `.git` metadata can construct a different
+build and therefore cannot be authenticated by a source file inside that same
+checkout. Publication automation must use the canonical checked-in invocation
+and independent CI/build provenance when hostile-operator attestation is a
+requirement. A command-line `--workspace_status_command` override is not valid
+Phase 3 evidence even if the resulting JSON is shape-correct.
+
+Obtain the KMD label with
+`nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits` immediately
+before the run. The binary rejects missing, malformed, duplicate, or mismatched
+evidence labels, unstamped builds, and dirty source trees. Its
+`process_lifetime_peak_rss_bytes` counter is the process-global `RUSAGE_SELF`
+high-water mark and is not attributable to one benchmark row; deterministic
+owned host payload and device-memory counters remain the subsystem comparisons.
 
 ## Continuous integration
 

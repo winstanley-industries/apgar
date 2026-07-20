@@ -1,9 +1,6 @@
 #ifndef APGAR_TESTS_SUPPORT_ROUTING_BUILDER_H_
 #define APGAR_TESTS_SUPPORT_ROUTING_BUILDER_H_
 
-#include <cstdlib>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <utility>
 #include <variant>
@@ -11,6 +8,7 @@
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "apgar/routing/planar_route.h"
+#include "apgar/tooling/runfiles.h"
 #include "tests/support/board_builder.h"
 #include "tests/support/google_test.h"
 
@@ -54,17 +52,7 @@ namespace apgar::test_support {
 
 [[nodiscard]] inline std::string ReadFixture(
     const std::string& workspace_path = "tests/fixtures/m1_exactness.kicad_pcb") {
-  const char* test_srcdir = std::getenv("TEST_SRCDIR");
-  const char* test_workspace = std::getenv("TEST_WORKSPACE");
-  if (test_srcdir == nullptr || test_workspace == nullptr) {
-    return {};
-  }
-  const std::string path = std::string(test_srcdir) + "/" + test_workspace + "/" + workspace_path;
-  std::ifstream input(path);
-  if (!input) {
-    return {};
-  }
-  return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  return tooling::ReadRunfile(workspace_path).value_or(std::string{});
 }
 
 }  // namespace apgar::test_support

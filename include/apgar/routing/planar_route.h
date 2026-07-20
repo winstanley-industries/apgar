@@ -9,20 +9,25 @@
 
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry_compiler/compiled_board.h"
+#include "apgar/routing/candidate_policy.h"
 
 namespace apgar::routing {
 
-inline constexpr std::uint8_t kNoIncomingDirection = 8;
-
-struct CpuRouteRequest {
+// Backend-neutral immutable request shared by the CPU oracle and every planar
+// GPU candidate explorer. The legacy alias below remains source-compatible
+// with the Phase 1/2 CPU API.
+struct PlanarRouteRequest {
   board_ir::EntityRef net;
   board_ir::Point64 start;
   board_ir::Point64 goal;
   board_ir::LayerId start_layer;
   board_ir::LayerId goal_layer;
+  CandidateGenerationPolicy candidate_policy;
 
-  friend bool operator==(const CpuRouteRequest&, const CpuRouteRequest&) = default;
+  friend bool operator==(const PlanarRouteRequest&, const PlanarRouteRequest&) = default;
 };
+
+using CpuRouteRequest = PlanarRouteRequest;
 
 struct LayerSegment {
   board_ir::LayerId layer;
@@ -62,7 +67,7 @@ enum class TwoTerminalRequestIssue : std::uint8_t {
   kMissingTerminal,
 };
 
-using TwoTerminalRequestResult = std::variant<CpuRouteRequest, TwoTerminalRequestIssue>;
+using TwoTerminalRequestResult = std::variant<PlanarRouteRequest, TwoTerminalRequestIssue>;
 
 [[nodiscard]] TwoTerminalRequestResult BuildTwoTerminalRouteRequest(
     const board_ir::BoardSnapshot& board, board_ir::LayerId start_layer,
@@ -88,6 +93,12 @@ using PlanarEndpointResult = std::variant<ResolvedPlanarEndpoints, PlanarEndpoin
 
 [[nodiscard]] std::optional<std::uint64_t> CheckedAdd(std::uint64_t left,
                                                       std::uint64_t right) noexcept;
+
+// Route labels reserve UINT64_MAX as the unreachable sentinel. Unlike the
+// generic checked integer helper above, this operation rejects a sum equal to
+// UINT64_MAX as well as arithmetic overflow.
+[[nodiscard]] std::optional<std::uint64_t> CheckedAddFiniteRouteCost(std::uint64_t left,
+                                                                     std::uint64_t right) noexcept;
 
 [[nodiscard]] std::uint64_t StepCost(const geometry_compiler::CompilerProfile& profile,
                                      geometry_compiler::Direction direction,

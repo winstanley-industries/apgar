@@ -1,0 +1,27 @@
+{
+  "schema": "phase3_evidence_manifest_v1",
+  "result_schema": "phase3_candidate_bakeoff_v2",
+  "result_file": "benchmarks/results/phase3_candidate_bakeoff_3e3fe4c.json",
+  "result_sha256": "4734665b627c8de7f719247ef463d9b6694502326caf993112aec848479e6e2d",
+  "source_commit": "3e3fe4cc064d73e0bd4e3cadc2bf5024494faaca",
+  "report_file": "benchmarks/phase3_candidate_dispatch_diversity_report.md",
+  "report_sha256": "abfc17725833bfdc59d6d60c04e8453e2653662ec22d924d6ff4d7f96ff60b36",
+  "decision_file": "docs/adr/ADR-013-phase3-candidate-dispatch-conclusions.md",
+  "decision_sha256": "dbc97c428548ac3c7871dc906e426b4a9bd33a110ff7f60dad52fc71ddd79d5f",
+  "expected_correctness_summary": {
+    "generator_stage_medians": 792,
+    "requested_queries": 2772,
+    "reached_queries": 2317,
+    "unreachable_queries": 455,
+    "failure_queries": 0
+  },
+  "expected_end_to_end_wins": {
+    "sequential_cpu_astar": 52,
+    "parallel_cpu_astar": 14,
+    "cuda": 0
+  },
+  "expected_execution_wins_against_fastest_cpu": {
+    "batched_cuda_frontier": 1,
+    "batched_cuda_sweep": 4
+  }
+}

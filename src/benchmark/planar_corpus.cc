@@ -300,6 +300,82 @@ using GeneratedDescriptionsResult = std::variant<std::vector<GeneratedDescriptio
   return descriptions;
 }
 
+[[nodiscard]] GeneratedDescriptionsResult Phase3AdditionalDescriptions() {
+  std::vector<GeneratedDescription> descriptions;
+
+  CompilerProfile symmetric = BaseProfile(
+      AxisAlignedBox64{.min = Point64{.x = 0, .y = -20}, .max = Point64{.x = 100, .y = 20}}, 10, 4,
+      3, DeterministicCosts{.orthogonal_step = 10, .diagonal_step = 14, .bend = 7});
+  for (const std::vector<LatticeIndex>& path : {
+           std::vector<LatticeIndex>{{0, 0}, {2, 2}, {8, 2}, {10, 0}},
+           std::vector<LatticeIndex>{{0, 0}, {2, -2}, {8, -2}, {10, 0}},
+       }) {
+    if (std::optional<std::string> error = AddPolyline(&symmetric, path); error.has_value()) {
+      return *error;
+    }
+  }
+  descriptions.push_back(GeneratedDescription{
+      .name = "symmetric_dual_corridor",
+      .family = "symmetric-dual-corridor",
+      .start = Point64{.x = 0, .y = 0},
+      .goal = Point64{.x = 100, .y = 0},
+      .profile = std::move(symmetric),
+  });
+
+  CompilerProfile channels = BaseProfile(
+      AxisAlignedBox64{.min = Point64{.x = 0, .y = -20}, .max = Point64{.x = 120, .y = 20}}, 10, 5,
+      3, DeterministicCosts{.orthogonal_step = 11, .diagonal_step = 16, .bend = 9});
+  for (std::int64_t channel_y : {-2, 0, 2}) {
+    if (std::optional<std::string> error = AddPolyline(
+            &channels, {{0, 0}, {2, 0}, {4, channel_y}, {8, channel_y}, {10, 0}, {12, 0}});
+        error.has_value()) {
+      return *error;
+    }
+  }
+  descriptions.push_back(GeneratedDescription{
+      .name = "multi_channel_bottleneck",
+      .family = "multi-channel-resource-bottleneck",
+      .start = Point64{.x = 0, .y = 0},
+      .goal = Point64{.x = 120, .y = 0},
+      .profile = std::move(channels),
+  });
+
+  CompilerProfile alternatives = BaseProfile(
+      AxisAlignedBox64{.min = Point64{.x = 0, .y = -40}, .max = Point64{.x = 120, .y = 40}}, 10, 4,
+      4, DeterministicCosts{.orthogonal_step = 13, .diagonal_step = 18, .bend = 5});
+  if (std::optional<std::string> error = AddInclusiveLine(&alternatives, {0, 0}, {2, 0});
+      error.has_value()) {
+    return *error;
+  }
+  if (std::optional<std::string> error = AddInclusiveLine(&alternatives, {10, 0}, {12, 0});
+      error.has_value()) {
+    return *error;
+  }
+  if (std::optional<std::string> error = AddInclusiveLine(&alternatives, {2, -4}, {2, 4});
+      error.has_value()) {
+    return *error;
+  }
+  if (std::optional<std::string> error = AddInclusiveLine(&alternatives, {10, -4}, {10, 4});
+      error.has_value()) {
+    return *error;
+  }
+  for (std::int64_t channel_y : {-4, -2, 0, 2, 4}) {
+    if (std::optional<std::string> error =
+            AddInclusiveLine(&alternatives, {2, channel_y}, {10, channel_y});
+        error.has_value()) {
+      return *error;
+    }
+  }
+  descriptions.push_back(GeneratedDescription{
+      .name = "policy_alternatives",
+      .family = "ban-penalty-alternatives",
+      .start = Point64{.x = 0, .y = 0},
+      .goal = Point64{.x = 120, .y = 0},
+      .profile = std::move(alternatives),
+  });
+  return descriptions;
+}
+
 [[nodiscard]] std::variant<PlanarCorpusCase, std::string> BuildGenerated(
     GeneratedDescription description) {
   BoardCreationResult board_result =
@@ -389,6 +465,27 @@ PlanarCorpusResult BuildPlanarBakeoffCorpus(std::string_view kicad_fixture) {
     return std::get<std::string>(std::move(kicad));
   }
   corpus.push_back(std::get<PlanarCorpusCase>(std::move(kicad)));
+  return corpus;
+}
+
+PlanarCorpusResult BuildPhase3CandidateCorpus(std::string_view kicad_fixture) {
+  PlanarCorpusResult base = BuildPlanarBakeoffCorpus(kicad_fixture);
+  if (std::holds_alternative<std::string>(base)) {
+    return std::get<std::string>(std::move(base));
+  }
+  std::vector<PlanarCorpusCase> corpus = std::get<std::vector<PlanarCorpusCase>>(std::move(base));
+  GeneratedDescriptionsResult descriptions = Phase3AdditionalDescriptions();
+  if (std::holds_alternative<std::string>(descriptions)) {
+    return std::get<std::string>(std::move(descriptions));
+  }
+  for (GeneratedDescription& description :
+       std::get<std::vector<GeneratedDescription>>(descriptions)) {
+    std::variant<PlanarCorpusCase, std::string> result = BuildGenerated(std::move(description));
+    if (std::holds_alternative<std::string>(result)) {
+      return std::get<std::string>(std::move(result));
+    }
+    corpus.push_back(std::get<PlanarCorpusCase>(std::move(result)));
+  }
   return corpus;
 }
 

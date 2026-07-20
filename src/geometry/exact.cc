@@ -215,6 +215,29 @@ struct ScaledBox {
   return true;
 }
 
+[[nodiscard]] bool SegmentToSegmentClearanceAtLeastScaled(board_ir::Segment64 first,
+                                                          board_ir::Segment64 second,
+                                                          Wide required_distance_twice) noexcept {
+  if (required_distance_twice == 0) {
+    return true;
+  }
+
+  const ScaledPoint first_start = Scale(first.start);
+  const ScaledPoint first_end = Scale(first.end);
+  const ScaledPoint second_start = Scale(second.start);
+  const ScaledPoint second_end = Scale(second.end);
+  if (SegmentsIntersect(first_start, first_end, second_start, second_end)) {
+    return false;
+  }
+  return PointSegmentDistanceAtLeast(first_start, second_start, second_end,
+                                     required_distance_twice) &&
+         PointSegmentDistanceAtLeast(first_end, second_start, second_end,
+                                     required_distance_twice) &&
+         PointSegmentDistanceAtLeast(second_start, first_start, first_end,
+                                     required_distance_twice) &&
+         PointSegmentDistanceAtLeast(second_end, first_start, first_end, required_distance_twice);
+}
+
 [[nodiscard]] board_ir::HeadingMask HeadingFor(board_ir::Segment64 segment) noexcept {
   const board_ir::DbCoord delta_x = segment.end.x - segment.start.x;
   const board_ir::DbCoord delta_y = segment.end.y - segment.start.y;
@@ -273,6 +296,69 @@ SegmentClearanceResult SegmentClearanceAtLeast(board_ir::Segment64 segment,
   };
 }
 
+SegmentClearanceResult SegmentToSegmentClearanceAtLeast(board_ir::Segment64 first,
+                                                        board_ir::Segment64 second,
+                                                        board_ir::DbCoord min_distance) {
+  if (!board_ir::PointIsValid(first.start) || !board_ir::PointIsValid(first.end) ||
+      !board_ir::PointIsValid(second.start) || !board_ir::PointIsValid(second.end)) {
+    return SegmentClearanceResult{
+        .error = ExactGeometryErrorCode::kCoordinateOutOfRange,
+        .clearance_satisfied = false,
+        .detail = "Exact segment-pair input exceeds the validated coordinate range",
+    };
+  }
+  if (min_distance < 0 || min_distance > board_ir::kMaxAbsDbCoord) {
+    return SegmentClearanceResult{
+        .error = ExactGeometryErrorCode::kInvalidDistance,
+        .clearance_satisfied = false,
+        .detail = "Minimum segment-pair distance is outside the validated range",
+    };
+  }
+  return SegmentClearanceResult{
+      .error = ExactGeometryErrorCode::kNone,
+      .clearance_satisfied = SegmentToSegmentClearanceAtLeastScaled(
+          first, second, static_cast<Wide>(min_distance) * 2),
+      .detail = {},
+  };
+}
+
+SegmentClearanceResult SweptTraceClearanceAtLeast(board_ir::Segment64 centerline,
+                                                  const board_ir::AxisAlignedBox64& obstacle,
+                                                  board_ir::DbCoord nominal_width,
+                                                  board_ir::DbCoord clearance) {
+  if (!board_ir::PointIsValid(centerline.start) || !board_ir::PointIsValid(centerline.end) ||
+      !board_ir::PointIsValid(obstacle.min) || !board_ir::PointIsValid(obstacle.max)) {
+    return SegmentClearanceResult{
+        .error = ExactGeometryErrorCode::kCoordinateOutOfRange,
+        .clearance_satisfied = false,
+        .detail = "Exact swept-trace input exceeds the validated coordinate range",
+    };
+  }
+  if (!board_ir::BoxIsValid(obstacle)) {
+    return SegmentClearanceResult{
+        .error = ExactGeometryErrorCode::kInvalidObstacle,
+        .clearance_satisfied = false,
+        .detail = "Swept-trace obstacle bounds are not normalized",
+    };
+  }
+  if (nominal_width <= 0 || nominal_width > board_ir::kMaxAbsDbCoord || clearance < 0 ||
+      clearance > board_ir::kMaxAbsDbCoord) {
+    return SegmentClearanceResult{
+        .error = ExactGeometryErrorCode::kInvalidDistance,
+        .clearance_satisfied = false,
+        .detail = "Trace width or clearance is outside the validated range",
+    };
+  }
+  const Wide required_distance_twice =
+      static_cast<Wide>(nominal_width) + static_cast<Wide>(clearance) * 2;
+  return SegmentClearanceResult{
+      .error = ExactGeometryErrorCode::kNone,
+      .clearance_satisfied =
+          SegmentClearanceAtLeastScaled(centerline, obstacle, required_distance_twice),
+      .detail = {},
+  };
+}
+
 MovementValidationResult ValidateMovement(const board_ir::BoardSnapshot& board,
                                           board_ir::LayerId layer, board_ir::Segment64 centerline) {
   if (!board_ir::PointIsValid(centerline.start) || !board_ir::PointIsValid(centerline.end)) {
@@ -298,13 +384,17 @@ MovementValidationResult ValidateMovement(const board_ir::BoardSnapshot& board,
                    "Movement layer is not allowed by the routing profile");
   }
 
-  const Wide required_distance_twice =
-      static_cast<Wide>(profile.nominal_width) + static_cast<Wide>(profile.clearance) * 2;
   for (const board_ir::Obstacle& obstacle : board.ObstaclesOnLayer(layer)) {
     if (obstacle.owner_net.has_value() && *obstacle.owner_net == profile.net) {
       continue;
     }
-    if (!SegmentClearanceAtLeastScaled(centerline, obstacle.bounds, required_distance_twice)) {
+    const SegmentClearanceResult clearance = SweptTraceClearanceAtLeast(
+        centerline, obstacle.bounds, profile.nominal_width, profile.clearance);
+    if (!clearance.ok()) {
+      return Failure(MovementViolationCode::kCoordinateOutOfRange,
+                     "Movement swept-trace inputs are outside exact geometry bounds");
+    }
+    if (!clearance.clearance_satisfied) {
       return MovementValidationResult{
           .code = MovementViolationCode::kStaticObstacleConflict,
           .obstacle = obstacle.ref,

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <string>
 #include <utility>
 #include <variant>
@@ -59,6 +60,79 @@ using test_support::ReadFixture;
 using test_support::Snapshot;
 using test_support::TwoTerminalRequest;
 
+TEST(RouteCostArithmeticTest, ReservesUint64MaxAsUnreachableSentinel) {
+  constexpr std::uint64_t kMaximum = std::numeric_limits<std::uint64_t>::max();
+  ASSERT_TRUE(CheckedAddFiniteRouteCost(kMaximum - 1U, 0).has_value());
+  EXPECT_EQ(*CheckedAddFiniteRouteCost(kMaximum - 1U, 0), kMaximum - 1U);
+  EXPECT_FALSE(CheckedAddFiniteRouteCost(kMaximum - 1U, 1).has_value());
+  EXPECT_FALSE(CheckedAddFiniteRouteCost(0, kMaximum).has_value());
+
+  // Generic byte/count accounting still permits the full uint64 domain.
+  ASSERT_TRUE(CheckedAdd(kMaximum - 1U, 1).has_value());
+  EXPECT_EQ(*CheckedAdd(kMaximum - 1U, 1), kMaximum);
+}
+
+struct HorizontalPolicyCase {
+  BoardSnapshot board;
+  CompiledBoard compiled;
+  CpuRouteRequest request;
+  EdgeResourceKey middle_resource;
+};
+
+[[nodiscard]] HorizontalPolicyCase MakeHorizontalPolicyCase(bool allow_detour) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  BoardSnapshot board = Snapshot(std::move(data));
+  CompilerProfile profile = test_support::DefaultCompilerProfile({0});
+  profile.heading_mask = static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal);
+  if (allow_detour) {
+    profile.heading_mask |= static_cast<board_ir::HeadingMask>(board_ir::Heading::kVertical);
+  } else {
+    profile.compilation_roi =
+        AxisAlignedBox64{.min = Point64{.x = 0, .y = 0}, .max = Point64{.x = 100, .y = 0}};
+    profile.active_regions = {ActiveRegion{.layer = 0, .bounds = profile.compilation_roi}};
+  }
+  CompiledBoard compiled = Compile(board, profile);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  EdgeResourceKey middle{
+      .layer = 0,
+      .lattice_x = 4,
+      .lattice_y = 0,
+      .direction = geometry_compiler::Direction::kEast,
+  };
+  EXPECT_TRUE(ResourceExists(compiled, middle));
+  return HorizontalPolicyCase{
+      .board = std::move(board),
+      .compiled = std::move(compiled),
+      .request = std::move(request),
+      .middle_resource = middle,
+  };
+}
+
+[[nodiscard]] bool RouteUsesResource(const CpuRoute& route, const CompiledBoard& compiled,
+                                     const EdgeResourceKey& resource) {
+  for (std::size_t index = 1; index < route.lattice_path.size(); ++index) {
+    const std::optional<geometry_compiler::LatticeIndex> start =
+        geometry_compiler::ExactPointToLatticeIndex(compiled.profile(),
+                                                    route.lattice_path[index - 1]);
+    const std::optional<geometry_compiler::LatticeIndex> end =
+        geometry_compiler::ExactPointToLatticeIndex(compiled.profile(), route.lattice_path[index]);
+    if (!start.has_value() || !end.has_value()) {
+      return false;
+    }
+    const std::optional<geometry_compiler::Direction> direction = DirectionBetween(*start, *end);
+    if (!direction.has_value()) {
+      return false;
+    }
+    const std::optional<EdgeResourceKey> traversed =
+        CanonicalPhysicalEdgeResource(resource.layer, *start, *direction);
+    if (traversed == resource) {
+      return true;
+    }
+  }
+  return false;
+}
+
 TEST(CpuAStarTest, RepeatedCompilationAndRoutingAreExternallyIdentical) {
   const BoardSnapshot board = Snapshot(test_support::ValidM1BoardData());
   const CompilerProfile profile = test_support::DefaultCompilerProfile();
@@ -78,6 +152,11 @@ TEST(CpuAStarTest, RepeatedCompilationAndRoutingAreExternallyIdentical) {
   EXPECT_EQ(std::get<CpuRoute>(first).compiler_profile_fingerprint,
             first_compiled.compiler_profile_fingerprint());
   EXPECT_EQ(std::get<CpuRoute>(first).rule_bucket_identity, first_compiled.rule_bucket().identity);
+  const CandidatePolicyResult normalized_default =
+      NormalizeCandidateGenerationPolicy(first_compiled, CandidateGenerationPolicy{});
+  ASSERT_TRUE(std::holds_alternative<NormalizedCandidateGenerationPolicy>(normalized_default));
+  EXPECT_EQ(std::get<CpuRoute>(first).candidate_policy_identity,
+            std::get<NormalizedCandidateGenerationPolicy>(normalized_default).identity);
 }
 
 TEST(CpuAStarTest, CheapDiagonalHeuristicRemainsAdmissible) {
@@ -317,6 +396,153 @@ TEST(CpuAStarIntegrationTest, RoutesKiCadFixtureAroundFrontBlockerAndDirectlyOnB
   EXPECT_EQ(back_route.segments.front().centerline.start, back_request.start);
   EXPECT_EQ(back_route.segments.front().centerline.end, back_request.goal);
   EXPECT_GT(front_route.total_cost, back_route.total_cost);
+}
+
+TEST(CpuAStarPolicyTest, BansAreAbsentAndLargePenaltiesSelectTheSameDetour) {
+  HorizontalPolicyCase test_case = MakeHorizontalPolicyCase(true);
+  const CpuRouteResult base =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, test_case.request);
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(base));
+  ASSERT_EQ(std::get<CpuRoute>(base).total_cost, 100U);
+  ASSERT_TRUE(
+      RouteUsesResource(std::get<CpuRoute>(base), test_case.compiled, test_case.middle_resource));
+
+  CpuRouteRequest banned_request = test_case.request;
+  banned_request.candidate_policy.objective = CandidateObjective::kResourceDiverse;
+  banned_request.candidate_policy.banned_resources = {test_case.middle_resource};
+  const CpuRouteResult banned =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, banned_request);
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(banned));
+  EXPECT_EQ(std::get<CpuRoute>(banned).total_cost, 126U);
+  EXPECT_FALSE(
+      RouteUsesResource(std::get<CpuRoute>(banned), test_case.compiled, test_case.middle_resource));
+
+  CpuRouteRequest penalized_request = test_case.request;
+  penalized_request.candidate_policy.objective = CandidateObjective::kResourceDiverse;
+  penalized_request.candidate_policy.resource_penalties = {
+      ResourcePenalty{.resource = test_case.middle_resource, .additional_cost = 200}};
+  const CpuRouteResult penalized =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, penalized_request);
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(penalized));
+  EXPECT_EQ(std::get<CpuRoute>(penalized).total_cost, 126U);
+  EXPECT_FALSE(RouteUsesResource(std::get<CpuRoute>(penalized), test_case.compiled,
+                                 test_case.middle_resource));
+}
+
+TEST(CpuAStarPolicyTest, ObjectiveSurchargesAndPenaltyApplyInBothTraversalDirections) {
+  HorizontalPolicyCase test_case = MakeHorizontalPolicyCase(false);
+  CandidateGenerationPolicy policy{
+      .objective = CandidateObjective::kLengthBiased,
+      .deterministic_seed = 0x12345678U,
+      .candidate_ordinal = 7,
+      .orthogonal_step_surcharge = 2,
+      .diagonal_step_surcharge = 3,
+      .bend_surcharge = 5,
+      .banned_resources = {},
+      .resource_penalties =
+          {
+              ResourcePenalty{.resource = test_case.middle_resource, .additional_cost = 10},
+              ResourcePenalty{.resource = test_case.middle_resource, .additional_cost = 7},
+          },
+  };
+  test_case.request.candidate_policy = policy;
+  const CandidatePolicyResult normalized =
+      NormalizeCandidateGenerationPolicy(test_case.compiled, policy);
+  ASSERT_TRUE(std::holds_alternative<NormalizedCandidateGenerationPolicy>(normalized));
+
+  const CpuRouteResult first =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, test_case.request);
+  const CpuRouteResult second =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, test_case.request);
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(first));
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(second));
+  EXPECT_EQ(first, second);
+  EXPECT_EQ(std::get<CpuRoute>(first).total_cost, 137U);
+  EXPECT_EQ(std::get<CpuRoute>(first).candidate_policy_identity,
+            std::get<NormalizedCandidateGenerationPolicy>(normalized).identity);
+
+  CpuRouteRequest reverse = test_case.request;
+  std::swap(reverse.start, reverse.goal);
+  const CpuRouteResult reversed = RouteWithCpuAStar(test_case.board, test_case.compiled, reverse);
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(reversed));
+  EXPECT_EQ(std::get<CpuRoute>(reversed).total_cost, 137U);
+  EXPECT_EQ(std::get<CpuRoute>(reversed).candidate_policy_identity,
+            std::get<CpuRoute>(first).candidate_policy_identity);
+}
+
+TEST(CpuAStarPolicyTest, AOnlyCorridorBanIsDisconnected) {
+  HorizontalPolicyCase test_case = MakeHorizontalPolicyCase(false);
+  test_case.request.candidate_policy.banned_resources = {test_case.middle_resource};
+
+  const CpuRouteResult result =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, test_case.request);
+
+  ASSERT_TRUE(std::holds_alternative<RouteFailure>(result));
+  EXPECT_EQ(std::get<RouteFailure>(result).code, RouteFailureCode::kDisconnected);
+}
+
+TEST(CpuAStarPolicyTest, PolicyBanCannotMaskADanglingCompiledEdge) {
+  HorizontalPolicyCase test_case = MakeHorizontalPolicyCase(false);
+  const PlanarEndpointResult endpoints =
+      ResolvePlanarEndpoints(test_case.compiled, test_case.request);
+  ASSERT_TRUE(std::holds_alternative<ResolvedPlanarEndpoints>(endpoints));
+  const geometry_compiler::LatticeIndex start = std::get<ResolvedPlanarEndpoints>(endpoints).start;
+  const geometry_compiler::Direction outward =
+      start.x == 0 ? geometry_compiler::Direction::kWest : geometry_compiler::Direction::kEast;
+  ASSERT_TRUE(geometry_compiler::CompiledBoardTestPeer::AddLegalEdge(
+      test_case.compiled, test_case.request.start_layer, start.x, start.y, outward));
+  const std::optional<EdgeResourceKey> dangling =
+      CanonicalPhysicalEdgeResource(test_case.request.start_layer, start, outward);
+  ASSERT_TRUE(dangling.has_value());
+  ASSERT_FALSE(ResourceExists(test_case.compiled, *dangling));
+
+  // A request cannot name the dangling edge as a ban: normalization requires
+  // both directed halves of every physical resource to exist.
+  CpuRouteRequest direct_ban = test_case.request;
+  direct_ban.candidate_policy.banned_resources = {*dangling};
+  const CpuRouteResult invalid_policy =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, direct_ban);
+  ASSERT_TRUE(std::holds_alternative<RouteFailure>(invalid_policy));
+  EXPECT_EQ(std::get<RouteFailure>(invalid_policy).code, RouteFailureCode::kInvalidRequest);
+
+  // Even a valid, unrelated policy ban cannot make search skip the independent
+  // destination-containment invariant on the corrupted legal edge.
+  CpuRouteRequest unrelated_ban = test_case.request;
+  unrelated_ban.candidate_policy.banned_resources = {test_case.middle_resource};
+  const CpuRouteResult corrupted =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, unrelated_ban);
+  ASSERT_TRUE(std::holds_alternative<RouteFailure>(corrupted));
+  EXPECT_EQ(std::get<RouteFailure>(corrupted).code, RouteFailureCode::kInternalInvariant);
+}
+
+TEST(CpuAStarPolicyTest, RejectsInvalidOverflowingAndUnsupportedPoliciesBeforeSearch) {
+  HorizontalPolicyCase test_case = MakeHorizontalPolicyCase(false);
+
+  CpuRouteRequest invalid = test_case.request;
+  invalid.candidate_policy.banned_resources = {EdgeResourceKey{
+      .layer = 0,
+      .lattice_x = 400,
+      .lattice_y = 0,
+      .direction = geometry_compiler::Direction::kEast,
+  }};
+  const CpuRouteResult invalid_result =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, invalid);
+  ASSERT_TRUE(std::holds_alternative<RouteFailure>(invalid_result));
+  EXPECT_EQ(std::get<RouteFailure>(invalid_result).code, RouteFailureCode::kInvalidRequest);
+
+  CpuRouteRequest overflow = test_case.request;
+  overflow.candidate_policy.orthogonal_step_surcharge = std::numeric_limits<std::uint64_t>::max();
+  const CpuRouteResult overflow_result =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, overflow);
+  ASSERT_TRUE(std::holds_alternative<RouteFailure>(overflow_result));
+  EXPECT_EQ(std::get<RouteFailure>(overflow_result).code, RouteFailureCode::kInvalidRequest);
+
+  CpuRouteRequest unsupported = test_case.request;
+  ++unsupported.candidate_policy.schema_version;
+  const CpuRouteResult unsupported_result =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, unsupported);
+  ASSERT_TRUE(std::holds_alternative<RouteFailure>(unsupported_result));
+  EXPECT_EQ(std::get<RouteFailure>(unsupported_result).code, RouteFailureCode::kUnsupportedPolicy);
 }
 
 }  // namespace

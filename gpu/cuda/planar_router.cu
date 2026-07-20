@@ -13,7 +13,9 @@
 #include <new>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
@@ -150,6 +152,7 @@ class CudaUploadedCompiledView final : public UploadedCompiledView {
  public:
   int device = -1;
   DeviceCompiledHeaderV1 header;
+  std::vector<DeviceNodeV1> host_nodes;
   DeviceBuffer<DeviceCompiledHeaderV1> device_header;
   DeviceBuffer<DeviceLayerRangeV1> layers;
   DeviceBuffer<DeviceNodeV1> nodes;
@@ -167,6 +170,37 @@ class CudaPendingRouteExecution final : public PendingRouteExecution {
   DeviceBuffer<std::uint64_t> labels;
   DeviceBuffer<std::uint32_t> predecessors;
 };
+
+class CudaPendingCandidateBatchExecution final : public PendingCandidateBatchExecution {
+ public:
+  int device = -1;
+  std::uint64_t batch_id = 0;
+  PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
+  std::uint64_t state_count = 0;
+  std::uint64_t persistent_bytes = 0;
+  std::uint64_t batch_bytes = 0;
+  std::uint64_t batch_host_bytes = 0;
+  double kernel_milliseconds = 0.0;
+  std::uint64_t kernel_launch_count = 0;
+  std::uint64_t blocking_status_readback_count = 0;
+  std::uint32_t dispatched_rounds = 0;
+  std::uint32_t finalization_launch_count = 0;
+  std::uint32_t chunk_rounds = 0;
+  std::vector<DeviceCandidateBatchQueryV1> queries;
+  DeviceBuffer<DeviceCandidateBatchQueryV1> device_queries;
+  DeviceBuffer<DeviceCandidatePolicyEdgeV1> policy_edges;
+  DeviceBuffer<DeviceCandidateBatchResultV1> results;
+  DeviceBuffer<std::uint64_t> labels;
+  DeviceBuffer<std::uint32_t> predecessors;
+  DeviceBuffer<std::uint64_t> state_owners;
+  DeviceBuffer<std::uint64_t> predecessor_owners;
+};
+
+inline constexpr std::uint32_t kBatchQueryRunning = 0;
+inline constexpr std::uint32_t kBatchQueryReached = 1;
+inline constexpr std::uint32_t kBatchQueryDisconnected = 2;
+inline constexpr std::uint32_t kBatchQueryBudgetExhausted = 3;
+inline constexpr std::uint32_t kBatchQueryCancelled = 4;
 
 __global__ void InitializeResultHeader(const DeviceCompiledHeaderV1* compiled,
                                        DeviceResultHeaderV1* result, std::uint32_t start_node,
@@ -202,8 +236,10 @@ __device__ std::uint32_t DeviceStateIndex(std::uint32_t node_index, std::uint8_t
   return node_index * kIncomingHeadingCount + incoming_heading;
 }
 
-__device__ bool DeviceCheckedAdd(std::uint64_t left, std::uint64_t right, std::uint64_t* result) {
-  if (left == kInfiniteRouteCost || right > kInfiniteRouteCost - left) {
+__device__ bool DeviceCheckedAddFiniteRouteCost(std::uint64_t left, std::uint64_t right,
+                                                std::uint64_t* result) {
+  constexpr std::uint64_t kMaximumFiniteRouteCost = kInfiniteRouteCost - 1U;
+  if (left > kMaximumFiniteRouteCost || right > kMaximumFiniteRouteCost - left) {
     return false;
   }
   *result = left + right;
@@ -263,7 +299,8 @@ __global__ void FrontierRelax(const DeviceNodeV1* nodes, DeviceCompiledHeaderV1 
     const std::uint32_t neighbor = node.neighbors[direction];
     const std::uint32_t target_state = DeviceStateIndex(neighbor, direction);
     std::uint64_t candidate = 0;
-    if (!DeviceCheckedAdd(label, DeviceStepCost(header, direction, incoming), &candidate)) {
+    if (!DeviceCheckedAddFiniteRouteCost(label, DeviceStepCost(header, direction, incoming),
+                                         &candidate)) {
       continue;
     }
     const unsigned long long previous =
@@ -301,7 +338,7 @@ __global__ void ComputeDepartureLabels(DeviceCompiledHeaderV1 header, std::uint3
     }
     std::uint64_t candidate = 0;
     const std::uint64_t turn_cost = incoming == direction ? 0 : header.costs.bend;
-    if (DeviceCheckedAdd(label, turn_cost, &candidate) && candidate < best) {
+    if (DeviceCheckedAddFiniteRouteCost(label, turn_cost, &candidate) && candidate < best) {
       best = candidate;
       used_turn = incoming != direction;
     }
@@ -332,7 +369,7 @@ __global__ void SweepRuns(const DeviceRunV1* runs, std::uint64_t run_count,
     const std::uint32_t target = run_nodes[run.node_offset + position + 1];
     carry = min(carry, departure_labels[static_cast<std::uint64_t>(source) * 8 + direction]);
     std::uint64_t candidate = 0;
-    if (DeviceCheckedAdd(carry, step_cost, &candidate)) {
+    if (DeviceCheckedAddFiniteRouteCost(carry, step_cost, &candidate)) {
       const std::uint32_t target_state = DeviceStateIndex(target, direction);
       const unsigned long long previous =
           atomicMin(reinterpret_cast<unsigned long long*>(&labels[target_state]),
@@ -384,13 +421,564 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
     const std::uint32_t predecessor_state = DeviceStateIndex(predecessor_node, predecessor_heading);
     const std::uint64_t predecessor_label = labels[predecessor_state];
     std::uint64_t candidate = 0;
-    if (DeviceCheckedAdd(predecessor_label, DeviceStepCost(header, incoming, predecessor_heading),
-                         &candidate) &&
+    if (DeviceCheckedAddFiniteRouteCost(
+            predecessor_label, DeviceStepCost(header, incoming, predecessor_heading), &candidate) &&
         candidate == labels[state] && predecessor_state < best) {
       best = predecessor_state;
     }
   }
   predecessors[state] = best;
+}
+
+__device__ std::uint32_t DevicePhysicalEdgeIndex(const DeviceNodeV1* nodes, std::uint32_t source,
+                                                 std::uint8_t direction) {
+  if (direction < 4) {
+    return source * 8U + direction;
+  }
+  const std::uint32_t canonical_source = nodes[source].neighbors[direction];
+  return canonical_source == kInvalidNodeIndex ? kInvalidStateIndex
+                                               : canonical_source * 8U + direction - 4U;
+}
+
+__device__ std::uint64_t DevicePolicyAdjustment(const DeviceCandidatePolicyEdgeV1* policy_edges,
+                                                const DeviceCandidateBatchQueryV1& query,
+                                                std::uint32_t physical_edge) {
+  std::uint32_t first = query.policy_offset;
+  std::uint32_t last = query.policy_offset + query.policy_count;
+  while (first < last) {
+    const std::uint32_t middle = first + (last - first) / 2U;
+    const std::uint32_t candidate = policy_edges[middle].physical_edge_index;
+    if (candidate < physical_edge) {
+      first = middle + 1U;
+    } else {
+      last = middle;
+    }
+  }
+  if (first < query.policy_offset + query.policy_count &&
+      policy_edges[first].physical_edge_index == physical_edge) {
+    return policy_edges[first].adjustment;
+  }
+  return 0;
+}
+
+__device__ bool DeviceBatchTransitionCost(const DeviceNodeV1* nodes,
+                                          const DeviceCompiledHeaderV1& header,
+                                          const DeviceCandidateBatchQueryV1& query,
+                                          const DeviceCandidatePolicyEdgeV1* policy_edges,
+                                          std::uint32_t source, std::uint8_t direction,
+                                          std::uint8_t incoming_heading, std::uint64_t* cost) {
+  const std::uint32_t physical_edge = DevicePhysicalEdgeIndex(nodes, source, direction);
+  if (physical_edge == kInvalidStateIndex) {
+    return false;
+  }
+  const std::uint64_t adjustment = DevicePolicyAdjustment(policy_edges, query, physical_edge);
+  if (adjustment == kBannedResourceAdjustment) {
+    return false;
+  }
+  std::uint64_t value =
+      (direction % 2U) != 0
+          ? static_cast<std::uint64_t>(header.costs.diagonal_step) + query.diagonal_step_surcharge
+          : static_cast<std::uint64_t>(header.costs.orthogonal_step) +
+                query.orthogonal_step_surcharge;
+  if (incoming_heading != kNoIncomingHeading && incoming_heading != direction) {
+    const std::uint64_t bend = static_cast<std::uint64_t>(header.costs.bend) + query.bend_surcharge;
+    if (!DeviceCheckedAddFiniteRouteCost(value, bend, &value)) {
+      return false;
+    }
+  }
+  return DeviceCheckedAddFiniteRouteCost(value, adjustment, cost);
+}
+
+__device__ std::uint64_t DeviceCoordinateDistance(std::int64_t left, std::int64_t right) {
+  return left >= right ? static_cast<std::uint64_t>(left) - static_cast<std::uint64_t>(right)
+                       : static_cast<std::uint64_t>(right) - static_cast<std::uint64_t>(left);
+}
+
+__device__ std::uint64_t DeviceAdmissibleHeuristic(const DeviceNodeV1* nodes,
+                                                   const DeviceCompiledHeaderV1& header,
+                                                   const DeviceCandidateBatchQueryV1& query,
+                                                   std::uint32_t node_index) {
+  const DeviceNodeV1& node = nodes[node_index];
+  const DeviceNodeV1& goal = nodes[query.goal_node];
+  const std::uint64_t dx = DeviceCoordinateDistance(node.lattice_x, goal.lattice_x);
+  const std::uint64_t dy = DeviceCoordinateDistance(node.lattice_y, goal.lattice_y);
+  const std::uint64_t unavoidable_steps = max(dx, dy);
+  const std::uint64_t orthogonal =
+      static_cast<std::uint64_t>(header.costs.orthogonal_step) + query.orthogonal_step_surcharge;
+  const std::uint64_t diagonal =
+      static_cast<std::uint64_t>(header.costs.diagonal_step) + query.diagonal_step_surcharge;
+  const std::uint64_t minimum_step = min(orthogonal, diagonal);
+  if (unavoidable_steps != 0 && minimum_step > (kInfiniteRouteCost - 1) / unavoidable_steps) {
+    return kInfiniteRouteCost - 1;
+  }
+  return unavoidable_steps * minimum_step;
+}
+
+__device__ bool DeviceFrontierWinnerLess(std::uint64_t left_f, std::uint64_t left_g,
+                                         std::uint32_t left_state, std::uint8_t left_heading,
+                                         std::uint64_t right_f, std::uint64_t right_g,
+                                         std::uint32_t right_state, std::uint8_t right_heading) {
+  return left_f < right_f ||
+         (left_f == right_f &&
+          (left_g < right_g ||
+           (left_g == right_g && (left_state < right_state ||
+                                  (left_state == right_state && left_heading < right_heading)))));
+}
+
+// Every query-major state write first proves that the destination still
+// belongs to the writing query. The compare-and-swap is also the ownership
+// stamp paired with the label/closed write. A mismatch stops the write and
+// corrupts only the offending query's result association so host validation
+// reports the invariant without allowing cross-query state contamination.
+__device__ bool DeviceClaimCandidateState(std::uint64_t* state_owners, std::uint64_t slot,
+                                          std::uint64_t expected_owner,
+                                          DeviceCandidateBatchResultV1* result) {
+  const unsigned long long owner = static_cast<unsigned long long>(expected_owner);
+  const unsigned long long observed =
+      atomicCAS(reinterpret_cast<unsigned long long*>(&state_owners[slot]), owner, owner);
+  if (observed == owner) {
+    return true;
+  }
+  atomicExch(reinterpret_cast<unsigned long long*>(&result->workspace_owner), 0ULL);
+  return false;
+}
+
+__global__ void InitializeCandidateBatch(
+    const DeviceCompiledHeaderV1* compiled, const DeviceCandidateBatchQueryV1* queries,
+    std::uint32_t query_count, DeviceCandidateBatchResultV1* results, std::uint64_t* labels,
+    std::uint32_t* predecessors, std::uint64_t* state_owners, std::uint64_t* predecessor_owners,
+    std::uint8_t* closed, std::uint32_t* query_status) {
+  const std::uint64_t slot = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::uint64_t total_states = compiled->represented_states * query_count;
+  if (slot < total_states) {
+    const std::uint32_t query_index =
+        static_cast<std::uint32_t>(slot / compiled->represented_states);
+    const DeviceCandidateBatchQueryV1 query = queries[query_index];
+    const std::uint32_t local_state = static_cast<std::uint32_t>(slot - query.workspace_offset);
+    const std::uint32_t start_state = DeviceStateIndex(query.start_node, kNoIncomingHeading);
+    labels[slot] = local_state == start_state ? 0 : kInfiniteRouteCost;
+    predecessors[slot] = kInvalidStateIndex;
+    state_owners[slot] = query.workspace_owner;
+    predecessor_owners[slot] = query.workspace_owner;
+    if (closed != nullptr) {
+      closed[slot] = 0;
+    }
+  }
+  if (slot >= query_count) {
+    return;
+  }
+  const DeviceCandidateBatchQueryV1 query = queries[slot];
+  DeviceCandidateBatchResultV1& result = results[slot];
+  result.schema_version = kDeviceCandidateBatchSchemaVersion;
+  result.compiler_version = compiled->compiler_version;
+  result.input_ordinal = query.input_ordinal;
+  result.start_node = query.start_node;
+  result.goal_node = query.goal_node;
+  result.goal_state = kInvalidStateIndex;
+  result.rounds = 0;
+  result.generator = query.generator;
+  result.completion = KernelCompletion::kBudgetExhausted;
+  result.reserved[0] = 0;
+  result.reserved[1] = 0;
+  result.batch_id = query.batch_id;
+  result.query_id = query.query_id;
+  result.workspace_owner = query.workspace_owner;
+  result.policy_identity = query.policy_identity;
+  result.routing_profile_fingerprint = query.routing_profile_fingerprint;
+  result.source_board_content_hash = compiled->source_board_content_hash;
+  result.compiler_profile_fingerprint = compiled->compiler_profile_fingerprint;
+  result.rule_bucket_identity = compiled->rule_bucket_identity;
+  result.device_view_fingerprint = compiled->device_view_fingerprint;
+  result.examined_work = 0;
+  result.heading_turn_relaxations = 0;
+  query_status[slot] = kBatchQueryRunning;
+}
+
+__device__ void DeviceSetBatchCompletion(DeviceCandidateBatchResultV1* result,
+                                         std::uint32_t* status, std::uint32_t value) {
+  *status = value;
+  switch (value) {
+    case kBatchQueryReached:
+      result->completion = KernelCompletion::kReached;
+      break;
+    case kBatchQueryDisconnected:
+      result->completion = KernelCompletion::kDisconnected;
+      break;
+    case kBatchQueryBudgetExhausted:
+      result->completion = KernelCompletion::kBudgetExhausted;
+      break;
+    case kBatchQueryCancelled:
+      result->completion = KernelCompletion::kCancelled;
+      break;
+    default:
+      break;
+  }
+}
+
+__global__ void CandidateFrontierChunk(const DeviceNodeV1* nodes, DeviceCompiledHeaderV1 header,
+                                       const DeviceCandidateBatchQueryV1* queries,
+                                       const DeviceCandidatePolicyEdgeV1* policy_edges,
+                                       std::uint32_t query_count, std::uint32_t chunk_rounds,
+                                       std::uint64_t* labels, std::uint64_t* state_owners,
+                                       std::uint8_t* closed, DeviceCandidateBatchResultV1* results,
+                                       std::uint32_t* query_status) {
+  const std::uint32_t query_index = blockIdx.x;
+  if (query_index >= query_count) {
+    return;
+  }
+  const DeviceCandidateBatchQueryV1 query = queries[query_index];
+  DeviceCandidateBatchResultV1& result = results[query_index];
+  const std::uint64_t offset = query.workspace_offset;
+
+  __shared__ std::uint64_t winner_f[kThreadsPerBlock];
+  __shared__ std::uint64_t winner_g[kThreadsPerBlock];
+  __shared__ std::uint32_t winner_state[kThreadsPerBlock];
+  __shared__ std::uint8_t winner_heading[kThreadsPerBlock];
+  __shared__ std::uint32_t running;
+
+  for (std::uint32_t chunk_round = 0; chunk_round < chunk_rounds; ++chunk_round) {
+    if (threadIdx.x == 0) {
+      running = query_status[query_index] == kBatchQueryRunning ? 1U : 0U;
+    }
+    __syncthreads();
+    if (running == 0) {
+      break;
+    }
+
+    std::uint64_t best_f = kInfiniteRouteCost;
+    std::uint64_t best_g = kInfiniteRouteCost;
+    std::uint32_t best_state = kInvalidStateIndex;
+    std::uint8_t best_heading = kNoIncomingHeading;
+    for (std::uint32_t state = threadIdx.x; state < header.represented_states;
+         state += blockDim.x) {
+      if (closed[offset + state] != 0) {
+        continue;
+      }
+      const std::uint64_t g = labels[offset + state];
+      if (g == kInfiniteRouteCost) {
+        continue;
+      }
+      std::uint64_t f = 0;
+      if (!DeviceCheckedAddFiniteRouteCost(
+              g,
+              DeviceAdmissibleHeuristic(nodes, header, query,
+                                        static_cast<std::uint32_t>(state / kIncomingHeadingCount)),
+              &f)) {
+        f = kInfiniteRouteCost - 1;
+      }
+      const std::uint8_t heading = static_cast<std::uint8_t>(state % kIncomingHeadingCount);
+      if (DeviceFrontierWinnerLess(f, g, state, heading, best_f, best_g, best_state,
+                                   best_heading)) {
+        best_f = f;
+        best_g = g;
+        best_state = state;
+        best_heading = heading;
+      }
+    }
+    winner_f[threadIdx.x] = best_f;
+    winner_g[threadIdx.x] = best_g;
+    winner_state[threadIdx.x] = best_state;
+    winner_heading[threadIdx.x] = best_heading;
+    __syncthreads();
+
+    for (std::uint32_t stride = blockDim.x / 2U; stride != 0; stride /= 2U) {
+      if (threadIdx.x < stride &&
+          DeviceFrontierWinnerLess(winner_f[threadIdx.x + stride], winner_g[threadIdx.x + stride],
+                                   winner_state[threadIdx.x + stride],
+                                   winner_heading[threadIdx.x + stride], winner_f[threadIdx.x],
+                                   winner_g[threadIdx.x], winner_state[threadIdx.x],
+                                   winner_heading[threadIdx.x])) {
+        winner_f[threadIdx.x] = winner_f[threadIdx.x + stride];
+        winner_g[threadIdx.x] = winner_g[threadIdx.x + stride];
+        winner_state[threadIdx.x] = winner_state[threadIdx.x + stride];
+        winner_heading[threadIdx.x] = winner_heading[threadIdx.x + stride];
+      }
+      __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+      ++result.rounds;
+      const std::uint32_t selected_state = winner_state[0];
+      if (selected_state == kInvalidStateIndex) {
+        DeviceSetBatchCompletion(&result, &query_status[query_index], kBatchQueryDisconnected);
+      } else {
+        const std::uint64_t selected_slot = offset + selected_state;
+        if (DeviceClaimCandidateState(state_owners, selected_slot, query.workspace_owner,
+                                      &result)) {
+          closed[selected_slot] = 1;
+          const std::uint32_t node_index = selected_state / kIncomingHeadingCount;
+          if (node_index == query.goal_node) {
+            result.goal_state = selected_state;
+            DeviceSetBatchCompletion(&result, &query_status[query_index], kBatchQueryReached);
+          } else {
+            const std::uint8_t incoming =
+                static_cast<std::uint8_t>(selected_state % kIncomingHeadingCount);
+            const DeviceNodeV1 node = nodes[node_index];
+            for (std::uint8_t direction = 0; direction < 8; ++direction) {
+              if ((node.legal_edges & static_cast<std::uint8_t>(1U << direction)) == 0) {
+                continue;
+              }
+              ++result.examined_work;
+              std::uint64_t transition = 0;
+              if (!DeviceBatchTransitionCost(nodes, header, query, policy_edges, node_index,
+                                             direction, incoming, &transition)) {
+                continue;
+              }
+              std::uint64_t candidate = 0;
+              if (!DeviceCheckedAddFiniteRouteCost(winner_g[0], transition, &candidate)) {
+                continue;
+              }
+              const std::uint32_t target_state =
+                  DeviceStateIndex(node.neighbors[direction], direction);
+              const std::uint64_t target_slot = offset + target_state;
+              if (candidate < labels[target_slot] &&
+                  DeviceClaimCandidateState(state_owners, target_slot, query.workspace_owner,
+                                            &result)) {
+                labels[target_slot] = candidate;
+              }
+            }
+          }
+        } else {
+          DeviceSetBatchCompletion(&result, &query_status[query_index], kBatchQueryDisconnected);
+        }
+      }
+    }
+    __syncthreads();
+  }
+}
+
+__device__ std::uint64_t DeviceSweepDeparture(const DeviceCompiledHeaderV1& header,
+                                              const DeviceCandidateBatchQueryV1& query,
+                                              const std::uint64_t* query_labels, std::uint32_t node,
+                                              std::uint8_t direction,
+                                              std::uint64_t* turn_relaxations) {
+  std::uint64_t best =
+      node == query.start_node ? 0 : query_labels[DeviceStateIndex(node, direction)];
+  for (std::uint8_t incoming = 0; incoming < 8; ++incoming) {
+    const std::uint64_t label = query_labels[DeviceStateIndex(node, incoming)];
+    if (label == kInfiniteRouteCost) {
+      continue;
+    }
+    std::uint64_t candidate = label;
+    if (incoming != direction) {
+      const std::uint64_t bend =
+          static_cast<std::uint64_t>(header.costs.bend) + query.bend_surcharge;
+      if (!DeviceCheckedAddFiniteRouteCost(candidate, bend, &candidate)) {
+        continue;
+      }
+    }
+    if (candidate < best) {
+      best = candidate;
+      if (incoming != direction) {
+        ++*turn_relaxations;
+      }
+    }
+  }
+  return best;
+}
+
+__global__ void ResetCandidateSweepRound(std::uint32_t query_count, std::uint32_t* changed) {
+  const std::uint32_t query_index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (query_index < query_count) {
+    changed[query_index] = 0;
+  }
+}
+
+__global__ void ComputeCandidateSweepDepartures(
+    DeviceCompiledHeaderV1 header, const DeviceCandidateBatchQueryV1* queries,
+    std::uint32_t query_count, const std::uint64_t* labels, std::uint64_t* departures,
+    DeviceCandidateBatchResultV1* results, const std::uint32_t* query_status) {
+  const std::uint64_t departure_count = header.represented_nodes * 8U;
+  const std::uint64_t item = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::uint64_t total_departures = departure_count * query_count;
+  if (item >= total_departures) {
+    return;
+  }
+  const std::uint32_t query_index = static_cast<std::uint32_t>(item / departure_count);
+  if (query_status[query_index] != kBatchQueryRunning) {
+    return;
+  }
+  const DeviceCandidateBatchQueryV1 query = queries[query_index];
+  const std::uint64_t local_item = item - static_cast<std::uint64_t>(query_index) * departure_count;
+  const std::uint32_t node = static_cast<std::uint32_t>(local_item / 8U);
+  const std::uint8_t direction = static_cast<std::uint8_t>(local_item % 8U);
+  std::uint64_t turns = 0;
+  departures[item] =
+      DeviceSweepDeparture(header, query, labels + query.workspace_offset, node, direction, &turns);
+  if (turns != 0) {
+    atomicAdd(reinterpret_cast<unsigned long long*>(&results[query_index].heading_turn_relaxations),
+              static_cast<unsigned long long>(turns));
+  }
+}
+
+__global__ void SweepCandidateRuns(const DeviceNodeV1* nodes, const DeviceRunV1* runs,
+                                   std::uint64_t run_count, const std::uint32_t* run_nodes,
+                                   DeviceCompiledHeaderV1 header,
+                                   const DeviceCandidateBatchQueryV1* queries,
+                                   const DeviceCandidatePolicyEdgeV1* policy_edges,
+                                   std::uint32_t query_count, const std::uint64_t* departures,
+                                   std::uint64_t* labels, std::uint64_t* state_owners,
+                                   DeviceCandidateBatchResultV1* results, std::uint32_t* changed,
+                                   const std::uint32_t* query_status) {
+  const std::uint64_t item = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::uint64_t total_runs = run_count * query_count;
+  if (item >= total_runs || run_count == 0) {
+    return;
+  }
+  const std::uint32_t query_index = static_cast<std::uint32_t>(item / run_count);
+  if (query_status[query_index] != kBatchQueryRunning) {
+    return;
+  }
+  const std::uint64_t run_index = item - static_cast<std::uint64_t>(query_index) * run_count;
+  const DeviceCandidateBatchQueryV1 query = queries[query_index];
+  DeviceCandidateBatchResultV1& result = results[query_index];
+  const std::uint64_t departure_offset =
+      static_cast<std::uint64_t>(query_index) * header.represented_nodes * 8U;
+  const DeviceRunV1 run = runs[run_index];
+  const std::uint8_t direction = static_cast<std::uint8_t>(run.direction);
+  std::uint64_t carry = kInfiniteRouteCost;
+  bool run_changed = false;
+  for (std::uint32_t position = 0; position + 1 < run.node_count; ++position) {
+    const std::uint32_t source = run_nodes[run.node_offset + position];
+    const std::uint32_t target = run_nodes[run.node_offset + position + 1];
+    carry = min(carry,
+                departures[departure_offset + static_cast<std::uint64_t>(source) * 8U + direction]);
+    std::uint64_t transition = 0;
+    if (!DeviceBatchTransitionCost(nodes, header, query, policy_edges, source, direction, direction,
+                                   &transition)) {
+      carry = kInfiniteRouteCost;
+      continue;
+    }
+    // Departure already accounts for any heading change, so the generic
+    // helper receives the outgoing direction as its incoming heading.
+    std::uint64_t candidate = 0;
+    if (DeviceCheckedAddFiniteRouteCost(carry, transition, &candidate)) {
+      const std::uint32_t target_state = DeviceStateIndex(target, direction);
+      const std::uint64_t target_slot = query.workspace_offset + target_state;
+      if (DeviceClaimCandidateState(state_owners, target_slot, query.workspace_owner, &result)) {
+        const unsigned long long previous =
+            atomicMin(reinterpret_cast<unsigned long long*>(&labels[target_slot]),
+                      static_cast<unsigned long long>(candidate));
+        if (candidate < previous) {
+          run_changed = true;
+        }
+      }
+      carry =
+          min(candidate,
+              departures[departure_offset + static_cast<std::uint64_t>(target) * 8U + direction]);
+    } else {
+      carry = departures[departure_offset + static_cast<std::uint64_t>(target) * 8U + direction];
+    }
+  }
+  atomicAdd(reinterpret_cast<unsigned long long*>(&result.examined_work),
+            static_cast<unsigned long long>(run.node_count - 1U));
+  if (run_changed) {
+    atomicExch(&changed[query_index], 1U);
+  }
+}
+
+__global__ void FinalizeCandidateSweepRound(DeviceCompiledHeaderV1 header,
+                                            const DeviceCandidateBatchQueryV1* queries,
+                                            std::uint32_t query_count, const std::uint64_t* labels,
+                                            DeviceCandidateBatchResultV1* results,
+                                            const std::uint32_t* changed,
+                                            std::uint32_t* query_status) {
+  const std::uint32_t query_index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (query_index >= query_count || query_status[query_index] != kBatchQueryRunning) {
+    return;
+  }
+  const DeviceCandidateBatchQueryV1 query = queries[query_index];
+  DeviceCandidateBatchResultV1& result = results[query_index];
+  ++result.rounds;
+  if (changed[query_index] != 0) {
+    return;
+  }
+  std::uint64_t best = kInfiniteRouteCost;
+  std::uint32_t best_state = kInvalidStateIndex;
+  for (std::uint8_t heading = 0; heading < 8; ++heading) {
+    const std::uint32_t state = DeviceStateIndex(query.goal_node, heading);
+    const std::uint64_t label = labels[query.workspace_offset + state];
+    if (label < best || (label == best && state < best_state)) {
+      best = label;
+      best_state = state;
+    }
+  }
+  if (best == kInfiniteRouteCost) {
+    DeviceSetBatchCompletion(&result, &query_status[query_index], kBatchQueryDisconnected);
+  } else {
+    result.goal_state = best_state;
+    DeviceSetBatchCompletion(&result, &query_status[query_index], kBatchQueryReached);
+  }
+}
+
+__global__ void FinalizeCandidateBatchStatus(std::uint32_t query_count,
+                                             DeviceCandidateBatchResultV1* results,
+                                             std::uint32_t* query_status,
+                                             std::uint32_t completion) {
+  const std::uint32_t query = blockIdx.x * blockDim.x + threadIdx.x;
+  if (query < query_count && query_status[query] == kBatchQueryRunning) {
+    DeviceSetBatchCompletion(&results[query], &query_status[query], completion);
+  }
+}
+
+__global__ void SelectCandidateBatchPredecessors(
+    const DeviceNodeV1* nodes, DeviceCompiledHeaderV1 header,
+    const DeviceCandidateBatchQueryV1* queries, const DeviceCandidatePolicyEdgeV1* policy_edges,
+    std::uint32_t query_count, const std::uint64_t* labels, std::uint64_t* state_owners,
+    std::uint32_t* predecessors, std::uint64_t* predecessor_owners,
+    DeviceCandidateBatchResultV1* results) {
+  const std::uint64_t slot = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::uint64_t total_states = header.represented_states * query_count;
+  if (slot >= total_states) {
+    return;
+  }
+  const std::uint32_t query_index = static_cast<std::uint32_t>(slot / header.represented_states);
+  const DeviceCandidateBatchQueryV1 query = queries[query_index];
+  DeviceCandidateBatchResultV1& result = results[query_index];
+  const std::uint32_t state = static_cast<std::uint32_t>(slot - query.workspace_offset);
+  if (!DeviceClaimCandidateState(state_owners, slot, query.workspace_owner, &result) ||
+      !DeviceClaimCandidateState(predecessor_owners, slot, query.workspace_owner, &result)) {
+    return;
+  }
+  const std::uint32_t node = state / kIncomingHeadingCount;
+  const std::uint8_t incoming = static_cast<std::uint8_t>(state % kIncomingHeadingCount);
+  const std::uint32_t start_state = DeviceStateIndex(query.start_node, kNoIncomingHeading);
+  if (state == start_state || incoming == kNoIncomingHeading ||
+      labels[slot] == kInfiniteRouteCost) {
+    predecessors[slot] = kInvalidStateIndex;
+    return;
+  }
+  const std::uint8_t opposite = static_cast<std::uint8_t>((incoming + 4U) % 8U);
+  const std::uint32_t predecessor_node = nodes[node].neighbors[opposite];
+  if (predecessor_node == kInvalidNodeIndex) {
+    predecessors[slot] = kInvalidStateIndex;
+    return;
+  }
+  std::uint32_t best = kInvalidStateIndex;
+  for (std::uint8_t predecessor_heading = 0; predecessor_heading < kIncomingHeadingCount;
+       ++predecessor_heading) {
+    if (predecessor_heading == kNoIncomingHeading && predecessor_node != query.start_node) {
+      continue;
+    }
+    const std::uint32_t predecessor_state = DeviceStateIndex(predecessor_node, predecessor_heading);
+    const std::uint64_t predecessor_slot = query.workspace_offset + predecessor_state;
+    if (!DeviceClaimCandidateState(state_owners, predecessor_slot, query.workspace_owner,
+                                   &result)) {
+      predecessors[slot] = kInvalidStateIndex;
+      return;
+    }
+    std::uint64_t transition = 0;
+    if (!DeviceBatchTransitionCost(nodes, header, query, policy_edges, predecessor_node, incoming,
+                                   predecessor_heading, &transition)) {
+      continue;
+    }
+    std::uint64_t candidate = 0;
+    if (DeviceCheckedAddFiniteRouteCost(labels[predecessor_slot], transition, &candidate) &&
+        candidate == labels[slot] && predecessor_state < best) {
+      best = predecessor_state;
+    }
+  }
+  predecessors[slot] = best;
 }
 
 [[nodiscard]] std::optional<BackendError> CopyToDevice(void* destination, const void* source,
@@ -452,9 +1040,10 @@ template <typename T>
       static_cast<__uint128_t>(std::max(header.costs.orthogonal_step, header.costs.diagonal_step)) +
       header.costs.bend;
   if (maximum_transition_cost * header.represented_nodes *
-          geometry_compiler::kStableDirectionOrder.size() >
-      std::numeric_limits<std::uint64_t>::max()) {
-    return InvalidDeviceView("CUDA upload rejected costs that exceed the simple-state path bound");
+          geometry_compiler::kStableDirectionOrder.size() >=
+      kInfiniteRouteCost) {
+    return InvalidDeviceView(
+        "CUDA upload rejected costs that exceed or collide with the finite route-cost bound");
   }
 
   if (board.layers.empty()) {
@@ -891,7 +1480,205 @@ template <typename T>
   return CompleteBoundedSearch(uploaded, execution, converged);
 }
 
-class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
+struct CandidateBatchAllocation {
+  std::uint64_t total_states = 0;
+  std::uint64_t sweep_departures = 0;
+  std::uint64_t batch_bytes = 0;
+  std::uint64_t batch_host_bytes = 0;
+};
+
+[[nodiscard]] std::variant<CandidateBatchAllocation, BackendError> ValidateCandidateBatchExecution(
+    const CudaUploadedCompiledView& uploaded,
+    const BackendCandidateBatchExecutionRequest& request) {
+  const std::optional<PlanarGeneratorDescriptor> descriptor =
+      DescribePlanarGenerator(request.generator);
+  if (request.schema_version != kDeviceCandidateBatchSchemaVersion || request.batch_id == 0 ||
+      request.queries.empty() ||
+      request.queries.size() > std::numeric_limits<std::uint32_t>::max() ||
+      request.policy_edges.size() > routing::kMaximumPolicyResourceEntries ||
+      request.maximum_rounds == 0 || !descriptor.has_value()) {
+    return BackendError{.code = BackendErrorCode::kInternalInvariant,
+                        .detail =
+                            "CUDA candidate batch has invalid schema, identity, aggregate policy "
+                            "size, generator, or round bounds"};
+  }
+  const std::uint64_t state_count = uploaded.header.represented_states;
+  if (request.maximum_workspace_states_per_query < state_count) {
+    return BackendError{.code = BackendErrorCode::kResourceExhausted,
+                        .detail =
+                            "CUDA candidate batch exceeds the per-query workspace-state "
+                            "capacity"};
+  }
+  if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier &&
+      request.maximum_frontier_states_per_query < state_count) {
+    return BackendError{.code = BackendErrorCode::kResourceExhausted,
+                        .detail =
+                            "CUDA candidate frontier exceeds the per-query frontier-state "
+                            "capacity"};
+  }
+  const __uint128_t total_states_wide =
+      static_cast<__uint128_t>(state_count) * request.queries.size();
+  if (total_states_wide > std::numeric_limits<std::uint64_t>::max() ||
+      total_states_wide > std::numeric_limits<std::size_t>::max() ||
+      total_states_wide >
+          static_cast<__uint128_t>(std::numeric_limits<std::uint32_t>::max()) * kThreadsPerBlock) {
+    return BackendError{.code = BackendErrorCode::kResourceExhausted,
+                        .detail =
+                            "CUDA candidate batch query-major state space exceeds launch or "
+                            "host index bounds"};
+  }
+  const std::uint64_t total_states = static_cast<std::uint64_t>(total_states_wide);
+  const __uint128_t maximum_launch_items =
+      static_cast<__uint128_t>(std::numeric_limits<std::uint32_t>::max()) * kThreadsPerBlock;
+  __uint128_t sweep_departures_wide = 0;
+  if (descriptor->workspace == PlanarGeneratorWorkspace::kSweep) {
+    sweep_departures_wide =
+        static_cast<__uint128_t>(uploaded.header.represented_nodes) * 8U * request.queries.size();
+    const __uint128_t sweep_runs_wide =
+        static_cast<__uint128_t>(uploaded.runs.count()) * request.queries.size();
+    if (sweep_departures_wide > std::numeric_limits<std::uint64_t>::max() ||
+        sweep_departures_wide > std::numeric_limits<std::size_t>::max() ||
+        sweep_departures_wide > maximum_launch_items || sweep_runs_wide > maximum_launch_items) {
+      return BackendError{
+          .code = BackendErrorCode::kResourceExhausted,
+          .detail = "CUDA candidate sweep departure or run batch exceeds launch bounds",
+      };
+    }
+    const __uint128_t maximum_examined =
+        static_cast<__uint128_t>(request.maximum_rounds) * uploaded.header.represented_nodes * 8U;
+    const __uint128_t maximum_turn_relaxations = maximum_examined * 8U;
+    if (maximum_examined > std::numeric_limits<std::uint64_t>::max() ||
+        maximum_turn_relaxations > std::numeric_limits<std::uint64_t>::max()) {
+      return BackendError{
+          .code = BackendErrorCode::kResourceExhausted,
+          .detail = "CUDA candidate sweep telemetry bounds exceed uint64 capacity",
+      };
+    }
+  }
+
+  std::set<std::uint64_t> owners;
+  std::uint64_t expected_policy_offset = 0;
+  for (std::size_t query_index = 0; query_index < request.queries.size(); ++query_index) {
+    const DeviceCandidateBatchQueryV1& query = request.queries[query_index];
+    const std::uint64_t policy_end =
+        static_cast<std::uint64_t>(query.policy_offset) + query.policy_count;
+    if (query.schema_version != kDeviceCandidateBatchSchemaVersion ||
+        query.batch_id != request.batch_id || query.query_id == 0 || query.workspace_owner == 0 ||
+        query.generator != request.generator || query.maximum_rounds != request.maximum_rounds ||
+        query.start_node >= uploaded.header.represented_nodes ||
+        query.goal_node >= uploaded.header.represented_nodes ||
+        query.start_node == query.goal_node ||
+        query.workspace_offset != query_index * state_count ||
+        query.workspace_state_count != state_count ||
+        query.frontier_state_capacity !=
+            (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier ? state_count : 0) ||
+        query.policy_offset != expected_policy_offset ||
+        policy_end > std::numeric_limits<std::uint32_t>::max() ||
+        policy_end > request.policy_edges.size() ||
+        std::ranges::any_of(query.reserved, [](std::uint8_t byte) { return byte != 0; }) ||
+        (query_index != 0 && request.queries[query_index - 1].query_id >= query.query_id) ||
+        !owners.insert(query.workspace_owner).second) {
+      return BackendError{.code = BackendErrorCode::kInternalInvariant,
+                          .detail =
+                              "CUDA candidate batch query ordering, ownership, association, "
+                              "endpoint, policy, or workspace bounds are invalid"};
+    }
+    std::uint32_t previous_edge = 0;
+    bool have_previous_edge = false;
+    std::uint64_t maximum_penalty = 0;
+    for (std::uint64_t edge_index = query.policy_offset; edge_index < policy_end; ++edge_index) {
+      const DeviceCandidatePolicyEdgeV1& edge = request.policy_edges[edge_index];
+      const std::uint32_t node = edge.physical_edge_index / 8U;
+      const std::uint8_t direction = static_cast<std::uint8_t>(edge.physical_edge_index % 8U);
+      if (edge.reserved != 0 || node >= uploaded.host_nodes.size() || direction >= 4 ||
+          (uploaded.host_nodes[node].legal_edges & static_cast<std::uint8_t>(1U << direction)) ==
+              0 ||
+          (have_previous_edge && edge.physical_edge_index <= previous_edge)) {
+        return BackendError{.code = BackendErrorCode::kInternalInvariant,
+                            .detail =
+                                "CUDA candidate batch policy edge encoding is invalid or "
+                                "non-canonical"};
+      }
+      have_previous_edge = true;
+      previous_edge = edge.physical_edge_index;
+      if (edge.adjustment != kBannedResourceAdjustment) {
+        maximum_penalty = std::max(maximum_penalty, edge.adjustment);
+      }
+    }
+    const __uint128_t orthogonal = static_cast<__uint128_t>(uploaded.header.costs.orthogonal_step) +
+                                   query.orthogonal_step_surcharge;
+    const __uint128_t diagonal = static_cast<__uint128_t>(uploaded.header.costs.diagonal_step) +
+                                 query.diagonal_step_surcharge;
+    const __uint128_t bend =
+        static_cast<__uint128_t>(uploaded.header.costs.bend) + query.bend_surcharge;
+    const __uint128_t maximum_transition = std::max(orthogonal, diagonal) + bend + maximum_penalty;
+    if (orthogonal >= kInfiniteRouteCost || diagonal >= kInfiniteRouteCost ||
+        bend >= kInfiniteRouteCost ||
+        maximum_transition * uploaded.header.represented_nodes * 8U >= kInfiniteRouteCost) {
+      return BackendError{.code = BackendErrorCode::kInternalInvariant,
+                          .detail =
+                              "CUDA candidate batch policy cost bound collides with the "
+                              "unreachable sentinel"};
+    }
+    expected_policy_offset = policy_end;
+  }
+  if (expected_policy_offset != request.policy_edges.size()) {
+    return BackendError{.code = BackendErrorCode::kInternalInvariant,
+                        .detail = "CUDA candidate batch contains unowned policy-edge storage"};
+  }
+
+  __uint128_t bytes = static_cast<__uint128_t>(request.queries.size()) *
+                      (sizeof(DeviceCandidateBatchQueryV1) + sizeof(DeviceCandidateBatchResultV1) +
+                       sizeof(std::uint32_t));
+  bytes +=
+      static_cast<__uint128_t>(request.policy_edges.size()) * sizeof(DeviceCandidatePolicyEdgeV1);
+  bytes += total_states_wide *
+           (sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t));
+  if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
+    bytes += total_states_wide * sizeof(std::uint8_t);
+  } else {
+    bytes += sweep_departures_wide * sizeof(std::uint64_t);
+    bytes += static_cast<__uint128_t>(request.queries.size()) * sizeof(std::uint32_t);
+  }
+  if (bytes > std::numeric_limits<std::uint64_t>::max() ||
+      uploaded.header.estimated_persistent_device_bytes > request.maximum_device_bytes ||
+      bytes > request.maximum_device_bytes - uploaded.header.estimated_persistent_device_bytes) {
+    return BackendError{.code = BackendErrorCode::kResourceExhausted,
+                        .detail =
+                            "CUDA candidate batch exceeds the deterministic device-memory "
+                            "budget"};
+  }
+  const std::optional<std::uint64_t> host_bytes = EstimateCandidateBatchHostBytesV1(
+      request.queries.size(), request.policy_edges.size(), state_count);
+  if (!host_bytes.has_value() || *host_bytes > request.maximum_host_bytes) {
+    return BackendError{
+        .code = BackendErrorCode::kResourceExhausted,
+        .detail = "CUDA candidate batch exceeds the deterministic host-memory budget",
+    };
+  }
+  return CandidateBatchAllocation{
+      .total_states = total_states,
+      .sweep_departures = static_cast<std::uint64_t>(sweep_departures_wide),
+      .batch_bytes = static_cast<std::uint64_t>(bytes),
+      .batch_host_bytes = *host_bytes};
+}
+
+[[nodiscard]] std::optional<BackendError> SetCurrentCudaDeviceForBatch(int expected_device,
+                                                                       const char* operation) {
+  int current_device = -1;
+  if (const cudaError_t status = cudaGetDevice(&current_device); status != cudaSuccess) {
+    return CudaError(operation, status);
+  }
+  if (current_device != expected_device) {
+    return BackendError{.code = BackendErrorCode::kBackendFailure,
+                        .detail =
+                            "CUDA candidate batch current device differs from its upload or "
+                            "execution device"};
+  }
+  return std::nullopt;
+}
+
+class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
  public:
   [[nodiscard]] BackendMetadataResult QueryMetadata() const override {
     int device = 0;
@@ -927,6 +1714,7 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
     auto uploaded = std::make_unique<CudaUploadedCompiledView>();
     uploaded->device = device;
     uploaded->header = board.header;
+    uploaded->host_nodes = board.nodes;
     if (std::optional<BackendError> error =
             AllocateAndUpload(uploaded->device_header, &board.header, 1,
                               "cudaMalloc(device header)", "cudaMemcpy(device header)");
@@ -1039,8 +1827,9 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
           .detail = "CUDA execute requires distinct start and goal nodes",
       };
     }
-    if (request.generator != PlanarGenerator::kBucketedFrontier &&
-        request.generator != PlanarGenerator::kHeadingAwareSweep) {
+    const std::optional<PlanarGeneratorDescriptor> descriptor =
+        DescribePlanarGenerator(request.generator);
+    if (!descriptor.has_value()) {
       return BackendError{.code = BackendErrorCode::kInternalInvariant,
                           .detail = "CUDA execute received an unknown generator"};
     }
@@ -1053,7 +1842,7 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
                                            state_count * sizeof(std::uint64_t) +
                                            state_count * sizeof(std::uint32_t);
     const std::uint64_t algorithm_bytes =
-        request.generator == PlanarGenerator::kBucketedFrontier
+        descriptor->workspace == PlanarGeneratorWorkspace::kFrontier
             ? state_count * 2 * sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t)
             : uploaded->header.represented_nodes * 8 * sizeof(std::uint64_t) +
                   2 * sizeof(std::uint64_t);
@@ -1141,6 +1930,389 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
     return std::unique_ptr<PendingRouteExecution>(std::move(execution));
   }
 
+  [[nodiscard]] CandidateBatchExecutionResult ExecuteCandidateBatch(
+      const UploadedCompiledView& board,
+      const BackendCandidateBatchExecutionRequest& request) override {
+    try {
+      const auto* uploaded = dynamic_cast<const CudaUploadedCompiledView*>(&board);
+      if (uploaded == nullptr) {
+        return BackendError{.code = BackendErrorCode::kInternalInvariant,
+                            .detail = "CUDA candidate batch received a view from another backend"};
+      }
+      if (std::optional<BackendError> error =
+              SetCurrentCudaDeviceForBatch(uploaded->device, "cudaGetDevice(candidate batch)");
+          error.has_value()) {
+        return std::move(*error);
+      }
+      std::variant<CandidateBatchAllocation, BackendError> validated =
+          ValidateCandidateBatchExecution(*uploaded, request);
+      if (std::holds_alternative<BackendError>(validated)) {
+        return std::get<BackendError>(std::move(validated));
+      }
+      const CandidateBatchAllocation allocation = std::get<CandidateBatchAllocation>(validated);
+      const std::uint32_t query_count = static_cast<std::uint32_t>(request.queries.size());
+      const std::optional<PlanarGeneratorDescriptor> descriptor =
+          DescribePlanarGenerator(request.generator);
+      if (!descriptor.has_value()) {
+        return BackendError{
+            .code = BackendErrorCode::kInternalInvariant,
+            .detail =
+                "CUDA candidate batch generator descriptor disappeared after validated "
+                "execution admission"};
+      }
+
+      auto execution = std::make_unique<CudaPendingCandidateBatchExecution>();
+      execution->device = uploaded->device;
+      execution->batch_id = request.batch_id;
+      execution->generator = request.generator;
+      execution->state_count = uploaded->header.represented_states;
+      execution->persistent_bytes = uploaded->header.estimated_persistent_device_bytes;
+      execution->batch_bytes = allocation.batch_bytes;
+      execution->batch_host_bytes = allocation.batch_host_bytes;
+      execution->chunk_rounds = descriptor->chunk_rounds;
+      execution->queries = request.queries;
+      if (std::optional<BackendError> error = AllocateAndUpload(
+              execution->device_queries, request.queries.data(), request.queries.size(),
+              "cudaMalloc(candidate batch queries)", "cudaMemcpy(candidate batch queries)");
+          error.has_value()) {
+        return std::move(*error);
+      }
+      if (std::optional<BackendError> error = AllocateAndUpload(
+              execution->policy_edges, request.policy_edges.data(), request.policy_edges.size(),
+              "cudaMalloc(candidate batch policy edges)",
+              "cudaMemcpy(candidate batch policy edges)");
+          error.has_value()) {
+        return std::move(*error);
+      }
+      if (std::optional<BackendError> error =
+              execution->results.Allocate(query_count, "cudaMalloc(candidate batch results)");
+          error.has_value()) {
+        return std::move(*error);
+      }
+      if (std::optional<BackendError> error = execution->labels.Allocate(
+              allocation.total_states, "cudaMalloc(candidate batch labels)");
+          error.has_value()) {
+        return std::move(*error);
+      }
+      if (std::optional<BackendError> error = execution->predecessors.Allocate(
+              allocation.total_states, "cudaMalloc(candidate batch predecessors)");
+          error.has_value()) {
+        return std::move(*error);
+      }
+      if (std::optional<BackendError> error = execution->state_owners.Allocate(
+              allocation.total_states, "cudaMalloc(candidate batch state owners)");
+          error.has_value()) {
+        return std::move(*error);
+      }
+      if (std::optional<BackendError> error = execution->predecessor_owners.Allocate(
+              allocation.total_states, "cudaMalloc(candidate batch predecessor owners)");
+          error.has_value()) {
+        return std::move(*error);
+      }
+      DeviceBuffer<std::uint32_t> query_status;
+      if (std::optional<BackendError> error =
+              query_status.Allocate(query_count, "cudaMalloc(candidate batch status)");
+          error.has_value()) {
+        return std::move(*error);
+      }
+      DeviceBuffer<std::uint8_t> closed;
+      DeviceBuffer<std::uint64_t> sweep_departures;
+      DeviceBuffer<std::uint32_t> sweep_changed;
+      if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
+        if (std::optional<BackendError> error =
+                closed.Allocate(allocation.total_states, "cudaMalloc(candidate frontier closed)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+      } else {
+        if (std::optional<BackendError> error = sweep_departures.Allocate(
+                allocation.sweep_departures, "cudaMalloc(candidate sweep departures)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error =
+                sweep_changed.Allocate(query_count, "cudaMalloc(candidate sweep round stats)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+      }
+
+      const std::uint64_t actual_batch_bytes =
+          execution->device_queries.bytes() + execution->policy_edges.bytes() +
+          execution->results.bytes() + execution->labels.bytes() + execution->predecessors.bytes() +
+          execution->state_owners.bytes() + execution->predecessor_owners.bytes() +
+          query_status.bytes() + closed.bytes() + sweep_departures.bytes() + sweep_changed.bytes();
+      if (actual_batch_bytes != allocation.batch_bytes) {
+        return BackendError{
+            .code = BackendErrorCode::kInternalInvariant,
+            .detail =
+                "CUDA candidate batch allocation bytes disagree with deterministic accounting",
+        };
+      }
+
+      cudaEvent_t start_event = nullptr;
+      cudaEvent_t stop_event = nullptr;
+      cudaError_t status = cudaEventCreate(&start_event);
+      if (status != cudaSuccess) {
+        return CudaError("cudaEventCreate(candidate batch start)", status);
+      }
+      status = cudaEventCreate(&stop_event);
+      if (status != cudaSuccess) {
+        cudaEventDestroy(start_event);
+        return CudaError("cudaEventCreate(candidate batch stop)", status);
+      }
+      status = cudaEventRecord(start_event);
+      if (status != cudaSuccess) {
+        cudaEventDestroy(stop_event);
+        cudaEventDestroy(start_event);
+        return CudaError("cudaEventRecord(candidate batch start)", status);
+      }
+
+      std::optional<BackendError> run_error;
+      const std::uint64_t initialization_work =
+          std::max<std::uint64_t>(allocation.total_states, query_count);
+      InitializeCandidateBatch<<<BlockCount(initialization_work), kThreadsPerBlock>>>(
+          uploaded->device_header.get(), execution->device_queries.get(), query_count,
+          execution->results.get(), execution->labels.get(), execution->predecessors.get(),
+          execution->state_owners.get(), execution->predecessor_owners.get(), closed.get(),
+          query_status.get());
+      ++execution->kernel_launch_count;
+      run_error = CheckLaunch("InitializeCandidateBatch launch");
+
+      std::vector<std::uint32_t> host_status(query_count, kBatchQueryRunning);
+      bool all_complete = false;
+      std::uint32_t dispatched_rounds = 0;
+      while (!run_error.has_value() && dispatched_rounds < request.maximum_rounds) {
+        if (request.cancellation != nullptr && request.cancellation->load()) {
+          break;
+        }
+        const std::uint32_t maximum_chunk_rounds = descriptor->chunk_rounds;
+        const std::uint32_t chunk_rounds =
+            std::min(maximum_chunk_rounds, request.maximum_rounds - dispatched_rounds);
+        if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
+          CandidateFrontierChunk<<<query_count, kThreadsPerBlock>>>(
+              uploaded->nodes.get(), uploaded->header, execution->device_queries.get(),
+              execution->policy_edges.get(), query_count, chunk_rounds, execution->labels.get(),
+              execution->state_owners.get(), closed.get(), execution->results.get(),
+              query_status.get());
+          ++execution->kernel_launch_count;
+          run_error = CheckLaunch("CandidateFrontierChunk launch");
+        } else {
+          const std::uint64_t batched_runs =
+              static_cast<std::uint64_t>(query_count) * uploaded->runs.count();
+          for (std::uint32_t chunk_round = 0; !run_error.has_value() && chunk_round < chunk_rounds;
+               ++chunk_round) {
+            ResetCandidateSweepRound<<<BlockCount(query_count), kThreadsPerBlock>>>(
+                query_count, sweep_changed.get());
+            ++execution->kernel_launch_count;
+            run_error = CheckLaunch("ResetCandidateSweepRound launch");
+            if (run_error.has_value()) {
+              break;
+            }
+            ComputeCandidateSweepDepartures<<<BlockCount(allocation.sweep_departures),
+                                              kThreadsPerBlock>>>(
+                uploaded->header, execution->device_queries.get(), query_count,
+                execution->labels.get(), sweep_departures.get(), execution->results.get(),
+                query_status.get());
+            ++execution->kernel_launch_count;
+            run_error = CheckLaunch("ComputeCandidateSweepDepartures launch");
+            if (run_error.has_value()) {
+              break;
+            }
+            if (batched_runs != 0) {
+              SweepCandidateRuns<<<BlockCount(batched_runs), kThreadsPerBlock>>>(
+                  uploaded->nodes.get(), uploaded->runs.get(), uploaded->runs.count(),
+                  uploaded->run_nodes.get(), uploaded->header, execution->device_queries.get(),
+                  execution->policy_edges.get(), query_count, sweep_departures.get(),
+                  execution->labels.get(), execution->state_owners.get(), execution->results.get(),
+                  sweep_changed.get(), query_status.get());
+              ++execution->kernel_launch_count;
+              run_error = CheckLaunch("SweepCandidateRuns launch");
+              if (run_error.has_value()) {
+                break;
+              }
+            }
+            FinalizeCandidateSweepRound<<<BlockCount(query_count), kThreadsPerBlock>>>(
+                uploaded->header, execution->device_queries.get(), query_count,
+                execution->labels.get(), execution->results.get(), sweep_changed.get(),
+                query_status.get());
+            ++execution->kernel_launch_count;
+            run_error = CheckLaunch("FinalizeCandidateSweepRound launch");
+          }
+        }
+        if (run_error.has_value()) {
+          break;
+        }
+        dispatched_rounds += chunk_rounds;
+        execution->dispatched_rounds = dispatched_rounds;
+        status = cudaMemcpy(host_status.data(), query_status.get(), query_status.bytes(),
+                            cudaMemcpyDeviceToHost);
+        if (status != cudaSuccess) {
+          run_error = CudaError("cudaMemcpy(candidate batch status)", status);
+          break;
+        }
+        ++execution->blocking_status_readback_count;
+        all_complete = std::ranges::none_of(
+            host_status, [](std::uint32_t value) { return value == kBatchQueryRunning; });
+        if (all_complete) {
+          break;
+        }
+        if (request.cancellation != nullptr && request.cancellation->load()) {
+          break;
+        }
+      }
+      if (!run_error.has_value() && !all_complete) {
+        const std::uint32_t completion =
+            request.cancellation != nullptr && request.cancellation->load()
+                ? kBatchQueryCancelled
+                : kBatchQueryBudgetExhausted;
+        FinalizeCandidateBatchStatus<<<BlockCount(query_count), kThreadsPerBlock>>>(
+            query_count, execution->results.get(), query_status.get(), completion);
+        ++execution->kernel_launch_count;
+        ++execution->finalization_launch_count;
+        run_error = CheckLaunch("FinalizeCandidateBatchStatus launch");
+      }
+      if (!run_error.has_value()) {
+        SelectCandidateBatchPredecessors<<<BlockCount(allocation.total_states), kThreadsPerBlock>>>(
+            uploaded->nodes.get(), uploaded->header, execution->device_queries.get(),
+            execution->policy_edges.get(), query_count, execution->labels.get(),
+            execution->state_owners.get(), execution->predecessors.get(),
+            execution->predecessor_owners.get(), execution->results.get());
+        ++execution->kernel_launch_count;
+        run_error = CheckLaunch("SelectCandidateBatchPredecessors launch");
+      }
+      if (!run_error.has_value()) {
+        status = cudaEventRecord(stop_event);
+        if (status == cudaSuccess) {
+          status = cudaEventSynchronize(stop_event);
+        }
+        float elapsed = 0.0F;
+        if (status == cudaSuccess) {
+          status = cudaEventElapsedTime(&elapsed, start_event, stop_event);
+        }
+        if (status != cudaSuccess) {
+          run_error = CudaError("CUDA candidate batch timing", status);
+        } else {
+          execution->kernel_milliseconds = elapsed;
+        }
+      }
+      cudaEventDestroy(stop_event);
+      cudaEventDestroy(start_event);
+      if (run_error.has_value()) {
+        return std::move(*run_error);
+      }
+      return std::unique_ptr<PendingCandidateBatchExecution>(std::move(execution));
+    } catch (const std::bad_alloc&) {
+      return BackendError{
+          .code = BackendErrorCode::kResourceExhausted,
+          .detail = "CUDA candidate batch host allocation failed during execution",
+      };
+    } catch (const std::length_error&) {
+      return BackendError{
+          .code = BackendErrorCode::kResourceExhausted,
+          .detail = "CUDA candidate batch host container capacity failed during execution",
+      };
+    }
+  }
+
+  [[nodiscard]] CandidateBatchReadbackResult ReadbackCandidateBatch(
+      const PendingCandidateBatchExecution& pending) override {
+    try {
+      const auto* execution = dynamic_cast<const CudaPendingCandidateBatchExecution*>(&pending);
+      if (execution == nullptr) {
+        return BackendError{
+            .code = BackendErrorCode::kInternalInvariant,
+            .detail = "CUDA candidate batch readback received an execution from another backend",
+        };
+      }
+      if (std::optional<BackendError> error = SetCurrentCudaDeviceForBatch(
+              execution->device, "cudaGetDevice(candidate batch readback)");
+          error.has_value()) {
+        return std::move(*error);
+      }
+      std::vector<DeviceCandidateBatchResultV1> headers(execution->queries.size());
+      cudaError_t status = cudaMemcpy(headers.data(), execution->results.get(),
+                                      execution->results.bytes(), cudaMemcpyDeviceToHost);
+      if (status != cudaSuccess) {
+        return CudaError("cudaMemcpy(candidate batch results)", status);
+      }
+      UntrustedCandidateBatchResult readback{
+          .schema_version = kDeviceCandidateBatchSchemaVersion,
+          .batch_id = execution->batch_id,
+          .generator = execution->generator,
+          .telemetry =
+              CandidateBatchTelemetry{
+                  .persistent_device_bytes = execution->persistent_bytes,
+                  .batch_device_bytes = execution->batch_bytes,
+                  .peak_device_bytes = execution->persistent_bytes + execution->batch_bytes,
+                  .batch_host_bytes = execution->batch_host_bytes,
+                  .kernel_launch_count = execution->kernel_launch_count,
+                  .blocking_status_readback_count = execution->blocking_status_readback_count,
+                  .dispatched_rounds = execution->dispatched_rounds,
+                  .finalization_launch_count = execution->finalization_launch_count,
+                  .chunk_rounds = execution->chunk_rounds,
+                  .kernel_milliseconds = execution->kernel_milliseconds,
+              },
+          .queries = {},
+          .labels = std::vector<std::uint64_t>(execution->labels.count()),
+          .predecessors = std::vector<std::uint32_t>(execution->predecessors.count()),
+          .state_owners = std::vector<std::uint64_t>(execution->state_owners.count()),
+          .predecessor_owners = std::vector<std::uint64_t>(execution->predecessor_owners.count()),
+      };
+      status = cudaMemcpy(readback.labels.data(), execution->labels.get(),
+                          execution->labels.bytes(), cudaMemcpyDeviceToHost);
+      if (status != cudaSuccess) {
+        return CudaError("cudaMemcpy(candidate batch labels)", status);
+      }
+      status = cudaMemcpy(readback.predecessors.data(), execution->predecessors.get(),
+                          execution->predecessors.bytes(), cudaMemcpyDeviceToHost);
+      if (status != cudaSuccess) {
+        return CudaError("cudaMemcpy(candidate batch predecessors)", status);
+      }
+      status = cudaMemcpy(readback.state_owners.data(), execution->state_owners.get(),
+                          execution->state_owners.bytes(), cudaMemcpyDeviceToHost);
+      if (status != cudaSuccess) {
+        return CudaError("cudaMemcpy(candidate batch state owners)", status);
+      }
+      status = cudaMemcpy(readback.predecessor_owners.data(), execution->predecessor_owners.get(),
+                          execution->predecessor_owners.bytes(), cudaMemcpyDeviceToHost);
+      if (status != cudaSuccess) {
+        return CudaError("cudaMemcpy(candidate batch predecessor owners)", status);
+      }
+
+      readback.queries.reserve(execution->queries.size());
+      // Query envelopes expose checked non-owning slices over the four final
+      // bulk readback buffers. This keeps four D2H workspace transfers for the
+      // whole batch and performs no host-to-host partition copies.
+      for (std::size_t query_index = 0; query_index < execution->queries.size(); ++query_index) {
+        const DeviceCandidateBatchQueryV1& query = execution->queries[query_index];
+        UntrustedCandidateBatchQueryResult result{
+            .header = headers[query_index],
+            .workspace_offset = query.workspace_offset,
+            .workspace_state_count = query.workspace_state_count,
+            .telemetry =
+                CandidateQueryTelemetry{
+                    .examined_work = headers[query_index].examined_work,
+                    .heading_turn_relaxations = headers[query_index].heading_turn_relaxations,
+                    .rounds = headers[query_index].rounds,
+                },
+        };
+        readback.queries.push_back(std::move(result));
+      }
+      return readback;
+    } catch (const std::bad_alloc&) {
+      return BackendError{
+          .code = BackendErrorCode::kResourceExhausted,
+          .detail = "CUDA candidate batch host allocation failed during readback",
+      };
+    } catch (const std::length_error&) {
+      return BackendError{
+          .code = BackendErrorCode::kResourceExhausted,
+          .detail = "CUDA candidate batch host container capacity failed during readback",
+      };
+    }
+  }
+
   [[nodiscard]] ReadbackResult ReadbackRoute(const PendingRouteExecution& pending) override {
     const auto* execution = dynamic_cast<const CudaPendingRouteExecution*>(&pending);
     if (execution == nullptr) {
@@ -1204,8 +2376,11 @@ class CudaPlanarRouteBackend final : public IPlanarRouteBackend {
 
 }  // namespace
 
+CudaPlanarRouteBackend::CudaPlanarRouteBackend()
+    : implementation_(std::make_unique<CudaPlanarRouteBackendImpl>()) {}
+
 std::unique_ptr<IPlanarRouteBackend> CreateCudaPlanarRouteBackend() {
-  return std::make_unique<CudaPlanarRouteBackend>();
+  return std::unique_ptr<IPlanarRouteBackend>(new CudaPlanarRouteBackend());
 }
 
 }  // namespace apgar::gpu

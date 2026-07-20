@@ -79,7 +79,9 @@ void ExpectDifferentialSuccess(const BoardSnapshot& board, const CompiledBoard& 
   const PlanarGpuRoute& first_route = std::get<PlanarGpuRoute>(first);
   const PlanarGpuRoute& second_route = std::get<PlanarGpuRoute>(second);
   EXPECT_EQ(first_route.total_cost, std::get<CpuRoute>(cpu).total_cost);
+  EXPECT_EQ(first_route.policy_identity, std::get<CpuRoute>(cpu).candidate_policy_identity);
   EXPECT_EQ(first_route.total_cost, second_route.total_cost);
+  EXPECT_EQ(first_route.policy_identity, second_route.policy_identity);
   EXPECT_EQ(first_route.lattice_path, second_route.lattice_path);
   EXPECT_EQ(first_route.segments, second_route.segments);
   EXPECT_EQ(first_route.backend.backend, "cuda");

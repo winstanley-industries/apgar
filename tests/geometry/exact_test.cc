@@ -29,6 +29,23 @@ using board_ir::Segment64;
   return result.ok() && result.clearance_satisfied;
 }
 
+[[nodiscard]] bool CheckedSweptClearance(Segment64 centerline, const AxisAlignedBox64& obstacle,
+                                         board_ir::DbCoord nominal_width,
+                                         board_ir::DbCoord clearance) {
+  const SegmentClearanceResult result =
+      SweptTraceClearanceAtLeast(centerline, obstacle, nominal_width, clearance);
+  EXPECT_TRUE(result.ok()) << result.detail;
+  return result.ok() && result.clearance_satisfied;
+}
+
+[[nodiscard]] bool CheckedSegmentPairClearance(Segment64 first, Segment64 second,
+                                               board_ir::DbCoord min_distance) {
+  const SegmentClearanceResult result =
+      SegmentToSegmentClearanceAtLeast(first, second, min_distance);
+  EXPECT_TRUE(result.ok()) << result.detail;
+  return result.ok() && result.clearance_satisfied;
+}
+
 TEST(ExactClearanceTest, TreatsBoundaryEqualityAsLegal) {
   const AxisAlignedBox64 obstacle{
       .min = Point64{.x = 0, .y = 0},
@@ -151,6 +168,62 @@ TEST(ExactClearanceTest, ReportsInvalidInputsSeparatelyFromCollisions) {
   EXPECT_EQ(distance_error.error, ExactGeometryErrorCode::kInvalidDistance);
   EXPECT_TRUE(collision.ok());
   EXPECT_FALSE(collision.clearance_satisfied);
+}
+
+TEST(ExactClearanceTest, SegmentPairEqualityIsLegalAndOneDbuInsideIsNot) {
+  const Segment64 first{
+      .start = Point64{.x = 0, .y = 0},
+      .end = Point64{.x = 20, .y = 0},
+  };
+  const Segment64 equality{
+      .start = Point64{.x = 0, .y = 10},
+      .end = Point64{.x = 20, .y = 10},
+  };
+  const Segment64 one_dbu_inside{
+      .start = Point64{.x = 0, .y = 9},
+      .end = Point64{.x = 20, .y = 9},
+  };
+  const Segment64 crossing{
+      .start = Point64{.x = 10, .y = -10},
+      .end = Point64{.x = 10, .y = 10},
+  };
+
+  EXPECT_TRUE(CheckedSegmentPairClearance(first, equality, 10));
+  EXPECT_FALSE(CheckedSegmentPairClearance(first, one_dbu_inside, 10));
+  EXPECT_FALSE(CheckedSegmentPairClearance(first, crossing, 10));
+}
+
+TEST(SweptTraceClearanceTest, PreservesOddWidthHalfDbuAndOneDbuPerturbations) {
+  const Segment64 centerline{
+      .start = Point64{.x = 0, .y = 0},
+      .end = Point64{.x = 10, .y = 0},
+  };
+  const AxisAlignedBox64 ten_dbu_away{
+      .min = Point64{.x = 5, .y = 10},
+      .max = Point64{.x = 5, .y = 10},
+  };
+  const AxisAlignedBox64 nine_dbu_away{
+      .min = Point64{.x = 5, .y = 9},
+      .max = Point64{.x = 5, .y = 9},
+  };
+
+  // 3 / 2 + 8 = 9.5 DBU: no integer rounding is permitted.
+  EXPECT_TRUE(CheckedSweptClearance(centerline, ten_dbu_away, 3, 8));
+  EXPECT_FALSE(CheckedSweptClearance(centerline, nine_dbu_away, 3, 8));
+}
+
+TEST(SweptTraceClearanceTest, TreatsExactEnvelopeEqualityAsLegal) {
+  const Segment64 centerline{
+      .start = Point64{.x = -10, .y = 0},
+      .end = Point64{.x = 10, .y = 0},
+  };
+  const AxisAlignedBox64 obstacle{
+      .min = Point64{.x = 0, .y = 10},
+      .max = Point64{.x = 0, .y = 10},
+  };
+
+  EXPECT_TRUE(CheckedSweptClearance(centerline, obstacle, 4, 8));
+  EXPECT_FALSE(CheckedSweptClearance(centerline, obstacle, 4, 9));
 }
 
 TEST(MovementValidationTest, ReportsTheConflictingObstacleProvenance) {
