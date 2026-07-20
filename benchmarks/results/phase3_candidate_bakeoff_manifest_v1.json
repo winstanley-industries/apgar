@@ -1,13 +1,13 @@
 {
   "schema": "phase3_evidence_manifest_v1",
   "result_schema": "phase3_candidate_bakeoff_v2",
-  "result_file": "benchmarks/results/phase3_candidate_bakeoff_3ff9f61.json",
-  "result_sha256": "ca506e2fe5768187f02b71e7fb7ee35cbd4cb40e7742f42d9436483ab45df23c",
-  "source_commit": "3ff9f61803f1449e4956e4ac4faf783c672599db",
+  "result_file": "benchmarks/results/phase3_candidate_bakeoff_3e3fe4c.json",
+  "result_sha256": "4734665b627c8de7f719247ef463d9b6694502326caf993112aec848479e6e2d",
+  "source_commit": "3e3fe4cc064d73e0bd4e3cadc2bf5024494faaca",
   "report_file": "benchmarks/phase3_candidate_dispatch_diversity_report.md",
-  "report_sha256": "d169d6439b13b84cbacb8e6abb275150a2d9d066ae2075df27e893144b188fa4",
+  "report_sha256": "abfc17725833bfdc59d6d60c04e8453e2653662ec22d924d6ff4d7f96ff60b36",
   "decision_file": "docs/adr/ADR-013-phase3-candidate-dispatch-conclusions.md",
-  "decision_sha256": "88e278db19f7609e5006e19fefffeadf6f04689632f2581d32080baa4250c7f2",
+  "decision_sha256": "dbc97c428548ac3c7871dc906e426b4a9bd33a110ff7f60dad52fc71ddd79d5f",
   "expected_correctness_summary": {
     "generator_stage_medians": 792,
     "requested_queries": 2772,

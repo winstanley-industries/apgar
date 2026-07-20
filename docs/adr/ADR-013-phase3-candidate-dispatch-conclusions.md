@@ -1,7 +1,7 @@
 # ADR-013: Phase 3 Candidate Dispatch Conclusions
 
 **Status:** Accepted
-**Date:** July 19, 2026
+**Date:** July 20, 2026
 **Applies to:** Phase 3 CPU/GPU candidate-generation dispatch and the retained
 experimental CUDA generators
 
@@ -16,9 +16,9 @@ dispatch unless reproducible end-to-end evidence supports a change.
 
 The evidence is the Phase 3 result-schema v2 artifact produced by Google
 Benchmark 1.9.5:
-`benchmarks/results/phase3_candidate_bakeoff_3ff9f61.json`, SHA-256
-`ca506e2fe5768187f02b71e7fb7ee35cbd4cb40e7742f42d9436483ab45df23c`,
-built from exact source commit `3ff9f61803f1449e4956e4ac4faf783c672599db`.
+`benchmarks/results/phase3_candidate_bakeoff_3e3fe4c.json`, SHA-256
+`4734665b627c8de7f719247ef463d9b6694502326caf993112aec848479e6e2d`,
+built from exact source commit `3e3fe4cc064d73e0bd4e3cadc2bf5024494faaca`.
 The canonical
 `benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json` binds the exact
 bytes of that artifact, the human report, and this ADR with independent SHA-256
@@ -48,10 +48,10 @@ GCC 15.2 host compiler. Google Benchmark is the pinned 1.9.5 dependency.
 - Keep CUDA frontier and sweep as explicit experimental forced backends for
   differential tests, replay, and future bakeoffs. They are not silent
   fallbacks or production defaults.
-- Preserve both GPU algorithms. Sweep and frontier each won 33 of 66 GPU-only
-  execution/readback comparisons; after complete
-  end-to-end work, frontier won 38 GPU-only comparisons and sweep won 28. No
-  single GPU algorithm dominates the measured corpus.
+- Preserve both GPU algorithms. Frontier won 29 and sweep won 37 of 66
+  GPU-only execution/readback comparisons; after complete end-to-end work,
+  frontier won 40 GPU-only comparisons and sweep won 26. No single GPU
+  algorithm dominates the measured corpus.
 - Keep exact candidate admission and deterministic store publication outside
   trusted generator state. A GPU route matching CPU scalar cost remains
   untrusted until every exact admission invariant passes.
@@ -63,14 +63,15 @@ GCC 15.2 host compiler. Google Benchmark is the pinned 1.9.5 dependency.
 - With prepared upload and exact admission excluded, CUDA sweep won only four
   of 66 execution/readback comparisons against the fastest CPU mode; CUDA
   frontier nominally won one, overlapping sweep at cross-tile `k=128`. The
-  frontier row's 4.2% median advantage was smaller than its 25.7% real-time
-  coefficient of variation.
+  frontier row's 13.7% median advantage was smaller than its 26.6% real-time
+  coefficient of variation; the matching parallel CPU row's coefficient of
+  variation was 5.4%.
 - The closest end-to-end GPU result was cross-tile edges at `k=128`: CUDA
-  frontier took 4.193 ms versus parallel CPU A* at 3.646 ms, 1.150 times the
-  CPU latency. On the KiCad fixture at `k=128`, CUDA sweep took 31.580 ms versus
-  parallel CPU A* at 6.396 ms, 4.937 times the CPU latency.
-- Prepared flatten/upload medians ranged from 0.370 to 0.615 ms, with a median
-  of 0.408 ms across the eleven cases. End-to-end GPU rows include this cost
+  frontier took 3.187 ms versus parallel CPU A* at 2.681 ms, 1.189 times the
+  CPU latency. On the KiCad fixture at `k=128`, CUDA sweep took 25.214 ms versus
+  parallel CPU A* at 5.532 ms, 4.558 times the CPU latency.
+- Prepared flatten/upload medians ranged from 0.376 to 0.670 ms, with a median
+  of 0.417 ms across the eleven cases. End-to-end GPU rows include this cost
   and prepared-view release.
 - All 792 non-upload median generator/stage rows were ordered,
   deterministic, and matched CPU reachability/failure and optimal scalar cost.
@@ -81,8 +82,9 @@ GCC 15.2 host compiler. Google Benchmark is the pinned 1.9.5 dependency.
   cancellation, unsupported, or invalid outcomes. The 455 unreachable policy
   queries in the unique 2,772-query matrix were reproduced by every backend.
 - Peak backend-owned VRAM was 28,288,168 bytes on KiCad sweep at `k=128`.
-  Peak deterministic GPU batch host payload was 45,047,240 bytes on KiCad
-  `k=128`, tied by frontier and sweep.
+  Peak deterministic GPU batch host payload was 22,564,808 bytes on KiCad
+  `k=128`, tied by frontier and sweep. The prepared deterministic node-lookup
+  index added at most 2,788 persistent host bytes on this corpus.
 - The policy schedule produced resource diversity but a flat intrinsic
   best-of-k curve in every reachable row. The base policy is already optimal
   under the reported intrinsic metric; the complete policy schedule produced
@@ -98,6 +100,13 @@ GCC 15.2 host compiler. Google Benchmark is the pinned 1.9.5 dependency.
 - The negative dispatch result does not invalidate batched GPU exploration:
   both kernels are deterministic, isolated, bounded, and differential-testable,
   and they provide a stable measurement platform for larger future searches.
+- Review-driven changes removed a second host partition copy from GPU
+  readback, replaced repeated policy-resource node scans with a deterministic
+  lookup, and batched candidate normalization and store publication. Relative
+  to the preceding artifact, peak deterministic GPU host payload halved and
+  the combined exact-admission/store measurement improved by about 12% across
+  generators. GPU execution/readback latency did not improve uniformly, so
+  these fixes do not change dispatch.
 - Larger boards, batches beyond 128, lower-readback designs, persistent kernels,
   or richer alternative policies may change a later crossover. Those are
   hypotheses, not measured Phase 3 conclusions.

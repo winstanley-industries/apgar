@@ -18,7 +18,7 @@ class Phase3EvidenceValidatorTest(unittest.TestCase):
         self.addCleanup(self._temporary.cleanup)
         self.root = pathlib.Path(self._temporary.name)
         self.paths = (
-            "benchmarks/results/phase3_candidate_bakeoff_3ff9f61.json",
+            "benchmarks/results/phase3_candidate_bakeoff_3e3fe4c.json",
             "benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json",
             "benchmarks/phase3_candidate_dispatch_diversity_report.md",
             "docs/adr/ADR-013-phase3-candidate-dispatch-conclusions.md",
@@ -28,25 +28,6 @@ class Phase3EvidenceValidatorTest(unittest.TestCase):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(runfiles_root / relative, destination)
         self.manifest_path = self.root / self.paths[1]
-        # Keep hostile-validator tests focused on the corruption they inject
-        # while the checked-in benchmark artifact is being regenerated for a
-        # compatible additive v2 counter/context revision.
-        old_result_checksum = json.loads(self.manifest_path.read_text(encoding="utf-8"))[
-            "result_sha256"
-        ]
-        result = self._load_result()
-        self._upgrade_result_to_v2(result)
-        self._rewrite_result_and_checksum(result)
-        new_result_checksum = json.loads(self.manifest_path.read_text(encoding="utf-8"))[
-            "result_sha256"
-        ]
-        for path_index, checksum_field in ((2, "report_sha256"), (3, "decision_sha256")):
-            self._rewrite_bound_document(
-                path_index,
-                checksum_field,
-                old_result_checksum,
-                new_result_checksum,
-            )
 
     def _rewrite_result_and_checksum(self, result: dict[str, object]) -> None:
         result_path = self.root / self.paths[0]
