@@ -17,6 +17,10 @@ namespace apgar::routing {
 inline constexpr std::uint32_t kCandidateGenerationPolicySchemaVersion = 1;
 inline constexpr std::uint64_t kMaximumPolicyResourceEntries = 1'000'000;
 inline constexpr std::uint32_t kMaximumAlternativePolicyCount = 1'000'000;
+// Stable heading-state sentinel shared by policy cost reconstruction and every
+// planar search implementation. Valid movement directions occupy [0, 8).
+inline constexpr std::uint8_t kNoIncomingDirection =
+    static_cast<std::uint8_t>(geometry_compiler::kStableDirectionOrder.size());
 
 enum class CandidateObjective : std::uint8_t {
   kBaseScalarCost = 0,

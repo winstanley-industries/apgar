@@ -70,6 +70,9 @@ now.
   as GPU output, fabricate CUDA evidence from self-consistent public fields, or
   swap equal-looking GPU results between queries. Input ordinal is a scheduling
   identity and is intentionally independent of candidate ordinal.
+  CPU `lattice_path` and telemetry remain redundant diagnostic outputs rather
+  than authenticated candidate semantics; candidate construction consumes the
+  sealed exact segment sequence only.
 - Builder failures are Candidate Rejection v1 records rather than a smaller
   error type. Normalization, exact validation, resource reconstruction, metric,
   and accounting diagnostics retain all available identity, association,
@@ -108,15 +111,25 @@ now.
   deterministic ranking/enumeration/pruning, resource and geometry diversity,
   and metric dominance. Immutable candidates are separate from mutable store
   metadata. A store instance binds to one complete Board/compiler/routing/rule
-  association set and rejects association drift rather than mixing stale and
-  current candidates under the same net identity.
+  association set when its first exact-admitted RouteCandidate enters
+  publication. That session binding persists even if later duplicate, budget,
+  or pinned-rollback processing retains no candidate. Association drift is
+  rejected rather than mixing stale and current candidates under the same net
+  identity.
 - Retained-pool caps do not bound hostile admission work. Store v1 therefore
   also enforces positive per-transaction item-count, recomputed aggregate-input-
   byte, and conservative deterministic-work caps before exact admission. Input
   and work accounting includes both the policy carried by each generated
   candidate and the independently supplied request policy. A shared-request
-  overload checks the repeated request-policy bytes and entry work in O(1)
-  before allocating per-item request copies. A transaction-wide cap,
+  overload checks the repeated request-policy bytes and entry work in O(1),
+  but those repeated quantities are conservative schema accounting rather than
+  physical-copy requirements. The caller-owned request remains referenced, its
+  policy is normalized exactly once, and that immutable result is reused while
+  every generated candidate policy and payload remains independently checked.
+  Exact typed equality to the verified normalized request policy avoids a
+  redundant candidate-policy sort/copy; a differing candidate policy falls
+  back to full independent normalization before request association is tested.
+  A transaction-wide cap,
   configuration, or accounting failure emits and retains one candidate-less
   structured rejection and performs no exact admission or publication. The
   work formula is versioned by the store schema rather than inferred from
@@ -139,6 +152,11 @@ now.
   replacement, even when the incoming payload has a better rank. Stable
   representative choice applies only among same-ID payloads first published in
   one batch.
+- Candidate IDs and the versioned geometry/resource signatures index
+  deterministic duplicate buckets. Exact canonical equality remains mandatory
+  within a matching signature bucket, including deliberately collided
+  signatures; a signature never becomes equality evidence. Unrelated winners
+  are not compared during duplicate-group construction.
 - Structured builder diagnostics that fail before exact store admission enter
   through an explicit single/batch rejection-retention seam. They share the
   store's canonical ordering and bounded rejection cap and do not mutate
@@ -155,6 +173,13 @@ now.
   `candidate.store.rejection_transaction.item_budget.v1` diagnostic returned
   directly to the caller as well as submitted to bounded history. Rejection
   retention compares all three strings in canonical length-then-byte order.
+  Single records use canonical lower-bound insertion; a submitted batch is
+  canonicalized and sorted once, then merged with retained history up to the
+  configured cap.
+  Candidate admission likewise collects exact-admission and store-publication
+  diagnostics across the whole transaction, then performs one canonical
+  sort/merge/truncate under the publication mutex rather than repeated vector
+  insertion and shifting.
 - CAN-002 is represented by owner-scoped retention pins. A pinned candidate is
   never pruned; Phase 3 does not define worlds, selection, congestion, or
   prices.
@@ -182,9 +207,11 @@ now.
 - Admission transactions now have an explicit, reproducible denial-of-service
   boundary. Over-cap batches return one transaction-level diagnostic rather
   than allocating one result per rejected input.
-- Publication cost remains quadratic in the bounded size of a touched net's
-  retention/duplicate pool, but no longer scales with candidates on unrelated
-  nets. The global ID check is an ordered-index lookup.
+- Duplicate publication lookup is ordered-map work plus exact comparisons only
+  inside matching geometry/resource-signature collision buckets. The bounded
+  Pareto and resource-diversity retention passes remain quadratic in a touched
+  net's pool, but no publication work scales with candidates on unrelated nets.
+  The global ID check is an ordered-index lookup.
 - Candidate ranking and Pareto dominance compare the independently
   reconstructed intrinsic base cost and quality vector. Scalar policy costs
   remain authoritative for identical-policy CPU/GPU differential checks but

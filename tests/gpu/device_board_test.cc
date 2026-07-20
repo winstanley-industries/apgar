@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "apgar/board_ir/board.h"
+#include "apgar/candidates/gpu_candidate_adapter.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "apgar/gpu/planar_router.h"
 #include "tests/support/board_builder.h"
@@ -290,6 +291,10 @@ class ScriptedDisconnectedBatchBackend final : public IPlanarRouteBackend {
                 .kernel_milliseconds = 0.0,
             },
         .queries = {},
+        .labels = std::vector<std::uint64_t>(total_states, kInfiniteRouteCost),
+        .predecessors = std::vector<std::uint32_t>(total_states, kInvalidStateIndex),
+        .state_owners = std::vector<std::uint64_t>(total_states),
+        .predecessor_owners = std::vector<std::uint64_t>(total_states),
     };
     result.queries.reserve(request_.queries.size());
     for (const DeviceCandidateBatchQueryV1& query : request_.queries) {
@@ -316,13 +321,17 @@ class ScriptedDisconnectedBatchBackend final : public IPlanarRouteBackend {
       };
       UntrustedCandidateBatchQueryResult query_result{
           .header = header,
-          .labels = std::vector<std::uint64_t>(state_count, kInfiniteRouteCost),
-          .predecessors = std::vector<std::uint32_t>(state_count, kInvalidStateIndex),
-          .state_owners = std::vector<std::uint64_t>(state_count, query.workspace_owner),
-          .predecessor_owners = std::vector<std::uint64_t>(state_count, query.workspace_owner),
+          .workspace_offset = query.workspace_offset,
+          .workspace_state_count = query.workspace_state_count,
           .telemetry = CandidateQueryTelemetry{.rounds = 1},
       };
-      query_result.labels[StateIndex(query.start_node, kNoIncomingHeading)] = 0;
+      const std::size_t first = static_cast<std::size_t>(query.workspace_offset);
+      const std::size_t count = static_cast<std::size_t>(query.workspace_state_count);
+      std::ranges::fill(std::span<std::uint64_t>(result.state_owners).subspan(first, count),
+                        query.workspace_owner);
+      std::ranges::fill(std::span<std::uint64_t>(result.predecessor_owners).subspan(first, count),
+                        query.workspace_owner);
+      result.labels[first + StateIndex(query.start_node, kNoIncomingHeading)] = 0;
       result.queries.push_back(std::move(query_result));
     }
     return result;
@@ -360,6 +369,94 @@ TEST(DeviceCompiledBoardTest, FlatteningIsStableAndAccountsEveryOwnedByte) {
       first.nodes.size() * sizeof(DeviceNodeV1) + first.runs.size() * sizeof(DeviceRunV1) +
       first.run_nodes.size() * sizeof(std::uint32_t);
   EXPECT_EQ(first.header.estimated_persistent_device_bytes, expected_bytes);
+}
+
+TEST(DeviceCompiledBoardTest, PreparedLookupIsCanonicalExactAndSeparatelyAccounted) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
+  ScriptedBackend backend(StraightEastResult(compiled, &device, request, false));
+
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, compiled, backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  const std::unique_ptr<PreparedPlanarCompiledView>& prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result);
+  ASSERT_NE(prepared, nullptr);
+  EXPECT_EQ(prepared->prepared_node_lookup_host_bytes(),
+            device.nodes.size() * sizeof(std::uint32_t));
+  for (std::uint32_t index = 0; index < device.nodes.size(); ++index) {
+    const DeviceNodeV1& node = device.nodes[index];
+    EXPECT_EQ(
+        prepared->FindNodeIndex(
+            node.layer, geometry_compiler::LatticeIndex{.x = node.lattice_x, .y = node.lattice_y}),
+        index);
+  }
+  EXPECT_FALSE(
+      prepared
+          ->FindNodeIndex(
+              0, geometry_compiler::LatticeIndex{.x = std::numeric_limits<std::int64_t>::min(),
+                                                 .y = std::numeric_limits<std::int64_t>::max()})
+          .has_value());
+}
+
+TEST(DeviceCandidateBatchTest, GeneratorDescriptorsAreExhaustiveAndDriveStableSemantics) {
+  const std::optional<PlanarGeneratorDescriptor> frontier =
+      DescribePlanarGenerator(PlanarGenerator::kBucketedFrontier);
+  const std::optional<PlanarGeneratorDescriptor> sweep =
+      DescribePlanarGenerator(PlanarGenerator::kHeadingAwareSweep);
+  ASSERT_TRUE(frontier.has_value());
+  ASSERT_TRUE(sweep.has_value());
+  EXPECT_EQ(frontier->workspace, PlanarGeneratorWorkspace::kFrontier);
+  EXPECT_EQ(frontier->chunk_rounds, kCandidateFrontierChunkRounds);
+  EXPECT_TRUE(frontier->launches_once_per_chunk);
+  EXPECT_EQ(sweep->workspace, PlanarGeneratorWorkspace::kSweep);
+  EXPECT_EQ(sweep->chunk_rounds, kCandidateSweepChunkRounds);
+  EXPECT_FALSE(sweep->launches_once_per_chunk);
+  EXPECT_FALSE(DescribePlanarGenerator(static_cast<PlanarGenerator>(255)).has_value());
+}
+
+TEST(DeviceCandidateBatchTest, CandidateProvenanceMappingsRejectUnknownOrIncompleteInputs) {
+  EXPECT_EQ(candidates::CandidateGeneratorForPlanarGenerator(PlanarGenerator::kBucketedFrontier),
+            candidates::CandidateGeneratorKind::kCudaFrontier);
+  EXPECT_EQ(candidates::CandidateGeneratorForPlanarGenerator(PlanarGenerator::kHeadingAwareSweep),
+            candidates::CandidateGeneratorKind::kCudaSweep);
+  EXPECT_FALSE(candidates::CandidateGeneratorForPlanarGenerator(static_cast<PlanarGenerator>(255))
+                   .has_value());
+
+  const BackendMetadata valid{
+      .backend = "cuda",
+      .device_name = "test-device",
+      .device_uuid = "GPU-test",
+      .compute_capability_major = 12,
+      .compute_capability_minor = 0,
+      .runtime_version = 13000,
+      .driver_version = 13030,
+      .global_memory_bytes = 1024,
+  };
+  EXPECT_EQ(candidates::CudaCandidateDeviceClass(valid), "cuda-cc-12.0");
+  BackendMetadata incomplete = valid;
+  incomplete.device_uuid.clear();
+  EXPECT_FALSE(candidates::CudaCandidateDeviceClass(incomplete).has_value());
+  BackendMetadata wrong_backend = valid;
+  wrong_backend.backend = "scripted";
+  EXPECT_FALSE(candidates::CudaCandidateDeviceClass(wrong_backend).has_value());
+}
+
+TEST(DeviceCandidateBatchTest, HostAccountingContainsOneFinalQueryWorkspace) {
+  constexpr std::uint64_t kInputs = 3;
+  constexpr std::uint64_t kAdmitted = 2;
+  constexpr std::uint64_t kPolicyEdges = 5;
+  constexpr std::uint64_t kStates = 7;
+  const std::uint64_t expected =
+      kInputs *
+          (sizeof(DeviceCandidateBatchQueryV1) + sizeof(DeviceCandidateBatchResultV1) + 128U) +
+      kAdmitted * (2U * sizeof(DeviceCandidateBatchQueryV1) + 2U * sizeof(std::uint32_t)) +
+      kPolicyEdges * (sizeof(DeviceCandidatePolicyEdgeV1) + 40U) +
+      kAdmitted * kStates *
+          (sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2U * sizeof(std::uint64_t));
+  EXPECT_EQ(EstimateCandidateBatchHostBytesV1(kInputs, kAdmitted, kPolicyEdges, kStates), expected);
 }
 
 TEST(DeviceCompiledBoardTest, StableIndicesPreserveNegativeAndCrossTileAdjacency) {
@@ -640,6 +737,7 @@ TEST(GpuUntrustedResultTest, CpuOracleRejectsForgedDisconnectedLegacyAndBatchRes
       batch_backend);
   ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(batch_result));
   const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(batch_result);
+  EXPECT_EQ(batch.prepared_node_lookup_host_bytes, device.nodes.size() * sizeof(std::uint32_t));
   ASSERT_EQ(batch.items.size(), 1U);
   ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items.front().result()));
   EXPECT_EQ(std::get<PlanarGpuFailure>(batch.items.front().result()).code,

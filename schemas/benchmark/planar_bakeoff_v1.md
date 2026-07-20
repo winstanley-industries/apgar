@@ -1,7 +1,8 @@
 # Planar Bakeoff Result Contract v1
 
 The Phase 2 machine-readable result is Google Benchmark 1.9.5 JSON. APGAR adds
-context keys prefixed `apgar_` for the exact commit, corpus version, timing and
+context keys prefixed `apgar_` for one caller-supplied commit label containing
+exactly 40 lowercase hexadecimal characters, corpus version, timing and
 warm-up policy, pinned CUDA/nvcc/benchmark C++ toolchains, and backend/device
 metadata. The CPU A* baseline is part of the CUDA-linked benchmark executable,
 so its C++ toolchain is the recorded benchmark GCC toolchain rather than the
@@ -14,6 +15,10 @@ tile dimensions, heading mask, and orthogonal/diagonal/bend costs.
 Backend/device metadata is mandatory. The benchmark executable exits nonzero
 without running benchmarks if it cannot query that metadata, so a successful
 v1 artifact always contains the complete provenance context.
+
+The executable rejects a missing, malformed, or repeated `--apgar_commit`
+argument. This v1 label is provenance metadata, not independently authenticated
+source identity; Phase 3's v2 contract adds a Bazel-stamped clean-tree binding.
 
 Benchmark names are `<forced-generator>/<case>`, where the generators are
 `cpu_astar`, `cuda_frontier`, and `cuda_sweep`. Google Benchmark owns iteration

@@ -28,6 +28,25 @@ class Phase3EvidenceValidatorTest(unittest.TestCase):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(runfiles_root / relative, destination)
         self.manifest_path = self.root / self.paths[1]
+        # Keep hostile-validator tests focused on the corruption they inject
+        # while the checked-in benchmark artifact is being regenerated for a
+        # compatible additive v2 counter/context revision.
+        old_result_checksum = json.loads(self.manifest_path.read_text(encoding="utf-8"))[
+            "result_sha256"
+        ]
+        result = self._load_result()
+        self._upgrade_result_to_v2(result)
+        self._rewrite_result_and_checksum(result)
+        new_result_checksum = json.loads(self.manifest_path.read_text(encoding="utf-8"))[
+            "result_sha256"
+        ]
+        for path_index, checksum_field in ((2, "report_sha256"), (3, "decision_sha256")):
+            self._rewrite_bound_document(
+                path_index,
+                checksum_field,
+                old_result_checksum,
+                new_result_checksum,
+            )
 
     def _rewrite_result_and_checksum(self, result: dict[str, object]) -> None:
         result_path = self.root / self.paths[0]
@@ -65,16 +84,36 @@ class Phase3EvidenceValidatorTest(unittest.TestCase):
         case_ordinals = {
             case: index + 1 for index, case in enumerate(validate_phase3_evidence._CASES)
         }
+        lookup_bytes_by_case = {}
+        for case in validate_phase3_evidence._CASES:
+            description = context[f"apgar_case_{case}"]
+            node_field = next(
+                field for field in description.split(";") if field.startswith("nodes=")
+            )
+            lookup_bytes_by_case[case] = 4 * int(node_field.removeprefix("nodes="))
         for row in result["benchmarks"]:
             match = validate_phase3_evidence._ROW_PATTERN.match(row["name"])
-            if match is None:
+            if match is not None:
+                generator, stage, case, count_text, _ = match.groups()
+                invariant_aggregate = row["aggregate_name"] in ("mean", "median")
+                row["prepared_node_lookup_host_bytes"] = (
+                    lookup_bytes_by_case[case]
+                    if invariant_aggregate and generator.startswith("batched_cuda_")
+                    else 0
+                )
+                row["semantic_outcome_checksum_hi"] = (
+                    case_ordinals[case] if invariant_aggregate else 0
+                )
+                row["semantic_outcome_checksum_lo"] = int(count_text) if invariant_aggregate else 0
+                if include_retained_rejections and stage != "execution_readback":
+                    row["retained_rejection_records"] = row["rejected_candidates"]
                 continue
-            _, stage, case, count_text, _ = match.groups()
-            invariant_aggregate = row["aggregate_name"] in ("mean", "median")
-            row["semantic_outcome_checksum_hi"] = case_ordinals[case] if invariant_aggregate else 0
-            row["semantic_outcome_checksum_lo"] = int(count_text) if invariant_aggregate else 0
-            if include_retained_rejections and stage != "execution_readback":
-                row["retained_rejection_records"] = row["rejected_candidates"]
+            upload_match = validate_phase3_evidence._UPLOAD_PATTERN.match(row["name"])
+            if upload_match is not None:
+                case, _ = upload_match.groups()
+                row["prepared_node_lookup_host_bytes"] = (
+                    lookup_bytes_by_case[case] if row["aggregate_name"] in ("mean", "median") else 0
+                )
 
     def test_rejects_raw_result_checksum_drift(self) -> None:
         result_path = self.root / self.paths[0]
@@ -321,6 +360,15 @@ class Phase3EvidenceValidatorTest(unittest.TestCase):
         )
         self.assertEqual(correctness["generator_stage_medians"], 792)
 
+    def test_v1_rows_remain_compatible_without_v2_prepared_lookup_counter(self) -> None:
+        result = self._load_result()
+        for row in result["benchmarks"]:
+            row.pop("prepared_node_lookup_host_bytes", None)
+        medians = validate_phase3_evidence._validate_rows(
+            result["benchmarks"], "phase3_candidate_bakeoff_v1"
+        )
+        self.assertEqual(len(medians), 792)
+
     def test_v2_rejects_ordered_policy_outcome_drift(self) -> None:
         result = self._load_result()
         self._upgrade_result_to_v2(result)
@@ -359,6 +407,7 @@ class Phase3EvidenceValidatorTest(unittest.TestCase):
 
     def test_v2_rejects_missing_or_mutated_required_context(self) -> None:
         original = self._load_result()
+        self._upgrade_result_to_v2(original)
         for key in validate_phase3_evidence._V2_REQUIRED_CONTEXT:
             with self.subTest(key=key, corruption="missing"):
                 result = json.loads(json.dumps(original))
@@ -375,6 +424,7 @@ class Phase3EvidenceValidatorTest(unittest.TestCase):
 
     def test_v2_rejects_missing_retained_rejection_accounting(self) -> None:
         result = self._load_result()
+        self._upgrade_result_to_v2(result)
         row = next(
             row
             for row in result["benchmarks"]

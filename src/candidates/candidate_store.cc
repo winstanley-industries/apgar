@@ -12,12 +12,15 @@
 #include <ranges>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include "src/candidates/route_candidate_internal.h"
 
 namespace apgar::candidates {
 namespace {
@@ -37,91 +40,49 @@ using UWide = __uint128_t;
 
 [[nodiscard]] bool RejectionBefore(const CandidateRejection& left,
                                    const CandidateRejection& right) noexcept {
-  const board_ir::EntityRef left_net = left.net.value_or(board_ir::EntityRef{});
-  const board_ir::EntityRef right_net = right.net.value_or(board_ir::EntityRef{});
-  const CandidateId left_id = left.candidate_id.value_or(CandidateId{});
-  const CandidateId right_id = right.candidate_id.value_or(CandidateId{});
-  const board_ir::EntityRef left_conflict = left.conflicting_entity.value_or(board_ir::EntityRef{});
-  const board_ir::EntityRef right_conflict =
-      right.conflicting_entity.value_or(board_ir::EntityRef{});
-  const bool left_has_candidate_id = left.candidate_id.has_value();
-  const bool right_has_candidate_id = right.candidate_id.has_value();
-  const bool left_has_net = left.net.has_value();
-  const bool right_has_net = right.net.has_value();
-  const bool left_has_conflict = left.conflicting_entity.has_value();
-  const bool right_has_conflict = right.conflicting_entity.has_value();
-  return std::tuple{left.schema_version,
-                    left_has_candidate_id,
-                    left_id,
-                    left_has_net,
-                    left_net.id,
-                    left_net.generation,
-                    left.stage,
-                    left.code,
-                    left.invariant_id.size(),
-                    std::string_view(left.invariant_id),
-                    left.associations.board_content_hash,
-                    left.associations.compiler_profile_fingerprint,
-                    left.associations.geometry_compiler_version,
-                    left.associations.routing_profile_fingerprint,
-                    left.associations.rule_bucket_identity,
-                    left.policy_identity,
-                    left.provenance.generator,
-                    left.provenance.generator_version,
-                    left.provenance.backend,
-                    left.provenance.supported_device_class.size(),
-                    std::string_view(left.provenance.supported_device_class),
-                    left.provenance.deterministic_seed,
-                    left.provenance.batch_identity,
-                    left.provenance.query_identity,
-                    left.provenance.candidate_ordinal,
-                    left.primitive_witness_index,
-                    left.resource_witness_index,
-                    left.expected_value,
-                    left.actual_value,
-                    left_has_conflict,
-                    left_conflict.id,
-                    left_conflict.generation,
-                    left.candidate_payload_checksum,
-                    left.detail.size(),
-                    std::string_view(left.detail),
-                    left.logical_bytes} <
-         std::tuple{right.schema_version,
-                    right_has_candidate_id,
-                    right_id,
-                    right_has_net,
-                    right_net.id,
-                    right_net.generation,
-                    right.stage,
-                    right.code,
-                    right.invariant_id.size(),
-                    std::string_view(right.invariant_id),
-                    right.associations.board_content_hash,
-                    right.associations.compiler_profile_fingerprint,
-                    right.associations.geometry_compiler_version,
-                    right.associations.routing_profile_fingerprint,
-                    right.associations.rule_bucket_identity,
-                    right.policy_identity,
-                    right.provenance.generator,
-                    right.provenance.generator_version,
-                    right.provenance.backend,
-                    right.provenance.supported_device_class.size(),
-                    std::string_view(right.provenance.supported_device_class),
-                    right.provenance.deterministic_seed,
-                    right.provenance.batch_identity,
-                    right.provenance.query_identity,
-                    right.provenance.candidate_ordinal,
-                    right.primitive_witness_index,
-                    right.resource_witness_index,
-                    right.expected_value,
-                    right.actual_value,
-                    right_has_conflict,
-                    right_conflict.id,
-                    right_conflict.generation,
-                    right.candidate_payload_checksum,
-                    right.detail.size(),
-                    std::string_view(right.detail),
-                    right.logical_bytes};
+  const auto key = [](const CandidateRejection& rejection) {
+    const board_ir::EntityRef net = rejection.net.value_or(board_ir::EntityRef{});
+    const CandidateId id = rejection.candidate_id.value_or(CandidateId{});
+    const board_ir::EntityRef conflict =
+        rejection.conflicting_entity.value_or(board_ir::EntityRef{});
+    return std::tuple{rejection.schema_version,
+                      rejection.candidate_id.has_value(),
+                      id,
+                      rejection.net.has_value(),
+                      net.id,
+                      net.generation,
+                      rejection.stage,
+                      rejection.code,
+                      rejection.invariant_id.size(),
+                      std::string_view(rejection.invariant_id),
+                      rejection.associations.board_content_hash,
+                      rejection.associations.compiler_profile_fingerprint,
+                      rejection.associations.geometry_compiler_version,
+                      rejection.associations.routing_profile_fingerprint,
+                      rejection.associations.rule_bucket_identity,
+                      rejection.policy_identity,
+                      rejection.provenance.generator,
+                      rejection.provenance.generator_version,
+                      rejection.provenance.backend,
+                      rejection.provenance.supported_device_class.size(),
+                      std::string_view(rejection.provenance.supported_device_class),
+                      rejection.provenance.deterministic_seed,
+                      rejection.provenance.batch_identity,
+                      rejection.provenance.query_identity,
+                      rejection.provenance.candidate_ordinal,
+                      rejection.primitive_witness_index,
+                      rejection.resource_witness_index,
+                      rejection.expected_value,
+                      rejection.actual_value,
+                      rejection.conflicting_entity.has_value(),
+                      conflict.id,
+                      conflict.generation,
+                      rejection.candidate_payload_checksum,
+                      rejection.detail.size(),
+                      std::string_view(rejection.detail),
+                      rejection.logical_bytes};
+  };
+  return key(left) < key(right);
 }
 
 [[nodiscard]] bool EntityRefBefore(board_ir::EntityRef left, board_ir::EntityRef right) noexcept {
@@ -185,38 +146,26 @@ using UWide = __uint128_t;
                                             const RouteCandidate& right) noexcept {
   const GeneratedRouteCandidate& a = left.data();
   const GeneratedRouteCandidate& b = right.data();
-  const auto a_header = std::tuple{a.schema_major,
-                                   a.schema_minor,
-                                   a.id,
-                                   a.net.id,
-                                   a.net.generation,
-                                   a.intended_terminals[0].id,
-                                   a.intended_terminals[0].generation,
-                                   a.intended_terminals[1].id,
-                                   a.intended_terminals[1].generation,
-                                   a.associations.board_content_hash,
-                                   a.associations.compiler_profile_fingerprint,
-                                   a.associations.geometry_compiler_version,
-                                   a.associations.routing_profile_fingerprint,
-                                   a.associations.rule_bucket_identity,
-                                   a.geometry_schema_version,
-                                   a.resource_schema_version};
-  const auto b_header = std::tuple{b.schema_major,
-                                   b.schema_minor,
-                                   b.id,
-                                   b.net.id,
-                                   b.net.generation,
-                                   b.intended_terminals[0].id,
-                                   b.intended_terminals[0].generation,
-                                   b.intended_terminals[1].id,
-                                   b.intended_terminals[1].generation,
-                                   b.associations.board_content_hash,
-                                   b.associations.compiler_profile_fingerprint,
-                                   b.associations.geometry_compiler_version,
-                                   b.associations.routing_profile_fingerprint,
-                                   b.associations.rule_bucket_identity,
-                                   b.geometry_schema_version,
-                                   b.resource_schema_version};
+  const auto header_key = [](const GeneratedRouteCandidate& candidate) {
+    return std::tuple{candidate.schema_major,
+                      candidate.schema_minor,
+                      candidate.id,
+                      candidate.net.id,
+                      candidate.net.generation,
+                      candidate.intended_terminals[0].id,
+                      candidate.intended_terminals[0].generation,
+                      candidate.intended_terminals[1].id,
+                      candidate.intended_terminals[1].generation,
+                      candidate.associations.board_content_hash,
+                      candidate.associations.compiler_profile_fingerprint,
+                      candidate.associations.geometry_compiler_version,
+                      candidate.associations.routing_profile_fingerprint,
+                      candidate.associations.rule_bucket_identity,
+                      candidate.geometry_schema_version,
+                      candidate.resource_schema_version};
+  };
+  const auto a_header = header_key(a);
+  const auto b_header = header_key(b);
   if (a_header != b_header) {
     return a_header < b_header;
   }
@@ -235,40 +184,27 @@ using UWide = __uint128_t;
   if (a.resources != b.resources) {
     return std::ranges::lexicographical_compare(a.resources, b.resources);
   }
-  const auto a_tail = std::tuple{a.metrics.scalar_policy_cost,
-                                 a.metrics.intrinsic_base_cost,
-                                 a.metrics.orthogonal_step_count,
-                                 a.metrics.diagonal_step_count,
-                                 a.metrics.bend_count,
-                                 a.metrics.line_primitive_count,
-                                 a.metrics.via_count,
-                                 a.metrics.axis_aligned_length_dbu,
-                                 a.metrics.diagonal_projection_dbu,
-                                 a.constraints.supported_hard_constraints_satisfied,
-                                 a.constraints.unsupported_rules_remain,
-                                 a.constraints.connected_intended_terminal_count,
-                                 a.constraints.exact_validation_code,
-                                 a.geometry_signature,
-                                 a.resource_signature,
-                                 a.payload_checksum,
-                                 a.logical_bytes};
-  const auto b_tail = std::tuple{b.metrics.scalar_policy_cost,
-                                 b.metrics.intrinsic_base_cost,
-                                 b.metrics.orthogonal_step_count,
-                                 b.metrics.diagonal_step_count,
-                                 b.metrics.bend_count,
-                                 b.metrics.line_primitive_count,
-                                 b.metrics.via_count,
-                                 b.metrics.axis_aligned_length_dbu,
-                                 b.metrics.diagonal_projection_dbu,
-                                 b.constraints.supported_hard_constraints_satisfied,
-                                 b.constraints.unsupported_rules_remain,
-                                 b.constraints.connected_intended_terminal_count,
-                                 b.constraints.exact_validation_code,
-                                 b.geometry_signature,
-                                 b.resource_signature,
-                                 b.payload_checksum,
-                                 b.logical_bytes};
+  const auto tail_key = [](const GeneratedRouteCandidate& candidate) {
+    return std::tuple{candidate.metrics.scalar_policy_cost,
+                      candidate.metrics.intrinsic_base_cost,
+                      candidate.metrics.orthogonal_step_count,
+                      candidate.metrics.diagonal_step_count,
+                      candidate.metrics.bend_count,
+                      candidate.metrics.line_primitive_count,
+                      candidate.metrics.via_count,
+                      candidate.metrics.axis_aligned_length_dbu,
+                      candidate.metrics.diagonal_projection_dbu,
+                      candidate.constraints.supported_hard_constraints_satisfied,
+                      candidate.constraints.unsupported_rules_remain,
+                      candidate.constraints.connected_intended_terminal_count,
+                      candidate.constraints.exact_validation_code,
+                      candidate.geometry_signature,
+                      candidate.resource_signature,
+                      candidate.payload_checksum,
+                      candidate.logical_bytes};
+  };
+  const auto a_tail = tail_key(a);
+  const auto b_tail = tail_key(b);
   return a_tail < b_tail;
 }
 
@@ -281,33 +217,6 @@ struct DuplicateRelation {
   CandidateRejectionCode code;
   const char* invariant;
 };
-
-[[nodiscard]] std::optional<DuplicateRelation> DuplicateRelationBetween(
-    const RouteCandidate& candidate, const RouteCandidate& incumbent) noexcept {
-  if (candidate.id() == incumbent.id()) {
-    return DuplicateRelation{
-        .code = CandidateRejectionCode::kDuplicateIdentity,
-        .invariant = "candidate.store.duplicate_id.v1",
-    };
-  }
-  if (SameCandidateContext(candidate, incumbent) &&
-      candidate.data().geometry_signature == incumbent.data().geometry_signature &&
-      CanonicalGeometryEqual(candidate, incumbent)) {
-    return DuplicateRelation{
-        .code = CandidateRejectionCode::kDuplicateGeometry,
-        .invariant = "candidate.store.duplicate_geometry.v1",
-    };
-  }
-  if (SameCandidateContext(candidate, incumbent) &&
-      candidate.data().resource_signature == incumbent.data().resource_signature &&
-      CanonicalResourcesEqual(candidate, incumbent)) {
-    return DuplicateRelation{
-        .code = CandidateRejectionCode::kDuplicateResources,
-        .invariant = "candidate.store.duplicate_resources.v1",
-    };
-  }
-  return std::nullopt;
-}
 
 [[nodiscard]] bool StoreResultBefore(const CandidateStoreAdmissionResult& left,
                                      const CandidateStoreAdmissionResult& right) noexcept {
@@ -849,7 +758,7 @@ void AccumulateCandidateShape(const GeneratedRouteCandidate& candidate,
   return bytes;
 }
 
-[[nodiscard]] std::optional<CandidateRejection> PreflightSharedRequestPolicyCopies(
+[[nodiscard]] std::optional<CandidateRejection> PreflightSharedRequestPolicyAccounting(
     const CandidateStoreConfig& config, const CandidateAssociations& associations,
     const routing::CandidateGenerationPolicy& policy, std::size_t item_count) {
   if (!routing::CandidateGenerationPolicyShapeIsWithinV1Bounds(policy)) {
@@ -865,28 +774,28 @@ void AccumulateCandidateShape(const GeneratedRouteCandidate& candidate,
     return TransactionRejection(
         associations, CandidateRejectionCode::kMemoryAccountingOverflow,
         "candidate.store.transaction.input_bytes_overflow.v1",
-        "Shared request-policy copy accounting overflowed before admission wrapper construction");
+        "Shared request-policy logical-byte accounting overflowed before exact admission");
   }
   if (!CheckedMultiply(policy_entries, item_count, repeated_policy_entries)) {
     return TransactionRejection(
         associations, CandidateRejectionCode::kMemoryAccountingOverflow,
         "candidate.store.transaction.work_overflow.v1",
-        "Shared request-policy work accounting overflowed before admission wrapper construction");
+        "Shared request-policy work accounting overflowed before exact admission");
   }
   if (repeated_policy_bytes > std::numeric_limits<std::uint64_t>::max()) {
     return TransactionRejection(
         associations, CandidateRejectionCode::kMemoryAccountingOverflow,
         "candidate.store.transaction.input_bytes_overflow.v1",
-        "Repeated shared request policies exceed the version-1 unsigned 64-bit accounting "
-        "domain before wrapper construction");
+        "Repeated shared request-policy logical bytes exceed the version-1 unsigned 64-bit "
+        "accounting domain before exact admission");
   }
   const std::uint64_t checked_policy_bytes = static_cast<std::uint64_t>(repeated_policy_bytes);
   if (checked_policy_bytes > config.maximum_admission_input_bytes_per_transaction) {
     return TransactionRejection(
         associations, CandidateRejectionCode::kBudgetExhausted,
         "candidate.store.transaction.input_byte_budget.v1",
-        "Repeated shared request policies exceed the configured aggregate input-byte budget "
-        "before wrapper construction",
+        "Repeated shared request-policy logical bytes exceed the configured aggregate "
+        "input-byte budget before exact admission",
         config.maximum_admission_input_bytes_per_transaction, checked_policy_bytes);
   }
   if (repeated_policy_entries > std::numeric_limits<std::uint64_t>::max()) {
@@ -894,7 +803,7 @@ void AccumulateCandidateShape(const GeneratedRouteCandidate& candidate,
         associations, CandidateRejectionCode::kMemoryAccountingOverflow,
         "candidate.store.transaction.work_overflow.v1",
         "Repeated shared request-policy entries exceed the version-1 unsigned 64-bit accounting "
-        "domain before wrapper construction");
+        "domain before exact admission");
   }
   const std::uint64_t checked_policy_entries = static_cast<std::uint64_t>(repeated_policy_entries);
   if (checked_policy_entries > config.maximum_admission_work_units_per_transaction) {
@@ -902,27 +811,28 @@ void AccumulateCandidateShape(const GeneratedRouteCandidate& candidate,
         associations, CandidateRejectionCode::kBudgetExhausted,
         "candidate.store.transaction.work_budget.v1",
         "Repeated shared request-policy entries exceed the configured work-unit budget before "
-        "wrapper construction",
+        "exact admission",
         config.maximum_admission_work_units_per_transaction, checked_policy_entries);
   }
   return std::nullopt;
 }
 
+template <typename RequestAt, typename CandidateAt>
 [[nodiscard]] std::optional<CandidateRejection> PreflightAdmissionTransaction(
     const CandidateStoreConfig& config, const board_ir::BoardSnapshot& board,
-    const geometry_compiler::CompiledBoard& compiled_board,
-    std::span<const CandidateAdmissionItem> items) {
+    const geometry_compiler::CompiledBoard& compiled_board, std::size_t item_count,
+    RequestAt&& request_at, CandidateAt&& candidate_at) {
   const CandidateAssociations associations = AssociationsFor(board, compiled_board);
   if (std::optional<CandidateRejection> rejection =
-          PreflightAdmissionItemCount(config, associations, items.size());
+          PreflightAdmissionItemCount(config, associations, item_count);
       rejection.has_value()) {
     return rejection;
   }
 
   CandidateTransactionShapeSummary shape_summary;
-  for (const CandidateAdmissionItem& item : items) {
-    AccumulateCandidateShape(item.generated, shape_summary);
-    AccumulatePolicyShape(item.request.candidate_policy, shape_summary);
+  for (std::size_t index = 0; index < item_count; ++index) {
+    AccumulateCandidateShape(candidate_at(index), shape_summary);
+    AccumulatePolicyShape(request_at(index).candidate_policy, shape_summary);
   }
   if (std::optional<CandidateRejection> rejection =
           CandidateShapeTransactionRejection(associations, shape_summary);
@@ -941,15 +851,16 @@ void AccumulateCandidateShape(const GeneratedRouteCandidate& candidate,
   UWide structural_work_units = 0;
   const UWide obstacle_count = board.data().obstacles.size();
   const UWide terminal_count = board.data().terminals.size();
-  for (const CandidateAdmissionItem& item : items) {
-    const UWide primitive_count = item.generated.geometry.size();
-    const UWide resource_count = item.generated.resources.size();
-    const UWide banned_count = item.generated.policy.banned_resources.size();
-    const UWide penalty_count = item.generated.policy.resource_penalties.size();
-    const UWide request_banned_count = item.request.candidate_policy.banned_resources.size();
-    const UWide request_penalty_count = item.request.candidate_policy.resource_penalties.size();
-    const std::optional<UWide> request_policy_bytes =
-        PolicyLogicalBytes(item.request.candidate_policy);
+  for (std::size_t index = 0; index < item_count; ++index) {
+    const GeneratedRouteCandidate& candidate = candidate_at(index);
+    const routing::PlanarRouteRequest& request = request_at(index);
+    const UWide primitive_count = candidate.geometry.size();
+    const UWide resource_count = candidate.resources.size();
+    const UWide banned_count = candidate.policy.banned_resources.size();
+    const UWide penalty_count = candidate.policy.resource_penalties.size();
+    const UWide request_banned_count = request.candidate_policy.banned_resources.size();
+    const UWide request_penalty_count = request.candidate_policy.resource_penalties.size();
+    const std::optional<UWide> request_policy_bytes = PolicyLogicalBytes(request.candidate_policy);
     const UWide primitive_pairs =
         primitive_count < 2 ? 0 : (primitive_count * (primitive_count - 1)) / 2;
     const UWide obstacle_checks = primitive_count * obstacle_count;
@@ -958,7 +869,7 @@ void AccumulateCandidateShape(const GeneratedRouteCandidate& candidate,
         !CheckedAddWork(resource_count * kResourceSpanBytes, structural_input_bytes) ||
         !CheckedAddWork(banned_count * kResourceKeyBytes, structural_input_bytes) ||
         !CheckedAddWork(penalty_count * kResourcePenaltyBytes, structural_input_bytes) ||
-        !CheckedAddWork(item.generated.provenance.supported_device_class.size(),
+        !CheckedAddWork(candidate.provenance.supported_device_class.size(),
                         structural_input_bytes) ||
         !request_policy_bytes.has_value() ||
         !CheckedAddWork(*request_policy_bytes, structural_input_bytes)) {
@@ -1016,23 +927,23 @@ void AccumulateCandidateShape(const GeneratedRouteCandidate& candidate,
 
   UWide input_bytes = 0;
   UWide work_units = structural_work_units;
-  for (const CandidateAdmissionItem& item : items) {
-    const std::optional<std::uint64_t> candidate_bytes =
-        ComputeCandidateLogicalBytes(item.generated);
+  for (std::size_t index = 0; index < item_count; ++index) {
+    const GeneratedRouteCandidate& candidate = candidate_at(index);
+    const routing::PlanarRouteRequest& request = request_at(index);
+    const std::optional<std::uint64_t> candidate_bytes = ComputeCandidateLogicalBytes(candidate);
     if (!candidate_bytes.has_value() || !CheckedAddWork(*candidate_bytes, input_bytes)) {
       return TransactionRejection(associations, CandidateRejectionCode::kMemoryAccountingOverflow,
                                   "candidate.store.transaction.input_bytes_overflow.v1",
                                   "Admission transaction input-byte accounting overflowed");
     }
-    const std::optional<UWide> request_policy_bytes =
-        PolicyLogicalBytes(item.request.candidate_policy);
+    const std::optional<UWide> request_policy_bytes = PolicyLogicalBytes(request.candidate_policy);
     if (!request_policy_bytes.has_value() || !CheckedAddWork(*request_policy_bytes, input_bytes)) {
       return TransactionRejection(
           associations, CandidateRejectionCode::kMemoryAccountingOverflow,
           "candidate.store.transaction.input_bytes_overflow.v1",
           "Admission transaction request-policy input-byte accounting overflowed");
     }
-    for (const CandidatePrimitive& primitive : item.generated.geometry) {
+    for (const CandidatePrimitive& primitive : candidate.geometry) {
       const auto* line = std::get_if<ExactLinePrimitive>(&primitive);
       if (line == nullptr) {
         continue;
@@ -1057,7 +968,7 @@ void AccumulateCandidateShape(const GeneratedRouteCandidate& candidate,
             "Admission transaction derived lattice-edge work accounting overflowed");
       }
     }
-    for (const PhysicalEdgeSpan& span : item.generated.resources) {
+    for (const PhysicalEdgeSpan& span : candidate.resources) {
       if (!CheckedAddWork(span.edge_count, work_units)) {
         return TransactionRejection(associations, CandidateRejectionCode::kMemoryAccountingOverflow,
                                     "candidate.store.transaction.work_overflow.v1",
@@ -1197,26 +1108,58 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
     RetainRejection(*rejection);
     return {std::move(*rejection)};
   }
-  if (std::optional<CandidateRejection> rejection = PreflightSharedRequestPolicyCopies(
+  if (std::optional<CandidateRejection> rejection = PreflightSharedRequestPolicyAccounting(
           config_, associations, context.request.candidate_policy, generated.size());
       rejection.has_value()) {
     RetainRejection(*rejection);
     return {std::move(*rejection)};
   }
-  std::vector<CandidateAdmissionItem> items;
-  items.reserve(generated.size());
-  for (GeneratedRouteCandidate& candidate : generated) {
-    items.push_back(
-        CandidateAdmissionItem{.request = context.request, .generated = std::move(candidate)});
+  if (std::optional<CandidateRejection> rejection = PreflightAdmissionTransaction(
+          config_, context.board, context.compiled_board, generated.size(),
+          [&context](std::size_t) -> const routing::PlanarRouteRequest& { return context.request; },
+          [&generated](std::size_t index) -> const GeneratedRouteCandidate& {
+            return generated[index];
+          });
+      rejection.has_value()) {
+    RetainRejection(*rejection);
+    return {std::move(*rejection)};
   }
-  return AdmitBatch(context.board, context.compiled_board, std::move(items));
+  if (generated.empty()) {
+    return PublishAdmissionResults({});
+  }
+
+  // The request is independently untrusted, but it is identical for every
+  // item in this overload. Normalize it once, then reuse the immutable result.
+  // Each generated policy is still checked independently: exact typed equality
+  // uses the verified normalized value, while a differing value is normalized
+  // and validated on its own.
+  const routing::CandidatePolicyResult verified_request_policy =
+      routing::NormalizeCandidateGenerationPolicy(context.compiled_board,
+                                                  context.request.candidate_policy);
+  {
+    std::scoped_lock lock(mutex_);
+    ++shared_request_policy_normalizations_;
+  }
+  std::vector<CandidateAdmissionResult> admitted;
+  admitted.reserve(generated.size());
+  for (GeneratedRouteCandidate& candidate : generated) {
+    admitted.push_back(internal::AdmitRouteCandidateWithVerifiedRequestPolicy(
+        context, verified_request_policy, std::move(candidate)));
+  }
+  return PublishAdmissionResults(std::move(admitted));
 }
 
 std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     std::vector<CandidateAdmissionItem>&& items) {
-  if (std::optional<CandidateRejection> rejection =
-          PreflightAdmissionTransaction(config_, board, compiled_board, items);
+  if (std::optional<CandidateRejection> rejection = PreflightAdmissionTransaction(
+          config_, board, compiled_board, items.size(),
+          [&items](std::size_t index) -> const routing::PlanarRouteRequest& {
+            return items[index].request;
+          },
+          [&items](std::size_t index) -> const GeneratedRouteCandidate& {
+            return items[index].generated;
+          });
       rejection.has_value()) {
     RetainRejection(*rejection);
     return {std::move(*rejection)};
@@ -1230,13 +1173,22 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
     admitted.push_back(AdmitRouteCandidate(context, std::move(item.generated)));
   }
 
+  return PublishAdmissionResults(std::move(admitted));
+}
+
+std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAdmissionResults(
+    std::vector<CandidateAdmissionResult> admitted) {
   std::vector<CandidateStoreAdmissionResult> results;
   results.reserve(admitted.size());
   std::vector<RouteCandidate> accepted;
   accepted.reserve(admitted.size());
+  std::vector<CandidateRejection> canonical_rejections;
+  canonical_rejections.reserve(admitted.size());
   for (CandidateAdmissionResult& result : admitted) {
     if (auto* rejection = std::get_if<CandidateRejection>(&result); rejection != nullptr) {
-      results.emplace_back(std::move(*rejection));
+      CandidateRejection canonical = CanonicalizeCandidateRejectionV1(*rejection);
+      canonical_rejections.push_back(canonical);
+      results.emplace_back(std::move(canonical));
     } else {
       accepted.push_back(std::get<RouteCandidate>(std::move(result)));
     }
@@ -1244,11 +1196,8 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
   std::ranges::sort(accepted, CandidateTotalBefore);
 
   std::scoped_lock lock(mutex_);
-  for (CandidateStoreAdmissionResult& result : results) {
-    RetainRejectionLocked(std::get<CandidateRejection>(result));
-  }
   std::vector<CandidateStoreAdmissionResult> publication_results =
-      PublishAcceptedBatchLocked(std::move(accepted));
+      PublishAcceptedBatchLocked(std::move(accepted), std::move(canonical_rejections));
   results.insert(results.end(), std::make_move_iterator(publication_results.begin()),
                  std::make_move_iterator(publication_results.end()));
   std::ranges::sort(results, StoreResultBefore);
@@ -1306,15 +1255,52 @@ std::optional<CandidateRejection> CandidateStore::RetainRejections(
     RetainRejectionLocked(over_cap);
     return over_cap;
   }
-  std::scoped_lock lock(mutex_);
+  std::vector<CandidateRejection> canonical;
+  canonical.reserve(rejections.size());
   for (const CandidateRejection& rejection : rejections) {
-    rejections_.push_back(CanonicalizeCandidateRejectionV1(rejection));
+    canonical.push_back(CanonicalizeCandidateRejectionV1(rejection));
   }
-  std::ranges::sort(rejections_, RejectionBefore);
-  if (rejections_.size() > config_.maximum_rejection_records) {
-    rejections_.resize(static_cast<std::size_t>(config_.maximum_rejection_records));
-  }
+  std::scoped_lock lock(mutex_);
+  RetainCanonicalRejectionsLocked(std::move(canonical));
   return std::nullopt;
+}
+
+std::vector<CandidateRejection> CandidateStore::BuildMergedRejectionsLocked(
+    std::vector<CandidateRejection> canonical_rejections) {
+  ++rejection_batch_merges_;
+  std::ranges::sort(canonical_rejections, RejectionBefore);
+  const std::size_t maximum_size = std::numeric_limits<std::size_t>::max();
+  const std::size_t total_size = canonical_rejections.size() > maximum_size - rejections_.size()
+                                     ? maximum_size
+                                     : rejections_.size() + canonical_rejections.size();
+  const std::size_t configured_size =
+      config_.maximum_rejection_records > maximum_size
+          ? maximum_size
+          : static_cast<std::size_t>(config_.maximum_rejection_records);
+  const std::size_t retained_size = std::min(configured_size, total_size);
+  std::vector<CandidateRejection> merged;
+  merged.reserve(static_cast<std::size_t>(retained_size));
+  auto existing = rejections_.begin();
+  auto incoming = canonical_rejections.begin();
+  while (merged.size() < retained_size &&
+         (existing != rejections_.end() || incoming != canonical_rejections.end())) {
+    if (existing == rejections_.end()) {
+      merged.push_back(std::move(*incoming++));
+    } else if (incoming == canonical_rejections.end() || !RejectionBefore(*incoming, *existing)) {
+      merged.push_back(*existing++);
+    } else {
+      merged.push_back(std::move(*incoming++));
+    }
+  }
+  return merged;
+}
+
+void CandidateStore::RetainCanonicalRejectionsLocked(
+    std::vector<CandidateRejection> canonical_rejections) {
+  if (canonical_rejections.empty()) {
+    return;
+  }
+  rejections_ = BuildMergedRejectionsLocked(std::move(canonical_rejections));
 }
 
 std::optional<CandidateStoreError> CandidateStore::Pin(std::uint64_t owner_id,
@@ -1364,10 +1350,11 @@ bool CandidateStore::IsPinnedLocked(CandidateId candidate_id) const {
 }
 
 void CandidateStore::RetainRejectionLocked(const CandidateRejection& rejection) {
-  rejections_.push_back(CanonicalizeCandidateRejectionV1(rejection));
-  std::ranges::sort(rejections_, RejectionBefore);
+  CandidateRejection canonical = CanonicalizeCandidateRejectionV1(rejection);
+  const auto position = std::ranges::lower_bound(rejections_, canonical, RejectionBefore);
+  rejections_.insert(position, std::move(canonical));
   if (rejections_.size() > config_.maximum_rejection_records) {
-    rejections_.resize(static_cast<std::size_t>(config_.maximum_rejection_records));
+    rejections_.pop_back();
   }
 }
 
@@ -1375,13 +1362,14 @@ CandidateStoreAdmissionResult CandidateStore::PublishAcceptedLocked(RouteCandida
   std::vector<RouteCandidate> candidates;
   candidates.push_back(std::move(candidate));
   std::vector<CandidateStoreAdmissionResult> results =
-      PublishAcceptedBatchLocked(std::move(candidates));
+      PublishAcceptedBatchLocked(std::move(candidates), {});
   return std::move(results.front());
 }
 
 std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchLocked(
-    std::vector<RouteCandidate> candidates) {
+    std::vector<RouteCandidate> candidates, std::vector<CandidateRejection> canonical_rejections) {
   last_publication_candidate_inspections_ = 0;
+  last_duplicate_equality_checks_ = 0;
   std::vector<CandidateStoreAdmissionResult> results;
   results.reserve(candidates.size());
   std::ranges::sort(candidates, CandidateTotalBefore);
@@ -1406,11 +1394,18 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
       rejection->stage = CandidateLifecycleStage::kStored;
     }
     if (rejection.has_value()) {
-      RetainRejectionLocked(*rejection);
+      canonical_rejections.push_back(*rejection);
       results.emplace_back(std::move(*rejection));
       continue;
     }
     eligible.push_back(std::make_shared<const RouteCandidate>(std::move(candidate)));
+  }
+
+  // Exact admission establishes the immutable store session even when every
+  // eligible candidate is later rejected by duplicate, budget, or rollback
+  // policy. Retained-pool contents are not the association authority.
+  if (!bound_associations_.has_value() && !eligible.empty()) {
+    bound_associations_ = eligible.front()->data().associations;
   }
 
   // Candidate identity is global even though geometry/resource deduplication
@@ -1429,7 +1424,7 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
               ? "Candidate identity is already owned by an immutable candidate in this net"
               : "Candidate identity is already owned by another net in the global stable ID "
                 "index");
-      RetainRejectionLocked(rejection);
+      canonical_rejections.push_back(rejection);
       results.emplace_back(std::move(rejection));
       continue;
     }
@@ -1438,7 +1433,7 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
       CandidateRejection rejection = StoreRejection(
           *candidate, CandidateRejectionCode::kDuplicateIdentity, "candidate.store.duplicate_id.v1",
           "Candidate is not the preferred stable duplicate identity representative");
-      RetainRejectionLocked(rejection);
+      canonical_rejections.push_back(rejection);
       results.emplace_back(std::move(rejection));
       continue;
     }
@@ -1498,20 +1493,66 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
       return false;
     });
 
-    std::vector<bool> winner(entries.size(), false);
+    std::vector<std::size_t> order_position(entries.size());
+    for (std::size_t position = 0; position < order.size(); ++position) {
+      order_position[order[position]] = position;
+    }
     std::vector<std::optional<std::size_t>> conflict_winner(entries.size());
     std::vector<std::optional<DuplicateRelation>> conflict_relation(entries.size());
     std::vector<std::size_t> duplicate_winners;
+    std::map<CandidateId, std::size_t> identity_winners;
+    std::map<CandidateSignature, std::vector<std::size_t>> geometry_winners;
+    std::map<CandidateSignature, std::vector<std::size_t>> resource_winners;
     for (const std::size_t index : order) {
       std::optional<std::size_t> conflict;
       std::optional<DuplicateRelation> relation;
-      for (const std::size_t winner_index : duplicate_winners) {
-        ++last_publication_candidate_inspections_;
-        relation =
-            DuplicateRelationBetween(*entries[index].candidate, *entries[winner_index].candidate);
-        if (relation.has_value()) {
+      const auto consider = [&](std::size_t winner_index, DuplicateRelation duplicate_relation) {
+        if (!conflict.has_value() || order_position[winner_index] < order_position[*conflict]) {
           conflict = winner_index;
-          break;
+          relation = duplicate_relation;
+        }
+      };
+
+      if (const auto identity = identity_winners.find(entries[index].candidate->id());
+          identity != identity_winners.end()) {
+        consider(identity->second,
+                 DuplicateRelation{.code = CandidateRejectionCode::kDuplicateIdentity,
+                                   .invariant = "candidate.store.duplicate_id.v1"});
+      }
+      if (!conflict.has_value() || order_position[*conflict] != 0) {
+        if (const auto geometry =
+                geometry_winners.find(entries[index].candidate->data().geometry_signature);
+            geometry != geometry_winners.end()) {
+          for (const std::size_t winner_index : geometry->second) {
+            ++last_publication_candidate_inspections_;
+            ++last_duplicate_equality_checks_;
+            if (SameCandidateContext(*entries[index].candidate, *entries[winner_index].candidate) &&
+                CanonicalGeometryEqual(*entries[index].candidate,
+                                       *entries[winner_index].candidate)) {
+              consider(winner_index,
+                       DuplicateRelation{.code = CandidateRejectionCode::kDuplicateGeometry,
+                                         .invariant = "candidate.store.duplicate_geometry.v1"});
+              break;
+            }
+          }
+        }
+      }
+      if (!conflict.has_value() || order_position[*conflict] != 0) {
+        if (const auto resource =
+                resource_winners.find(entries[index].candidate->data().resource_signature);
+            resource != resource_winners.end()) {
+          for (const std::size_t winner_index : resource->second) {
+            ++last_publication_candidate_inspections_;
+            ++last_duplicate_equality_checks_;
+            if (SameCandidateContext(*entries[index].candidate, *entries[winner_index].candidate) &&
+                CanonicalResourcesEqual(*entries[index].candidate,
+                                        *entries[winner_index].candidate)) {
+              consider(winner_index,
+                       DuplicateRelation{.code = CandidateRejectionCode::kDuplicateResources,
+                                         .invariant = "candidate.store.duplicate_resources.v1"});
+              break;
+            }
+          }
         }
       }
       if (conflict.has_value() && !entry_is_pinned(index)) {
@@ -1519,8 +1560,10 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
         conflict_relation[index] = *relation;
         continue;
       }
-      winner[index] = true;
       duplicate_winners.push_back(index);
+      identity_winners.try_emplace(entries[index].candidate->id(), index);
+      geometry_winners[entries[index].candidate->data().geometry_signature].push_back(index);
+      resource_winners[entries[index].candidate->data().resource_signature].push_back(index);
     }
 
     CandidatePool winner_pool;
@@ -1540,7 +1583,8 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
     change.incoming = incoming;
     for (std::size_t index = 0; index < entries.size(); ++index) {
       const BatchEntry& entry = entries[index];
-      const bool retained = winner[index] && ContainsCandidate(change.retained, entry.candidate);
+      const bool retained = !conflict_winner[index].has_value() &&
+                            ContainsCandidate(change.retained, entry.candidate);
       if (retained) {
         if (entry.incoming) {
           change.results.emplace_back(entry.candidate);
@@ -1577,13 +1621,52 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
             *candidate,
             "Admission transaction rolled back because a touched pool's pinned candidates "
             "cannot fit its configured retention budget");
-        RetainRejectionLocked(rejection);
+        canonical_rejections.push_back(rejection);
         results.emplace_back(std::move(rejection));
       }
+    }
+    if (!canonical_rejections.empty()) {
+      rejections_ = BuildMergedRejectionsLocked(std::move(canonical_rejections));
     }
     std::ranges::sort(results, StoreResultBefore);
     return results;
   }
+
+  // Finish every potentially allocating rejection/result operation before
+  // mutating pools or the global ID index. The final history move below cannot
+  // expose a partial per-record publication.
+  std::size_t staged_rejection_count = 0;
+  std::size_t staged_result_count = 0;
+  for (const auto& [net, change] : staged) {
+    static_cast<void>(net);
+    if (change.rejections.size() >
+            std::numeric_limits<std::size_t>::max() - staged_rejection_count ||
+        change.results.size() > std::numeric_limits<std::size_t>::max() - staged_result_count) {
+      throw std::length_error("Candidate publication result collection exceeds size_t");
+    }
+    staged_rejection_count += change.rejections.size();
+    staged_result_count += change.results.size();
+  }
+  if (staged_rejection_count >
+          std::numeric_limits<std::size_t>::max() - canonical_rejections.size() ||
+      staged_result_count > std::numeric_limits<std::size_t>::max() - results.size()) {
+    throw std::length_error("Candidate publication result collection exceeds size_t");
+  }
+  canonical_rejections.reserve(canonical_rejections.size() + staged_rejection_count);
+  results.reserve(results.size() + staged_result_count);
+  for (auto& [net, change] : staged) {
+    static_cast<void>(net);
+    canonical_rejections.insert(canonical_rejections.end(),
+                                std::make_move_iterator(change.rejections.begin()),
+                                std::make_move_iterator(change.rejections.end()));
+    results.insert(results.end(), std::make_move_iterator(change.results.begin()),
+                   std::make_move_iterator(change.results.end()));
+  }
+  std::optional<std::vector<CandidateRejection>> merged_rejections;
+  if (!canonical_rejections.empty()) {
+    merged_rejections.emplace(BuildMergedRejectionsLocked(std::move(canonical_rejections)));
+  }
+  std::ranges::sort(results, StoreResultBefore);
 
   // Commit every touched pool and the global ID index as one mutex-protected
   // publication. Untouched pools are neither copied nor recomputed.
@@ -1606,16 +1689,10 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
         candidate_id_index_.emplace(candidate->id(), candidate);
       }
     }
-    for (CandidateRejection& rejection : change.rejections) {
-      RetainRejectionLocked(std::move(rejection));
-    }
-    results.insert(results.end(), std::make_move_iterator(change.results.begin()),
-                   std::make_move_iterator(change.results.end()));
   }
-  if (!bound_associations_.has_value() && !candidate_id_index_.empty()) {
-    bound_associations_ = candidate_id_index_.begin()->second->data().associations;
+  if (merged_rejections.has_value()) {
+    rejections_ = std::move(*merged_rejections);
   }
-  std::ranges::sort(results, StoreResultBefore);
   return results;
 }
 

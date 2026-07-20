@@ -14,8 +14,12 @@ computable, and a bounded UTF-8 detail string.
 
 The invariant identifier, provenance `supported_device_class`, and detail are
 each valid UTF-8 and at most 1,024 encoded bytes. The device-class string may
-be empty when no backend evidence exists for a candidate-less transaction
-diagnostic. The 1,024-byte limit is part of schema-v1 compatibility.
+be empty only when no typed producer provenance can be bound for a
+candidate-less diagnostic. In that form all provenance fields are zero/default,
+including `generator_version=0`; the default enum storage is not a CPU-generator
+claim. This covers transaction failures and malformed GPU envelopes whose
+unknown generator cannot be represented by Candidate Provenance v1. The
+1,024-byte limit is part of schema-v1 compatibility.
 
 Candidate construction is part of this lifecycle, not a lossy pre-admission
 exception path. Normalization, exact-geometry, resource reconstruction, metric,

@@ -81,8 +81,11 @@ identity, so they cannot detect cross-query contamination.
   bounded to one million per v1 device-admitted batch. A separate checked
   logical host-memory budget covers a
   small classification/result envelope for every input plus encoded policies
-  and simultaneous flat and partitioned readback workspaces only for queries
-  admitted to execution. An allocation-free check proves that the minimum
+  and one final flat query-major readback workspace for every query admitted to
+  execution. CUDA uses four bulk device-to-host transfers for the final flat
+  label, predecessor, state-owner, and predecessor-owner buffers. Validation
+  borrows checked query slices without a partition or labels/predecessors copy.
+  An allocation-free check proves that the minimum
   all-input classification/result envelope fits before uniqueness, output, or
   admission bookkeeping is allocated. If it does not fit, the API returns one
   outer `ResourceExhausted` because per-query results cannot be retained within
@@ -92,6 +95,13 @@ identity, so they cannot detect cross-query contamination.
   invalid or unsupported peers, and prevents backend discovery when no
   executable query remains. Host allocation failure remains an explicit
   `ResourceExhausted` outcome.
+- Preparation builds one deterministic host-only index over the immutable
+  DeviceCompiledBoard nodes. The index contains exactly one 32-bit node index
+  per represented node, sorted by `(layer, lattice x, lattice y, node index)`,
+  and is reused for logarithmic endpoint and policy-resource resolution. It is
+  not serialized into DeviceCompiledBoard v1 or its fingerprint. Validated
+  batches expose its exact `4 * represented nodes` persistent-host byte count
+  separately from transient backend `batch_host_bytes`.
 - The frontier evolves into a bounded deterministic heuristic A*-style
   explorer with an admissible policy-aware heuristic and stable
   `(query, f, g, state, heading)` winner key. It does not use a conventional
@@ -103,6 +113,10 @@ identity, so they cannot detect cross-query contamination.
   resource bounds. Results are ordered by unique query identity. Cancellation
   is sampled at bounded launch boundaries and preserves deterministic completed
   versus cancelled outcomes.
+- Host execution, capacity, workspace, and telemetry formulas obtain generator
+  semantics from one exhaustive descriptor. An unknown enum has no descriptor
+  and fails explicitly; no fallback branch may silently reinterpret it as
+  frontier or sweep.
 - Shared telemetry records dispatched rounds and the optional unfinished-query
   finalization launch independently of untrusted per-query headers. Batch-wide
   launch/readback accounting uses only that shared envelope; a corrupt query

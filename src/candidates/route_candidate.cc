@@ -1065,7 +1065,9 @@ struct IndexedLineBounds {
 }
 
 [[nodiscard]] std::optional<VerificationFailure> ValidateAssociations(
-    const CandidateAdmissionContext& context, const GeneratedRouteCandidate& candidate) {
+    const CandidateAdmissionContext& context, const GeneratedRouteCandidate& candidate,
+    const routing::CandidatePolicyResult* verified_request_policy,
+    bool candidate_policy_already_matches_verified_request) {
   if (const std::optional<routing::CompiledBoardAssociationIssue> issue =
           routing::ValidateCompiledBoardAssociation(context.board, context.compiled_board);
       issue.has_value()) {
@@ -1095,19 +1097,24 @@ struct IndexedLineBounds {
                    CandidateRejectionCode::kAssociationMismatch, "candidate.net.association.v1",
                    "Candidate net identity does not match the intended route request");
   }
-  const routing::CandidatePolicyResult request_policy_result =
-      routing::NormalizeCandidateGenerationPolicy(context.compiled_board,
-                                                  context.request.candidate_policy);
-  if (!std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(
-          request_policy_result) ||
-      std::get<routing::NormalizedCandidateGenerationPolicy>(request_policy_result).identity !=
-          candidate.policy_identity ||
-      std::get<routing::NormalizedCandidateGenerationPolicy>(request_policy_result).policy !=
-          candidate.policy) {
-    return Failure(CandidateLifecycleStage::kExactValidated,
-                   CandidateRejectionCode::kAssociationMismatch,
-                   "candidate.policy.request_association.v1",
-                   "Candidate policy does not match the route request policy");
+  if (!candidate_policy_already_matches_verified_request) {
+    std::optional<routing::CandidatePolicyResult> owned_request_policy;
+    if (verified_request_policy == nullptr) {
+      owned_request_policy.emplace(routing::NormalizeCandidateGenerationPolicy(
+          context.compiled_board, context.request.candidate_policy));
+      verified_request_policy = &*owned_request_policy;
+    }
+    if (!std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(
+            *verified_request_policy) ||
+        std::get<routing::NormalizedCandidateGenerationPolicy>(*verified_request_policy).identity !=
+            candidate.policy_identity ||
+        std::get<routing::NormalizedCandidateGenerationPolicy>(*verified_request_policy).policy !=
+            candidate.policy) {
+      return Failure(CandidateLifecycleStage::kExactValidated,
+                     CandidateRejectionCode::kAssociationMismatch,
+                     "candidate.policy.request_association.v1",
+                     "Candidate policy does not match the route request policy");
+    }
   }
   const board_ir::Net* net = context.board.FindNet(context.request.net);
   if (net == nullptr || net->terminals.size() != 2 ||
@@ -1162,13 +1169,13 @@ struct GeneratedRouteCandidateProducerFactory {
         return candidate.provenance.generator == CandidateGeneratorKind::kCpuAStar &&
                candidate.provenance.generator_version == 1 &&
                candidate.provenance.backend == CandidateBackendKind::kCpu &&
-               candidate.provenance.supported_device_class == "cpu-reference-v1";
+               candidate.provenance.supported_device_class == kCpuReferenceDeviceClassV1;
       case internal::CandidateProducerAuthority::kAuthenticatedCudaBatch:
         return (candidate.provenance.generator == CandidateGeneratorKind::kCudaFrontier ||
                 candidate.provenance.generator == CandidateGeneratorKind::kCudaSweep) &&
                candidate.provenance.generator_version == 1 &&
                candidate.provenance.backend == CandidateBackendKind::kCuda &&
-               candidate.provenance.supported_device_class.starts_with("cuda-cc-");
+               candidate.provenance.supported_device_class.starts_with(kCudaDeviceClassPrefixV1);
     }
     return false;
   }
@@ -1621,7 +1628,7 @@ CandidateDraftBuildResult BuildGeneratedCandidateFromCpuRoute(
       .generator = CandidateGeneratorKind::kCpuAStar,
       .generator_version = 1,
       .backend = CandidateBackendKind::kCpu,
-      .supported_device_class = "cpu-reference-v1",
+      .supported_device_class = std::string(kCpuReferenceDeviceClassV1),
       .deterministic_seed = normalized_policy.policy.deterministic_seed,
       .batch_identity = scheduling.batch_identity,
       .query_identity = scheduling.query_identity,
@@ -1670,7 +1677,8 @@ namespace {
 
 CandidateAdmissionResult AdmitRouteCandidateWithBudgets(
     const CandidateAdmissionContext& context, GeneratedRouteCandidate generated,
-    std::uint64_t maximum_pair_checks, std::uint64_t maximum_expanded_resource_edges) {
+    std::uint64_t maximum_pair_checks, std::uint64_t maximum_expanded_resource_edges,
+    const routing::CandidatePolicyResult* verified_request_policy = nullptr) {
   if (const std::optional<VerificationFailure> failure = CandidatePayloadShapeFailure(generated);
       failure.has_value()) {
     return RejectionFrom(generated, *failure);
@@ -1692,28 +1700,46 @@ CandidateAdmissionResult AdmitRouteCandidateWithBudgets(
                 "candidate.identity.nonzero.v1", "Candidate identity must be nonzero"));
   }
 
-  const routing::CandidatePolicyResult policy_result =
-      routing::NormalizeCandidateGenerationPolicy(context.compiled_board, generated.policy);
-  if (!std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(policy_result)) {
-    return RejectionFrom(
-        generated,
-        Failure(CandidateLifecycleStage::kGenerated, CandidateRejectionCode::kInvalidInput,
-                "candidate.policy.normalization.v1",
-                "Candidate policy is invalid for the associated CompiledBoard: " +
-                    std::get<routing::CandidatePolicyError>(policy_result).detail));
+  std::optional<routing::CandidatePolicyResult> owned_policy_result;
+  const routing::NormalizedCandidateGenerationPolicy* normalized_policy = nullptr;
+  bool candidate_policy_matches_verified_request = false;
+  if (verified_request_policy != nullptr) {
+    const auto* verified_normalized =
+        std::get_if<routing::NormalizedCandidateGenerationPolicy>(verified_request_policy);
+    if (verified_normalized != nullptr && generated.policy == verified_normalized->policy) {
+      normalized_policy = verified_normalized;
+      candidate_policy_matches_verified_request = true;
+    }
   }
-  const routing::NormalizedCandidateGenerationPolicy& normalized_policy =
-      std::get<routing::NormalizedCandidateGenerationPolicy>(policy_result);
-  if (generated.policy_identity != normalized_policy.identity) {
+  if (normalized_policy == nullptr) {
+    owned_policy_result.emplace(
+        routing::NormalizeCandidateGenerationPolicy(context.compiled_board, generated.policy));
+    if (!std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(
+            *owned_policy_result)) {
+      return RejectionFrom(
+          generated,
+          Failure(CandidateLifecycleStage::kGenerated, CandidateRejectionCode::kInvalidInput,
+                  "candidate.policy.normalization.v1",
+                  "Candidate policy is invalid for the associated CompiledBoard: " +
+                      std::get<routing::CandidatePolicyError>(*owned_policy_result).detail));
+    }
+    normalized_policy =
+        &std::get<routing::NormalizedCandidateGenerationPolicy>(*owned_policy_result);
+  }
+  const std::uint64_t normalized_policy_identity = normalized_policy->identity;
+  if (generated.policy_identity != normalized_policy_identity) {
     VerificationFailure failure =
         Failure(CandidateLifecycleStage::kGenerated, CandidateRejectionCode::kAssociationMismatch,
                 "candidate.policy.identity.v1",
                 "Candidate policy identity does not match its normalized complete policy");
-    failure.expected_value = normalized_policy.identity;
+    failure.expected_value = normalized_policy_identity;
     failure.actual_value = generated.policy_identity;
     return RejectionFrom(generated, std::move(failure));
   }
-  generated.policy = normalized_policy.policy;
+  if (owned_policy_result.has_value()) {
+    generated.policy = std::move(
+        std::get<routing::NormalizedCandidateGenerationPolicy>(*owned_policy_result).policy);
+  }
   if (const std::optional<VerificationFailure> failure = ValidateProvenance(generated);
       failure.has_value()) {
     return RejectionFrom(generated, *failure);
@@ -1735,7 +1761,8 @@ CandidateAdmissionResult AdmitRouteCandidateWithBudgets(
   }
   generated.geometry = std::get<std::vector<CandidatePrimitive>>(std::move(geometry_result));
 
-  if (const std::optional<VerificationFailure> failure = ValidateAssociations(context, generated);
+  if (const std::optional<VerificationFailure> failure = ValidateAssociations(
+          context, generated, verified_request_policy, candidate_policy_matches_verified_request);
       failure.has_value()) {
     return RejectionFrom(generated, *failure);
   }
@@ -1858,7 +1885,7 @@ CandidateAdmissionResult AdmitRouteCandidateWithReducedSelfClearanceBudgetForTes
     const CandidateAdmissionContext& context, GeneratedRouteCandidate&& generated,
     std::uint64_t maximum_pair_checks) {
   return AdmitRouteCandidateWithBudgets(context, std::move(generated), maximum_pair_checks,
-                                        kMaximumCandidateExpandedResourceEdges);
+                                        kMaximumCandidateExpandedResourceEdges, nullptr);
 }
 
 CandidateAdmissionResult AdmitRouteCandidateWithReducedResourceEdgeBudgetForTesting(
@@ -1866,7 +1893,7 @@ CandidateAdmissionResult AdmitRouteCandidateWithReducedResourceEdgeBudgetForTest
     std::uint64_t maximum_expanded_resource_edges) {
   return AdmitRouteCandidateWithBudgets(context, std::move(generated),
                                         kMaximumCandidateSelfClearancePairChecks,
-                                        maximum_expanded_resource_edges);
+                                        maximum_expanded_resource_edges, nullptr);
 }
 
 CandidateAdmissionResult AdmitRouteCandidate(const CandidateAdmissionContext& context,
@@ -1877,7 +1904,7 @@ CandidateAdmissionResult AdmitRouteCandidate(const CandidateAdmissionContext& co
   }
   return AdmitRouteCandidateWithBudgets(context, GeneratedRouteCandidate(generated),
                                         kMaximumCandidateSelfClearancePairChecks,
-                                        kMaximumCandidateExpandedResourceEdges);
+                                        kMaximumCandidateExpandedResourceEdges, nullptr);
 }
 
 CandidateAdmissionResult AdmitRouteCandidate(const CandidateAdmissionContext& context,
@@ -1888,7 +1915,16 @@ CandidateAdmissionResult AdmitRouteCandidate(const CandidateAdmissionContext& co
   }
   return AdmitRouteCandidateWithBudgets(context, std::move(generated),
                                         kMaximumCandidateSelfClearancePairChecks,
-                                        kMaximumCandidateExpandedResourceEdges);
+                                        kMaximumCandidateExpandedResourceEdges, nullptr);
+}
+
+CandidateAdmissionResult internal::AdmitRouteCandidateWithVerifiedRequestPolicy(
+    const CandidateAdmissionContext& context,
+    const routing::CandidatePolicyResult& verified_request_policy,
+    GeneratedRouteCandidate&& generated) {
+  return AdmitRouteCandidateWithBudgets(
+      context, std::move(generated), kMaximumCandidateSelfClearancePairChecks,
+      kMaximumCandidateExpandedResourceEdges, &verified_request_policy);
 }
 
 bool CanonicalGeometryEqual(const RouteCandidate& left, const RouteCandidate& right) noexcept {

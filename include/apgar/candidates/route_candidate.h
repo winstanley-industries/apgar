@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -26,6 +27,8 @@ inline constexpr std::uint16_t kRouteCandidateSchemaMinor = 0;
 inline constexpr std::uint32_t kCandidateGeometrySchemaVersion = 1;
 inline constexpr std::uint32_t kCandidateResourceSchemaVersion = 1;
 inline constexpr std::uint32_t kCandidateRejectionSchemaVersion = 1;
+inline constexpr std::string_view kCpuReferenceDeviceClassV1 = "cpu-reference-v1";
+inline constexpr std::string_view kCudaDeviceClassPrefixV1 = "cuda-cc-";
 inline constexpr std::uint64_t kMaximumCandidatePrimitives = 1'000'000;
 inline constexpr std::uint64_t kMaximumCandidateResourceSpans = 1'000'000;
 inline constexpr std::uint64_t kMaximumCandidateExpandedResourceEdges = 1'000'000;

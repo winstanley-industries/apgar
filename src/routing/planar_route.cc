@@ -125,6 +125,15 @@ std::optional<std::uint64_t> CheckedAdd(std::uint64_t left, std::uint64_t right)
   return left + right;
 }
 
+std::optional<std::uint64_t> CheckedAddFiniteRouteCost(std::uint64_t left,
+                                                       std::uint64_t right) noexcept {
+  constexpr std::uint64_t kMaximumFiniteRouteCost = std::numeric_limits<std::uint64_t>::max() - 1U;
+  if (left > kMaximumFiniteRouteCost || right > kMaximumFiniteRouteCost - left) {
+    return std::nullopt;
+  }
+  return left + right;
+}
+
 std::uint64_t StepCost(const geometry_compiler::CompilerProfile& profile,
                        geometry_compiler::Direction direction,
                        std::uint8_t incoming_direction) noexcept {

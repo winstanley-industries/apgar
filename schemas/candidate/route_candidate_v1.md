@@ -84,6 +84,14 @@ headers expose no evidence mint. APGAR implementation code intentionally
 depending on source-private headers is inside this C++ trust boundary; hostile
 runtime inputs and clients of the supported public dependency graph are not.
 
+`CpuRoute::lattice_path` is a redundant search-reconstruction trace and
+`CpuRoute::telemetry` is diagnostic. Neither field participates in CPU producer
+evidence, and no authenticated candidate consumer may derive geometry,
+resources, identity, or cost from them. Candidate construction consumes only
+the authenticated exact segment sequence. Mutating either diagnostic field
+therefore does not relabel an authenticated route; mutating any sealed field
+does.
+
 Both typed builders also seal the complete finalized GeneratedRouteCandidate
 payload in an immutable evidence snapshot. Direct admission compares every
 public field with that snapshot after independent exact validation. A copied

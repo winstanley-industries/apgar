@@ -1,6 +1,5 @@
 #include <benchmark/benchmark.h>
 #include <sys/resource.h>
-#include <sys/utsname.h>
 
 #include <algorithm>
 #include <array>
@@ -31,6 +30,7 @@
 #include "apgar/routing/candidate_policy.h"
 #include "apgar/routing/cpu_astar.h"
 #include "apgar/tooling/runfiles.h"
+#include "tools/benchmark_support.h"
 
 namespace {
 
@@ -38,9 +38,6 @@ inline constexpr int kBenchmarkRepetitions = 20;
 inline constexpr double kBenchmarkMinimumSeconds = 0.02;
 inline constexpr double kBenchmarkWarmupSeconds = 0.01;
 inline constexpr std::uint32_t kMaximumCandidateCount = 128;
-inline constexpr std::uint64_t kMaximumStoreAdmissionItems = 1'024;
-inline constexpr std::uint64_t kMaximumStoreAdmissionInputBytes = 64U * 1024U * 1024U;
-inline constexpr std::uint64_t kMaximumStoreAdmissionWorkUnits = 100'000'000;
 inline constexpr std::array<std::uint32_t, 6> kCandidateCounts = {4, 8, 16, 32, 64, 128};
 enum class FailureClass : std::uint8_t {
   kReached = 0,
@@ -99,6 +96,7 @@ struct BatchExecution {
   std::uint64_t persistent_owned_device_bytes = 0;
   std::uint64_t batch_owned_device_bytes = 0;
   std::uint64_t peak_owned_device_bytes = 0;
+  std::uint64_t prepared_node_lookup_host_bytes = 0;
   std::uint64_t batch_owned_host_bytes = 0;
   std::uint64_t kernel_launch_count = 0;
   std::uint64_t blocking_status_readback_count = 0;
@@ -111,6 +109,8 @@ struct BatchExecution {
 };
 
 struct AdmissionObservation {
+  bool valid = true;
+  std::string error;
   std::uint64_t requested_candidates = 0;
   std::uint64_t reached_queries = 0;
   std::uint64_t failed_queries = 0;
@@ -150,6 +150,7 @@ struct CaseContext {
   std::vector<apgar::routing::NormalizedCandidateGenerationPolicy> policies;
   std::vector<VisibleQueryOutcome> cpu_oracles;
   std::uint64_t persistent_device_bytes = 0;
+  std::uint64_t prepared_node_lookup_host_bytes = 0;
 };
 
 struct BenchmarkContext {
@@ -159,24 +160,6 @@ struct BenchmarkContext {
   std::uint32_t parallel_worker_count = 1;
   std::vector<std::unique_ptr<BenchmarkDeterminismBaseline>> determinism_baselines;
 };
-
-[[nodiscard]] std::optional<std::string> LineValue(std::string_view contents,
-                                                   std::string_view key) {
-  const std::size_t key_offset = contents.find(key);
-  if (key_offset == std::string_view::npos) {
-    return std::nullopt;
-  }
-  std::string_view value = contents.substr(key_offset + key.size());
-  value = value.substr(0, value.find('\n'));
-  while (!value.empty() && (value.front() == ' ' || value.front() == '\t' || value.front() == ':' ||
-                            value.front() == '"')) {
-    value.remove_prefix(1);
-  }
-  while (!value.empty() && (value.back() == ' ' || value.back() == '\t' || value.back() == '"')) {
-    value.remove_suffix(1);
-  }
-  return std::string(value);
-}
 
 [[nodiscard]] std::optional<std::uint64_t> ProcessLifetimePeakRssBytes() noexcept {
   struct rusage usage{};
@@ -207,27 +190,11 @@ struct BenchmarkContext {
   return left * right;
 }
 
-void AddPoint(apgar::board_ir::StableHashBuilder* hash, apgar::board_ir::Point64 point) {
-  hash->AddI64(point.x);
-  hash->AddI64(point.y);
-}
-
 [[nodiscard]] std::uint64_t GeometryFingerprint(
     std::span<const apgar::board_ir::Point64> path,
     std::span<const apgar::routing::LayerSegment> segments) {
-  apgar::board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-PHASE3-BENCHMARK-GEOMETRY-V1");
-  hash.AddU64(path.size());
-  for (const apgar::board_ir::Point64 point : path) {
-    AddPoint(&hash, point);
-  }
-  hash.AddU64(segments.size());
-  for (const apgar::routing::LayerSegment& segment : segments) {
-    hash.AddI32(segment.layer);
-    AddPoint(&hash, segment.centerline.start);
-    AddPoint(&hash, segment.centerline.end);
-  }
-  return hash.Finish();
+  return apgar::benchmark::tool_support::PlanarGeometryFingerprint(
+      "APGAR-PHASE3-BENCHMARK-GEOMETRY-V1", path, segments);
 }
 
 [[nodiscard]] FailureClass CpuFailureClass(apgar::routing::RouteFailureCode code) {
@@ -494,6 +461,7 @@ void CanonicalizeQueryOrder(BatchExecution* batch) {
   execution.persistent_owned_device_bytes = batch.telemetry.persistent_device_bytes;
   execution.batch_owned_device_bytes = batch.telemetry.batch_device_bytes;
   execution.peak_owned_device_bytes = batch.telemetry.peak_device_bytes;
+  execution.prepared_node_lookup_host_bytes = batch.prepared_node_lookup_host_bytes;
   execution.batch_owned_host_bytes = batch.telemetry.batch_host_bytes;
   execution.kernel_launch_count = batch.telemetry.kernel_launch_count;
   execution.blocking_status_readback_count = batch.telemetry.blocking_status_readback_count;
@@ -587,6 +555,18 @@ struct CandidateDraftWithPolicy {
   apgar::candidates::GeneratedRouteCandidate candidate;
 };
 
+// The benchmark has already accepted a validated backend envelope before it
+// reaches candidate construction. A missing canonical provenance mapping is a
+// benchmark invariant failure, not a candidate rejection that may silently be
+// attributed to a different generator or device class.
+struct BenchmarkAdmissionError {
+  std::string detail;
+};
+
+using CandidateDraftResult =
+    std::variant<CandidateDraftWithPolicy, apgar::candidates::CandidateRejection,
+                 BenchmarkAdmissionError>;
+
 [[nodiscard]] const apgar::gpu::PlanarCandidateBatchItem* FindGpuBatchItem(
     const BatchExecution& execution, std::uint64_t query_id) {
   if (!execution.validated_gpu_batch.has_value()) {
@@ -597,7 +577,7 @@ struct CandidateDraftWithPolicy {
   return found == execution.validated_gpu_batch->items.end() ? nullptr : &*found;
 }
 
-[[nodiscard]] apgar::candidates::CandidateRejection BenchmarkBuildRejection(
+[[nodiscard]] CandidateDraftResult BenchmarkBuildRejection(
     const CaseContext& context, const BatchExecution& execution, const QueryExecution& query,
     std::uint64_t batch_identity, std::string invariant_id, std::string detail) {
   const std::uint32_t policy_index =
@@ -607,17 +587,23 @@ struct CandidateDraftWithPolicy {
   apgar::candidates::CandidateGeneratorKind generator =
       apgar::candidates::CandidateGeneratorKind::kCpuAStar;
   apgar::candidates::CandidateBackendKind backend = apgar::candidates::CandidateBackendKind::kCpu;
-  std::string device_class = "cpu-reference-v1";
+  std::string device_class(apgar::candidates::kCpuReferenceDeviceClassV1);
   if (execution.validated_gpu_batch.has_value()) {
-    generator =
-        execution.validated_gpu_batch->generator == apgar::gpu::PlanarGenerator::kBucketedFrontier
-            ? apgar::candidates::CandidateGeneratorKind::kCudaFrontier
-            : apgar::candidates::CandidateGeneratorKind::kCudaSweep;
+    const std::optional<apgar::candidates::CandidateGeneratorKind> mapped_generator =
+        apgar::candidates::CandidateGeneratorForPlanarGenerator(
+            execution.validated_gpu_batch->generator);
+    const std::optional<std::string> mapped_device_class =
+        apgar::candidates::CudaCandidateDeviceClass(execution.validated_gpu_batch->backend);
+    if (!mapped_generator.has_value() || !mapped_device_class.has_value()) {
+      return BenchmarkAdmissionError{
+          .detail =
+              "validated GPU benchmark envelope has no canonical Candidate Provenance v1 "
+              "mapping",
+      };
+    }
+    generator = *mapped_generator;
     backend = apgar::candidates::CandidateBackendKind::kCuda;
-    device_class = "cuda-cc-" +
-                   std::to_string(execution.validated_gpu_batch->backend.compute_capability_major) +
-                   "." +
-                   std::to_string(execution.validated_gpu_batch->backend.compute_capability_minor);
+    device_class = *mapped_device_class;
     batch_identity = execution.validated_gpu_batch->batch_id;
   }
   apgar::candidates::CandidateRejection rejection{
@@ -652,9 +638,10 @@ struct CandidateDraftWithPolicy {
   return apgar::candidates::CanonicalizeCandidateRejectionV1(std::move(rejection));
 }
 
-[[nodiscard]] std::variant<CandidateDraftWithPolicy, apgar::candidates::CandidateRejection>
-BuildCandidateDraft(const CaseContext& context, const BatchExecution& execution,
-                    const QueryExecution& query, std::uint64_t batch_identity) {
+[[nodiscard]] CandidateDraftResult BuildCandidateDraft(const CaseContext& context,
+                                                       const BatchExecution& execution,
+                                                       const QueryExecution& query,
+                                                       std::uint64_t batch_identity) {
   if (!query.route.has_value() || query.input_ordinal >= context.policies.size()) {
     return BenchmarkBuildRejection(
         context, execution, query, batch_identity, "candidate.benchmark.missing_route.v1",
@@ -761,6 +748,8 @@ void PublishPairwiseDiversity(std::span<const apgar::candidates::StoredCandidate
                                               const BatchExecution& execution,
                                               std::uint32_t candidate_count) {
   AdmissionObservation observation{
+      .valid = true,
+      .error = {},
       .requested_candidates = candidate_count,
       .peak_deterministic_host_bytes =
           context.test_case.compiled_board.telemetry().estimated_host_bytes,
@@ -805,8 +794,12 @@ void PublishPairwiseDiversity(std::span<const apgar::candidates::StoredCandidate
       route_payload_bytes = SaturatingAdd(route_payload_bytes, point_bytes);
       route_payload_bytes = SaturatingAdd(route_payload_bytes, segment_bytes);
     }
-    std::variant<CandidateDraftWithPolicy, apgar::candidates::CandidateRejection> built =
-        BuildCandidateDraft(context, execution, query, batch_identity);
+    CandidateDraftResult built = BuildCandidateDraft(context, execution, query, batch_identity);
+    if (std::holds_alternative<BenchmarkAdmissionError>(built)) {
+      observation.valid = false;
+      observation.error = std::get<BenchmarkAdmissionError>(std::move(built)).detail;
+      return observation;
+    }
     if (std::holds_alternative<apgar::candidates::CandidateRejection>(built)) {
       ++observation.builder_rejections;
       builder_rejection_records.push_back(
@@ -832,16 +825,28 @@ void PublishPairwiseDiversity(std::span<const apgar::candidates::StoredCandidate
       .maximum_candidates_per_net = candidate_count,
       .maximum_candidate_bytes_per_net = std::numeric_limits<std::uint64_t>::max(),
       .maximum_rejection_records = std::max<std::uint64_t>(1, candidate_count * 2ULL),
-      .maximum_admission_items_per_transaction = kMaximumStoreAdmissionItems,
-      .maximum_admission_input_bytes_per_transaction = kMaximumStoreAdmissionInputBytes,
-      .maximum_admission_work_units_per_transaction = kMaximumStoreAdmissionWorkUnits,
+      .maximum_rejection_items_per_transaction = kMaximumCandidateCount,
+      .maximum_admission_items_per_transaction =
+          apgar::candidates::kDefaultMaximumAdmissionItemsPerTransaction,
+      .maximum_admission_input_bytes_per_transaction =
+          apgar::candidates::kDefaultMaximumAdmissionInputBytesPerTransaction,
+      .maximum_admission_work_units_per_transaction =
+          apgar::candidates::kDefaultMaximumAdmissionWorkUnitsPerTransaction,
   });
   if (!store.valid()) {
+    observation.valid = false;
+    observation.error = "candidate benchmark constructed an invalid store configuration";
     observation.builder_rejections += drafts.size();
     observation.rejected_candidates = observation.reached_queries;
     return observation;
   }
-  store.RetainRejections(std::move(builder_rejection_records));
+  if (const std::optional<apgar::candidates::CandidateRejection> ingestion_failure =
+          store.RetainRejections(builder_rejection_records);
+      ingestion_failure.has_value()) {
+    observation.valid = false;
+    observation.error = "candidate benchmark exceeded its rejection-ingestion transaction cap";
+    return observation;
+  }
   std::vector<apgar::candidates::CandidateAdmissionItem> admission_items;
   admission_items.reserve(drafts.size());
   for (CandidateDraftWithPolicy& draft : drafts) {
@@ -859,8 +864,18 @@ void PublishPairwiseDiversity(std::span<const apgar::candidates::StoredCandidate
       store.Enumerate(context.test_case.request.net);
   const std::vector<apgar::candidates::CandidateRejection> rejections = store.Rejections();
   observation.accepted_candidates = accepted.size();
+  if (observation.accepted_candidates > observation.reached_queries) {
+    observation.valid = false;
+    observation.error = "candidate store retained more candidates than reached generator queries";
+    return observation;
+  }
   observation.rejected_candidates = observation.reached_queries - observation.accepted_candidates;
   observation.retained_rejection_records = rejections.size();
+  if (observation.retained_rejection_records < observation.builder_rejections) {
+    observation.valid = false;
+    observation.error = "candidate store retained fewer diagnostics than the builder submitted";
+    return observation;
+  }
   observation.store_rejections =
       observation.retained_rejection_records - observation.builder_rejections;
   observation.accepted_logical_bytes = store.CandidateBytes(context.test_case.request.net)
@@ -985,6 +1000,7 @@ struct ExecutionSummary {
   std::uint64_t persistent_owned_device_bytes = 0;
   std::uint64_t batch_owned_device_bytes = 0;
   std::uint64_t peak_owned_device_bytes = 0;
+  std::uint64_t prepared_node_lookup_host_bytes = 0;
   std::uint64_t batch_owned_host_bytes = 0;
   std::uint64_t kernel_launch_count = 0;
   std::uint64_t blocking_status_readback_count = 0;
@@ -1003,6 +1019,7 @@ struct ExecutionSummary {
       .persistent_owned_device_bytes = execution.persistent_owned_device_bytes,
       .batch_owned_device_bytes = execution.batch_owned_device_bytes,
       .peak_owned_device_bytes = execution.peak_owned_device_bytes,
+      .prepared_node_lookup_host_bytes = execution.prepared_node_lookup_host_bytes,
       .batch_owned_host_bytes = execution.batch_owned_host_bytes,
       .kernel_launch_count = execution.kernel_launch_count,
       .blocking_status_readback_count = execution.blocking_status_readback_count,
@@ -1055,6 +1072,7 @@ struct ExecutionSummary {
          left.persistent_owned_device_bytes == right.persistent_owned_device_bytes &&
          left.batch_owned_device_bytes == right.batch_owned_device_bytes &&
          left.peak_owned_device_bytes == right.peak_owned_device_bytes &&
+         left.prepared_node_lookup_host_bytes == right.prepared_node_lookup_host_bytes &&
          left.batch_owned_host_bytes == right.batch_owned_host_bytes &&
          left.kernel_launch_count == right.kernel_launch_count &&
          left.blocking_status_readback_count == right.blocking_status_readback_count &&
@@ -1104,6 +1122,8 @@ void PublishExecutionCounters(benchmark::State& state, const ExecutionSummary& s
       static_cast<double>(summary.persistent_owned_device_bytes);
   state.counters["batch_owned_vram_bytes"] = static_cast<double>(summary.batch_owned_device_bytes);
   state.counters["peak_owned_vram_bytes"] = static_cast<double>(summary.peak_owned_device_bytes);
+  state.counters["prepared_node_lookup_host_bytes"] =
+      static_cast<double>(summary.prepared_node_lookup_host_bytes);
   state.counters["gpu_batch_owned_host_bytes"] =
       static_cast<double>(summary.batch_owned_host_bytes);
   state.counters["batch_cuda_event_milliseconds"] = average_cuda_event_milliseconds;
@@ -1262,6 +1282,10 @@ void CandidateStageBenchmark(benchmark::State& state, CaseContext* context,
     // shifted into the next sample or asymmetrically omitted from the last.
     iteration_execution.reset();
     iteration_prepared.reset();
+    if (admission.has_value() && !admission->valid) {
+      state.SkipWithError(admission->error);
+      break;
+    }
     benchmark::DoNotOptimize(execution_summary.ordered_outcome_checksum);
     if (admission.has_value()) {
       benchmark::DoNotOptimize(admission->ordered_candidate_checksum);
@@ -1329,6 +1353,10 @@ void PreparedUploadBenchmark(benchmark::State& state, CaseContext* context,
         std::get<std::unique_ptr<apgar::gpu::PreparedPlanarCompiledView>>(
             std::move(prepared_result));
     benchmark::DoNotOptimize(prepared.get());
+    if (prepared->prepared_node_lookup_host_bytes() != context->prepared_node_lookup_host_bytes) {
+      state.SkipWithError("prepared node-lookup accounting changed across identical uploads");
+      break;
+    }
     ++successful_uploads;
     state.PauseTiming();
     prepared.reset();
@@ -1336,6 +1364,8 @@ void PreparedUploadBenchmark(benchmark::State& state, CaseContext* context,
   }
   state.counters["persistent_owned_vram_bytes"] =
       static_cast<double>(context->persistent_device_bytes);
+  state.counters["prepared_node_lookup_host_bytes"] =
+      static_cast<double>(context->prepared_node_lookup_host_bytes);
   state.counters["prepared_uploads_per_second"] =
       benchmark::Counter(1, benchmark::Counter::kIsIterationInvariantRate);
   state.SetItemsProcessed(static_cast<std::int64_t>(successful_uploads));
@@ -1551,6 +1581,7 @@ struct EvidenceLabels {
         .policies = {},
         .cpu_oracles = {},
         .persistent_device_bytes = 0,
+        .prepared_node_lookup_host_bytes = 0,
     };
     case_context.deterministic_seed = BenchmarkSeed(case_context.test_case);
     std::optional<std::vector<apgar::routing::NormalizedCandidateGenerationPolicy>> policies =
@@ -1583,9 +1614,11 @@ struct EvidenceLabels {
                 << std::get<apgar::gpu::PlanarGpuFailure>(device_board_result).detail << '\n';
       return std::nullopt;
     }
-    case_context.persistent_device_bytes =
-        std::get<apgar::gpu::DeviceCompiledBoardV1>(device_board_result)
-            .header.estimated_persistent_device_bytes;
+    const apgar::gpu::DeviceCompiledBoardV1& device_board =
+        std::get<apgar::gpu::DeviceCompiledBoardV1>(device_board_result);
+    case_context.persistent_device_bytes = device_board.header.estimated_persistent_device_bytes;
+    case_context.prepared_node_lookup_host_bytes =
+        static_cast<std::uint64_t>(device_board.nodes.size()) * sizeof(std::uint32_t);
     context.cases.push_back(std::move(case_context));
   }
   return context;
@@ -1624,13 +1657,20 @@ struct EvidenceLabels {
   benchmark::AddCustomContext("apgar_google_benchmark_module_lock_sha256",
                               "0bd357fd9db30ee31d5eb4c78b1086ce3d79b4423ce76de19e8a2fa7b2fa2e10");
   benchmark::AddCustomContext("apgar_baseline", "sequential_cpu_astar");
-  benchmark::AddCustomContext("apgar_candidate_counts", "4,8,16,32,64,128");
-  benchmark::AddCustomContext("apgar_store_maximum_admission_items",
-                              std::to_string(kMaximumStoreAdmissionItems));
-  benchmark::AddCustomContext("apgar_store_maximum_admission_input_bytes",
-                              std::to_string(kMaximumStoreAdmissionInputBytes));
-  benchmark::AddCustomContext("apgar_store_maximum_admission_work_units",
-                              std::to_string(kMaximumStoreAdmissionWorkUnits));
+  benchmark::AddCustomContext(
+      "apgar_candidate_counts",
+      apgar::benchmark::tool_support::JoinUnsignedDecimal(kCandidateCounts));
+  benchmark::AddCustomContext(
+      "apgar_store_maximum_admission_items",
+      std::to_string(apgar::candidates::kDefaultMaximumAdmissionItemsPerTransaction));
+  benchmark::AddCustomContext("apgar_store_maximum_rejection_items",
+                              std::to_string(kMaximumCandidateCount));
+  benchmark::AddCustomContext(
+      "apgar_store_maximum_admission_input_bytes",
+      std::to_string(apgar::candidates::kDefaultMaximumAdmissionInputBytesPerTransaction));
+  benchmark::AddCustomContext(
+      "apgar_store_maximum_admission_work_units",
+      std::to_string(apgar::candidates::kDefaultMaximumAdmissionWorkUnitsPerTransaction));
   benchmark::AddCustomContext("apgar_policy_schedule",
                               "base_then_length_bend_strong_resource_penalty_resource_ban_v1");
   benchmark::AddCustomContext(
@@ -1649,7 +1689,7 @@ struct EvidenceLabels {
                               "prepare_flatten_upload_only_prepared_view_release_excluded");
   benchmark::AddCustomContext(
       "apgar_host_memory_scope",
-      "deterministic_compiled_route_candidate_rejection_logical_payload_phase_max");
+      "candidate_admission_phase_max_plus_separate_prepared_lookup_and_gpu_batch_ownership");
   benchmark::AddCustomContext(
       "apgar_process_peak_rss_scope",
       "getrusage_RUSAGE_SELF_process_lifetime_high_water_not_row_attributable");
@@ -1662,6 +1702,27 @@ struct EvidenceLabels {
   benchmark::AddCustomContext(
       "apgar_cuda_sweep_launch_model",
       "query_node_heading_departures_plus_query_run_parallel_atomic_min_8_round_host_chunks");
+  constexpr std::optional<apgar::gpu::PlanarGeneratorDescriptor> kFrontierDescriptor =
+      apgar::gpu::DescribePlanarGenerator(apgar::gpu::PlanarGenerator::kBucketedFrontier);
+  constexpr std::optional<apgar::gpu::PlanarGeneratorDescriptor> kSweepDescriptor =
+      apgar::gpu::DescribePlanarGenerator(apgar::gpu::PlanarGenerator::kHeadingAwareSweep);
+  static_assert(kFrontierDescriptor.has_value() && kSweepDescriptor.has_value());
+  benchmark::AddCustomContext("apgar_cuda_frontier_chunk_rounds",
+                              std::to_string(kFrontierDescriptor->chunk_rounds));
+  benchmark::AddCustomContext("apgar_cuda_sweep_chunk_rounds",
+                              std::to_string(kSweepDescriptor->chunk_rounds));
+  benchmark::AddCustomContext(
+      "apgar_cuda_frontier_launches_per_chunk",
+      std::to_string(kFrontierDescriptor->launches_once_per_chunk ? 1U : 0U));
+  benchmark::AddCustomContext("apgar_cuda_sweep_kernels_per_round_without_runs",
+                              std::to_string(kSweepDescriptor->kernels_per_round_without_runs));
+  benchmark::AddCustomContext("apgar_cuda_sweep_kernels_per_round_with_runs",
+                              std::to_string(kSweepDescriptor->kernels_per_round_with_runs));
+  benchmark::AddCustomContext("apgar_cuda_fixed_batch_launches",
+                              std::to_string(apgar::gpu::kCandidateBatchFixedLaunches));
+  benchmark::AddCustomContext(
+      "apgar_cuda_maximum_finalization_launches",
+      std::to_string(apgar::gpu::kCandidateBatchMaximumFinalizationLaunches));
   benchmark::AddCustomContext(
       "apgar_cuda_round_synchronization_model",
       "one_blocking_query_status_readback_after_each_32_frontier_or_8_sweep_round_chunk");
@@ -1691,7 +1752,7 @@ struct EvidenceLabels {
                               std::to_string(context.parallel_worker_count));
   benchmark::AddCustomContext(
       "apgar_default_cpu_toolchain",
-      "LLVM 22.1.8 via toolchains_llvm 0.8.11 checksum-pinned zero-sysroot "
+      "LLVM 22.1.8 via hermetic-llvm module llvm@0.8.11 checksum-pinned zero-sysroot "
       "module_lock_sha256=b40edb2bb2ed271bf613b396d245cb473c42fb057a2b26a3bc7d7e8bfcf6aa71");
   benchmark::AddCustomContext("apgar_benchmark_cpp_toolchain",
                               "GCC 15.2.0 checksum-pinned distribution/sysroot archive_sha256="
@@ -1706,26 +1767,7 @@ struct EvidenceLabels {
       "apgar_cudart_component",
       "13.0.96 sha256=25b8071951baba827be1580b841d363464f6ee6c39f48d33a81646f90cc95ed1");
 
-  struct utsname host{};
-  if (uname(&host) == 0) {
-    benchmark::AddCustomContext("apgar_host_kernel",
-                                std::string(host.sysname) + " " + host.release);
-    benchmark::AddCustomContext("apgar_host_architecture", host.machine);
-  }
-  if (const std::optional<std::string> os_release = apgar::tooling::ReadFile("/etc/os-release");
-      os_release.has_value()) {
-    if (const std::optional<std::string> pretty_name = LineValue(*os_release, "PRETTY_NAME=");
-        pretty_name.has_value()) {
-      benchmark::AddCustomContext("apgar_host_os", *pretty_name);
-    }
-  }
-  if (const std::optional<std::string> cpu_info = apgar::tooling::ReadFile("/proc/cpuinfo");
-      cpu_info.has_value()) {
-    if (const std::optional<std::string> model = LineValue(*cpu_info, "model name");
-        model.has_value()) {
-      benchmark::AddCustomContext("apgar_cpu_model", *model);
-    }
-  }
+  apgar::benchmark::tool_support::AddHostContext();
 
   const apgar::gpu::BackendMetadata& metadata = context.backend_metadata;
   benchmark::AddCustomContext("apgar_backend", metadata.backend);
@@ -1767,7 +1809,9 @@ struct EvidenceLabels {
             ";seed=" + std::to_string(case_context.deterministic_seed) +
             ";resource_penalty_increment=" +
             std::to_string(case_context.resource_penalty_increment) +
-            ";persistent_device_bytes=" + std::to_string(case_context.persistent_device_bytes));
+            ";persistent_device_bytes=" + std::to_string(case_context.persistent_device_bytes) +
+            ";prepared_node_lookup_host_bytes=" +
+            std::to_string(case_context.prepared_node_lookup_host_bytes));
     std::string policy_identities;
     for (std::size_t index = 0; index < case_context.policies.size(); ++index) {
       if (index != 0) {

@@ -1,20 +1,18 @@
-#include <charconv>
 #include <cstdint>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <variant>
-#include <vector>
 
 #include "apgar/benchmark/planar_corpus.h"
 #include "apgar/board_ir/stable_hash.h"
 #include "apgar/gpu/cuda_backend.h"
 #include "apgar/gpu/fault_injecting_backend.h"
 #include "apgar/gpu/planar_router.h"
+#include "apgar/tooling/replay.h"
 #include "apgar/tooling/runfiles.h"
 
 namespace {
@@ -33,37 +31,8 @@ struct ReplayArtifact {
   std::string expected_invariant;
 };
 
-template <typename Integer>
-[[nodiscard]] bool ParseUnsigned(std::string_view text, Integer* value) {
-  const char* begin = text.data();
-  const char* end = text.data() + text.size();
-  const auto [next, error] = std::from_chars(begin, end, *value);
-  return error == std::errc{} && next == end;
-}
-
 [[nodiscard]] std::optional<ReplayArtifact> ParseArtifact(std::string_view contents,
                                                           std::string* error) {
-  if (contents.empty() || contents.back() != '\n') {
-    *error = "canonical replay must end every line with LF";
-    return std::nullopt;
-  }
-  const std::size_t checksum_start = contents.rfind("checksum_fnv1a64=");
-  if (checksum_start == std::string_view::npos || checksum_start == 0 ||
-      contents[checksum_start - 1] != '\n') {
-    *error = "missing final replay checksum";
-    return std::nullopt;
-  }
-  const std::string_view payload = contents.substr(0, checksum_start);
-  std::string_view checksum_text = contents.substr(checksum_start + 17);
-  checksum_text.remove_suffix(1);
-  std::uint64_t recorded_checksum = 0;
-  if (!ParseUnsigned(checksum_text, &recorded_checksum) ||
-      apgar::board_ir::StableHashString(payload) != recorded_checksum) {
-    *error = "replay payload checksum mismatch";
-    return std::nullopt;
-  }
-
-  std::vector<std::string_view> values;
   constexpr std::string_view kKeys[] = {
       "format=",
       "schema_version=",
@@ -79,25 +48,12 @@ template <typename Integer>
       "expected_failure=",
       "expected_invariant=",
   };
-  std::size_t offset = 0;
-  for (std::string_view key : kKeys) {
-    const std::size_t end = payload.find('\n', offset);
-    if (end == std::string_view::npos) {
-      *error = "replay payload is truncated";
-      return std::nullopt;
-    }
-    const std::string_view line = payload.substr(offset, end - offset);
-    if (!line.starts_with(key)) {
-      *error = "replay fields are missing or out of canonical order";
-      return std::nullopt;
-    }
-    values.push_back(line.substr(key.size()));
-    offset = end + 1;
-  }
-  if (offset != payload.size()) {
-    *error = "replay payload has unknown fields";
+  const std::optional<apgar::tooling::CanonicalReplayEnvelope> envelope =
+      apgar::tooling::ParseCanonicalReplayEnvelope(contents, kKeys, error);
+  if (!envelope.has_value()) {
     return std::nullopt;
   }
+  const auto& values = envelope->values;
   if (values[0] != "apgar_gpu_invariant_replay" || values[1] != "1" ||
       values[4] != "bucketed_frontier" || values[5] != "goal_predecessor_self_cycle" ||
       values[11] != "internal_invariant" || values[12] != "gpu.predecessor.self_reference.v1") {
@@ -109,12 +65,15 @@ template <typename Integer>
   artifact.fixture = values[2];
   artifact.generator = apgar::gpu::PlanarGenerator::kBucketedFrontier;
   artifact.expected_invariant = std::string(values[12]);
-  if (!ParseUnsigned(values[3], &artifact.fixture_checksum) ||
-      !ParseUnsigned(values[6], &artifact.layer) ||
-      !ParseUnsigned(values[7], &artifact.maximum_rounds) || artifact.maximum_rounds == 0 ||
-      !ParseUnsigned(values[8], &artifact.expected_board_hash) ||
-      !ParseUnsigned(values[9], &artifact.expected_profile_fingerprint) ||
-      !ParseUnsigned(values[10], &artifact.expected_device_fingerprint)) {
+  if (!apgar::tooling::ParseCanonicalUnsignedDecimal(values[3], &artifact.fixture_checksum) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[6], &artifact.layer) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[7], &artifact.maximum_rounds) ||
+      artifact.maximum_rounds == 0 ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[8], &artifact.expected_board_hash) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[9],
+                                                     &artifact.expected_profile_fingerprint) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[10],
+                                                     &artifact.expected_device_fingerprint)) {
     *error = "replay contains an invalid integer field";
     return std::nullopt;
   }

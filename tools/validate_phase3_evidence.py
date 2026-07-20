@@ -34,7 +34,22 @@ _CASES = (
     "sparse_regions",
     "symmetric_dual_corridor",
 )
+# Independent v2 schema oracles. The validator must not infer the required
+# matrix or resource bounds solely from the untrusted result that it validates.
+# The producer derives its context text from the corresponding C++ constants;
+# this module checks that text against the published contract.
 _CANDIDATE_COUNTS = (4, 8, 16, 32, 64, 128)
+_STORE_MAXIMUM_REJECTION_ITEMS = max(_CANDIDATE_COUNTS)
+_STORE_MAXIMUM_ADMISSION_ITEMS = 1024
+_STORE_MAXIMUM_ADMISSION_INPUT_BYTES = 64 * 1024 * 1024
+_STORE_MAXIMUM_ADMISSION_WORK_UNITS = 100_000_000
+_CUDA_FRONTIER_CHUNK_ROUNDS = 32
+_CUDA_SWEEP_CHUNK_ROUNDS = 8
+_CUDA_FRONTIER_LAUNCHES_PER_CHUNK = 1
+_CUDA_SWEEP_KERNELS_PER_ROUND_WITHOUT_RUNS = 3
+_CUDA_SWEEP_KERNELS_PER_ROUND_WITH_RUNS = 4
+_CUDA_FIXED_BATCH_LAUNCHES = 2
+_CUDA_MAXIMUM_FINALIZATION_LAUNCHES = 1
 _AGGREGATES = {"mean", "median", "stddev", "cv"}
 _ROW_PATTERN = re.compile(r"^phase3/([^/]+)/([^/]+)/([^/]+)/k_([0-9]+)/.*_([a-z]+)$")
 _UPLOAD_PATTERN = re.compile(r"^phase3/shared_cuda/prepared_upload/([^/]+)/.*_([a-z]+)$")
@@ -84,6 +99,7 @@ _COMMON_COUNTERS = {
     "outcome_checksum_lo",
 }
 _V2_COMMON_COUNTERS = {
+    "prepared_node_lookup_host_bytes",
     "semantic_outcome_checksum_hi",
     "semantic_outcome_checksum_lo",
 }
@@ -155,7 +171,7 @@ _REQUIRED_CONTEXT = {
     "apgar_candidate_resource_schema_version": "1",
     "apgar_candidate_policy_schema_version": "1",
     "apgar_device_candidate_batch_schema_version": "1",
-    "apgar_candidate_counts": "4,8,16,32,64,128",
+    "apgar_candidate_counts": ",".join(str(count) for count in _CANDIDATE_COUNTS),
     "apgar_repetitions": "20",
     "apgar_min_time_seconds": "0.020000",
     "apgar_min_warmup_seconds": "0.010000",
@@ -165,9 +181,19 @@ _V2_REQUIRED_CONTEXT = {
     "apgar_source_identity": "bazel_stable_workspace_status_v1",
     "apgar_source_identity_trust": "canonical_checked_in_invocation_v1",
     "apgar_source_tree_dirty": "false",
-    "apgar_store_maximum_admission_items": "1024",
-    "apgar_store_maximum_admission_input_bytes": "67108864",
-    "apgar_store_maximum_admission_work_units": "100000000",
+    "apgar_store_maximum_rejection_items": str(_STORE_MAXIMUM_REJECTION_ITEMS),
+    "apgar_store_maximum_admission_items": str(_STORE_MAXIMUM_ADMISSION_ITEMS),
+    "apgar_store_maximum_admission_input_bytes": str(_STORE_MAXIMUM_ADMISSION_INPUT_BYTES),
+    "apgar_store_maximum_admission_work_units": str(_STORE_MAXIMUM_ADMISSION_WORK_UNITS),
+    "apgar_cuda_frontier_chunk_rounds": str(_CUDA_FRONTIER_CHUNK_ROUNDS),
+    "apgar_cuda_sweep_chunk_rounds": str(_CUDA_SWEEP_CHUNK_ROUNDS),
+    "apgar_cuda_frontier_launches_per_chunk": str(_CUDA_FRONTIER_LAUNCHES_PER_CHUNK),
+    "apgar_cuda_sweep_kernels_per_round_without_runs": str(
+        _CUDA_SWEEP_KERNELS_PER_ROUND_WITHOUT_RUNS
+    ),
+    "apgar_cuda_sweep_kernels_per_round_with_runs": str(_CUDA_SWEEP_KERNELS_PER_ROUND_WITH_RUNS),
+    "apgar_cuda_fixed_batch_launches": str(_CUDA_FIXED_BATCH_LAUNCHES),
+    "apgar_cuda_maximum_finalization_launches": str(_CUDA_MAXIMUM_FINALIZATION_LAUNCHES),
 }
 _CORRECTNESS_SUMMARY_KEYS = {
     "generator_stage_medians",
@@ -387,7 +413,13 @@ def _validate_query_accounting(row: Mapping[str, Any], label: str, candidate_cou
 
 
 def _validate_execution_telemetry(
-    row: Mapping[str, Any], label: str, generator: str, candidate_count: int, upload_bytes: int
+    row: Mapping[str, Any],
+    label: str,
+    generator: str,
+    candidate_count: int,
+    upload_bytes: int,
+    upload_lookup_host_bytes: int | None,
+    result_schema: str,
 ) -> None:
     persistent = _require_counter_integer(row, "persistent_owned_vram_bytes", label)
     batch = _require_counter_integer(row, "batch_owned_vram_bytes", label)
@@ -399,6 +431,13 @@ def _validate_execution_telemetry(
         for counter in _GPU_ONLY_COUNTERS:
             if _require_number(row, counter, label) != 0.0:
                 raise EvidenceError(f"{label} CPU row unexpectedly reports GPU counter {counter}")
+        if (
+            result_schema == "phase3_candidate_bakeoff_v2"
+            and _require_number(row, "prepared_node_lookup_host_bytes", label) != 0.0
+        ):
+            raise EvidenceError(
+                f"{label} CPU row unexpectedly reports GPU counter prepared_node_lookup_host_bytes"
+            )
         workers = _require_counter_integer(row, "parallel_host_workers", label)
         if generator == "sequential_cpu_astar" and workers != 1:
             raise EvidenceError(f"{label} sequential CPU row must use one host worker")
@@ -408,12 +447,25 @@ def _validate_execution_telemetry(
 
     if persistent != upload_bytes or persistent == 0 or batch == 0:
         raise EvidenceError(f"{label} GPU memory ownership disagrees with prepared upload evidence")
+    if result_schema == "phase3_candidate_bakeoff_v2":
+        prepared_lookup = _require_counter_integer(row, "prepared_node_lookup_host_bytes", label)
+        if prepared_lookup != upload_lookup_host_bytes or prepared_lookup == 0:
+            raise EvidenceError(
+                f"{label} prepared node-lookup ownership disagrees with prepared upload evidence"
+            )
     if _require_counter_integer(row, "gpu_batch_owned_host_bytes", label) == 0:
         raise EvidenceError(f"{label} GPU batch host accounting must be nonzero")
     if _require_counter_integer(row, "parallel_host_workers", label) != 1:
         raise EvidenceError(f"{label} GPU batch must report one host dispatch worker")
 
-    expected_chunk = 32 if generator == "batched_cuda_frontier" else 8
+    # This is the schema-pinned public contract, not a value inferred from the
+    # producer's own chunk_rounds telemetry. A corrupted producer cannot
+    # redefine the expectation by changing the counter it emitted.
+    expected_chunk = (
+        _CUDA_FRONTIER_CHUNK_ROUNDS
+        if generator == "batched_cuda_frontier"
+        else _CUDA_SWEEP_CHUNK_ROUNDS
+    )
     chunk = _require_counter_integer(row, "chunk_rounds", label)
     if chunk != expected_chunk:
         raise EvidenceError(f"{label} GPU round chunk does not match the generator contract")
@@ -423,16 +475,26 @@ def _validate_execution_telemetry(
     if readbacks != expected_readbacks:
         raise EvidenceError(f"{label} GPU blocking-readback accounting is inconsistent")
     finalization = _require_counter_integer(row, "finalization_launch_count", label)
-    if finalization > 1 or (dispatched == 0 and finalization != 1):
+    if finalization > _CUDA_MAXIMUM_FINALIZATION_LAUNCHES or (
+        dispatched == 0 and finalization != _CUDA_MAXIMUM_FINALIZATION_LAUNCHES
+    ):
         raise EvidenceError(f"{label} GPU finalization-launch accounting is inconsistent")
     launches = _require_counter_integer(row, "kernel_launch_count", label)
     if generator == "batched_cuda_frontier":
-        expected_launches = 2 + readbacks + finalization
+        expected_launches = (
+            _CUDA_FIXED_BATCH_LAUNCHES
+            + readbacks * _CUDA_FRONTIER_LAUNCHES_PER_CHUNK
+            + finalization
+        )
         if launches != expected_launches:
             raise EvidenceError(f"{label} CUDA frontier launch accounting is inconsistent")
     else:
         possible_launches = {
-            2 + dispatched * kernels_per_round + finalization for kernels_per_round in (3, 4)
+            _CUDA_FIXED_BATCH_LAUNCHES + dispatched * kernels_per_round + finalization
+            for kernels_per_round in (
+                _CUDA_SWEEP_KERNELS_PER_ROUND_WITHOUT_RUNS,
+                _CUDA_SWEEP_KERNELS_PER_ROUND_WITH_RUNS,
+            )
         }
         if launches not in possible_launches:
             raise EvidenceError(f"{label} CUDA sweep launch accounting is inconsistent")
@@ -581,11 +643,14 @@ def _validate_rows(
         label = f"prepared-upload/{case}/{aggregate}"
         if row.get("time_unit") != "us":
             raise EvidenceError(f"{label} does not report microseconds")
-        for counter in (
+        required_upload_counters = [
             "real_time",
             "prepared_uploads_per_second",
             "persistent_owned_vram_bytes",
-        ):
+        ]
+        if result_schema == "phase3_candidate_bakeoff_v2":
+            required_upload_counters.append("prepared_node_lookup_host_bytes")
+        for counter in required_upload_counters:
             _require_number(row, counter, label)
         if aggregate == "median":
             if case in upload_medians:
@@ -615,7 +680,22 @@ def _validate_rows(
         upload_bytes = _require_counter_integer(
             upload_medians[case], "persistent_owned_vram_bytes", f"prepared-upload/{case}"
         )
-        _validate_execution_telemetry(row, label, generator, count, upload_bytes)
+        upload_lookup_host_bytes = (
+            _require_counter_integer(
+                upload_medians[case], "prepared_node_lookup_host_bytes", f"prepared-upload/{case}"
+            )
+            if result_schema == "phase3_candidate_bakeoff_v2"
+            else None
+        )
+        _validate_execution_telemetry(
+            row,
+            label,
+            generator,
+            count,
+            upload_bytes,
+            upload_lookup_host_bytes,
+            result_schema,
+        )
         if stage != "execution_readback":
             _validate_admission_accounting(row, label, result_schema, count)
 
@@ -623,6 +703,11 @@ def _validate_rows(
         label = f"prepared-upload/{case}"
         if _require_counter_integer(row, "persistent_owned_vram_bytes", label) == 0:
             raise EvidenceError(f"{label} persistent VRAM accounting must be nonzero")
+        if (
+            result_schema == "phase3_candidate_bakeoff_v2"
+            and _require_counter_integer(row, "prepared_node_lookup_host_bytes", label) == 0
+        ):
+            raise EvidenceError(f"{label} prepared node-lookup accounting must be nonzero")
     return medians
 
 
@@ -633,7 +718,6 @@ def _correctness_summary(
     requested_queries = 0
     reached_queries = 0
     unreachable_queries = 0
-    failure_queries = 0
     for case in _CASES:
         for count in _CANDIDATE_COUNTS:
             baseline_label = f"correctness/sequential_cpu_astar/end_to_end/{case}/{count}"
@@ -665,13 +749,12 @@ def _correctness_summary(
             requested_queries += count
             reached_queries += expected_reached
             unreachable_queries += expected_unreachable
-            failure_queries += sum(
-                _require_counter_integer(baseline, counter, baseline_label)
-                for counter in _ZERO_FAILURE_COUNTERS
-            )
-
             for generator in _GENERATORS:
                 for stage in _STAGES:
+                    # The selected row is the oracle itself; its accounting was
+                    # already validated above. Compare every other row to it.
+                    if generator == "sequential_cpu_astar" and stage == "end_to_end":
+                        continue
                     label = f"correctness/{generator}/{stage}/{case}/{count}"
                     row = medians[(generator, stage, case, count)]
                     reached = _require_counter_integer(row, "reached_queries", label)
@@ -711,7 +794,9 @@ def _correctness_summary(
         "requested_queries": requested_queries,
         "reached_queries": reached_queries,
         "unreachable_queries": unreachable_queries,
-        "failure_queries": failure_queries,
+        # _validate_query_accounting rejects any nonzero member of
+        # _ZERO_FAILURE_COUNTERS before this summary is constructed.
+        "failure_queries": 0,
     }
 
 

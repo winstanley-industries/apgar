@@ -32,11 +32,65 @@ inline constexpr std::uint64_t kBannedResourceAdjustment =
     std::numeric_limits<std::uint64_t>::max();
 inline constexpr std::uint32_t kCandidateFrontierChunkRounds = 32;
 inline constexpr std::uint32_t kCandidateSweepChunkRounds = 8;
+inline constexpr std::uint32_t kCandidateBatchFixedLaunches = 2;
+inline constexpr std::uint32_t kCandidateBatchMaximumFinalizationLaunches = 1;
 
 enum class PlanarGenerator : std::uint8_t {
   kBucketedFrontier,
   kHeadingAwareSweep,
 };
+
+enum class PlanarGeneratorWorkspace : std::uint8_t {
+  kFrontier,
+  kSweep,
+};
+
+// One exhaustive source of host-side execution, workspace, and telemetry
+// semantics for every supported generator. Callers must reject a missing
+// descriptor rather than treating an unknown enum value as one of the known
+// implementations.
+struct PlanarGeneratorDescriptor {
+  PlanarGenerator generator;
+  PlanarGeneratorWorkspace workspace;
+  std::uint32_t chunk_rounds;
+  std::uint8_t fixed_examined_work_per_round;
+  std::uint8_t examined_work_per_node_per_round;
+  std::uint8_t heading_turn_relaxations_per_examined_work;
+  std::uint8_t kernels_per_round_without_runs;
+  std::uint8_t kernels_per_round_with_runs;
+  bool launches_once_per_chunk;
+};
+
+[[nodiscard]] constexpr std::optional<PlanarGeneratorDescriptor> DescribePlanarGenerator(
+    PlanarGenerator generator) noexcept {
+  switch (generator) {
+    case PlanarGenerator::kBucketedFrontier:
+      return PlanarGeneratorDescriptor{
+          .generator = generator,
+          .workspace = PlanarGeneratorWorkspace::kFrontier,
+          .chunk_rounds = kCandidateFrontierChunkRounds,
+          .fixed_examined_work_per_round = 8,
+          .examined_work_per_node_per_round = 0,
+          .heading_turn_relaxations_per_examined_work = 0,
+          .kernels_per_round_without_runs = 0,
+          .kernels_per_round_with_runs = 0,
+          .launches_once_per_chunk = true,
+      };
+    case PlanarGenerator::kHeadingAwareSweep:
+      return PlanarGeneratorDescriptor{
+          .generator = generator,
+          .workspace = PlanarGeneratorWorkspace::kSweep,
+          .chunk_rounds = kCandidateSweepChunkRounds,
+          .fixed_examined_work_per_round = 0,
+          .examined_work_per_node_per_round = 8,
+          .heading_turn_relaxations_per_examined_work = 8,
+          .kernels_per_round_without_runs = 3,
+          .kernels_per_round_with_runs = 4,
+          .launches_once_per_chunk = false,
+      };
+  }
+  return std::nullopt;
+}
 
 enum class PlanarGpuFailureCode : std::uint8_t {
   kInvalidInput,
@@ -349,8 +403,8 @@ struct BackendCandidateBatchExecutionRequest {
 };
 
 // Deterministic logical upper bound for transient host payload owned while a
-// candidate batch is encoded, executed, read back, and partitioned into
-// query-local results. input_query_count includes retained preflight failures;
+// candidate batch is encoded, executed, and read into one final flat
+// query-major workspace. input_query_count includes retained preflight failures;
 // admitted_query_count includes only queries allocated execution/readback
 // workspaces. Container allocator overhead is deliberately excluded.
 [[nodiscard]] std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(
@@ -397,10 +451,8 @@ class PendingCandidateBatchExecution {
 
 struct UntrustedCandidateBatchQueryResult {
   DeviceCandidateBatchResultV1 header;
-  std::vector<std::uint64_t> labels;
-  std::vector<std::uint32_t> predecessors;
-  std::vector<std::uint64_t> state_owners;
-  std::vector<std::uint64_t> predecessor_owners;
+  std::uint64_t workspace_offset = 0;
+  std::uint64_t workspace_state_count = 0;
   CandidateQueryTelemetry telemetry;
 };
 
@@ -410,6 +462,13 @@ struct UntrustedCandidateBatchResult {
   PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
   CandidateBatchTelemetry telemetry;
   std::vector<UntrustedCandidateBatchQueryResult> queries;
+  // Final host ownership is flat and query-major. Query result offsets expose
+  // checked non-owning slices during synchronous validation; no query stores a
+  // second copy of these arrays.
+  std::vector<std::uint64_t> labels;
+  std::vector<std::uint32_t> predecessors;
+  std::vector<std::uint64_t> state_owners;
+  std::vector<std::uint64_t> predecessor_owners;
 };
 
 using BackendMetadataResult = std::variant<BackendMetadata, BackendError>;
@@ -519,6 +578,11 @@ class PreparedPlanarCompiledView {
   [[nodiscard]] const DeviceCompiledBoardV1& device_board() const noexcept { return device_board_; }
   [[nodiscard]] const BackendMetadata& metadata() const noexcept { return metadata_; }
   [[nodiscard]] const UploadedCompiledView& uploaded() const noexcept { return *uploaded_; }
+  [[nodiscard]] std::uint64_t prepared_node_lookup_host_bytes() const noexcept {
+    return static_cast<std::uint64_t>(node_lookup_.size()) * sizeof(std::uint32_t);
+  }
+  [[nodiscard]] std::optional<std::uint32_t> FindNodeIndex(
+      board_ir::LayerId layer, geometry_compiler::LatticeIndex index) const noexcept;
   [[nodiscard]] bool has_authenticated_cuda_producer() const noexcept {
     return authenticated_cuda_producer_;
   }
@@ -535,15 +599,17 @@ class PreparedPlanarCompiledView {
       const routing::CpuRouteRequest& request, const PlanarRoutePolicy& policy,
       PreparedPlanarCompiledView& prepared);
   PreparedPlanarCompiledView(IPlanarRouteBackend& backend, DeviceCompiledBoardV1 device_board,
-                             BackendMetadata metadata,
+                             std::vector<std::uint32_t> node_lookup, BackendMetadata metadata,
                              std::unique_ptr<UploadedCompiledView> uploaded)
       : backend_(&backend),
         device_board_(std::move(device_board)),
+        node_lookup_(std::move(node_lookup)),
         metadata_(std::move(metadata)),
         uploaded_(std::move(uploaded)) {}
 
   IPlanarRouteBackend* const backend_;
   const DeviceCompiledBoardV1 device_board_;
+  const std::vector<std::uint32_t> node_lookup_;
   const BackendMetadata metadata_;
   std::unique_ptr<UploadedCompiledView> uploaded_;
   bool authenticated_cuda_producer_ = false;
@@ -579,6 +645,9 @@ struct PlanarCandidateBatch {
   std::uint64_t device_view_fingerprint = 0;
   PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
   BackendMetadata backend;
+  // Persistent trusted-host payload for the prepared canonical node lookup.
+  // This is separate from backend-owned transient batch_host_bytes telemetry.
+  std::uint64_t prepared_node_lookup_host_bytes = 0;
   CandidateBatchTelemetry telemetry;
   std::vector<PlanarCandidateBatchItem> items;
 };

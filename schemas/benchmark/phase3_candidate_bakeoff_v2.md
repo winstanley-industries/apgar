@@ -12,11 +12,26 @@ compatible integer values.
 Required context records result/corpus/candidate/policy/batch schema versions,
 the exact commit as 40 lowercase hexadecimal characters,
 Board/compiler/routing/rule identities, policy identities and seeds,
-the three candidate-store admission-transaction caps,
+the candidate-store rejection-ingestion cap and three admission-transaction
+caps,
 host/CPU/GPU/driver/backend metadata, the operator-recorded NVIDIA KMD version
 from `nvidia-smi`, checksum-pinned LLVM/CUDA/GCC and Google Benchmark versions,
 warm-up/repetitions, and the supported device class. The result distinguishes
 the KMD version from CUDA's driver API compatibility value.
+
+The producer derives candidate-count and store-cap context values from its
+compiled C++ arrays/constants. The evidence validator independently pins the
+v2 values stated by this schema; it does not trust an artifact to choose its
+own matrix, resource bounds, or launch model. Thus these intentional
+cross-language checks are compatibility validation, not a second producer
+configuration. Canonical v2 uses requested counts `4,8,16,32,64,128`, a
+benchmark rejection-ingestion cap of `128`, and the Candidate Store v1 default
+admission caps of `1024` items, `67108864` input bytes, and `100000000` work
+units. It also records machine-checkable launch parameters: frontier/sweep
+chunks of `32`/`8` rounds, one frontier launch per chunk, three/four sweep
+kernels per round without/with compiled runs, two fixed batch launches, and at
+most one finalization launch. Human-readable launch-model strings are
+explanatory only.
 
 Rows compare sequential CPU A*, parallel host CPU A*, batched CUDA heuristic
 frontier, and batched CUDA sweep for requested ordered-policy prefixes of 4, 8,
@@ -33,9 +48,10 @@ Preparation/upload, batch execution/readback, exact validation/admission, and
 end-to-end time are separate measurements. Rows report latency and throughput,
 candidate queries/sec, generated routes/sec, accepted candidates/sec,
 query-local examined states and rounds, persistent/batch/peak owned VRAM once
-per batch, deterministic GPU-batch host bytes, CUDA-event milliseconds once per
-batch, exact kernel/finalization launches, exact blocking status readbacks,
-dispatched rounds, and the configured round chunk.
+per batch, persistent prepared node-lookup host bytes, deterministic transient
+GPU-batch host bytes, CUDA-event milliseconds once per batch, exact
+kernel/finalization launches, exact blocking status readbacks, dispatched
+rounds, and the configured round chunk.
 Rows also report reachability/failure, scalar cost, accepted/rejected counts,
 builder rejections, store rejections, total retained rejection records,
 peak deterministic owned host-payload bytes, process-lifetime peak RSS, unique
@@ -94,13 +110,16 @@ cross-generator work scores.
 
 CUDA frontier rows identify 32-round cooperative A* chunks; CUDA sweep rows
 identify 8-round departure/run-parallel chunks. The batch telemetry counters
-are authoritative for launch and synchronization counts. `rounds_maximum` is a
-query progress metric and must not be presented as a kernel-launch or blocking
-readback count.
+are authoritative evidence for launch and synchronization counts, while the
+validator independently checks `chunk_rounds` against these schema-pinned
+algorithm constants. A producer cannot redefine that contract by emitting a
+different numeric counter. `rounds_maximum` is a query progress metric and must
+not be presented as a kernel-launch or blocking readback count.
 CPU rows report zero for GPU-owned memory, CUDA timing, launches, readbacks,
-dispatch rounds, finalization, and chunk counters. GPU rows report prepared-view
-persistent bytes consistently, peak bytes as persistent plus batch bytes, and
-one blocking status readback per dispatched chunk. Frontier launches are the
+dispatch rounds, finalization, prepared node-lookup ownership, and chunk
+counters. GPU rows report prepared-view persistent device and node-lookup host
+bytes consistently, peak device bytes as persistent plus batch bytes, and one
+blocking status readback per dispatched chunk. Frontier launches are the
 two fixed initialization/predecessor launches plus one launch per chunk and an
 optional finalization launch. Sweep launches are the two fixed launches plus
 three kernels per dispatched round when the compiled board has no runs or four

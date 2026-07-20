@@ -112,6 +112,7 @@ void ExpectCpuDifferential(const BoardSnapshot& board, const CompiledBoard& comp
                            const PlanarCandidateBatch& batch) {
   ASSERT_EQ(batch.items.size(), queries.size());
   EXPECT_TRUE(std::ranges::is_sorted(batch.items, {}, &PlanarCandidateBatchItem::query_id));
+  EXPECT_GT(batch.prepared_node_lookup_host_bytes, 0U);
   EXPECT_GT(batch.telemetry.persistent_device_bytes, 0U);
   EXPECT_GT(batch.telemetry.batch_device_bytes, 0U);
   EXPECT_GT(batch.telemetry.batch_host_bytes, 0U);
@@ -157,6 +158,7 @@ void ExpectCpuDifferential(const BoardSnapshot& board, const CompiledBoard& comp
 }
 
 void ExpectRepeatableBatch(const PlanarCandidateBatch& first, const PlanarCandidateBatch& second) {
+  EXPECT_EQ(first.prepared_node_lookup_host_bytes, second.prepared_node_lookup_host_bytes);
   EXPECT_EQ(first.telemetry.persistent_device_bytes, second.telemetry.persistent_device_bytes);
   EXPECT_EQ(first.telemetry.batch_device_bytes, second.telemetry.batch_device_bytes);
   EXPECT_EQ(first.telemetry.peak_device_bytes, second.telemetry.peak_device_bytes);
@@ -240,28 +242,46 @@ class CorruptingBatchBackend final : public IPlanarRouteBackend {
       return result;
     }
     switch (fault_) {
-      case BatchReadbackFault::kStateOwner:
-        if (!batch.queries[1].state_owners.empty()) {
-          batch.queries[1].state_owners.front() = batch.queries.front().header.workspace_owner;
-        }
-        break;
-      case BatchReadbackFault::kPredecessorOwner:
-        if (!batch.queries[1].predecessor_owners.empty()) {
-          batch.queries[1].predecessor_owners.front() =
+      case BatchReadbackFault::kStateOwner: {
+        const std::uint64_t offset = batch.queries[1].workspace_offset;
+        if (offset < batch.state_owners.size()) {
+          batch.state_owners[static_cast<std::size_t>(offset)] =
               batch.queries.front().header.workspace_owner;
         }
         break;
-      case BatchReadbackFault::kPredecessorIndex: {
-        const std::uint32_t goal = batch.queries[1].header.goal_state;
-        if (goal < batch.queries[1].predecessors.size()) {
-          batch.queries[1].predecessors[goal] =
-              static_cast<std::uint32_t>(batch.queries[1].predecessors.size());
+      }
+      case BatchReadbackFault::kPredecessorOwner: {
+        const std::uint64_t offset = batch.queries[1].workspace_offset;
+        if (offset < batch.predecessor_owners.size()) {
+          batch.predecessor_owners[static_cast<std::size_t>(offset)] =
+              batch.queries.front().header.workspace_owner;
         }
         break;
       }
-      case BatchReadbackFault::kCrossQueryLabels:
-        batch.queries[1].labels = batch.queries.front().labels;
+      case BatchReadbackFault::kPredecessorIndex: {
+        const std::uint32_t goal = batch.queries[1].header.goal_state;
+        const std::uint64_t count = batch.queries[1].workspace_state_count;
+        const std::uint64_t offset = batch.queries[1].workspace_offset;
+        if (offset <= batch.predecessors.size() && goal < count &&
+            goal < batch.predecessors.size() - offset) {
+          batch.predecessors[static_cast<std::size_t>(offset + goal)] =
+              static_cast<std::uint32_t>(count);
+        }
         break;
+      }
+      case BatchReadbackFault::kCrossQueryLabels: {
+        const std::uint64_t count = batch.queries.front().workspace_state_count;
+        const std::uint64_t source = batch.queries.front().workspace_offset;
+        const std::uint64_t destination = batch.queries[1].workspace_offset;
+        if (batch.queries[1].workspace_state_count == count && source <= batch.labels.size() &&
+            count <= batch.labels.size() - source && destination <= batch.labels.size() &&
+            count <= batch.labels.size() - destination) {
+          std::ranges::copy_n(batch.labels.begin() + static_cast<std::ptrdiff_t>(source),
+                              static_cast<std::ptrdiff_t>(count),
+                              batch.labels.begin() + static_cast<std::ptrdiff_t>(destination));
+        }
+        break;
+      }
       case BatchReadbackFault::kExtraQuery: {
         UntrustedCandidateBatchQueryResult extra = batch.queries.back();
         extra.header.query_id = std::numeric_limits<std::uint64_t>::max();

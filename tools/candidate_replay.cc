@@ -1,4 +1,3 @@
-#include <charconv>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -6,16 +5,15 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <variant>
-#include <vector>
 
 #include "apgar/benchmark/planar_corpus.h"
 #include "apgar/board_ir/stable_hash.h"
 #include "apgar/candidates/route_candidate.h"
 #include "apgar/routing/candidate_policy.h"
 #include "apgar/routing/cpu_astar.h"
+#include "apgar/tooling/replay.h"
 #include "apgar/tooling/runfiles.h"
 
 namespace {
@@ -45,39 +43,8 @@ struct FaultyCandidate {
   apgar::candidates::GeneratedRouteCandidate generated;
 };
 
-template <typename Integer>
-[[nodiscard]] bool ParseUnsigned(std::string_view text, Integer* value) {
-  if (text.empty() || (text.size() > 1 && text.front() == '0')) {
-    return false;
-  }
-  const char* begin = text.data();
-  const char* end = text.data() + text.size();
-  const auto [next, error] = std::from_chars(begin, end, *value);
-  return error == std::errc{} && next == end;
-}
-
 [[nodiscard]] std::optional<ReplayArtifact> ParseArtifact(std::string_view contents,
                                                           std::string* error) {
-  if (contents.empty() || contents.back() != '\n') {
-    *error = "canonical replay must end every line with LF";
-    return std::nullopt;
-  }
-  const std::size_t checksum_start = contents.rfind("checksum_fnv1a64=");
-  if (checksum_start == std::string_view::npos || checksum_start == 0 ||
-      contents[checksum_start - 1] != '\n') {
-    *error = "missing final replay checksum";
-    return std::nullopt;
-  }
-  const std::string_view payload = contents.substr(0, checksum_start);
-  std::string_view checksum_text = contents.substr(checksum_start + 17);
-  checksum_text.remove_suffix(1);
-  std::uint64_t recorded_checksum = 0;
-  if (!ParseUnsigned(checksum_text, &recorded_checksum) ||
-      apgar::board_ir::StableHashString(payload) != recorded_checksum) {
-    *error = "replay payload checksum mismatch";
-    return std::nullopt;
-  }
-
   constexpr std::string_view kKeys[] = {
       "format=",
       "schema_version=",
@@ -113,30 +80,17 @@ template <typename Integer>
       "expected_failure=",
       "expected_invariant=",
   };
-  std::vector<std::string_view> values;
-  std::size_t offset = 0;
-  for (std::string_view key : kKeys) {
-    const std::size_t end = payload.find('\n', offset);
-    if (end == std::string_view::npos) {
-      *error = "replay payload is truncated";
-      return std::nullopt;
-    }
-    const std::string_view line = payload.substr(offset, end - offset);
-    if (!line.starts_with(key)) {
-      *error = "replay fields are missing or out of canonical order";
-      return std::nullopt;
-    }
-    values.push_back(line.substr(key.size()));
-    offset = end + 1;
-  }
-  if (offset != payload.size()) {
-    *error = "replay payload has unknown fields";
+  const std::optional<apgar::tooling::CanonicalReplayEnvelope> envelope =
+      apgar::tooling::ParseCanonicalReplayEnvelope(contents, kKeys, error);
+  if (!envelope.has_value()) {
     return std::nullopt;
   }
+  const auto& values = envelope->values;
   if (values[0] != "apgar_candidate_failure_replay" || values[1] != "1" || values[4] != "1" ||
       values[5] != "1" || values[6] != "1" || values[7] != "1" || values[8] != "0" ||
       values[9] != "1" || values[10] != "1" || values[11] != "1" || values[12] != "cpu_astar" ||
-      values[13] != "1" || values[14] != "cpu" || values[15] != "cpu-reference-v1" ||
+      values[13] != "1" || values[14] != "cpu" ||
+      values[15] != apgar::candidates::kCpuReferenceDeviceClassV1 ||
       values[16] != "resource_edge_count_increment" || values[30] != "resource_accounted" ||
       values[31] != "resource_mismatch" || values[32] != "candidate.resources.equivalence.v1") {
     *error =
@@ -149,19 +103,24 @@ template <typename Integer>
   artifact.fixture = std::string(values[2]);
   artifact.expected_stage = std::string(values[30]);
   artifact.expected_invariant = std::string(values[32]);
-  if (!ParseUnsigned(values[3], &artifact.fixture_checksum) ||
-      !ParseUnsigned(values[17], &artifact.layer) || !ParseUnsigned(values[18], &artifact.seed) ||
-      !ParseUnsigned(values[19], &artifact.candidate_ordinal) ||
-      !ParseUnsigned(values[20], &artifact.batch_identity) || artifact.batch_identity == 0 ||
-      !ParseUnsigned(values[21], &artifact.query_identity) || artifact.query_identity == 0 ||
-      !ParseUnsigned(values[22], &artifact.board_hash) ||
-      !ParseUnsigned(values[23], &artifact.profile_fingerprint) ||
-      !ParseUnsigned(values[24], &artifact.routing_profile_fingerprint) ||
-      !ParseUnsigned(values[25], &artifact.rule_bucket_identity) ||
-      !ParseUnsigned(values[26], &artifact.policy_identity) ||
-      !ParseUnsigned(values[27], &artifact.candidate_id.high) ||
-      !ParseUnsigned(values[28], &artifact.candidate_id.low) ||
-      !ParseUnsigned(values[29], &artifact.faulty_payload_checksum)) {
+  if (!apgar::tooling::ParseCanonicalUnsignedDecimal(values[3], &artifact.fixture_checksum) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[17], &artifact.layer) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[18], &artifact.seed) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[19], &artifact.candidate_ordinal) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[20], &artifact.batch_identity) ||
+      artifact.batch_identity == 0 ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[21], &artifact.query_identity) ||
+      artifact.query_identity == 0 ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[22], &artifact.board_hash) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[23], &artifact.profile_fingerprint) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[24],
+                                                     &artifact.routing_profile_fingerprint) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[25], &artifact.rule_bucket_identity) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[26], &artifact.policy_identity) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[27], &artifact.candidate_id.high) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[28], &artifact.candidate_id.low) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[29],
+                                                     &artifact.faulty_payload_checksum)) {
     *error = "replay contains an invalid integer field";
     return std::nullopt;
   }
@@ -256,7 +215,7 @@ template <typename Integer>
          << "generator=cpu_astar\n"
          << "generator_version=1\n"
          << "backend=cpu\n"
-         << "supported_device_class=cpu-reference-v1\n"
+         << "supported_device_class=" << apgar::candidates::kCpuReferenceDeviceClassV1 << '\n'
          << "fault=resource_edge_count_increment\n"
          << "layer=" << faulty.replay_case.request.start_layer << '\n'
          << "deterministic_seed=" << candidate.provenance.deterministic_seed << '\n'
@@ -336,7 +295,8 @@ int Replay(std::string_view artifact_path) {
       candidate.provenance.generator != apgar::candidates::CandidateGeneratorKind::kCpuAStar ||
       candidate.provenance.generator_version != 1 ||
       candidate.provenance.backend != apgar::candidates::CandidateBackendKind::kCpu ||
-      candidate.provenance.supported_device_class != "cpu-reference-v1" ||
+      candidate.provenance.supported_device_class !=
+          apgar::candidates::kCpuReferenceDeviceClassV1 ||
       candidate.associations.board_content_hash != artifact->board_hash ||
       candidate.associations.compiler_profile_fingerprint != artifact->profile_fingerprint ||
       candidate.associations.routing_profile_fingerprint != artifact->routing_profile_fingerprint ||

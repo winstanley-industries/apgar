@@ -11,9 +11,8 @@
 #include "src/candidates/route_candidate_internal.h"
 
 namespace apgar::candidates {
-namespace {
 
-[[nodiscard]] std::optional<CandidateGeneratorKind> CandidateGeneratorFor(
+std::optional<CandidateGeneratorKind> CandidateGeneratorForPlanarGenerator(
     gpu::PlanarGenerator generator) noexcept {
   switch (generator) {
     case gpu::PlanarGenerator::kBucketedFrontier:
@@ -24,17 +23,15 @@ namespace {
   return std::nullopt;
 }
 
-[[nodiscard]] std::optional<std::string> CudaDeviceClass(const gpu::BackendMetadata& metadata) {
+std::optional<std::string> CudaCandidateDeviceClass(const gpu::BackendMetadata& metadata) {
   if (metadata.backend != "cuda" || metadata.device_name.empty() || metadata.device_uuid.empty() ||
       metadata.compute_capability_major == 0 || metadata.runtime_version == 0 ||
       metadata.driver_version == 0 || metadata.global_memory_bytes == 0) {
     return std::nullopt;
   }
-  return "cuda-cc-" + std::to_string(metadata.compute_capability_major) + "." +
-         std::to_string(metadata.compute_capability_minor);
+  return std::string(kCudaDeviceClassPrefixV1) + std::to_string(metadata.compute_capability_major) +
+         "." + std::to_string(metadata.compute_capability_minor);
 }
-
-}  // namespace
 
 CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItem(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
@@ -42,22 +39,57 @@ CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItem(
     const routing::NormalizedCandidateGenerationPolicy& normalized_policy,
     const gpu::PlanarCandidateBatch& batch, const gpu::PlanarCandidateBatchItem& item) {
   const gpu::PlanarGpuRoute* route = std::get_if<gpu::PlanarGpuRoute>(&item.result());
+  const gpu::PlanarGenerator claimed_generator =
+      route == nullptr ? batch.generator : route->generator;
   const std::optional<CandidateGeneratorKind> candidate_generator =
-      CandidateGeneratorFor(route == nullptr ? batch.generator : route->generator);
+      CandidateGeneratorForPlanarGenerator(claimed_generator);
   const std::optional<std::string> device_class =
-      CudaDeviceClass(route == nullptr ? batch.backend : route->backend);
+      CudaCandidateDeviceClass(route == nullptr ? batch.backend : route->backend);
+  const CandidateAssociations context_associations = AssociationsFor(board, compiled_board);
+  const auto reject_without_bound_provenance = [&](std::string detail,
+                                                   std::optional<std::uint64_t> actual_value =
+                                                       std::nullopt) -> CandidateDraftBuildResult {
+    return CanonicalizeCandidateRejectionV1(CandidateRejection{
+        .candidate_id = std::nullopt,
+        .net = query.request.net,
+        .stage = CandidateLifecycleStage::kGenerated,
+        .code = CandidateRejectionCode::kInvalidInput,
+        .invariant_id = "candidate.builder.gpu_batch_envelope.v1",
+        .associations = context_associations,
+        .policy_identity = normalized_policy.identity,
+        // Version zero plus an otherwise zeroed record explicitly means that
+        // typed generator/backend provenance could not be represented.
+        .provenance = {},
+        .primitive_witness_index = std::nullopt,
+        .resource_witness_index = std::nullopt,
+        .expected_value = std::nullopt,
+        .actual_value = actual_value,
+        .conflicting_entity = std::nullopt,
+        .candidate_payload_checksum = std::nullopt,
+        .detail = std::move(detail),
+        .logical_bytes = 0,
+    });
+  };
+  if (!candidate_generator.has_value()) {
+    return reject_without_bound_provenance(
+        "GPU batch claims an unknown generator with no Candidate Provenance v1 mapping",
+        static_cast<std::uint8_t>(claimed_generator));
+  }
+  if (!device_class.has_value()) {
+    return reject_without_bound_provenance(
+        "GPU batch contains incomplete or non-CUDA device metadata");
+  }
   const CandidateProvenance provenance{
-      .generator = candidate_generator.value_or(CandidateGeneratorKind::kCudaFrontier),
+      .generator = *candidate_generator,
       .generator_version = 1,
       .backend = CandidateBackendKind::kCuda,
-      .supported_device_class = device_class.value_or("invalid-cuda-device-class"),
+      .supported_device_class = *device_class,
       .deterministic_seed = normalized_policy.policy.deterministic_seed,
       .batch_identity =
           item.has_validated_route_evidence() ? item.validated_batch_id() : batch.batch_id,
       .query_identity = item.query_id(),
       .candidate_ordinal = normalized_policy.policy.candidate_ordinal,
   };
-  const CandidateAssociations context_associations = AssociationsFor(board, compiled_board);
   const auto reject = [&](const CandidateAssociations& claimed_associations,
                           CandidateRejectionCode code, std::string invariant,
                           std::string detail) -> CandidateDraftBuildResult {
@@ -71,7 +103,7 @@ CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItem(
                   "Candidate policy exceeds the schema-v1 resource-entry bound");
   }
   if (batch.schema_version != gpu::kDeviceCandidateBatchSchemaVersion || batch.batch_id == 0 ||
-      query.query_id == 0 || !candidate_generator.has_value() || !device_class.has_value()) {
+      query.query_id == 0) {
     return reject(context_associations, CandidateRejectionCode::kInvalidInput,
                   "candidate.builder.gpu_batch_envelope.v1",
                   "Validated GPU batch schema, identity, generator, or CUDA device metadata is "

@@ -206,7 +206,8 @@ struct QueueGreater {
 }
 
 [[nodiscard]] std::uint64_t EstimatedTotal(std::uint64_t cost, std::uint64_t heuristic) noexcept {
-  return CheckedAdd(cost, heuristic).value_or(std::numeric_limits<std::uint64_t>::max());
+  return CheckedAddFiniteRouteCost(cost, heuristic)
+      .value_or(std::numeric_limits<std::uint64_t>::max());
 }
 
 [[nodiscard]] std::optional<RouteFailure> ValidateExactSegments(
@@ -390,19 +391,29 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                        "A* could not canonicalize a compiled physical edge", std::nullopt,
                        telemetry);
       }
-      if (PolicyBansResource(policy, *resource)) {
-        continue;
-      }
       const DirectionDelta delta = geometry_compiler::DeltaFor(direction);
-      const SearchState neighbor{
-          .x = current.state.x + delta.x,
-          .y = current.state.y + delta.y,
-          .incoming_direction = static_cast<std::uint8_t>(direction),
-      };
-      if (!compiled_board.ContainsNode(request.start_layer, neighbor.x, neighbor.y)) {
+      const __int128_t neighbor_x = static_cast<__int128_t>(current.state.x) + delta.x;
+      const __int128_t neighbor_y = static_cast<__int128_t>(current.state.y) + delta.y;
+      if (neighbor_x < std::numeric_limits<std::int64_t>::min() ||
+          neighbor_x > std::numeric_limits<std::int64_t>::max() ||
+          neighbor_y < std::numeric_limits<std::int64_t>::min() ||
+          neighbor_y > std::numeric_limits<std::int64_t>::max() ||
+          !compiled_board.ContainsNode(request.start_layer, static_cast<std::int64_t>(neighbor_x),
+                                       static_cast<std::int64_t>(neighbor_y))) {
         return Failure(RouteFailureCode::kInternalInvariant,
                        "Compiled legal edge points outside the represented sparse field",
                        std::nullopt, telemetry);
+      }
+      const SearchState neighbor{
+          .x = static_cast<std::int64_t>(neighbor_x),
+          .y = static_cast<std::int64_t>(neighbor_y),
+          .incoming_direction = static_cast<std::uint8_t>(direction),
+      };
+      // Policy is request-local guidance, never a way to suppress validation of
+      // the immutable CompiledBoard representation. Check the compiled-edge
+      // destination before a ban is allowed to skip relaxation.
+      if (PolicyBansResource(policy, *resource)) {
+        continue;
       }
       const std::optional<std::uint64_t> transition_cost = StepCostUnderPolicy(
           profile, direction, current.state.incoming_direction, policy, *resource);
@@ -411,7 +422,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                        "A normalized candidate policy produced an overflowing transition cost",
                        std::nullopt, telemetry);
       }
-      const std::optional<std::uint64_t> next_cost = CheckedAdd(current.cost, *transition_cost);
+      const std::optional<std::uint64_t> next_cost =
+          CheckedAddFiniteRouteCost(current.cost, *transition_cost);
       if (!next_cost.has_value()) {
         return Failure(RouteFailureCode::kResourceExhausted,
                        "Integer route cost overflowed the validated search envelope", std::nullopt,
@@ -512,7 +524,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                      "A normalized candidate policy overflowed during reconstruction", std::nullopt,
                      telemetry);
     }
-    const std::optional<std::uint64_t> next_cost = CheckedAdd(reconstructed_cost, *transition_cost);
+    const std::optional<std::uint64_t> next_cost =
+        CheckedAddFiniteRouteCost(reconstructed_cost, *transition_cost);
     if (!next_cost.has_value()) {
       return Failure(RouteFailureCode::kResourceExhausted,
                      "Reconstructed integer route cost overflowed", std::nullopt, telemetry);

@@ -93,8 +93,11 @@ using CpuRouteResult = std::variant<CpuRoute, RouteFailure>;
     const CpuRouteRequest& request);
 
 // True only when the exact associations, policy identity, scalar cost, and
-// segments still match evidence sealed by RouteWithCpuAStar. Publicly
-// fabricated or subsequently relabeled CpuRoute aggregates return false.
+// candidate-authoritative segment sequence still match evidence sealed by
+// RouteWithCpuAStar. `lattice_path` is a redundant reconstruction trace and
+// `telemetry` is diagnostic; neither is producer-authenticated or consumed by
+// candidate construction. Publicly fabricated aggregates or aggregates whose
+// authenticated fields were subsequently relabeled return false.
 [[nodiscard]] bool CpuRouteHasAuthenticatedAStarEvidence(const CpuRoute& route) noexcept;
 
 // Public for differential and corruption tests. Every returned route passes

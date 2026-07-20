@@ -3,11 +3,24 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <span>
 #include <utility>
 #include <variant>
 
 namespace apgar::gpu {
 namespace {
+
+template <typename T>
+[[nodiscard]] std::span<T> MutableWorkspaceSlice(
+    std::vector<T>& storage, const UntrustedCandidateBatchQueryResult& query) noexcept {
+  const std::uint64_t offset = query.workspace_offset;
+  const std::uint64_t count = query.workspace_state_count;
+  if (offset > storage.size() || count > static_cast<std::uint64_t>(storage.size()) - offset) {
+    return {};
+  }
+  return std::span<T>(storage).subspan(static_cast<std::size_t>(offset),
+                                       static_cast<std::size_t>(count));
+}
 
 class FaultInjectingPlanarRouteBackend final : public IPlanarRouteBackend {
  public:
@@ -90,18 +103,18 @@ class FaultInjectingCandidateBatchBackend final : public IPlanarRouteBackend {
       case UntrustedCandidateBatchResultFault::kNone:
         break;
       case UntrustedCandidateBatchResultFault::kWorkspaceBounds:
-        if (!query.labels.empty()) {
-          query.labels.pop_back();
+        query.workspace_state_count =
+            query.workspace_state_count == 0 ? 1 : query.workspace_state_count - 1;
+        break;
+      case UntrustedCandidateBatchResultFault::kWorkspaceOwner: {
+        std::span<std::uint64_t> owners = MutableWorkspaceSlice(result.state_owners, query);
+        if (!owners.empty()) {
+          owners.front() = query.header.workspace_owner == std::numeric_limits<std::uint64_t>::max()
+                               ? 0
+                               : query.header.workspace_owner + 1;
         }
         break;
-      case UntrustedCandidateBatchResultFault::kWorkspaceOwner:
-        if (!query.state_owners.empty()) {
-          query.state_owners.front() =
-              query.header.workspace_owner == std::numeric_limits<std::uint64_t>::max()
-                  ? 0
-                  : query.header.workspace_owner + 1;
-        }
-        break;
+      }
       case UntrustedCandidateBatchResultFault::kQueryTelemetry:
         query.header.rounds = query.telemetry.rounds == std::numeric_limits<std::uint32_t>::max()
                                   ? query.telemetry.rounds - 1
@@ -127,13 +140,15 @@ class FaultInjectingCandidateBatchBackend final : public IPlanarRouteBackend {
       case UntrustedCandidateBatchResultFault::kFalseDisconnected: {
         query.header.completion = KernelCompletion::kDisconnected;
         query.header.goal_state = kInvalidStateIndex;
-        std::ranges::fill(query.labels, kInfiniteRouteCost);
-        std::ranges::fill(query.predecessors, kInvalidStateIndex);
+        std::span<std::uint64_t> labels = MutableWorkspaceSlice(result.labels, query);
+        std::span<std::uint32_t> predecessors = MutableWorkspaceSlice(result.predecessors, query);
+        std::ranges::fill(labels, kInfiniteRouteCost);
+        std::ranges::fill(predecessors, kInvalidStateIndex);
         const std::uint64_t start_state =
             static_cast<std::uint64_t>(query.header.start_node) * kIncomingHeadingCount +
             kNoIncomingHeading;
-        if (start_state < query.labels.size()) {
-          query.labels[static_cast<std::size_t>(start_state)] = 0;
+        if (start_state < labels.size()) {
+          labels[static_cast<std::size_t>(start_state)] = 0;
         }
         break;
       }

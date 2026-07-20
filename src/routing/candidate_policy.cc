@@ -14,6 +14,13 @@ namespace {
 
 using UWide = __uint128_t;
 
+enum class AlternativeVariationMode : std::uint8_t {
+  kLengthBiased = 0,
+  kBendBiased = 1,
+  kPenalizeResource = 2,
+  kBanResource = 3,
+};
+
 [[nodiscard]] bool IsCanonicalDirection(geometry_compiler::Direction direction) noexcept {
   return direction == geometry_compiler::Direction::kEast ||
          direction == geometry_compiler::Direction::kNorthEast ||
@@ -309,10 +316,6 @@ CandidatePolicyBatchResult BuildDeterministicAlternativePolicies(
                    "Alternative schedule resources must be absent from the base policy");
     }
   }
-  if (schedule.candidate_count > 1 && schedule.alternative_resources.empty()) {
-    return Error(CandidatePolicyErrorCode::kInvalidAlternativeSchedule,
-                 "Alternative schedule resources must not normalize to an empty set");
-  }
   if (static_cast<std::uint64_t>(schedule.candidate_count - 1) >
       std::numeric_limits<std::uint32_t>::max() - normalized_base.policy.candidate_ordinal) {
     return Error(CandidatePolicyErrorCode::kInvalidAlternativeSchedule,
@@ -336,7 +339,7 @@ CandidatePolicyBatchResult BuildDeterministicAlternativePolicies(
     policy.candidate_ordinal += index;
     if (index != 0) {
       const std::uint64_t variation = static_cast<std::uint64_t>(index - 1);
-      const std::uint8_t mode = static_cast<std::uint8_t>(variation % 4U);
+      const AlternativeVariationMode mode = static_cast<AlternativeVariationMode>(variation % 4U);
       const std::uint64_t strength = variation / 4U + 1U;
       const EdgeResourceKey& resource =
           schedule.alternative_resources[(variation / 4U) % schedule.alternative_resources.size()];
@@ -352,7 +355,7 @@ CandidatePolicyBatchResult BuildDeterministicAlternativePolicies(
                      "Alternative policy strength overflows uint64");
       }
       switch (mode) {
-        case 0:
+        case AlternativeVariationMode::kLengthBiased:
           policy.objective = CandidateObjective::kLengthBiased;
           if (!CheckedAccumulate(*step_increment, &policy.orthogonal_step_surcharge) ||
               !CheckedAccumulate(*step_increment, &policy.diagonal_step_surcharge)) {
@@ -360,7 +363,7 @@ CandidatePolicyBatchResult BuildDeterministicAlternativePolicies(
                          "Alternative objective surcharge overflows uint64");
           }
           break;
-        case 1:
+        case AlternativeVariationMode::kBendBiased:
           policy.objective = CandidateObjective::kBendBiased;
           if (!CheckedAccumulate(*step_increment, &policy.orthogonal_step_surcharge) ||
               !CheckedAccumulate(*step_increment, &policy.diagonal_step_surcharge) ||
@@ -369,20 +372,17 @@ CandidatePolicyBatchResult BuildDeterministicAlternativePolicies(
                          "Alternative scalar surcharge overflows uint64");
           }
           break;
-        case 2:
+        case AlternativeVariationMode::kPenalizeResource:
           policy.objective = CandidateObjective::kResourceDiverse;
           policy.resource_penalties.push_back(ResourcePenalty{
               .resource = resource,
               .additional_cost = *penalty_increment,
           });
           break;
-        case 3:
+        case AlternativeVariationMode::kBanResource:
           policy.objective = CandidateObjective::kResourceDiverse;
           policy.banned_resources.push_back(resource);
           break;
-        default:
-          return Error(CandidatePolicyErrorCode::kInvalidAlternativeSchedule,
-                       "Alternative policy mode is outside the version-1 cycle");
       }
     }
 
@@ -426,7 +426,8 @@ std::optional<std::uint64_t> StepCostUnderPolicy(const geometry_compiler::Compil
                          normalized_policy.diagonal_step_surcharge
                    : static_cast<UWide>(profile.costs.orthogonal_step) +
                          normalized_policy.orthogonal_step_surcharge;
-  if (incoming_direction != 8 && incoming_direction != static_cast<std::uint8_t>(direction)) {
+  if (incoming_direction != kNoIncomingDirection &&
+      incoming_direction != static_cast<std::uint8_t>(direction)) {
     cost += static_cast<UWide>(profile.costs.bend) + normalized_policy.bend_surcharge;
   }
   cost += PolicyPenaltyForResource(normalized_policy, resource);

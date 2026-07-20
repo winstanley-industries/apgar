@@ -60,6 +60,18 @@ using test_support::ReadFixture;
 using test_support::Snapshot;
 using test_support::TwoTerminalRequest;
 
+TEST(RouteCostArithmeticTest, ReservesUint64MaxAsUnreachableSentinel) {
+  constexpr std::uint64_t kMaximum = std::numeric_limits<std::uint64_t>::max();
+  ASSERT_TRUE(CheckedAddFiniteRouteCost(kMaximum - 1U, 0).has_value());
+  EXPECT_EQ(*CheckedAddFiniteRouteCost(kMaximum - 1U, 0), kMaximum - 1U);
+  EXPECT_FALSE(CheckedAddFiniteRouteCost(kMaximum - 1U, 1).has_value());
+  EXPECT_FALSE(CheckedAddFiniteRouteCost(0, kMaximum).has_value());
+
+  // Generic byte/count accounting still permits the full uint64 domain.
+  ASSERT_TRUE(CheckedAdd(kMaximum - 1U, 1).has_value());
+  EXPECT_EQ(*CheckedAdd(kMaximum - 1U, 1), kMaximum);
+}
+
 struct HorizontalPolicyCase {
   BoardSnapshot board;
   CompiledBoard compiled;
@@ -467,6 +479,40 @@ TEST(CpuAStarPolicyTest, AOnlyCorridorBanIsDisconnected) {
 
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(result));
   EXPECT_EQ(std::get<RouteFailure>(result).code, RouteFailureCode::kDisconnected);
+}
+
+TEST(CpuAStarPolicyTest, PolicyBanCannotMaskADanglingCompiledEdge) {
+  HorizontalPolicyCase test_case = MakeHorizontalPolicyCase(false);
+  const PlanarEndpointResult endpoints =
+      ResolvePlanarEndpoints(test_case.compiled, test_case.request);
+  ASSERT_TRUE(std::holds_alternative<ResolvedPlanarEndpoints>(endpoints));
+  const geometry_compiler::LatticeIndex start = std::get<ResolvedPlanarEndpoints>(endpoints).start;
+  const geometry_compiler::Direction outward =
+      start.x == 0 ? geometry_compiler::Direction::kWest : geometry_compiler::Direction::kEast;
+  ASSERT_TRUE(geometry_compiler::CompiledBoardTestPeer::AddLegalEdge(
+      test_case.compiled, test_case.request.start_layer, start.x, start.y, outward));
+  const std::optional<EdgeResourceKey> dangling =
+      CanonicalPhysicalEdgeResource(test_case.request.start_layer, start, outward);
+  ASSERT_TRUE(dangling.has_value());
+  ASSERT_FALSE(ResourceExists(test_case.compiled, *dangling));
+
+  // A request cannot name the dangling edge as a ban: normalization requires
+  // both directed halves of every physical resource to exist.
+  CpuRouteRequest direct_ban = test_case.request;
+  direct_ban.candidate_policy.banned_resources = {*dangling};
+  const CpuRouteResult invalid_policy =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, direct_ban);
+  ASSERT_TRUE(std::holds_alternative<RouteFailure>(invalid_policy));
+  EXPECT_EQ(std::get<RouteFailure>(invalid_policy).code, RouteFailureCode::kInvalidRequest);
+
+  // Even a valid, unrelated policy ban cannot make search skip the independent
+  // destination-containment invariant on the corrupted legal edge.
+  CpuRouteRequest unrelated_ban = test_case.request;
+  unrelated_ban.candidate_policy.banned_resources = {test_case.middle_resource};
+  const CpuRouteResult corrupted =
+      RouteWithCpuAStar(test_case.board, test_case.compiled, unrelated_ban);
+  ASSERT_TRUE(std::holds_alternative<RouteFailure>(corrupted));
+  EXPECT_EQ(std::get<RouteFailure>(corrupted).code, RouteFailureCode::kInternalInvariant);
 }
 
 TEST(CpuAStarPolicyTest, RejectsInvalidOverflowingAndUnsupportedPoliciesBeforeSearch) {

@@ -1,10 +1,20 @@
 #ifndef APGAR_CANDIDATES_GPU_CANDIDATE_ADAPTER_H_
 #define APGAR_CANDIDATES_GPU_CANDIDATE_ADAPTER_H_
 
+#include <optional>
+#include <string>
+
 #include "apgar/candidates/route_candidate.h"
 #include "apgar/gpu/planar_router.h"
 
 namespace apgar::candidates {
+
+// Canonical mappings shared by provenance construction and diagnostics. An
+// unknown generator or incomplete/non-CUDA descriptor has no v1 mapping.
+[[nodiscard]] std::optional<CandidateGeneratorKind> CandidateGeneratorForPlanarGenerator(
+    gpu::PlanarGenerator generator) noexcept;
+[[nodiscard]] std::optional<std::string> CudaCandidateDeviceClass(
+    const gpu::BackendMetadata& metadata);
 
 // GPU evidence must remain inside its validated batch/result envelope. A
 // successful item is an opaque capability sealed only by the host validator;

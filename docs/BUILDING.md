@@ -16,7 +16,12 @@ Bazel downloads and selects the LLVM and CPython versions declared in
 linker inputs, and sanitizer runtimes instead of searching the host system.
 
 Developer-specific Bazel settings may be placed in the ignored
-`.bazelrc.user`, which is imported after the repository defaults.
+`.bazelrc.user`, which is imported after the ordinary repository defaults.
+The publication-only `benchmark` configuration is declared after that import,
+so its checked-in optimization, stamping, and workspace-status settings retain
+precedence. Explicit command-line options remain later Bazel inputs and define
+a different, noncanonical publication invocation when they override those
+settings.
 
 Install Bazelisk as `bazel` on `PATH`, as the standard Bazelisk packages do.
 Bazelisk delegates to `tools/bazel`; APGAR's wrapper adds repository commands
@@ -137,7 +142,7 @@ source commit and ask Google Benchmark to write its JSON report:
 
 ```sh
 bazel run --config=cuda --config=benchmark //:planar_benchmark -- \
-  --apgar_commit=EXACT_COMMIT \
+  --apgar_commit=EXACT_40_CHARACTER_COMMIT \
   --benchmark_out=/tmp/apgar-planar-bakeoff.json \
   --benchmark_out_format=json
 ```
@@ -171,9 +176,10 @@ not a compiler or CUDA toolchain input. It runs only under `--config=benchmark`.
 The benchmark continues to compile and link with the checksum-pinned Bazel C++,
 CUDA, CUDA-host, and Google Benchmark dependencies described below.
 
-The checked-in `.bazelrc` imports `.bazelrc.user` before defining the benchmark
-configuration, so a user file cannot replace the checked-in workspace-status
-command. The status probe resolves the repository that owns the script,
+The checked-in `.bazelrc` imports `.bazelrc.user` after ordinary developer
+defaults but before defining the benchmark configuration. Developer settings
+therefore retain their normal precedence while a user file cannot replace the
+checked-in benchmark workspace-status command. The status probe resolves the repository that owns the script,
 neutralizes inherited Git work-tree/index/config redirection, disables file
 system monitors and the untracked cache, and treats `assume-unchanged` or
 `skip-worktree` index entries as dirty. The published context identifies this

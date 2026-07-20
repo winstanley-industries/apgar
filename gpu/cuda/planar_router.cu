@@ -236,8 +236,10 @@ __device__ std::uint32_t DeviceStateIndex(std::uint32_t node_index, std::uint8_t
   return node_index * kIncomingHeadingCount + incoming_heading;
 }
 
-__device__ bool DeviceCheckedAdd(std::uint64_t left, std::uint64_t right, std::uint64_t* result) {
-  if (left == kInfiniteRouteCost || right > kInfiniteRouteCost - left) {
+__device__ bool DeviceCheckedAddFiniteRouteCost(std::uint64_t left, std::uint64_t right,
+                                                std::uint64_t* result) {
+  constexpr std::uint64_t kMaximumFiniteRouteCost = kInfiniteRouteCost - 1U;
+  if (left > kMaximumFiniteRouteCost || right > kMaximumFiniteRouteCost - left) {
     return false;
   }
   *result = left + right;
@@ -297,7 +299,8 @@ __global__ void FrontierRelax(const DeviceNodeV1* nodes, DeviceCompiledHeaderV1 
     const std::uint32_t neighbor = node.neighbors[direction];
     const std::uint32_t target_state = DeviceStateIndex(neighbor, direction);
     std::uint64_t candidate = 0;
-    if (!DeviceCheckedAdd(label, DeviceStepCost(header, direction, incoming), &candidate)) {
+    if (!DeviceCheckedAddFiniteRouteCost(label, DeviceStepCost(header, direction, incoming),
+                                         &candidate)) {
       continue;
     }
     const unsigned long long previous =
@@ -335,7 +338,7 @@ __global__ void ComputeDepartureLabels(DeviceCompiledHeaderV1 header, std::uint3
     }
     std::uint64_t candidate = 0;
     const std::uint64_t turn_cost = incoming == direction ? 0 : header.costs.bend;
-    if (DeviceCheckedAdd(label, turn_cost, &candidate) && candidate < best) {
+    if (DeviceCheckedAddFiniteRouteCost(label, turn_cost, &candidate) && candidate < best) {
       best = candidate;
       used_turn = incoming != direction;
     }
@@ -366,7 +369,7 @@ __global__ void SweepRuns(const DeviceRunV1* runs, std::uint64_t run_count,
     const std::uint32_t target = run_nodes[run.node_offset + position + 1];
     carry = min(carry, departure_labels[static_cast<std::uint64_t>(source) * 8 + direction]);
     std::uint64_t candidate = 0;
-    if (DeviceCheckedAdd(carry, step_cost, &candidate)) {
+    if (DeviceCheckedAddFiniteRouteCost(carry, step_cost, &candidate)) {
       const std::uint32_t target_state = DeviceStateIndex(target, direction);
       const unsigned long long previous =
           atomicMin(reinterpret_cast<unsigned long long*>(&labels[target_state]),
@@ -418,8 +421,8 @@ __global__ void SelectStablePredecessors(const DeviceNodeV1* nodes, DeviceCompil
     const std::uint32_t predecessor_state = DeviceStateIndex(predecessor_node, predecessor_heading);
     const std::uint64_t predecessor_label = labels[predecessor_state];
     std::uint64_t candidate = 0;
-    if (DeviceCheckedAdd(predecessor_label, DeviceStepCost(header, incoming, predecessor_heading),
-                         &candidate) &&
+    if (DeviceCheckedAddFiniteRouteCost(
+            predecessor_label, DeviceStepCost(header, incoming, predecessor_heading), &candidate) &&
         candidate == labels[state] && predecessor_state < best) {
       best = predecessor_state;
     }
@@ -479,11 +482,11 @@ __device__ bool DeviceBatchTransitionCost(const DeviceNodeV1* nodes,
                 query.orthogonal_step_surcharge;
   if (incoming_heading != kNoIncomingHeading && incoming_heading != direction) {
     const std::uint64_t bend = static_cast<std::uint64_t>(header.costs.bend) + query.bend_surcharge;
-    if (!DeviceCheckedAdd(value, bend, &value)) {
+    if (!DeviceCheckedAddFiniteRouteCost(value, bend, &value)) {
       return false;
     }
   }
-  return DeviceCheckedAdd(value, adjustment, cost);
+  return DeviceCheckedAddFiniteRouteCost(value, adjustment, cost);
 }
 
 __device__ std::uint64_t DeviceCoordinateDistance(std::int64_t left, std::int64_t right) {
@@ -656,7 +659,7 @@ __global__ void CandidateFrontierChunk(const DeviceNodeV1* nodes, DeviceCompiled
         continue;
       }
       std::uint64_t f = 0;
-      if (!DeviceCheckedAdd(
+      if (!DeviceCheckedAddFiniteRouteCost(
               g,
               DeviceAdmissibleHeuristic(nodes, header, query,
                                         static_cast<std::uint32_t>(state / kIncomingHeadingCount)),
@@ -722,7 +725,7 @@ __global__ void CandidateFrontierChunk(const DeviceNodeV1* nodes, DeviceCompiled
                 continue;
               }
               std::uint64_t candidate = 0;
-              if (!DeviceCheckedAdd(winner_g[0], transition, &candidate)) {
+              if (!DeviceCheckedAddFiniteRouteCost(winner_g[0], transition, &candidate)) {
                 continue;
               }
               const std::uint32_t target_state =
@@ -760,7 +763,7 @@ __device__ std::uint64_t DeviceSweepDeparture(const DeviceCompiledHeaderV1& head
     if (incoming != direction) {
       const std::uint64_t bend =
           static_cast<std::uint64_t>(header.costs.bend) + query.bend_surcharge;
-      if (!DeviceCheckedAdd(candidate, bend, &candidate)) {
+      if (!DeviceCheckedAddFiniteRouteCost(candidate, bend, &candidate)) {
         continue;
       }
     }
@@ -849,7 +852,7 @@ __global__ void SweepCandidateRuns(const DeviceNodeV1* nodes, const DeviceRunV1*
     // Departure already accounts for any heading change, so the generic
     // helper receives the outgoing direction as its incoming heading.
     std::uint64_t candidate = 0;
-    if (DeviceCheckedAdd(carry, transition, &candidate)) {
+    if (DeviceCheckedAddFiniteRouteCost(carry, transition, &candidate)) {
       const std::uint32_t target_state = DeviceStateIndex(target, direction);
       const std::uint64_t target_slot = query.workspace_offset + target_state;
       if (DeviceClaimCandidateState(state_owners, target_slot, query.workspace_owner, &result)) {
@@ -970,7 +973,7 @@ __global__ void SelectCandidateBatchPredecessors(
       continue;
     }
     std::uint64_t candidate = 0;
-    if (DeviceCheckedAdd(labels[predecessor_slot], transition, &candidate) &&
+    if (DeviceCheckedAddFiniteRouteCost(labels[predecessor_slot], transition, &candidate) &&
         candidate == labels[slot] && predecessor_state < best) {
       best = predecessor_state;
     }
@@ -1037,9 +1040,10 @@ template <typename T>
       static_cast<__uint128_t>(std::max(header.costs.orthogonal_step, header.costs.diagonal_step)) +
       header.costs.bend;
   if (maximum_transition_cost * header.represented_nodes *
-          geometry_compiler::kStableDirectionOrder.size() >
-      std::numeric_limits<std::uint64_t>::max()) {
-    return InvalidDeviceView("CUDA upload rejected costs that exceed the simple-state path bound");
+          geometry_compiler::kStableDirectionOrder.size() >=
+      kInfiniteRouteCost) {
+    return InvalidDeviceView(
+        "CUDA upload rejected costs that exceed or collide with the finite route-cost bound");
   }
 
   if (board.layers.empty()) {
@@ -1486,13 +1490,13 @@ struct CandidateBatchAllocation {
 [[nodiscard]] std::variant<CandidateBatchAllocation, BackendError> ValidateCandidateBatchExecution(
     const CudaUploadedCompiledView& uploaded,
     const BackendCandidateBatchExecutionRequest& request) {
+  const std::optional<PlanarGeneratorDescriptor> descriptor =
+      DescribePlanarGenerator(request.generator);
   if (request.schema_version != kDeviceCandidateBatchSchemaVersion || request.batch_id == 0 ||
       request.queries.empty() ||
       request.queries.size() > std::numeric_limits<std::uint32_t>::max() ||
       request.policy_edges.size() > routing::kMaximumPolicyResourceEntries ||
-      request.maximum_rounds == 0 ||
-      (request.generator != PlanarGenerator::kBucketedFrontier &&
-       request.generator != PlanarGenerator::kHeadingAwareSweep)) {
+      request.maximum_rounds == 0 || !descriptor.has_value()) {
     return BackendError{.code = BackendErrorCode::kInternalInvariant,
                         .detail =
                             "CUDA candidate batch has invalid schema, identity, aggregate policy "
@@ -1505,7 +1509,7 @@ struct CandidateBatchAllocation {
                             "CUDA candidate batch exceeds the per-query workspace-state "
                             "capacity"};
   }
-  if (request.generator == PlanarGenerator::kBucketedFrontier &&
+  if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier &&
       request.maximum_frontier_states_per_query < state_count) {
     return BackendError{.code = BackendErrorCode::kResourceExhausted,
                         .detail =
@@ -1527,7 +1531,7 @@ struct CandidateBatchAllocation {
   const __uint128_t maximum_launch_items =
       static_cast<__uint128_t>(std::numeric_limits<std::uint32_t>::max()) * kThreadsPerBlock;
   __uint128_t sweep_departures_wide = 0;
-  if (request.generator == PlanarGenerator::kHeadingAwareSweep) {
+  if (descriptor->workspace == PlanarGeneratorWorkspace::kSweep) {
     sweep_departures_wide =
         static_cast<__uint128_t>(uploaded.header.represented_nodes) * 8U * request.queries.size();
     const __uint128_t sweep_runs_wide =
@@ -1567,7 +1571,7 @@ struct CandidateBatchAllocation {
         query.workspace_offset != query_index * state_count ||
         query.workspace_state_count != state_count ||
         query.frontier_state_capacity !=
-            (request.generator == PlanarGenerator::kBucketedFrontier ? state_count : 0) ||
+            (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier ? state_count : 0) ||
         query.policy_offset != expected_policy_offset ||
         policy_end > std::numeric_limits<std::uint32_t>::max() ||
         policy_end > request.policy_edges.size() ||
@@ -1630,7 +1634,7 @@ struct CandidateBatchAllocation {
       static_cast<__uint128_t>(request.policy_edges.size()) * sizeof(DeviceCandidatePolicyEdgeV1);
   bytes += total_states_wide *
            (sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t));
-  if (request.generator == PlanarGenerator::kBucketedFrontier) {
+  if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
     bytes += total_states_wide * sizeof(std::uint8_t);
   } else {
     bytes += sweep_departures_wide * sizeof(std::uint64_t);
@@ -1823,8 +1827,9 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
           .detail = "CUDA execute requires distinct start and goal nodes",
       };
     }
-    if (request.generator != PlanarGenerator::kBucketedFrontier &&
-        request.generator != PlanarGenerator::kHeadingAwareSweep) {
+    const std::optional<PlanarGeneratorDescriptor> descriptor =
+        DescribePlanarGenerator(request.generator);
+    if (!descriptor.has_value()) {
       return BackendError{.code = BackendErrorCode::kInternalInvariant,
                           .detail = "CUDA execute received an unknown generator"};
     }
@@ -1837,7 +1842,7 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
                                            state_count * sizeof(std::uint64_t) +
                                            state_count * sizeof(std::uint32_t);
     const std::uint64_t algorithm_bytes =
-        request.generator == PlanarGenerator::kBucketedFrontier
+        descriptor->workspace == PlanarGeneratorWorkspace::kFrontier
             ? state_count * 2 * sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t)
             : uploaded->header.represented_nodes * 8 * sizeof(std::uint64_t) +
                   2 * sizeof(std::uint64_t);
@@ -1946,6 +1951,15 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
       }
       const CandidateBatchAllocation allocation = std::get<CandidateBatchAllocation>(validated);
       const std::uint32_t query_count = static_cast<std::uint32_t>(request.queries.size());
+      const std::optional<PlanarGeneratorDescriptor> descriptor =
+          DescribePlanarGenerator(request.generator);
+      if (!descriptor.has_value()) {
+        return BackendError{
+            .code = BackendErrorCode::kInternalInvariant,
+            .detail =
+                "CUDA candidate batch generator descriptor disappeared after validated "
+                "execution admission"};
+      }
 
       auto execution = std::make_unique<CudaPendingCandidateBatchExecution>();
       execution->device = uploaded->device;
@@ -1955,9 +1969,7 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
       execution->persistent_bytes = uploaded->header.estimated_persistent_device_bytes;
       execution->batch_bytes = allocation.batch_bytes;
       execution->batch_host_bytes = allocation.batch_host_bytes;
-      execution->chunk_rounds = request.generator == PlanarGenerator::kBucketedFrontier
-                                    ? kCandidateFrontierChunkRounds
-                                    : kCandidateSweepChunkRounds;
+      execution->chunk_rounds = descriptor->chunk_rounds;
       execution->queries = request.queries;
       if (std::optional<BackendError> error = AllocateAndUpload(
               execution->device_queries, request.queries.data(), request.queries.size(),
@@ -2006,7 +2018,7 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
       DeviceBuffer<std::uint8_t> closed;
       DeviceBuffer<std::uint64_t> sweep_departures;
       DeviceBuffer<std::uint32_t> sweep_changed;
-      if (request.generator == PlanarGenerator::kBucketedFrontier) {
+      if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
         if (std::optional<BackendError> error =
                 closed.Allocate(allocation.total_states, "cudaMalloc(candidate frontier closed)");
             error.has_value()) {
@@ -2074,12 +2086,10 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
         if (request.cancellation != nullptr && request.cancellation->load()) {
           break;
         }
-        const std::uint32_t maximum_chunk_rounds =
-            request.generator == PlanarGenerator::kBucketedFrontier ? kCandidateFrontierChunkRounds
-                                                                    : kCandidateSweepChunkRounds;
+        const std::uint32_t maximum_chunk_rounds = descriptor->chunk_rounds;
         const std::uint32_t chunk_rounds =
             std::min(maximum_chunk_rounds, request.maximum_rounds - dispatched_rounds);
-        if (request.generator == PlanarGenerator::kBucketedFrontier) {
+        if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
           CandidateFrontierChunk<<<query_count, kThreadsPerBlock>>>(
               uploaded->nodes.get(), uploaded->header, execution->device_queries.get(),
               execution->policy_edges.get(), query_count, chunk_rounds, execution->labels.get(),
@@ -2221,36 +2231,11 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
         return std::move(*error);
       }
       std::vector<DeviceCandidateBatchResultV1> headers(execution->queries.size());
-      std::vector<std::uint64_t> labels(execution->labels.count());
-      std::vector<std::uint32_t> predecessors(execution->predecessors.count());
-      std::vector<std::uint64_t> state_owners(execution->state_owners.count());
-      std::vector<std::uint64_t> predecessor_owners(execution->predecessor_owners.count());
       cudaError_t status = cudaMemcpy(headers.data(), execution->results.get(),
                                       execution->results.bytes(), cudaMemcpyDeviceToHost);
       if (status != cudaSuccess) {
         return CudaError("cudaMemcpy(candidate batch results)", status);
       }
-      status = cudaMemcpy(labels.data(), execution->labels.get(), execution->labels.bytes(),
-                          cudaMemcpyDeviceToHost);
-      if (status != cudaSuccess) {
-        return CudaError("cudaMemcpy(candidate batch labels)", status);
-      }
-      status = cudaMemcpy(predecessors.data(), execution->predecessors.get(),
-                          execution->predecessors.bytes(), cudaMemcpyDeviceToHost);
-      if (status != cudaSuccess) {
-        return CudaError("cudaMemcpy(candidate batch predecessors)", status);
-      }
-      status = cudaMemcpy(state_owners.data(), execution->state_owners.get(),
-                          execution->state_owners.bytes(), cudaMemcpyDeviceToHost);
-      if (status != cudaSuccess) {
-        return CudaError("cudaMemcpy(candidate batch state owners)", status);
-      }
-      status = cudaMemcpy(predecessor_owners.data(), execution->predecessor_owners.get(),
-                          execution->predecessor_owners.bytes(), cudaMemcpyDeviceToHost);
-      if (status != cudaSuccess) {
-        return CudaError("cudaMemcpy(candidate batch predecessor owners)", status);
-      }
-
       UntrustedCandidateBatchResult readback{
           .schema_version = kDeviceCandidateBatchSchemaVersion,
           .batch_id = execution->batch_id,
@@ -2268,21 +2253,43 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
                   .chunk_rounds = execution->chunk_rounds,
                   .kernel_milliseconds = execution->kernel_milliseconds,
               },
+          .queries = {},
+          .labels = std::vector<std::uint64_t>(execution->labels.count()),
+          .predecessors = std::vector<std::uint32_t>(execution->predecessors.count()),
+          .state_owners = std::vector<std::uint64_t>(execution->state_owners.count()),
+          .predecessor_owners = std::vector<std::uint64_t>(execution->predecessor_owners.count()),
       };
+      status = cudaMemcpy(readback.labels.data(), execution->labels.get(),
+                          execution->labels.bytes(), cudaMemcpyDeviceToHost);
+      if (status != cudaSuccess) {
+        return CudaError("cudaMemcpy(candidate batch labels)", status);
+      }
+      status = cudaMemcpy(readback.predecessors.data(), execution->predecessors.get(),
+                          execution->predecessors.bytes(), cudaMemcpyDeviceToHost);
+      if (status != cudaSuccess) {
+        return CudaError("cudaMemcpy(candidate batch predecessors)", status);
+      }
+      status = cudaMemcpy(readback.state_owners.data(), execution->state_owners.get(),
+                          execution->state_owners.bytes(), cudaMemcpyDeviceToHost);
+      if (status != cudaSuccess) {
+        return CudaError("cudaMemcpy(candidate batch state owners)", status);
+      }
+      status = cudaMemcpy(readback.predecessor_owners.data(), execution->predecessor_owners.get(),
+                          execution->predecessor_owners.bytes(), cudaMemcpyDeviceToHost);
+      if (status != cudaSuccess) {
+        return CudaError("cudaMemcpy(candidate batch predecessor owners)", status);
+      }
+
       readback.queries.reserve(execution->queries.size());
+      // Query envelopes expose checked non-owning slices over the four final
+      // bulk readback buffers. This keeps four D2H workspace transfers for the
+      // whole batch and performs no host-to-host partition copies.
       for (std::size_t query_index = 0; query_index < execution->queries.size(); ++query_index) {
         const DeviceCandidateBatchQueryV1& query = execution->queries[query_index];
-        const std::size_t first = static_cast<std::size_t>(query.workspace_offset);
-        const std::size_t last = first + static_cast<std::size_t>(execution->state_count);
         UntrustedCandidateBatchQueryResult result{
             .header = headers[query_index],
-            .labels = std::vector<std::uint64_t>(labels.begin() + first, labels.begin() + last),
-            .predecessors = std::vector<std::uint32_t>(predecessors.begin() + first,
-                                                       predecessors.begin() + last),
-            .state_owners = std::vector<std::uint64_t>(state_owners.begin() + first,
-                                                       state_owners.begin() + last),
-            .predecessor_owners = std::vector<std::uint64_t>(predecessor_owners.begin() + first,
-                                                             predecessor_owners.begin() + last),
+            .workspace_offset = query.workspace_offset,
+            .workspace_state_count = query.workspace_state_count,
             .telemetry =
                 CandidateQueryTelemetry{
                     .examined_work = headers[query_index].examined_work,

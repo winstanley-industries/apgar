@@ -776,6 +776,33 @@ TEST(RouteCandidateTest, CpuBuilderDerivesCpuOnlyProvenanceFromTypedEvidence) {
   EXPECT_TRUE(stale_rejection.candidate_payload_checksum.has_value());
 }
 
+TEST(RouteCandidateTest, CpuEvidenceAuthenticatesSegmentsNotRedundantDiagnostics) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
+  const routing::CpuRoute route = test_support::CpuRouteForCandidate(board, compiled, request);
+
+  routing::CpuRoute diagnostic_rewrite = route;
+  diagnostic_rewrite.lattice_path.clear();
+  ++diagnostic_rewrite.telemetry.queue_pops;
+  EXPECT_TRUE(routing::CpuRouteHasAuthenticatedAStarEvidence(diagnostic_rewrite));
+  EXPECT_TRUE(std::holds_alternative<GeneratedRouteCandidate>(BuildGeneratedCandidateFromCpuRoute(
+      board, compiled, request, policy, diagnostic_rewrite,
+      CandidateSchedulingIdentity{.batch_identity = 101, .query_identity = 103})));
+
+  routing::CpuRoute semantic_rewrite = route;
+  ASSERT_FALSE(semantic_rewrite.segments.empty());
+  ++semantic_rewrite.segments.front().centerline.end.x;
+  EXPECT_FALSE(routing::CpuRouteHasAuthenticatedAStarEvidence(semantic_rewrite));
+  const CandidateDraftBuildResult rejected = BuildGeneratedCandidateFromCpuRoute(
+      board, compiled, request, policy, semantic_rewrite,
+      CandidateSchedulingIdentity{.batch_identity = 101, .query_identity = 103});
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(rejected));
+  EXPECT_EQ(std::get<CandidateRejection>(rejected).invariant_id,
+            "candidate.builder.cpu_producer_authentication.v1");
+}
+
 TEST(RouteCandidateTest, AdmissionRejectsCpuPayloadRelabeledAsCudaProvenance) {
   const BoardSnapshot board = Snapshot();
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));

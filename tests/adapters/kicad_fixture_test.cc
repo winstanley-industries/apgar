@@ -1,9 +1,6 @@
 #include "apgar/adapters/kicad_fixture.h"
 
 #include <algorithm>
-#include <cstdlib>
-#include <fstream>
-#include <iterator>
 #include <map>
 #include <optional>
 #include <string>
@@ -12,24 +9,14 @@
 
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry/exact.h"
+#include "apgar/tooling/runfiles.h"
 #include "tests/support/google_test.h"
 
 namespace apgar::adapters {
 namespace {
 
 [[nodiscard]] std::string ReadFixture() {
-  const char* test_srcdir = std::getenv("TEST_SRCDIR");
-  const char* test_workspace = std::getenv("TEST_WORKSPACE");
-  if (test_srcdir == nullptr || test_workspace == nullptr) {
-    return {};
-  }
-  const std::string path =
-      std::string(test_srcdir) + "/" + test_workspace + "/tests/fixtures/m1_exactness.kicad_pcb";
-  std::ifstream input(path);
-  if (!input) {
-    return {};
-  }
-  return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  return tooling::ReadRunfile("tests/fixtures/m1_exactness.kicad_pcb").value_or(std::string{});
 }
 
 [[nodiscard]] KicadFixtureImportConfig Config() {

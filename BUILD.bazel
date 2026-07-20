@@ -259,6 +259,19 @@ cc_library(
     strip_include_prefix = "include",
 )
 
+cc_library(
+    name = "benchmark_tool_support",
+    srcs = ["tools/benchmark_support.cc"],
+    hdrs = ["tools/benchmark_support.h"],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":planar_route",
+        ":tool_runfiles",
+        "@google_benchmark//:benchmark",
+    ],
+)
+
 source_stamp_header(
     name = "phase3_source_stamp_header",
     out = "include/apgar/benchmark/phase3_source_stamp.h",
@@ -276,6 +289,18 @@ cc_library(
     hdrs = ["include/apgar/tooling/runfiles.h"],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",
+)
+
+cc_library(
+    name = "replay_parser",
+    srcs = ["src/tooling/replay.cc"],
+    hdrs = ["include/apgar/tooling/replay.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    deps = [
+        ":board_ir",
+        ":utf8",
+    ],
 )
 
 cc_library(
@@ -334,6 +359,7 @@ cc_binary(
         ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
+        ":replay_parser",
         ":tool_runfiles",
     ],
 )
@@ -366,6 +392,7 @@ cc_binary(
         ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
+        ":replay_parser",
         ":tool_runfiles",
     ],
 )
@@ -384,6 +411,7 @@ cc_binary(
         ":candidate_policy",
         ":cpu_astar",
         ":planar_benchmark_corpus",
+        ":replay_parser",
         ":tool_runfiles",
     ],
 )
@@ -444,6 +472,7 @@ cc_test(
         ":candidate_policy",
         ":cpu_astar",
         ":planar_benchmark_corpus",
+        ":replay_parser",
         ":tool_runfiles",
     ],
 )
@@ -464,7 +493,23 @@ cc_test(
         ":candidate_policy",
         ":cpu_astar",
         ":planar_benchmark_corpus",
+        ":replay_parser",
         ":tool_runfiles",
+    ],
+)
+
+cc_test(
+    name = "replay_parser_test",
+    size = "small",
+    srcs = [
+        "tests/support/google_test.h",
+        "tests/tooling_replay_test.cc",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":replay_parser",
+        "@googletest//:gtest_main",
     ],
 )
 
@@ -479,10 +524,12 @@ cc_binary(
     ],
     target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     deps = [
+        ":benchmark_tool_support",
         ":board_ir",
         ":cpu_astar",
         ":cuda_planar_route_backend",
         ":gpu_planar_router",
+        ":phase3_commit",
         ":planar_benchmark_corpus",
         ":tool_runfiles",
         "@google_benchmark//:benchmark",
@@ -501,6 +548,7 @@ cc_binary(
     ],
     target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     deps = [
+        ":benchmark_tool_support",
         ":board_ir",
         ":candidate_contract",
         ":candidate_policy",
@@ -539,6 +587,7 @@ cc_test(
         ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
+        ":replay_parser",
         ":tool_runfiles",
     ],
 )
@@ -572,6 +621,7 @@ cc_test(
         ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
+        ":replay_parser",
         ":tool_runfiles",
     ],
 )
@@ -650,7 +700,9 @@ cc_test(
     deps = [
         ":board_ir",
         ":geometry_compiler",
+        ":gpu_candidate_adapter",
         ":gpu_planar_router",
+        ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
 )
@@ -684,6 +736,7 @@ cc_test(
         ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
         ":planar_benchmark_corpus",
+        ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
 )
@@ -698,6 +751,20 @@ cc_test(
     copts = APGAR_COPTS,
     deps = [
         ":phase3_commit",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "benchmark_support_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/benchmark_support_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":benchmark_tool_support",
         "@googletest//:gtest_main",
     ],
 )
@@ -718,6 +785,7 @@ cc_test(
         ":candidate_policy",
         ":geometry_compiler",
         ":planar_route",
+        ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
 )
@@ -743,6 +811,7 @@ cc_test(
         ":geometry_compiler",
         ":gpu_planar_router",
         ":planar_route",
+        ":tool_runfiles",
         ":utf8",
         "@googletest//:gtest_main",
     ],
@@ -768,6 +837,7 @@ cc_test(
         ":cpu_route_evidence_test_support",
         ":geometry_compiler",
         ":planar_route",
+        ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
 )
@@ -793,6 +863,7 @@ cc_test(
         ":cpu_route_evidence_test_support",
         ":geometry_compiler",
         ":planar_route",
+        ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
 )
@@ -815,6 +886,7 @@ cc_test(
         ":cpu_astar",
         ":geometry_compiler",
         ":kicad_fixture_adapter",
+        ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
 )
@@ -832,6 +904,7 @@ cc_test(
         ":board_ir",
         ":exact_geometry",
         ":kicad_fixture_adapter",
+        ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
 )

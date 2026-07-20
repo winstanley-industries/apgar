@@ -13,8 +13,6 @@
 
 namespace apgar::routing {
 
-inline constexpr std::uint8_t kNoIncomingDirection = 8;
-
 // Backend-neutral immutable request shared by the CPU oracle and every planar
 // GPU candidate explorer. The legacy alias below remains source-compatible
 // with the Phase 1/2 CPU API.
@@ -95,6 +93,12 @@ using PlanarEndpointResult = std::variant<ResolvedPlanarEndpoints, PlanarEndpoin
 
 [[nodiscard]] std::optional<std::uint64_t> CheckedAdd(std::uint64_t left,
                                                       std::uint64_t right) noexcept;
+
+// Route labels reserve UINT64_MAX as the unreachable sentinel. Unlike the
+// generic checked integer helper above, this operation rejects a sum equal to
+// UINT64_MAX as well as arithmetic overflow.
+[[nodiscard]] std::optional<std::uint64_t> CheckedAddFiniteRouteCost(std::uint64_t left,
+                                                                     std::uint64_t right) noexcept;
 
 [[nodiscard]] std::uint64_t StepCost(const geometry_compiler::CompilerProfile& profile,
                                      geometry_compiler::Direction direction,

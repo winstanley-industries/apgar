@@ -80,6 +80,11 @@ by the three recorded surcharges. The admissible heuristic may include the
 minimum unavoidable step surcharges but must ignore bend and resource
 penalties.
 
+Before any backend treats an enabled compiled transition as banned, it validates
+that the immutable compiled edge can be canonicalized and that its destination
+is represented. A request-local ban may skip relaxation only; it cannot suppress
+a CompiledBoard structural-corruption diagnostic.
+
 Unsupported policy/backend combinations return `Unsupported`. CPU fallback is
 permitted only when it consumes exactly these semantics.
 

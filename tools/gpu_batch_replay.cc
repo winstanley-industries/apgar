@@ -1,17 +1,13 @@
 #include <array>
-#include <charconv>
 #include <cstdint>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <variant>
-#include <vector>
 
 #include "apgar/benchmark/planar_corpus.h"
 #include "apgar/board_ir/stable_hash.h"
@@ -20,6 +16,7 @@
 #include "apgar/gpu/fault_injecting_backend.h"
 #include "apgar/gpu/planar_router.h"
 #include "apgar/routing/candidate_policy.h"
+#include "apgar/tooling/replay.h"
 #include "apgar/tooling/runfiles.h"
 
 namespace {
@@ -88,14 +85,6 @@ struct ReplayArtifact {
   std::string expected_invariant;
 };
 
-template <typename Integer>
-[[nodiscard]] bool ParseUnsigned(std::string_view text, Integer* value) {
-  const char* begin = text.data();
-  const char* end = text.data() + text.size();
-  const auto [next, error] = std::from_chars(begin, end, *value);
-  return error == std::errc{} && next == end;
-}
-
 [[nodiscard]] const FaultContract* FindFault(std::string_view name) {
   for (const FaultContract& contract : kFaultContracts) {
     if (contract.name == name) {
@@ -107,26 +96,6 @@ template <typename Integer>
 
 [[nodiscard]] std::optional<ReplayArtifact> ParseArtifact(std::string_view contents,
                                                           std::string* error) {
-  if (contents.empty() || contents.back() != '\n') {
-    *error = "canonical replay must end every line with LF";
-    return std::nullopt;
-  }
-  const std::size_t checksum_start = contents.rfind("checksum_fnv1a64=");
-  if (checksum_start == std::string_view::npos || checksum_start == 0 ||
-      contents[checksum_start - 1] != '\n') {
-    *error = "missing final replay checksum";
-    return std::nullopt;
-  }
-  const std::string_view payload = contents.substr(0, checksum_start);
-  std::string_view checksum_text = contents.substr(checksum_start + 17);
-  checksum_text.remove_suffix(1);
-  std::uint64_t recorded_checksum = 0;
-  if (!ParseUnsigned(checksum_text, &recorded_checksum) ||
-      apgar::board_ir::StableHashString(payload) != recorded_checksum) {
-    *error = "replay payload checksum mismatch";
-    return std::nullopt;
-  }
-
   constexpr std::array<std::string_view, 34> kKeys{{
       "format=",
       "schema_version=",
@@ -163,32 +132,12 @@ template <typename Integer>
       "expected_failure=",
       "expected_invariant=",
   }};
-  std::vector<std::string_view> values;
-  values.reserve(kKeys.size());
-  std::size_t offset = 0;
-  const auto consume = [&](std::span<const std::string_view> keys) -> bool {
-    for (std::string_view key : keys) {
-      const std::size_t end = payload.find('\n', offset);
-      if (end == std::string_view::npos) {
-        *error = "replay payload is truncated";
-        return false;
-      }
-      const std::string_view line = payload.substr(offset, end - offset);
-      if (!line.starts_with(key)) {
-        *error = "replay fields are missing or out of canonical order";
-        return false;
-      }
-      values.push_back(line.substr(key.size()));
-      offset = end + 1;
-    }
-    return true;
-  };
-  if (!consume(kKeys) || offset != payload.size()) {
-    if (error->empty()) {
-      *error = "replay payload has unknown fields";
-    }
+  const std::optional<apgar::tooling::CanonicalReplayEnvelope> envelope =
+      apgar::tooling::ParseCanonicalReplayEnvelope(contents, kKeys, error);
+  if (!envelope.has_value()) {
     return std::nullopt;
   }
+  const auto& values = envelope->values;
 
   const FaultContract* fault = FindFault(values[6]);
   if (values[0] != "apgar_gpu_batch_invariant_replay" || values[1] != "1" || values[2] != "1" ||
@@ -204,29 +153,46 @@ template <typename Integer>
   artifact.fault = fault->fault;
   artifact.expected_invariant = std::string(values[33]);
   artifact.candidate_policy.objective = apgar::routing::CandidateObjective::kBaseScalarCost;
-  if (!ParseUnsigned(values[4], &artifact.fixture_checksum) ||
-      !ParseUnsigned(values[7], &artifact.layer) ||
-      !ParseUnsigned(values[8], &artifact.maximum_rounds) || artifact.maximum_rounds == 0 ||
-      !ParseUnsigned(values[9], &artifact.maximum_workspace_states_per_query) ||
-      !ParseUnsigned(values[10], &artifact.maximum_frontier_states_per_query) ||
-      !ParseUnsigned(values[11], &artifact.maximum_device_bytes) ||
-      !ParseUnsigned(values[12], &artifact.maximum_host_bytes) ||
-      !ParseUnsigned(values[13], &artifact.batch_id) || artifact.batch_id == 0 ||
-      !ParseUnsigned(values[14], &artifact.query_id) || artifact.query_id == 0 ||
-      !ParseUnsigned(values[15], &artifact.input_ordinal) ||
-      !ParseUnsigned(values[16], &artifact.candidate_policy.schema_version) ||
-      !ParseUnsigned(values[18], &artifact.candidate_policy.deterministic_seed) ||
-      !ParseUnsigned(values[19], &artifact.candidate_policy.candidate_ordinal) ||
-      !ParseUnsigned(values[20], &artifact.candidate_policy.orthogonal_step_surcharge) ||
-      !ParseUnsigned(values[21], &artifact.candidate_policy.diagonal_step_surcharge) ||
-      !ParseUnsigned(values[22], &artifact.candidate_policy.bend_surcharge) ||
-      !ParseUnsigned(values[25], &artifact.expected_policy_identity) ||
-      !ParseUnsigned(values[26], &artifact.expected_board_hash) ||
-      !ParseUnsigned(values[27], &artifact.expected_profile_fingerprint) ||
-      !ParseUnsigned(values[28], &artifact.expected_compiler_version) ||
-      !ParseUnsigned(values[29], &artifact.expected_rule_bucket_identity) ||
-      !ParseUnsigned(values[30], &artifact.expected_routing_profile_fingerprint) ||
-      !ParseUnsigned(values[31], &artifact.expected_device_fingerprint)) {
+  if (!apgar::tooling::ParseCanonicalUnsignedDecimal(values[4], &artifact.fixture_checksum) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[7], &artifact.layer) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[8], &artifact.maximum_rounds) ||
+      artifact.maximum_rounds == 0 ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(
+          values[9], &artifact.maximum_workspace_states_per_query) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[10],
+                                                     &artifact.maximum_frontier_states_per_query) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[11], &artifact.maximum_device_bytes) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[12], &artifact.maximum_host_bytes) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[13], &artifact.batch_id) ||
+      artifact.batch_id == 0 ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[14], &artifact.query_id) ||
+      artifact.query_id == 0 ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[15], &artifact.input_ordinal) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[16],
+                                                     &artifact.candidate_policy.schema_version) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(
+          values[18], &artifact.candidate_policy.deterministic_seed) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(
+          values[19], &artifact.candidate_policy.candidate_ordinal) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(
+          values[20], &artifact.candidate_policy.orthogonal_step_surcharge) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(
+          values[21], &artifact.candidate_policy.diagonal_step_surcharge) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[22],
+                                                     &artifact.candidate_policy.bend_surcharge) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[25],
+                                                     &artifact.expected_policy_identity) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[26], &artifact.expected_board_hash) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[27],
+                                                     &artifact.expected_profile_fingerprint) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[28],
+                                                     &artifact.expected_compiler_version) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[29],
+                                                     &artifact.expected_rule_bucket_identity) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(
+          values[30], &artifact.expected_routing_profile_fingerprint) ||
+      !apgar::tooling::ParseCanonicalUnsignedDecimal(values[31],
+                                                     &artifact.expected_device_fingerprint)) {
     *error = "replay contains an invalid integer field";
     return std::nullopt;
   }

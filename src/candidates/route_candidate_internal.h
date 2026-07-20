@@ -33,6 +33,16 @@ enum class CandidateProducerAuthority : std::uint8_t {
     CandidateLifecycleStage stage, CandidateRejectionCode code, std::string invariant_id,
     std::string detail);
 
+// CandidateStore's shared-request overload normalizes the independently
+// supplied request policy once, then reuses that immutable result for every
+// candidate. The candidate's own policy, associations, exact geometry,
+// resources, metrics, signatures, checksum, and accounting remain independently
+// validated per item.
+[[nodiscard]] CandidateAdmissionResult AdmitRouteCandidateWithVerifiedRequestPolicy(
+    const CandidateAdmissionContext& context,
+    const routing::CandidatePolicyResult& verified_request_policy,
+    GeneratedRouteCandidate&& generated);
+
 }  // namespace apgar::candidates::internal
 
 #endif  // APGAR_SRC_CANDIDATES_ROUTE_CANDIDATE_INTERNAL_H_

@@ -5,9 +5,12 @@ and immutable CandidateRejection v1 records. It never mutates Board IR,
 CompiledBoard, congestion, prices, or allocator state.
 
 A store instance binds to the complete Board/compiler/routing/rule association
-set of its first accepted candidate. Later candidates with another association
-set are rejected; candidates from stale snapshots are never mixed into the
-same per-net pool or returned by `Enumerate(net)`.
+set when its first exact-admitted RouteCandidate enters publication. The
+binding persists even if duplicate selection, retained-pool budgets, or a
+pinned-pool rollback subsequently reject every candidate in that publication.
+Later candidates with another association set are rejected; candidates from
+stale snapshots are never mixed into the same per-net pool or returned by
+`Enumerate(net)`.
 
 ## Budgets and admission order
 
@@ -23,11 +26,17 @@ the same retained-pool budgets.
 
 Transaction preflight occurs before exact admission and before its batch-sized
 admission-result scratch is allocated. The item-count cap is checked before an
-overload constructs any additional per-item request wrappers. For the overload
-that applies one shared request to many generated candidates, the canonical
+overload constructs any additional per-item scratch. For the overload that
+applies one shared request to many generated candidates, the canonical
 request-policy bytes and policy-entry work are multiplied by the item count and
-checked in O(1) before those request wrappers are copied. Every generated and
-request policy first receives the CandidateGenerationPolicy v1 O(1) shape
+checked in O(1). This multiplication is conservative logical/work accounting,
+not a statement about implementation allocations: the request remains
+caller-owned, its policy is normalized exactly once, and that immutable result
+is reused for every candidate without per-item request or policy copies. Each
+candidate's untrusted policy must compare exactly equal to that normalized
+typed value to use the fast path; a differing candidate policy receives full
+independent normalization and fails closed if it is invalid. Every generated
+and request policy first receives the CandidateGenerationPolicy v1 O(1) shape
 preflight. If any policy is over its resource-entry bound, the whole
 transaction returns one candidate-less `InvalidInput` diagnostic with invariant
 `candidate.store.transaction.policy_resource_entry_count.v1`; its actual value
@@ -39,8 +48,8 @@ vector already larger than either cap is rejected without walking its elements.
 Candidate store admission is explicit ownership transfer: the public single
 and batch candidate APIs accept only rvalue candidates/vectors. Binding the API
 therefore cannot implicitly deep-copy caller bulk. Before moving any element
-into internal scratch or copying one shared request into per-item wrappers, the
-store applies fixed shape precedence across the transaction: policy entries,
+into internal scratch, the store applies fixed shape precedence across the
+transaction: policy entries,
 geometry primitives, resource spans, then supported-device-class bytes. It
 reports the maximum invalid count within the first failing field, independent
 of input permutation. The corresponding transaction invariants are
@@ -53,8 +62,9 @@ omit payload checksum because invalid bulk is not inspected.
 Inputs passing that structural bound receive exact recomputed logical-byte
 accounting. That byte quantity is the sum of each generated candidate's
 canonical v1 logical bytes and the canonical v1 bytes of the independently
-supplied request policy for that item; both policy copies count even when their
-values are equal. Work uses the following conservative quantity, all with
+supplied request policy for that item. These per-item logical quantities count
+even when one physical shared-request object supplies every item. Work uses the
+following conservative quantity, all with
 checked unsigned arithmetic:
 
 ```text
@@ -133,8 +143,11 @@ or signed schema types and never wrapped arithmetic.
   payloads with the same ID, its stable best payload is the sole member allowed
   to proceed to publication and every other payload is rejected; after that
   publication, the incumbent is immutable.
-- Geometry/resource signature matches trigger full collision-safe canonical
-  equality before deduplication.
+- Candidate IDs and geometry/resource signatures select deterministic ordered
+  lookup buckets. A geometry/resource signature match triggers full
+  collision-safe canonical equality only within that bucket before
+  deduplication. Deliberate signature collisions may increase work inside the
+  bounded bucket but cannot cause false deduplication.
 - Exact duplicate geometry or resource footprints form an atomic group over
   the complete touched pool, including incumbents. A pinned incumbent wins as
   required by CAN-002; otherwise the better stable-ranked representative is
@@ -182,6 +195,15 @@ submits it to the ordinary stable retained-record order and cap; a preexisting
 record may outrank it in bounded history without erasing the call result. A
 within-cap call returns no transaction diagnostic. The result therefore does
 not depend on the contents or order of the uninspected records.
+Within the cap, one rejection is inserted at its canonical lower bound rather
+than re-sorting retained history. A rejection batch is canonicalized and
+sorted once, then deterministically merged with retained history up to the
+configured cap.
+One admission publication collects all exact-admission diagnostics and all
+diagnostics produced while staging duplicate, retention, or rollback outcomes.
+Under the publication mutex, that complete canonical set is sorted once and
+merged/truncated against retained history once; it is not published through a
+sequence of shifting single-record insertions.
 
 ## CAN-002 retention seam
 
