@@ -467,7 +467,7 @@ TEST(DeviceCandidateBatchTest, HostAccountingContainsOneFinalQueryWorkspace) {
   EXPECT_EQ(EstimateCandidateBatchHostBytesV1(kInputs, kAdmitted, kPolicyEdges, kStates), expected);
 }
 
-TEST(DeviceCandidateBatchTest, CompactSweepAccountingIncludesOneReusableValidationBitset) {
+TEST(DeviceCandidateBatchTest, CompactSweepAccountingIncludesBoundedValidationBitsets) {
   constexpr std::uint64_t kInputs = 3;
   constexpr std::uint64_t kAdmitted = 2;
   constexpr std::uint64_t kPolicyEdges = 5;
@@ -478,7 +478,9 @@ TEST(DeviceCandidateBatchTest, CompactSweepAccountingIncludesOneReusableValidati
       kAdmitted * (2U * sizeof(DeviceCandidateBatchQueryV1) + 2U * sizeof(std::uint32_t) +
                    sizeof(DeviceCandidateCompactPathV1)) +
       kPolicyEdges * (sizeof(DeviceCandidatePolicyEdgeV1) + 40U) +
-      kAdmitted * kStates * sizeof(std::uint32_t) + ((kStates + 63U) / 64U) * sizeof(std::uint64_t);
+      kAdmitted * kStates * sizeof(std::uint32_t) +
+      CandidateCompactValidationWorkerCountV1(kAdmitted) * ((kStates + 63U) / 64U) *
+          sizeof(std::uint64_t);
   EXPECT_EQ(EstimateCandidateBatchHostBytesV1(kInputs, kAdmitted, kPolicyEdges, kStates,
                                               PlanarGenerator::kHeadingAwareSweep),
             expected);
@@ -497,7 +499,8 @@ TEST(DeviceCandidateBatchTest, CompactValidationBitsetRoundsAtSixtyFourStateBoun
                    sizeof(DeviceCandidateCompactPathV1));
   const auto expected = [](std::uint64_t states) {
     return kCommon + states * sizeof(std::uint32_t) +
-           ((states + 63U) / 64U) * sizeof(std::uint64_t);
+           CandidateCompactValidationWorkerCountV1(kAdmitted) * ((states + 63U) / 64U) *
+               sizeof(std::uint64_t);
   };
 
   for (const std::uint64_t states : {1U, 63U, 64U, 65U}) {
@@ -509,6 +512,15 @@ TEST(DeviceCandidateBatchTest, CompactValidationBitsetRoundsAtSixtyFourStateBoun
       EstimateCandidateBatchHostBytesV1(kInputs, 0, 0, 65, PlanarGenerator::kHeadingAwareSweep),
       kInputs *
           (sizeof(DeviceCandidateBatchQueryV1) + sizeof(DeviceCandidateBatchResultV1) + 128U));
+}
+
+TEST(DeviceCandidateBatchTest, CompactValidationWorkerCountIsDeterministicAndBounded) {
+  EXPECT_EQ(CandidateCompactValidationWorkerCountV1(0), 0U);
+  EXPECT_EQ(CandidateCompactValidationWorkerCountV1(1), 1U);
+  EXPECT_EQ(CandidateCompactValidationWorkerCountV1(64), 1U);
+  EXPECT_EQ(CandidateCompactValidationWorkerCountV1(65), 2U);
+  EXPECT_EQ(CandidateCompactValidationWorkerCountV1(512), 8U);
+  EXPECT_EQ(CandidateCompactValidationWorkerCountV1(routing::kMaximumAlternativePolicyCount), 8U);
 }
 
 TEST(DeviceCompiledBoardTest, StableIndicesPreserveNegativeAndCrossTileAdjacency) {

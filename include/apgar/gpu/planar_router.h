@@ -1,6 +1,7 @@
 #ifndef APGAR_GPU_PLANAR_ROUTER_H_
 #define APGAR_GPU_PLANAR_ROUTER_H_
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -429,6 +430,19 @@ struct BackendCandidateBatchExecutionRequest {
   std::vector<DeviceCandidatePolicyEdgeV1> policy_edges;
   const std::atomic_bool* cancellation = nullptr;
 };
+
+inline constexpr std::uint64_t kCandidateCompactValidationQueriesPerWorker = 64;
+inline constexpr std::uint64_t kMaximumCandidateCompactValidationWorkers = 8;
+
+[[nodiscard]] constexpr std::uint64_t CandidateCompactValidationWorkerCountV1(
+    std::uint64_t admitted_query_count) noexcept {
+  if (admitted_query_count == 0) {
+    return 0;
+  }
+  const std::uint64_t workers =
+      1U + (admitted_query_count - 1U) / kCandidateCompactValidationQueriesPerWorker;
+  return std::min(workers, kMaximumCandidateCompactValidationWorkers);
+}
 
 // Deterministic logical upper bound for transient host payload owned while a
 // candidate batch is encoded, executed, read into one final flat query-major

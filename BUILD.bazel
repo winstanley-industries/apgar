@@ -179,6 +179,7 @@ cc_library(
     ],
     hdrs = ["include/apgar/gpu/planar_router.h"],
     copts = APGAR_COPTS,
+    linkopts = ["-pthread"],
     strip_include_prefix = "include",
     visibility = ["//visibility:public"],
     deps = [

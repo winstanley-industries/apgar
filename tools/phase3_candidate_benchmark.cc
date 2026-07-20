@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -62,6 +63,7 @@ enum class ForcedGenerator : std::uint8_t {
 enum class TimingStage : std::uint8_t {
   kExecution,
   kAdmission,
+  kPreparedEndToEnd,
   kEndToEnd,
 };
 
@@ -262,6 +264,8 @@ struct BenchmarkContext {
       return "execution_readback";
     case TimingStage::kAdmission:
       return "exact_admission_store";
+    case TimingStage::kPreparedEndToEnd:
+      return "prepared_end_to_end";
     case TimingStage::kEndToEnd:
       return "end_to_end";
   }
@@ -571,14 +575,27 @@ using CandidateDraftResult =
     std::variant<CandidateDraftWithPolicy, apgar::candidates::CandidateRejection,
                  BenchmarkAdmissionError>;
 
+[[nodiscard]] CandidateDraftResult ConvertCandidateDraftBuildResult(
+    std::uint32_t policy_index, apgar::candidates::CandidateDraftBuildResult result) {
+  if (std::holds_alternative<apgar::candidates::CandidateRejection>(result)) {
+    return std::get<apgar::candidates::CandidateRejection>(std::move(result));
+  }
+  return CandidateDraftWithPolicy{
+      .policy_index = policy_index,
+      .candidate = std::get<apgar::candidates::GeneratedRouteCandidate>(std::move(result)),
+  };
+}
+
 [[nodiscard]] const apgar::gpu::PlanarCandidateBatchItem* FindGpuBatchItem(
     const BatchExecution& execution, std::uint64_t query_id) {
   if (!execution.validated_gpu_batch.has_value()) {
     return nullptr;
   }
-  const auto found = std::ranges::find(execution.validated_gpu_batch->items, query_id,
-                                       &apgar::gpu::PlanarCandidateBatchItem::query_id);
-  return found == execution.validated_gpu_batch->items.end() ? nullptr : &*found;
+  const auto found = std::ranges::lower_bound(execution.validated_gpu_batch->items, query_id, {},
+                                              &apgar::gpu::PlanarCandidateBatchItem::query_id);
+  return found == execution.validated_gpu_batch->items.end() || found->query_id() != query_id
+             ? nullptr
+             : &*found;
 }
 
 [[nodiscard]] CandidateDraftResult BenchmarkBuildRejection(
@@ -678,13 +695,7 @@ using CandidateDraftResult =
         context.test_case.board, context.test_case.compiled_board, gpu_query,
         context.policies[query.input_ordinal], *execution.validated_gpu_batch, *item);
   }
-  if (std::holds_alternative<apgar::candidates::CandidateRejection>(result)) {
-    return std::get<apgar::candidates::CandidateRejection>(std::move(result));
-  }
-  return CandidateDraftWithPolicy{
-      .policy_index = query.input_ordinal,
-      .candidate = std::get<apgar::candidates::GeneratedRouteCandidate>(std::move(result)),
-  };
+  return ConvertCandidateDraftBuildResult(query.input_ordinal, std::move(result));
 }
 
 [[nodiscard]] std::uint64_t CandidateOrderingChecksum(
@@ -763,9 +774,69 @@ void PublishPairwiseDiversity(std::span<const apgar::candidates::StoredCandidate
   drafts.reserve(candidate_count);
   std::vector<apgar::candidates::CandidateRejection> builder_rejection_records;
   builder_rejection_records.reserve(candidate_count);
+  std::uint64_t gpu_batch_adapter_index_bytes = 0;
+  std::vector<std::optional<apgar::candidates::CandidateDraftBuildResult>> gpu_draft_results;
+  if (execution.validated_gpu_batch.has_value()) {
+    gpu_batch_adapter_index_bytes =
+        SaturatingMultiply(execution.validated_gpu_batch->items.size(), sizeof(std::uint64_t));
+    gpu_draft_results.resize(execution.queries.size());
+    std::vector<apgar::gpu::PlanarCandidateBatchQuery> gpu_queries;
+    std::vector<apgar::candidates::GpuCandidateBatchBuildRequest> gpu_requests;
+    std::vector<std::size_t> gpu_result_indices;
+    gpu_queries.reserve(execution.queries.size());
+    gpu_requests.reserve(execution.queries.size());
+    gpu_result_indices.reserve(execution.queries.size());
+    for (std::size_t index = 0; index < execution.queries.size(); ++index) {
+      const QueryExecution& query = execution.queries[index];
+      if (query.visible.failure != FailureClass::kReached || !query.route.has_value() ||
+          !std::holds_alternative<std::uint64_t>(query.route->evidence) ||
+          query.input_ordinal >= context.policies.size()) {
+        continue;
+      }
+      const apgar::gpu::PlanarCandidateBatchItem* item =
+          FindGpuBatchItem(execution, std::get<std::uint64_t>(query.route->evidence));
+      if (item == nullptr) {
+        continue;
+      }
+      apgar::routing::CpuRouteRequest request = context.test_case.request;
+      request.candidate_policy = context.policies[query.input_ordinal].policy;
+      gpu_queries.push_back(apgar::gpu::PlanarCandidateBatchQuery{
+          .query_id = query.visible.query_id,
+          .input_ordinal = query.input_ordinal,
+          .request = std::move(request),
+      });
+      gpu_requests.push_back(apgar::candidates::GpuCandidateBatchBuildRequest{
+          .query = std::cref(gpu_queries.back()),
+          .normalized_policy = std::cref(context.policies[query.input_ordinal]),
+          .item = std::cref(*item),
+      });
+      gpu_result_indices.push_back(index);
+    }
+    apgar::candidates::GpuCandidateBatchBuildResult built =
+        apgar::candidates::BuildGeneratedCandidatesFromGpuBatchItems(
+            context.test_case.board, context.test_case.compiled_board,
+            *execution.validated_gpu_batch, gpu_requests);
+    if (std::holds_alternative<apgar::candidates::GpuCandidateBatchBuildFailure>(built)) {
+      observation.valid = false;
+      observation.error =
+          std::get<apgar::candidates::GpuCandidateBatchBuildFailure>(std::move(built)).detail;
+      return observation;
+    }
+    std::vector<apgar::candidates::CandidateDraftBuildResult> batch_results =
+        std::get<std::vector<apgar::candidates::CandidateDraftBuildResult>>(std::move(built));
+    if (batch_results.size() != gpu_result_indices.size()) {
+      observation.valid = false;
+      observation.error = "GPU candidate batch adapter returned a noncanonical result count";
+      return observation;
+    }
+    for (std::size_t index = 0; index < batch_results.size(); ++index) {
+      gpu_draft_results[gpu_result_indices[index]] = std::move(batch_results[index]);
+    }
+  }
   std::uint64_t route_payload_bytes = 0;
   std::uint64_t draft_payload_bytes = 0;
-  for (const QueryExecution& query : execution.queries) {
+  for (std::size_t query_index = 0; query_index < execution.queries.size(); ++query_index) {
+    const QueryExecution& query = execution.queries[query_index];
     if (query.visible.failure != FailureClass::kReached) {
       ++observation.failed_queries;
       continue;
@@ -798,7 +869,11 @@ void PublishPairwiseDiversity(std::span<const apgar::candidates::StoredCandidate
       route_payload_bytes = SaturatingAdd(route_payload_bytes, point_bytes);
       route_payload_bytes = SaturatingAdd(route_payload_bytes, segment_bytes);
     }
-    CandidateDraftResult built = BuildCandidateDraft(context, execution, query, batch_identity);
+    CandidateDraftResult built =
+        !gpu_draft_results.empty() && gpu_draft_results[query_index].has_value()
+            ? ConvertCandidateDraftBuildResult(query.input_ordinal,
+                                               std::move(*gpu_draft_results[query_index]))
+            : BuildCandidateDraft(context, execution, query, batch_identity);
     if (std::holds_alternative<BenchmarkAdmissionError>(built)) {
       observation.valid = false;
       observation.error = std::get<BenchmarkAdmissionError>(std::move(built)).detail;
@@ -924,14 +999,16 @@ void PublishPairwiseDiversity(std::span<const apgar::candidates::StoredCandidate
   observation.ordered_candidate_checksum = CandidateOrderingChecksum(accepted);
   const std::uint64_t compiled_bytes =
       context.test_case.compiled_board.telemetry().estimated_host_bytes;
-  const std::uint64_t raw_phase = SaturatingAdd(compiled_bytes, route_payload_bytes);
+  const std::uint64_t route_phase = SaturatingAdd(compiled_bytes, route_payload_bytes);
+  const std::uint64_t batch_conversion_phase =
+      SaturatingAdd(route_phase, gpu_batch_adapter_index_bytes);
   const std::uint64_t draft_to_store_phase = SaturatingAdd(
-      SaturatingAdd(raw_phase, draft_payload_bytes), observation.rejection_logical_bytes);
+      SaturatingAdd(route_phase, draft_payload_bytes), observation.rejection_logical_bytes);
   const std::uint64_t stored_phase =
-      SaturatingAdd(SaturatingAdd(raw_phase, observation.accepted_logical_bytes),
+      SaturatingAdd(SaturatingAdd(route_phase, observation.accepted_logical_bytes),
                     observation.rejection_logical_bytes);
   observation.peak_deterministic_host_bytes =
-      std::max({raw_phase, draft_to_store_phase, stored_phase});
+      std::max({route_phase, batch_conversion_phase, draft_to_store_phase, stored_phase});
   return observation;
 }
 
@@ -1247,6 +1324,21 @@ void CandidateStageBenchmark(benchmark::State& state, CaseContext* context,
   if (stage == TimingStage::kAdmission) {
     admission_source = RunGenerator(*context, candidate_count, generator,
                                     benchmark_context->parallel_worker_count, setup_prepared.get());
+  }
+  if (stage == TimingStage::kPreparedEndToEnd) {
+    BatchExecution warm_execution =
+        RunGenerator(*context, candidate_count, generator, benchmark_context->parallel_worker_count,
+                     setup_prepared.get());
+    if (!DifferentialMatches(*context, warm_execution, candidate_count)) {
+      state.SkipWithError("prepared end-to-end warm-up violated CPU differential semantics");
+      return;
+    }
+    const AdmissionObservation warm_admission =
+        AdmitBatch(*context, warm_execution, candidate_count);
+    if (!warm_admission.valid) {
+      state.SkipWithError(warm_admission.error);
+      return;
+    }
   }
 
   std::optional<ExecutionSummary> first_execution;
@@ -1647,7 +1739,7 @@ struct EvidenceLabels {
   benchmark::AddCustomContext("apgar_nvidia_kmd_driver", nvidia_kmd_driver);
   benchmark::AddCustomContext("apgar_nvidia_kmd_driver_source",
                               "operator_supplied_nvidia_smi_query_gpu_driver_version");
-  benchmark::AddCustomContext("apgar_result_schema", "phase3_candidate_bakeoff_v2");
+  benchmark::AddCustomContext("apgar_result_schema", "phase3_candidate_bakeoff_v3");
   benchmark::AddCustomContext("apgar_corpus_version",
                               std::to_string(apgar::benchmark::kPhase3CandidateCorpusVersion));
   benchmark::AddCustomContext("apgar_board_ir_schema_version",
@@ -1697,7 +1789,13 @@ struct EvidenceLabels {
       "reported_policy_scalar_costs_are_per_policy_and_not_cross_policy_quality_metrics");
   benchmark::AddCustomContext(
       "apgar_timing_scopes",
-      "shared_prepare_upload;execution_readback;exact_admission_store;end_to_end");
+      "shared_prepare_upload;execution_readback;exact_admission_store;prepared_end_to_end;"
+      "end_to_end");
+  benchmark::AddCustomContext(
+      "apgar_prepared_end_to_end_scope",
+      "preexisting_prepare_upload_one_untimed_identical_full_pipeline_warmup_then_reuse_workspace_"
+      "execute_readback_validate_exact_admit_store_metrics_result_release_timed_retained_view_"
+      "release_excluded");
   benchmark::AddCustomContext(
       "apgar_end_to_end_gpu_scope",
       "prepare_flatten_upload_execute_readback_validate_exact_admit_store_metrics_and_release");
@@ -1861,9 +1959,10 @@ void RegisterBenchmarks(BenchmarkContext* context) {
       ForcedGenerator::kCudaFrontier,
       ForcedGenerator::kCudaSweep,
   };
-  constexpr std::array<TimingStage, 3> kStages = {
+  constexpr std::array<TimingStage, 4> kStages = {
       TimingStage::kExecution,
       TimingStage::kAdmission,
+      TimingStage::kPreparedEndToEnd,
       TimingStage::kEndToEnd,
   };
   for (CaseContext& case_context : context->cases) {

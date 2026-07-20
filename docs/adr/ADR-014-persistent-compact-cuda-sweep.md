@@ -40,6 +40,14 @@ workspaces remain explicitly bounded by the request.
   endpoints, cycles, headings, compiled adjacency and legal-edge masks,
   resource bans and penalties, scalar cost, exact coordinates, and exact Board
   IR route legality before producing validated route evidence.
+- Validate compact query partitions in parallel above 64 admitted queries.
+  The fixed schedule uses at most eight workers, retains external query order,
+  and charges one visited-state bitset per partition to the deterministic host
+  bound.
+- Convert validated GPU routes to candidate drafts through one bounded batch
+  membership index. The batch form preserves every opaque seal, association,
+  and authenticated-producer check while removing the scalar adapter's
+  quadratic repeated membership scan.
 - Preserve CPU A* as production dispatch, oracle, fallback, and disconnected
   confirmation. This implementation does not establish a universal GPU
   crossover and does not change automatic dispatch.
@@ -59,6 +67,13 @@ qualification.
 - Prepared-view lifetime now materially affects sweep throughput. End-to-end
   creation and release still pays upload and workspace allocation, while
   repeated compatible batches reuse capacity.
+- Canonical follow-up evidence therefore reports both cold `end_to_end` latency
+  and `prepared_end_to_end` steady-state throughput. The latter reuses the
+  immutable upload and an explicitly prewarmed sweep workspace but still
+  includes compact readback, hostile-output validation, exact admission, a
+  fresh bounded store, metrics, and transient result release. Prepare/upload,
+  the one identical full-pipeline warm-up, and retained-view release are
+  excluded from this scope.
 - Small jobs remain CPU-favored because GPU launch and status boundaries have
   a fixed cost. Disconnected jobs also retain the required CPU oracle cost.
 - Device compaction reduces transfer volume without weakening exact host

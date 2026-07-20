@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -33,11 +34,20 @@ std::optional<std::string> CudaCandidateDeviceClass(const gpu::BackendMetadata& 
          "." + std::to_string(metadata.compute_capability_minor);
 }
 
-CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItem(
+namespace {
+
+enum class BatchItemMembership : std::uint8_t {
+  kScanBatch,
+  kUnique,
+  kNotUnique,
+};
+
+CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItemImpl(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     const gpu::PlanarCandidateBatchQuery& query,
     const routing::NormalizedCandidateGenerationPolicy& normalized_policy,
-    const gpu::PlanarCandidateBatch& batch, const gpu::PlanarCandidateBatchItem& item) {
+    const gpu::PlanarCandidateBatch& batch, const gpu::PlanarCandidateBatchItem& item,
+    BatchItemMembership membership) {
   const gpu::PlanarGpuRoute* route = std::get_if<gpu::PlanarGpuRoute>(&item.result());
   const gpu::PlanarGenerator claimed_generator =
       route == nullptr ? batch.generator : route->generator;
@@ -109,9 +119,11 @@ CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItem(
                   "Validated GPU batch schema, identity, generator, or CUDA device metadata is "
                   "incomplete");
   }
-  const std::size_t matching_batch_items =
-      std::ranges::count(batch.items, item.query_id(), &gpu::PlanarCandidateBatchItem::query_id);
-  if (matching_batch_items != 1) {
+  const bool uniquely_present = membership == BatchItemMembership::kUnique ||
+                                (membership == BatchItemMembership::kScanBatch &&
+                                 std::ranges::count(batch.items, item.query_id(),
+                                                    &gpu::PlanarCandidateBatchItem::query_id) == 1);
+  if (!uniquely_present) {
     return reject(context_associations, CandidateRejectionCode::kAssociationMismatch,
                   "candidate.builder.gpu_batch_item_membership.v1",
                   "Validated GPU item query identity is not unique in the supplied batch");
@@ -153,6 +165,53 @@ CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItem(
       board, compiled_board, query.request, normalized_policy, route_associations,
       route->policy_identity, route->total_cost, route->segments, provenance,
       internal::CandidateProducerAuthority::kAuthenticatedCudaBatch);
+}
+
+}  // namespace
+
+CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItem(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    const gpu::PlanarCandidateBatchQuery& query,
+    const routing::NormalizedCandidateGenerationPolicy& normalized_policy,
+    const gpu::PlanarCandidateBatch& batch, const gpu::PlanarCandidateBatchItem& item) {
+  return BuildGeneratedCandidateFromGpuBatchItemImpl(board, compiled_board, query,
+                                                     normalized_policy, batch, item,
+                                                     BatchItemMembership::kScanBatch);
+}
+
+GpuCandidateBatchBuildResult BuildGeneratedCandidatesFromGpuBatchItems(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    const gpu::PlanarCandidateBatch& batch,
+    std::span<const GpuCandidateBatchBuildRequest> requests) {
+  if (requests.size() > routing::kMaximumAlternativePolicyCount ||
+      batch.items.size() > routing::kMaximumAlternativePolicyCount) {
+    return GpuCandidateBatchBuildFailure{
+        .code = CandidateRejectionCode::kBudgetExhausted,
+        .invariant_id = "candidate.builder.gpu_batch_conversion_bound.v1",
+        .detail = "GPU candidate batch conversion exceeds the bounded v1 item count",
+    };
+  }
+
+  std::vector<std::uint64_t> batch_query_ids;
+  batch_query_ids.reserve(batch.items.size());
+  for (const gpu::PlanarCandidateBatchItem& item : batch.items) {
+    batch_query_ids.push_back(item.query_id());
+  }
+  std::ranges::sort(batch_query_ids);
+
+  std::vector<CandidateDraftBuildResult> results;
+  results.reserve(requests.size());
+  for (const GpuCandidateBatchBuildRequest& request : requests) {
+    const std::uint64_t query_id = request.item.get().query_id();
+    const auto matches = std::ranges::equal_range(batch_query_ids, query_id);
+    const BatchItemMembership membership = std::ranges::distance(matches) == 1
+                                               ? BatchItemMembership::kUnique
+                                               : BatchItemMembership::kNotUnique;
+    results.push_back(BuildGeneratedCandidateFromGpuBatchItemImpl(
+        board, compiled_board, request.query.get(), request.normalized_policy.get(), batch,
+        request.item.get(), membership));
+  }
+  return results;
 }
 
 }  // namespace apgar::candidates

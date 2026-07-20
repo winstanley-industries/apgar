@@ -1,8 +1,12 @@
 #ifndef APGAR_CANDIDATES_GPU_CANDIDATE_ADAPTER_H_
 #define APGAR_CANDIDATES_GPU_CANDIDATE_ADAPTER_H_
 
+#include <functional>
 #include <optional>
+#include <span>
 #include <string>
+#include <variant>
+#include <vector>
 
 #include "apgar/candidates/route_candidate.h"
 #include "apgar/gpu/planar_router.h"
@@ -28,6 +32,29 @@ namespace apgar::candidates {
     const gpu::PlanarCandidateBatchQuery& query,
     const routing::NormalizedCandidateGenerationPolicy& normalized_policy,
     const gpu::PlanarCandidateBatch& batch, const gpu::PlanarCandidateBatchItem& item);
+
+struct GpuCandidateBatchBuildRequest {
+  std::reference_wrapper<const gpu::PlanarCandidateBatchQuery> query;
+  std::reference_wrapper<const routing::NormalizedCandidateGenerationPolicy> normalized_policy;
+  std::reference_wrapper<const gpu::PlanarCandidateBatchItem> item;
+};
+
+struct GpuCandidateBatchBuildFailure {
+  CandidateRejectionCode code = CandidateRejectionCode::kInternalInvariant;
+  std::string invariant_id;
+  std::string detail;
+};
+
+using GpuCandidateBatchBuildResult =
+    std::variant<std::vector<CandidateDraftBuildResult>, GpuCandidateBatchBuildFailure>;
+
+// Bounded batch form. It proves item membership once through a sorted query-ID
+// index, then retains every per-item seal, association, and producer check used
+// by the single-item adapter. Results preserve request order.
+[[nodiscard]] GpuCandidateBatchBuildResult BuildGeneratedCandidatesFromGpuBatchItems(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    const gpu::PlanarCandidateBatch& batch,
+    std::span<const GpuCandidateBatchBuildRequest> requests);
 
 }  // namespace apgar::candidates
 

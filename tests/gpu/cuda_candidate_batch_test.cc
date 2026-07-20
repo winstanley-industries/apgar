@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -665,7 +667,7 @@ TEST(CudaCandidateBatchTest, SealedBatchItemAuthenticatesCudaCandidateProvenance
 
   const candidates::CandidateDraftBuildResult built =
       candidates::BuildGeneratedCandidateFromGpuBatchItem(board, compiled, query, normalized, batch,
-                                                          item);
+                                                          copied_item);
   ASSERT_TRUE(std::holds_alternative<candidates::GeneratedRouteCandidate>(built));
   const candidates::CandidateProvenance& provenance =
       std::get<candidates::GeneratedRouteCandidate>(built).provenance;
@@ -675,8 +677,76 @@ TEST(CudaCandidateBatchTest, SealedBatchItemAuthenticatesCudaCandidateProvenance
   EXPECT_EQ(provenance.query_identity, query.query_id);
   EXPECT_EQ(provenance.candidate_ordinal, request.candidate_policy.candidate_ordinal);
 
+  const std::array bulk_requests = {candidates::GpuCandidateBatchBuildRequest{
+      .query = std::cref(query),
+      .normalized_policy = std::cref(normalized),
+      .item = std::cref(copied_item),
+  }};
+  const candidates::GpuCandidateBatchBuildResult bulk =
+      candidates::BuildGeneratedCandidatesFromGpuBatchItems(board, compiled, batch, bulk_requests);
+  ASSERT_TRUE(std::holds_alternative<std::vector<candidates::CandidateDraftBuildResult>>(bulk));
+  const std::vector<candidates::CandidateDraftBuildResult>& bulk_results =
+      std::get<std::vector<candidates::CandidateDraftBuildResult>>(bulk);
+  ASSERT_EQ(bulk_results.size(), 1U);
+  ASSERT_TRUE(std::holds_alternative<candidates::GeneratedRouteCandidate>(bulk_results.front()));
+  EXPECT_EQ(std::get<candidates::GeneratedRouteCandidate>(bulk_results.front()).payload_checksum,
+            std::get<candidates::GeneratedRouteCandidate>(built).payload_checksum);
+
   PlanarCandidateBatchQuery swapped_query = query;
   ++swapped_query.query_id;
+  const std::array ordered_requests = {
+      candidates::GpuCandidateBatchBuildRequest{
+          .query = std::cref(swapped_query),
+          .normalized_policy = std::cref(normalized),
+          .item = std::cref(copied_item),
+      },
+      candidates::GpuCandidateBatchBuildRequest{
+          .query = std::cref(query),
+          .normalized_policy = std::cref(normalized),
+          .item = std::cref(copied_item),
+      },
+  };
+  const candidates::GpuCandidateBatchBuildResult ordered =
+      candidates::BuildGeneratedCandidatesFromGpuBatchItems(board, compiled, batch,
+                                                            ordered_requests);
+  ASSERT_TRUE(std::holds_alternative<std::vector<candidates::CandidateDraftBuildResult>>(ordered));
+  const std::vector<candidates::CandidateDraftBuildResult>& ordered_results =
+      std::get<std::vector<candidates::CandidateDraftBuildResult>>(ordered);
+  ASSERT_EQ(ordered_results.size(), 2U);
+  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(ordered_results[0]));
+  EXPECT_EQ(std::get<candidates::CandidateRejection>(ordered_results[0]).invariant_id,
+            "candidate.builder.gpu_query_attribution.v1");
+  ASSERT_TRUE(std::holds_alternative<candidates::GeneratedRouteCandidate>(ordered_results[1]));
+  EXPECT_EQ(std::get<candidates::GeneratedRouteCandidate>(ordered_results[1]).payload_checksum,
+            std::get<candidates::GeneratedRouteCandidate>(built).payload_checksum);
+
+  PlanarCandidateBatch duplicate_batch = batch;
+  duplicate_batch.items.push_back(copied_item);
+  const candidates::GpuCandidateBatchBuildResult duplicate =
+      candidates::BuildGeneratedCandidatesFromGpuBatchItems(board, compiled, duplicate_batch,
+                                                            bulk_requests);
+  ASSERT_TRUE(
+      std::holds_alternative<std::vector<candidates::CandidateDraftBuildResult>>(duplicate));
+  const std::vector<candidates::CandidateDraftBuildResult>& duplicate_results =
+      std::get<std::vector<candidates::CandidateDraftBuildResult>>(duplicate);
+  ASSERT_EQ(duplicate_results.size(), 1U);
+  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(duplicate_results.front()));
+  EXPECT_EQ(std::get<candidates::CandidateRejection>(duplicate_results.front()).invariant_id,
+            "candidate.builder.gpu_batch_item_membership.v1");
+
+  PlanarCandidateBatch absent_batch = batch;
+  absent_batch.items.clear();
+  const candidates::GpuCandidateBatchBuildResult absent =
+      candidates::BuildGeneratedCandidatesFromGpuBatchItems(board, compiled, absent_batch,
+                                                            bulk_requests);
+  ASSERT_TRUE(std::holds_alternative<std::vector<candidates::CandidateDraftBuildResult>>(absent));
+  const std::vector<candidates::CandidateDraftBuildResult>& absent_results =
+      std::get<std::vector<candidates::CandidateDraftBuildResult>>(absent);
+  ASSERT_EQ(absent_results.size(), 1U);
+  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(absent_results.front()));
+  EXPECT_EQ(std::get<candidates::CandidateRejection>(absent_results.front()).invariant_id,
+            "candidate.builder.gpu_batch_item_membership.v1");
+
   const candidates::CandidateDraftBuildResult swapped =
       candidates::BuildGeneratedCandidateFromGpuBatchItem(board, compiled, swapped_query,
                                                           normalized, batch, item);

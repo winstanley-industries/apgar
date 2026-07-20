@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <map>
 #include <new>
@@ -14,6 +15,8 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -747,7 +750,8 @@ std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(std::uint64_t inp
   const UWide total_states = static_cast<UWide>(admitted_query_count) * represented_states;
   const UWide validation_scratch_bytes =
       admitted_query_count != 0 && compact_paths
-          ? ((static_cast<UWide>(represented_states) + 63U) / 64U) * sizeof(std::uint64_t)
+          ? ((static_cast<UWide>(represented_states) + 63U) / 64U) * sizeof(std::uint64_t) *
+                CandidateCompactValidationWorkerCountV1(admitted_query_count)
           : 0;
   const UWide bytes = static_cast<UWide>(input_query_count) * kPerInputEnvelopeBytes +
                       static_cast<UWide>(admitted_query_count) * per_admitted_envelope_bytes +
@@ -1998,6 +2002,10 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
       .policy_edges = {},
       .cancellation = policy.cancellation,
   };
+  backend_request.queries.reserve(preflight.admitted.size());
+  backend_request.policy_edges.reserve(static_cast<std::size_t>(preflight.aggregate_policy_edges));
+  const std::uint64_t routing_profile_fingerprint =
+      routing::FingerprintRoutingProfile(board.data().routing_profile);
 
   for (HostAdmittedCandidateBatchQuery& host_admitted : preflight.admitted) {
     const std::size_t item_index = host_admitted.item_index;
@@ -2038,8 +2046,7 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
         .query_id = query.query_id,
         .workspace_owner = owner,
         .policy_identity = normalized.identity,
-        .routing_profile_fingerprint =
-            routing::FingerprintRoutingProfile(board.data().routing_profile),
+        .routing_profile_fingerprint = routing_profile_fingerprint,
         .start_node = endpoints.start_node,
         .goal_node = endpoints.goal_node,
         .policy_offset = policy_offset,
@@ -2146,13 +2153,20 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
     return output;
   }
 
-  std::set<std::uint64_t> admitted_query_ids;
-  for (const AdmittedCandidateBatchQuery& query : admitted) {
-    admitted_query_ids.insert(query.device_query.query_id);
-  }
+  const bool canonical_readback_order =
+      readback.queries.size() == admitted.size() &&
+      std::ranges::equal(
+          readback.queries, admitted, {},
+          [](const UntrustedCandidateBatchQueryResult& query) { return query.header.query_id; },
+          [](const AdmittedCandidateBatchQuery& query) { return query.device_query.query_id; });
   const bool foreign_query =
+      !canonical_readback_order &&
       std::ranges::any_of(readback.queries, [&](const UntrustedCandidateBatchQueryResult& query) {
-        return !admitted_query_ids.contains(query.header.query_id);
+        const auto found = std::ranges::lower_bound(
+            admitted, query.header.query_id, {}, [](const AdmittedCandidateBatchQuery& candidate) {
+              return candidate.device_query.query_id;
+            });
+        return found == admitted.end() || found->device_query.query_id != query.header.query_id;
       });
   if (readback.queries.size() != admitted.size() || foreign_query) {
     SetAdmittedBatchFailure(
@@ -2171,38 +2185,58 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
   }
   output.telemetry = readback.telemetry;
 
-  std::vector<std::uint64_t> compact_visited_words;
+  std::vector<std::vector<std::uint64_t>> compact_visited_words;
   if (readback.readback_kind == CandidateBatchReadbackKind::kCompactPaths) {
     const std::size_t word_count =
         (static_cast<std::size_t>(device.header.represented_states) + 63U) / 64U;
-    compact_visited_words.resize(word_count);
-  }
-
-  std::map<std::uint64_t, const UntrustedCandidateBatchQueryResult*> by_query;
-  std::set<std::uint64_t> duplicate_query_ids;
-  for (const UntrustedCandidateBatchQueryResult& query : readback.queries) {
-    if (!by_query.emplace(query.header.query_id, &query).second) {
-      duplicate_query_ids.insert(query.header.query_id);
+    compact_visited_words.resize(
+        static_cast<std::size_t>(CandidateCompactValidationWorkerCountV1(admitted.size())));
+    for (std::vector<std::uint64_t>& words : compact_visited_words) {
+      words.resize(word_count);
     }
   }
-  for (const AdmittedCandidateBatchQuery& admitted_query : admitted) {
+
+  std::vector<const UntrustedCandidateBatchQueryResult*> readback_by_admitted(admitted.size());
+  if (canonical_readback_order) {
+    for (std::size_t index = 0; index < admitted.size(); ++index) {
+      readback_by_admitted[index] = &readback.queries[index];
+    }
+  }
+  if (!canonical_readback_order) {
+    std::map<std::uint64_t, const UntrustedCandidateBatchQueryResult*> by_query;
+    std::set<std::uint64_t> duplicate_query_ids;
+    for (const UntrustedCandidateBatchQueryResult& query : readback.queries) {
+      if (!by_query.emplace(query.header.query_id, &query).second) {
+        duplicate_query_ids.insert(query.header.query_id);
+      }
+    }
+    for (std::size_t index = 0; index < admitted.size(); ++index) {
+      const auto found = by_query.find(admitted[index].device_query.query_id);
+      if (found != by_query.end() && !duplicate_query_ids.contains(found->first)) {
+        readback_by_admitted[index] = found->second;
+      }
+    }
+  }
+  const auto validate_query = [&](std::size_t admitted_index,
+                                  std::span<std::uint64_t> visited_words) {
+    const AdmittedCandidateBatchQuery& admitted_query = admitted[admitted_index];
     PlanarCandidateBatchItem& item = output.items[admitted_query.item_index];
-    const auto found = by_query.find(admitted_query.device_query.query_id);
-    if (found == by_query.end() ||
-        duplicate_query_ids.contains(admitted_query.device_query.query_id)) {
+    const UntrustedCandidateBatchQueryResult* untrusted_pointer =
+        readback_by_admitted[admitted_index];
+    if (untrusted_pointer == nullptr) {
       ReplaceUnsealedResult(
           item, Failure(PlanarGpuFailureCode::kInternalInvariant,
                         "GPU candidate batch omitted or duplicated a query result", std::nullopt,
                         std::nullopt, "gpu.batch.query.identity.v1"));
-      continue;
+      return;
     }
-    const UntrustedCandidateBatchQueryResult& untrusted = *found->second;
+    const UntrustedCandidateBatchQueryResult& untrusted = *untrusted_pointer;
     if (std::optional<PlanarGpuFailure> invalid = ValidateCandidateBatchEnvelope(
             device, admitted_query.device_query, readback, untrusted, policy.maximum_rounds,
             readback.telemetry.dispatched_rounds, readback.telemetry.finalization_launch_count);
         invalid.has_value()) {
       ReplaceUnsealedResult(item, std::move(*invalid));
-      continue;
+      return;
     }
     if (readback.readback_kind == CandidateBatchReadbackKind::kCompactPaths) {
       const KernelTelemetry compact_telemetry = QueryKernelTelemetry(untrusted.telemetry);
@@ -2217,7 +2251,7 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
           ReplaceUnsealedResult(
               item, ValidateAndReconstructCompactGpuPath(
                         board, compiled_board, device, request, prepared.metadata(),
-                        admitted_query.endpoints, untrusted, reverse_states, compact_visited_words,
+                        admitted_query.endpoints, untrusted, reverse_states, visited_words,
                         admitted_query.normalized_policy));
           break;
         }
@@ -2246,7 +2280,7 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
                             std::nullopt, compact_telemetry));
           break;
       }
-      continue;
+      return;
     }
     const std::optional<UntrustedKernelResultView> kernel_view =
         QueryKernelView(readback, untrusted);
@@ -2255,7 +2289,7 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
           item, Failure(PlanarGpuFailureCode::kInternalInvariant,
                         "GPU candidate query workspace disappeared after bounds validation",
                         std::nullopt, std::nullopt, "gpu.batch.workspace.bounds.v1"));
-      continue;
+      return;
     }
     const UntrustedKernelResultView& kernel = *kernel_view;
     if (kernel.completion != KernelCompletion::kReached) {
@@ -2268,7 +2302,7 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
               predecessor_validation, &admitted_query.normalized_policy.policy);
           invalid.has_value()) {
         ReplaceUnsealedResult(item, WithTelemetry(std::move(*invalid), kernel.telemetry));
-        continue;
+        return;
       }
     }
     switch (kernel.completion) {
@@ -2307,6 +2341,56 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
                           "GPU candidate query was cancelled at a bounded batch boundary",
                           std::nullopt, kernel.telemetry));
         break;
+    }
+  };
+
+  if (readback.readback_kind == CandidateBatchReadbackKind::kCompactPaths &&
+      compact_visited_words.size() > 1) {
+    std::vector<std::exception_ptr> validation_exceptions(compact_visited_words.size());
+    const auto run_worker = [&](std::size_t worker_index) {
+      try {
+        const std::size_t begin = admitted.size() * worker_index / compact_visited_words.size();
+        const std::size_t end =
+            admitted.size() * (worker_index + 1U) / compact_visited_words.size();
+        for (std::size_t query_index = begin; query_index < end; ++query_index) {
+          validate_query(query_index, compact_visited_words[worker_index]);
+        }
+      } catch (...) {
+        // Each partition owns one slot. Resolve failures in ascending
+        // partition order after joining so scheduler timing cannot change the
+        // externally visible exception.
+        validation_exceptions[worker_index] = std::current_exception();
+      }
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve(compact_visited_words.size() - 1U);
+    std::size_t next_worker = 0;
+    try {
+      for (; next_worker + 1U < compact_visited_words.size(); ++next_worker) {
+        workers.emplace_back(run_worker, next_worker);
+      }
+    } catch (const std::system_error&) {
+      // A constrained host may reject thread creation. Preserve correctness
+      // and deterministic output by finishing every unstarted partition on
+      // the caller before joining the workers that did start.
+    }
+    for (; next_worker < compact_visited_words.size(); ++next_worker) {
+      run_worker(next_worker);
+    }
+    for (std::thread& worker : workers) {
+      worker.join();
+    }
+    for (const std::exception_ptr& validation_exception : validation_exceptions) {
+      if (validation_exception != nullptr) {
+        std::rethrow_exception(validation_exception);
+      }
+    }
+  } else {
+    for (std::size_t admitted_index = 0; admitted_index < admitted.size(); ++admitted_index) {
+      validate_query(admitted_index, compact_visited_words.empty()
+                                         ? std::span<std::uint64_t>{}
+                                         : std::span<std::uint64_t>(compact_visited_words.front()));
     }
   }
   return output;
