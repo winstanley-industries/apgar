@@ -477,6 +477,10 @@ void CanonicalizeQueryOrder(BatchExecution* batch) {
   execution.finalization_launch_count = batch.telemetry.finalization_launch_count;
   execution.chunk_rounds = batch.telemetry.chunk_rounds;
   execution.cuda_event_milliseconds = batch.telemetry.kernel_milliseconds;
+  if (gpu_generator == apgar::gpu::PlanarGenerator::kHeadingAwareSweep) {
+    execution.parallel_worker_count = static_cast<std::uint32_t>(
+        apgar::gpu::CandidateCompactValidationWorkerCountV1(candidate_count));
+  }
   execution.externally_ordered =
       std::is_sorted(batch.items.begin(), batch.items.end(),
                      [](const apgar::gpu::PlanarCandidateBatchItem& left,
