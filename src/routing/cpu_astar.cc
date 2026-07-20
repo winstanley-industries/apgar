@@ -283,6 +283,29 @@ std::optional<RouteFailure> ValidateReconstructedRoute(const board_ir::BoardSnap
   return ValidateExactSegments(board, request, segments);
 }
 
+std::optional<RouteFailure> ValidateReconstructedRouteWithNormalizedPolicy(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    const CpuRouteRequest& request, const NormalizedCandidateGenerationPolicy& normalized_policy,
+    std::span<const LayerSegment> segments) {
+  if (std::optional<CompiledBoardAssociationIssue> association =
+          ValidateCompiledBoardAssociation(board, compiled_board);
+      association.has_value()) {
+    return AssociationFailure(*association);
+  }
+  if (std::optional<RouteRequestAdmissionIssue> invalid =
+          ValidateTwoTerminalRouteRequest(board, compiled_board, request);
+      invalid.has_value()) {
+    return AdmissionFailure(*invalid);
+  }
+  if (!CandidateGenerationPolicyShapeIsWithinV1Bounds(normalized_policy.policy) ||
+      FingerprintCandidateGenerationPolicy(normalized_policy.policy) !=
+          normalized_policy.identity) {
+    return Failure(RouteFailureCode::kInternalInvariant,
+                   "Preflight-normalized candidate policy has a stale identity");
+  }
+  return ValidateExactSegments(board, request, segments);
+}
+
 CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                                  const CompiledBoard& compiled_board,
                                  const CpuRouteRequest& request) {

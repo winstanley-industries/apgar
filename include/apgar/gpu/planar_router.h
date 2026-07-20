@@ -23,6 +23,7 @@ namespace apgar::gpu {
 
 inline constexpr std::uint32_t kDeviceCompiledBoardSchemaVersion = 1;
 inline constexpr std::uint32_t kDeviceCandidateBatchSchemaVersion = 1;
+inline constexpr std::uint32_t kDeviceCandidateCompactPathSchemaVersion = 1;
 inline constexpr std::uint8_t kIncomingHeadingCount = 9;
 inline constexpr std::uint8_t kNoIncomingHeading = 8;
 inline constexpr std::uint32_t kInvalidNodeIndex = std::numeric_limits<std::uint32_t>::max();
@@ -32,7 +33,8 @@ inline constexpr std::uint64_t kBannedResourceAdjustment =
     std::numeric_limits<std::uint64_t>::max();
 inline constexpr std::uint32_t kCandidateFrontierChunkRounds = 32;
 inline constexpr std::uint32_t kCandidateSweepChunkRounds = 8;
-inline constexpr std::uint32_t kCandidateBatchFixedLaunches = 2;
+inline constexpr std::uint32_t kCandidateFrontierFixedLaunches = 2;
+inline constexpr std::uint32_t kCandidateSweepFixedLaunches = 4;
 inline constexpr std::uint32_t kCandidateBatchMaximumFinalizationLaunches = 1;
 
 enum class PlanarGenerator : std::uint8_t {
@@ -58,6 +60,7 @@ struct PlanarGeneratorDescriptor {
   std::uint8_t heading_turn_relaxations_per_examined_work;
   std::uint8_t kernels_per_round_without_runs;
   std::uint8_t kernels_per_round_with_runs;
+  std::uint8_t fixed_launches;
   bool launches_once_per_chunk;
 };
 
@@ -74,6 +77,7 @@ struct PlanarGeneratorDescriptor {
           .heading_turn_relaxations_per_examined_work = 0,
           .kernels_per_round_without_runs = 0,
           .kernels_per_round_with_runs = 0,
+          .fixed_launches = kCandidateFrontierFixedLaunches,
           .launches_once_per_chunk = true,
       };
     case PlanarGenerator::kHeadingAwareSweep:
@@ -86,6 +90,7 @@ struct PlanarGeneratorDescriptor {
           .heading_turn_relaxations_per_examined_work = 8,
           .kernels_per_round_without_runs = 3,
           .kernels_per_round_with_runs = 4,
+          .fixed_launches = kCandidateSweepFixedLaunches,
           .launches_once_per_chunk = false,
       };
   }
@@ -120,8 +125,15 @@ struct KernelTelemetry {
 struct CandidateBatchTelemetry {
   std::uint64_t persistent_device_bytes = 0;
   std::uint64_t batch_device_bytes = 0;
+  // Actual retained capacity of the reusable batch workspace. This can exceed
+  // the current batch's logical bytes after a larger batch has used the same
+  // prepared view.
+  std::uint64_t workspace_capacity_device_bytes = 0;
   std::uint64_t peak_device_bytes = 0;
   std::uint64_t batch_host_bytes = 0;
+  // Final result payload only. Bounded query-status copies are represented by
+  // blocking_status_readback_count and are not included here.
+  std::uint64_t device_to_host_readback_bytes = 0;
   std::uint64_t kernel_launch_count = 0;
   std::uint64_t blocking_status_readback_count = 0;
   std::uint32_t dispatched_rounds = 0;
@@ -388,6 +400,22 @@ struct DeviceCandidateBatchResultV1 {
 };
 static_assert(sizeof(DeviceCandidateBatchResultV1) == 120);
 
+// Separately versioned compact sweep readback. A reached query names one
+// reverse (goal-to-start) state sequence in the batch's flat compact buffer.
+// Failure outcomes carry a zero state count. Host validation treats every
+// field and every returned state as untrusted.
+struct DeviceCandidateCompactPathV1 {
+  std::uint32_t schema_version = kDeviceCandidateCompactPathSchemaVersion;
+  std::uint32_t state_count = 0;
+  std::uint64_t query_id = 0;
+  std::uint64_t workspace_owner = 0;
+  std::uint64_t state_offset = 0;
+
+  friend bool operator==(const DeviceCandidateCompactPathV1&,
+                         const DeviceCandidateCompactPathV1&) = default;
+};
+static_assert(sizeof(DeviceCandidateCompactPathV1) == 32);
+
 struct BackendCandidateBatchExecutionRequest {
   std::uint32_t schema_version = kDeviceCandidateBatchSchemaVersion;
   std::uint64_t batch_id = 0;
@@ -403,18 +431,21 @@ struct BackendCandidateBatchExecutionRequest {
 };
 
 // Deterministic logical upper bound for transient host payload owned while a
-// candidate batch is encoded, executed, and read into one final flat
-// query-major workspace. input_query_count includes retained preflight failures;
-// admitted_query_count includes only queries allocated execution/readback
-// workspaces. Container allocator overhead is deliberately excluded.
+// candidate batch is encoded, executed, read into one final flat query-major
+// workspace, and structurally validated. input_query_count includes retained
+// preflight failures; admitted_query_count includes only queries allocated
+// execution/readback workspaces. Caller-owned inputs, final returned route
+// vectors, the persistent prepared lookup, an independent disconnected-result
+// CPU oracle, and allocator bookkeeping are deliberately excluded.
 [[nodiscard]] std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(
     std::uint64_t input_query_count, std::uint64_t admitted_query_count,
-    std::uint64_t policy_edge_count, std::uint64_t represented_states) noexcept;
+    std::uint64_t policy_edge_count, std::uint64_t represented_states,
+    PlanarGenerator generator = PlanarGenerator::kBucketedFrontier) noexcept;
 
 // All-input-admitted convenience form used by a backend after preflight.
 [[nodiscard]] std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(
-    std::uint64_t query_count, std::uint64_t policy_edge_count,
-    std::uint64_t represented_states) noexcept;
+    std::uint64_t query_count, std::uint64_t policy_edge_count, std::uint64_t represented_states,
+    PlanarGenerator generator = PlanarGenerator::kBucketedFrontier) noexcept;
 
 // Peak of the earlier host-preflight phase: retained per-input classification
 // envelopes plus normalized-policy scratch for every individually shape-valid
@@ -453,13 +484,20 @@ struct UntrustedCandidateBatchQueryResult {
   DeviceCandidateBatchResultV1 header;
   std::uint64_t workspace_offset = 0;
   std::uint64_t workspace_state_count = 0;
+  std::optional<DeviceCandidateCompactPathV1> compact_path;
   CandidateQueryTelemetry telemetry;
+};
+
+enum class CandidateBatchReadbackKind : std::uint8_t {
+  kFullWorkspace,
+  kCompactPaths,
 };
 
 struct UntrustedCandidateBatchResult {
   std::uint32_t schema_version = kDeviceCandidateBatchSchemaVersion;
   std::uint64_t batch_id = 0;
   PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
+  CandidateBatchReadbackKind readback_kind = CandidateBatchReadbackKind::kFullWorkspace;
   CandidateBatchTelemetry telemetry;
   std::vector<UntrustedCandidateBatchQueryResult> queries;
   // Final host ownership is flat and query-major. Query result offsets expose
@@ -469,6 +507,7 @@ struct UntrustedCandidateBatchResult {
   std::vector<std::uint32_t> predecessors;
   std::vector<std::uint64_t> state_owners;
   std::vector<std::uint64_t> predecessor_owners;
+  std::vector<std::uint32_t> compact_path_states;
 };
 
 using BackendMetadataResult = std::variant<BackendMetadata, BackendError>;

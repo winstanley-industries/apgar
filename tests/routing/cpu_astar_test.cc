@@ -10,6 +10,7 @@
 #include "apgar/adapters/kicad_fixture.h"
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry_compiler/compiled_board.h"
+#include "src/routing/cpu_astar_internal.h"
 #include "tests/support/board_builder.h"
 #include "tests/support/compiler_builder.h"
 #include "tests/support/google_test.h"
@@ -269,6 +270,28 @@ TEST(CpuAStarTest, ExactValidatorRejectsDeliberatelyCorruptedReconstructedPath) 
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->code, RouteFailureCode::kValidationFailed);
   EXPECT_TRUE(result->obstacle.has_value());
+}
+
+TEST(CpuAStarTest, PreflightNormalizedExactValidatorRejectsAStalePolicyIdentity) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile());
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  const CpuRouteResult route_result = RouteWithCpuAStar(board, compiled, request);
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(route_result));
+  const CandidatePolicyResult normalized_result =
+      NormalizeCandidateGenerationPolicy(compiled, request.candidate_policy);
+  ASSERT_TRUE(std::holds_alternative<NormalizedCandidateGenerationPolicy>(normalized_result));
+  NormalizedCandidateGenerationPolicy normalized =
+      std::get<NormalizedCandidateGenerationPolicy>(normalized_result);
+  ++normalized.identity;
+
+  const std::optional<RouteFailure> result = ValidateReconstructedRouteWithNormalizedPolicy(
+      board, compiled, request, normalized, std::get<CpuRoute>(route_result).segments);
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->code, RouteFailureCode::kInternalInvariant);
 }
 
 TEST(CpuAStarTest, ExactValidatorRejectsAPathEnabledByACorruptedMask) {

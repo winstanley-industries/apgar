@@ -27,6 +27,11 @@ enum class UntrustedCandidateBatchResultFault : std::uint8_t {
   kBatchTelemetry,
   kQueryIdentity,
   kFalseDisconnected,
+  kCompactPathBounds,
+  kCompactPathEndpoint,
+  kCompactPathCycle,
+  kCompactPathHeading,
+  kCompactPathEdge,
 };
 
 [[nodiscard]] std::unique_ptr<IPlanarRouteBackend> CreateFaultInjectingPlanarRouteBackend(

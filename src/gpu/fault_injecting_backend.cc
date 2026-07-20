@@ -22,6 +22,27 @@ template <typename T>
                                        static_cast<std::size_t>(count));
 }
 
+[[nodiscard]] std::span<std::uint32_t> MutableCompactPathSlice(
+    UntrustedCandidateBatchResult& result,
+    const UntrustedCandidateBatchQueryResult& query) noexcept {
+  if (!query.compact_path.has_value()) {
+    return {};
+  }
+  const std::uint64_t offset = query.compact_path->state_offset;
+  const std::uint64_t count = query.compact_path->state_count;
+  if (offset > result.compact_path_states.size() ||
+      count > static_cast<std::uint64_t>(result.compact_path_states.size()) - offset) {
+    return {};
+  }
+  return std::span<std::uint32_t>(result.compact_path_states)
+      .subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(count));
+}
+
+[[nodiscard]] bool CompactPathContains(std::span<const std::uint32_t> states,
+                                       std::uint32_t candidate) noexcept {
+  return std::ranges::find(states, candidate) != states.end();
+}
+
 class FaultInjectingPlanarRouteBackend final : public IPlanarRouteBackend {
  public:
   FaultInjectingPlanarRouteBackend(IPlanarRouteBackend& inner, UntrustedResultFault fault)
@@ -149,6 +170,55 @@ class FaultInjectingCandidateBatchBackend final : public IPlanarRouteBackend {
             kNoIncomingHeading;
         if (start_state < labels.size()) {
           labels[static_cast<std::size_t>(start_state)] = 0;
+        }
+        break;
+      }
+      case UntrustedCandidateBatchResultFault::kCompactPathBounds:
+        if (query.compact_path.has_value()) {
+          query.compact_path->schema_version =
+              query.compact_path->schema_version == std::numeric_limits<std::uint32_t>::max()
+                  ? query.compact_path->schema_version - 1
+                  : query.compact_path->schema_version + 1;
+        }
+        break;
+      case UntrustedCandidateBatchResultFault::kCompactPathEndpoint: {
+        std::span<std::uint32_t> states = MutableCompactPathSlice(result, query);
+        if (!states.empty()) {
+          states.front() = kInvalidStateIndex;
+        }
+        break;
+      }
+      case UntrustedCandidateBatchResultFault::kCompactPathCycle: {
+        std::span<std::uint32_t> states = MutableCompactPathSlice(result, query);
+        if (states.size() >= 4) {
+          states[1] = states[2];
+        }
+        break;
+      }
+      case UntrustedCandidateBatchResultFault::kCompactPathHeading: {
+        std::span<std::uint32_t> states = MutableCompactPathSlice(result, query);
+        for (std::size_t index = 1; index + 1 < states.size(); ++index) {
+          const std::uint32_t node = NodeIndexForState(states[index]);
+          const std::uint32_t replacement = StateIndex(node, kNoIncomingHeading);
+          if (node != query.header.start_node && !CompactPathContains(states, replacement)) {
+            states[index] = replacement;
+            break;
+          }
+        }
+        break;
+      }
+      case UntrustedCandidateBatchResultFault::kCompactPathEdge: {
+        std::span<std::uint32_t> states = MutableCompactPathSlice(result, query);
+        for (std::size_t index = 1; index + 1 < states.size(); ++index) {
+          const std::uint32_t node = NodeIndexForState(states[index]);
+          const std::uint8_t original_heading = IncomingHeadingForState(states[index]);
+          for (std::uint8_t heading = 0; heading < 8; ++heading) {
+            const std::uint32_t replacement = StateIndex(node, heading);
+            if (heading != original_heading && !CompactPathContains(states, replacement)) {
+              states[index] = replacement;
+              return readback;
+            }
+          }
         }
         break;
       }

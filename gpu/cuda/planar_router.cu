@@ -119,6 +119,14 @@ class DeviceBuffer {
     return std::nullopt;
   }
 
+  [[nodiscard]] std::optional<BackendError> EnsureCapacity(std::size_t count,
+                                                           const char* operation) {
+    if (count <= count_) {
+      return std::nullopt;
+    }
+    return Allocate(count, operation);
+  }
+
   void Reset() noexcept {
     if (data_ != nullptr) {
       int previous_device = -1;
@@ -148,6 +156,69 @@ class DeviceBuffer {
   int device_ = -1;
 };
 
+class CudaSweepCandidateWorkspace {
+ public:
+  DeviceBuffer<DeviceCandidateBatchQueryV1> device_queries;
+  DeviceBuffer<DeviceCandidatePolicyEdgeV1> policy_edges;
+  DeviceBuffer<DeviceCandidateBatchResultV1> results;
+  DeviceBuffer<std::uint64_t> labels;
+  DeviceBuffer<std::uint64_t> state_owners;
+  DeviceBuffer<std::uint32_t> query_status;
+  DeviceBuffer<std::uint64_t> sweep_departures;
+  DeviceBuffer<std::uint32_t> sweep_changed;
+  DeviceBuffer<DeviceCandidateCompactPathV1> compact_paths;
+  DeviceBuffer<std::uint32_t> compact_path_states;
+
+  [[nodiscard]] std::uint64_t bytes() const noexcept {
+    return device_queries.bytes() + policy_edges.bytes() + results.bytes() + labels.bytes() +
+           state_owners.bytes() + query_status.bytes() + sweep_departures.bytes() +
+           sweep_changed.bytes() + compact_paths.bytes() + compact_path_states.bytes();
+  }
+
+  void Reset() noexcept {
+    device_queries.Reset();
+    policy_edges.Reset();
+    results.Reset();
+    labels.Reset();
+    state_owners.Reset();
+    query_status.Reset();
+    sweep_departures.Reset();
+    sweep_changed.Reset();
+    compact_paths.Reset();
+    compact_path_states.Reset();
+  }
+};
+
+class CudaSweepWorkspaceCache {
+ public:
+  [[nodiscard]] std::unique_ptr<CudaSweepCandidateWorkspace> Acquire() {
+    std::scoped_lock lock(mutex_);
+    if (cached_ != nullptr) {
+      return std::move(cached_);
+    }
+    return std::make_unique<CudaSweepCandidateWorkspace>();
+  }
+
+  void Release(std::unique_ptr<CudaSweepCandidateWorkspace> workspace) noexcept {
+    if (workspace == nullptr) {
+      return;
+    }
+    std::scoped_lock lock(mutex_);
+    if (cached_ == nullptr || workspace->bytes() > cached_->bytes()) {
+      cached_ = std::move(workspace);
+    }
+  }
+
+  void EvictIdle() noexcept {
+    std::scoped_lock lock(mutex_);
+    cached_.reset();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::unique_ptr<CudaSweepCandidateWorkspace> cached_;
+};
+
 class CudaUploadedCompiledView final : public UploadedCompiledView {
  public:
   int device = -1;
@@ -158,10 +229,18 @@ class CudaUploadedCompiledView final : public UploadedCompiledView {
   DeviceBuffer<DeviceNodeV1> nodes;
   DeviceBuffer<DeviceRunV1> runs;
   DeviceBuffer<std::uint32_t> run_nodes;
+  // All transient execution storage on one prepared view shares one device
+  // budget. Keep the execution lease through readback so an idle sweep cache
+  // cannot appear beside an active frontier or legacy workspace.
+  std::shared_ptr<std::mutex> execution_mutex = std::make_shared<std::mutex>();
+  std::shared_ptr<CudaSweepWorkspaceCache> sweep_workspace_cache =
+      std::make_shared<CudaSweepWorkspaceCache>();
 };
 
 class CudaPendingRouteExecution final : public PendingRouteExecution {
  public:
+  std::shared_ptr<std::mutex> execution_mutex;
+  std::unique_lock<std::mutex> execution_lease;
   int device = -1;
   BackendExecutionRequest request{};
   KernelCompletion completion = KernelCompletion::kDisconnected;
@@ -173,13 +252,22 @@ class CudaPendingRouteExecution final : public PendingRouteExecution {
 
 class CudaPendingCandidateBatchExecution final : public PendingCandidateBatchExecution {
  public:
+  ~CudaPendingCandidateBatchExecution() override {
+    if (sweep_workspace_cache != nullptr) {
+      sweep_workspace_cache->Release(std::move(sweep_workspace));
+    }
+  }
+
   int device = -1;
+  std::shared_ptr<std::mutex> execution_mutex;
+  std::unique_lock<std::mutex> execution_lease;
   std::uint64_t batch_id = 0;
   PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
   std::uint64_t state_count = 0;
   std::uint64_t persistent_bytes = 0;
   std::uint64_t batch_bytes = 0;
   std::uint64_t batch_host_bytes = 0;
+  std::uint64_t workspace_capacity_bytes = 0;
   double kernel_milliseconds = 0.0;
   std::uint64_t kernel_launch_count = 0;
   std::uint64_t blocking_status_readback_count = 0;
@@ -194,6 +282,8 @@ class CudaPendingCandidateBatchExecution final : public PendingCandidateBatchExe
   DeviceBuffer<std::uint32_t> predecessors;
   DeviceBuffer<std::uint64_t> state_owners;
   DeviceBuffer<std::uint64_t> predecessor_owners;
+  std::shared_ptr<CudaSweepWorkspaceCache> sweep_workspace_cache;
+  std::unique_ptr<CudaSweepCandidateWorkspace> sweep_workspace;
 };
 
 inline constexpr std::uint32_t kBatchQueryRunning = 0;
@@ -557,9 +647,13 @@ __global__ void InitializeCandidateBatch(
     const std::uint32_t local_state = static_cast<std::uint32_t>(slot - query.workspace_offset);
     const std::uint32_t start_state = DeviceStateIndex(query.start_node, kNoIncomingHeading);
     labels[slot] = local_state == start_state ? 0 : kInfiniteRouteCost;
-    predecessors[slot] = kInvalidStateIndex;
     state_owners[slot] = query.workspace_owner;
-    predecessor_owners[slot] = query.workspace_owner;
+    if (predecessors != nullptr) {
+      predecessors[slot] = kInvalidStateIndex;
+    }
+    if (predecessor_owners != nullptr) {
+      predecessor_owners[slot] = query.workspace_owner;
+    }
     if (closed != nullptr) {
       closed[slot] = 0;
     }
@@ -979,6 +1073,149 @@ __global__ void SelectCandidateBatchPredecessors(
     }
   }
   predecessors[slot] = best;
+}
+
+// Each query derives its reverse predecessor chain directly from final labels
+// into its disjoint fixed-capacity slice. A second deterministic kernel packs
+// those short paths before readback.
+__global__ void BuildQueryMajorCandidateSweepPaths(
+    const DeviceNodeV1* nodes, DeviceCompiledHeaderV1 header,
+    const DeviceCandidateBatchQueryV1* queries, const DeviceCandidatePolicyEdgeV1* policy_edges,
+    std::uint32_t query_count, const std::uint64_t* labels, std::uint64_t* state_owners,
+    DeviceCandidateBatchResultV1* results, DeviceCandidateCompactPathV1* compact_paths,
+    std::uint32_t* compact_path_states) {
+  const std::uint32_t query_index = blockIdx.x;
+  if (query_index >= query_count || threadIdx.x != 0) {
+    return;
+  }
+  const DeviceCandidateBatchQueryV1 query = queries[query_index];
+  DeviceCandidateBatchResultV1& result = results[query_index];
+  DeviceCandidateCompactPathV1& compact = compact_paths[query_index];
+  compact.schema_version = kDeviceCandidateCompactPathSchemaVersion;
+  compact.state_count = 0;
+  compact.query_id = query.query_id;
+  compact.workspace_owner = query.workspace_owner;
+  compact.state_offset = query.workspace_offset;
+  if (result.completion != KernelCompletion::kReached) {
+    return;
+  }
+
+  const std::uint32_t start_state = DeviceStateIndex(query.start_node, kNoIncomingHeading);
+  std::uint32_t cursor = result.goal_state;
+  bool complete = false;
+  for (std::uint32_t path_count = 0; path_count < header.represented_states; ++path_count) {
+    if (cursor >= header.represented_states ||
+        !DeviceClaimCandidateState(state_owners, query.workspace_offset + cursor,
+                                   query.workspace_owner, &result)) {
+      break;
+    }
+    compact_path_states[query.workspace_offset + path_count] = cursor;
+    if (cursor == start_state) {
+      compact.state_count = path_count + 1U;
+      complete = true;
+      break;
+    }
+    const std::uint32_t node = cursor / kIncomingHeadingCount;
+    const std::uint8_t incoming = static_cast<std::uint8_t>(cursor % kIncomingHeadingCount);
+    if (incoming == kNoIncomingHeading || incoming >= 8) {
+      break;
+    }
+    const std::uint8_t opposite = static_cast<std::uint8_t>((incoming + 4U) % 8U);
+    const std::uint32_t predecessor_node = nodes[node].neighbors[opposite];
+    if (predecessor_node == kInvalidNodeIndex) {
+      break;
+    }
+    std::uint32_t best = kInvalidStateIndex;
+    for (std::uint8_t predecessor_heading = 0; predecessor_heading < kIncomingHeadingCount;
+         ++predecessor_heading) {
+      if (predecessor_heading == kNoIncomingHeading && predecessor_node != query.start_node) {
+        continue;
+      }
+      const std::uint32_t predecessor_state =
+          DeviceStateIndex(predecessor_node, predecessor_heading);
+      const std::uint64_t predecessor_slot = query.workspace_offset + predecessor_state;
+      if (!DeviceClaimCandidateState(state_owners, predecessor_slot, query.workspace_owner,
+                                     &result)) {
+        best = kInvalidStateIndex;
+        break;
+      }
+      std::uint64_t transition = 0;
+      if (!DeviceBatchTransitionCost(nodes, header, query, policy_edges, predecessor_node, incoming,
+                                     predecessor_heading, &transition)) {
+        continue;
+      }
+      std::uint64_t candidate = 0;
+      if (DeviceCheckedAddFiniteRouteCost(labels[predecessor_slot], transition, &candidate) &&
+          candidate == labels[query.workspace_offset + cursor] && predecessor_state < best) {
+        best = predecessor_state;
+      }
+    }
+    if (best == kInvalidStateIndex) {
+      break;
+    }
+    cursor = best;
+  }
+  if (!complete) {
+    compact.state_count = 0;
+    result.workspace_owner = 0;
+  }
+}
+
+// One deterministic block computes canonical exclusive offsets in bounded
+// query chunks. The state copy itself remains fully parallel across queries and
+// path positions in the following kernel.
+__global__ void ScanCandidateSweepPathOffsets(std::uint32_t query_count,
+                                              DeviceCandidateCompactPathV1* compact_paths) {
+  if (blockIdx.x != 0) {
+    return;
+  }
+  __shared__ std::uint64_t scan[kThreadsPerBlock];
+  __shared__ std::uint64_t base_offset;
+  if (threadIdx.x == 0) {
+    base_offset = 0;
+  }
+  __syncthreads();
+
+  for (std::uint64_t chunk = 0; chunk < query_count; chunk += blockDim.x) {
+    const std::uint64_t query_index = chunk + threadIdx.x;
+    const std::uint64_t state_count =
+        query_index < query_count ? compact_paths[query_index].state_count : 0;
+    scan[threadIdx.x] = state_count;
+    __syncthreads();
+    for (std::uint32_t stride = 1; stride < blockDim.x; stride <<= 1U) {
+      const std::uint64_t addend = threadIdx.x >= stride ? scan[threadIdx.x - stride] : 0;
+      __syncthreads();
+      if (threadIdx.x >= stride) {
+        scan[threadIdx.x] += addend;
+      }
+      __syncthreads();
+    }
+    if (query_index < query_count) {
+      compact_paths[query_index].state_offset = base_offset + scan[threadIdx.x] - state_count;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      base_offset += scan[blockDim.x - 1U];
+    }
+    __syncthreads();
+  }
+}
+
+__global__ void ScatterCandidateSweepPaths(std::uint32_t query_count,
+                                           std::uint64_t represented_states,
+                                           const DeviceCandidateCompactPathV1* compact_paths,
+                                           const std::uint32_t* query_major_path_states,
+                                           std::uint32_t* packed_path_states) {
+  const std::uint32_t query_index = blockIdx.x;
+  if (query_index >= query_count) {
+    return;
+  }
+  const DeviceCandidateCompactPathV1 compact = compact_paths[query_index];
+  const std::uint64_t source_offset = static_cast<std::uint64_t>(query_index) * represented_states;
+  for (std::uint32_t state = threadIdx.x; state < compact.state_count; state += blockDim.x) {
+    packed_path_states[compact.state_offset + state] =
+        query_major_path_states[source_offset + state];
+  }
 }
 
 [[nodiscard]] std::optional<BackendError> CopyToDevice(void* destination, const void* source,
@@ -1632,11 +1869,15 @@ struct CandidateBatchAllocation {
                        sizeof(std::uint32_t));
   bytes +=
       static_cast<__uint128_t>(request.policy_edges.size()) * sizeof(DeviceCandidatePolicyEdgeV1);
-  bytes += total_states_wide *
-           (sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t));
   if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
+    bytes += total_states_wide *
+             (sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t));
     bytes += total_states_wide * sizeof(std::uint8_t);
   } else {
+    bytes +=
+        total_states_wide * (sizeof(std::uint64_t) + sizeof(std::uint64_t) + sizeof(std::uint32_t));
+    bytes +=
+        static_cast<__uint128_t>(request.queries.size()) * sizeof(DeviceCandidateCompactPathV1);
     bytes += sweep_departures_wide * sizeof(std::uint64_t);
     bytes += static_cast<__uint128_t>(request.queries.size()) * sizeof(std::uint32_t);
   }
@@ -1649,7 +1890,7 @@ struct CandidateBatchAllocation {
                             "budget"};
   }
   const std::optional<std::uint64_t> host_bytes = EstimateCandidateBatchHostBytesV1(
-      request.queries.size(), request.policy_edges.size(), state_count);
+      request.queries.size(), request.policy_edges.size(), state_count, request.generator);
   if (!host_bytes.has_value() || *host_bytes > request.maximum_host_bytes) {
     return BackendError{
         .code = BackendErrorCode::kResourceExhausted,
@@ -1816,6 +2057,9 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
       return BackendError{.code = BackendErrorCode::kBackendFailure,
                           .detail = "CUDA execute current device differs from upload device"};
     }
+    std::shared_ptr<std::mutex> execution_mutex = uploaded->execution_mutex;
+    std::unique_lock<std::mutex> execution_lease(*execution_mutex);
+    uploaded->sweep_workspace_cache->EvictIdle();
     if (request.start_node >= uploaded->header.represented_nodes ||
         request.goal_node >= uploaded->header.represented_nodes || request.maximum_rounds == 0) {
       return BackendError{.code = BackendErrorCode::kInternalInvariant,
@@ -1835,6 +2079,8 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
     }
 
     auto execution = std::make_unique<CudaPendingRouteExecution>();
+    execution->execution_mutex = std::move(execution_mutex);
+    execution->execution_lease = std::move(execution_lease);
     execution->device = current_device;
     execution->request = request;
     const std::uint64_t state_count = uploaded->header.represented_states;
@@ -1944,6 +2190,8 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
           error.has_value()) {
         return std::move(*error);
       }
+      std::shared_ptr<std::mutex> execution_mutex = uploaded->execution_mutex;
+      std::unique_lock<std::mutex> execution_lease(*execution_mutex);
       std::variant<CandidateBatchAllocation, BackendError> validated =
           ValidateCandidateBatchExecution(*uploaded, request);
       if (std::holds_alternative<BackendError>(validated)) {
@@ -1962,6 +2210,8 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
       }
 
       auto execution = std::make_unique<CudaPendingCandidateBatchExecution>();
+      execution->execution_mutex = std::move(execution_mutex);
+      execution->execution_lease = std::move(execution_lease);
       execution->device = uploaded->device;
       execution->batch_id = request.batch_id;
       execution->generator = request.generator;
@@ -1971,82 +2221,223 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
       execution->batch_host_bytes = allocation.batch_host_bytes;
       execution->chunk_rounds = descriptor->chunk_rounds;
       execution->queries = request.queries;
-      if (std::optional<BackendError> error = AllocateAndUpload(
-              execution->device_queries, request.queries.data(), request.queries.size(),
-              "cudaMalloc(candidate batch queries)", "cudaMemcpy(candidate batch queries)");
-          error.has_value()) {
-        return std::move(*error);
-      }
-      if (std::optional<BackendError> error = AllocateAndUpload(
-              execution->policy_edges, request.policy_edges.data(), request.policy_edges.size(),
-              "cudaMalloc(candidate batch policy edges)",
-              "cudaMemcpy(candidate batch policy edges)");
-          error.has_value()) {
-        return std::move(*error);
-      }
-      if (std::optional<BackendError> error =
-              execution->results.Allocate(query_count, "cudaMalloc(candidate batch results)");
-          error.has_value()) {
-        return std::move(*error);
-      }
-      if (std::optional<BackendError> error = execution->labels.Allocate(
-              allocation.total_states, "cudaMalloc(candidate batch labels)");
-          error.has_value()) {
-        return std::move(*error);
-      }
-      if (std::optional<BackendError> error = execution->predecessors.Allocate(
-              allocation.total_states, "cudaMalloc(candidate batch predecessors)");
-          error.has_value()) {
-        return std::move(*error);
-      }
-      if (std::optional<BackendError> error = execution->state_owners.Allocate(
-              allocation.total_states, "cudaMalloc(candidate batch state owners)");
-          error.has_value()) {
-        return std::move(*error);
-      }
-      if (std::optional<BackendError> error = execution->predecessor_owners.Allocate(
-              allocation.total_states, "cudaMalloc(candidate batch predecessor owners)");
-          error.has_value()) {
-        return std::move(*error);
-      }
       DeviceBuffer<std::uint32_t> query_status;
-      if (std::optional<BackendError> error =
-              query_status.Allocate(query_count, "cudaMalloc(candidate batch status)");
-          error.has_value()) {
-        return std::move(*error);
-      }
       DeviceBuffer<std::uint8_t> closed;
       DeviceBuffer<std::uint64_t> sweep_departures;
       DeviceBuffer<std::uint32_t> sweep_changed;
+      DeviceCandidateBatchQueryV1* device_queries = nullptr;
+      DeviceCandidatePolicyEdgeV1* policy_edges = nullptr;
+      DeviceCandidateBatchResultV1* results = nullptr;
+      std::uint64_t* labels = nullptr;
+      std::uint32_t* predecessors = nullptr;
+      std::uint64_t* state_owners = nullptr;
+      std::uint64_t* predecessor_owners = nullptr;
+      std::uint32_t* statuses = nullptr;
+      std::uint8_t* closed_states = nullptr;
+      std::uint64_t* departures = nullptr;
+      std::uint32_t* changed = nullptr;
+      DeviceCandidateCompactPathV1* compact_paths = nullptr;
+      std::uint32_t* compact_path_states = nullptr;
       if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
+        // A cached sweep workspace is part of this prepared view's actual
+        // device footprint even though it is not usable by the frontier.
+        // The prepared-view execution lease guarantees that every sweep
+        // workspace is idle here, so eviction restores the declared bound.
+        uploaded->sweep_workspace_cache->EvictIdle();
+        if (std::optional<BackendError> error = AllocateAndUpload(
+                execution->device_queries, request.queries.data(), request.queries.size(),
+                "cudaMalloc(candidate batch queries)", "cudaMemcpy(candidate batch queries)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error = AllocateAndUpload(
+                execution->policy_edges, request.policy_edges.data(), request.policy_edges.size(),
+                "cudaMalloc(candidate batch policy edges)",
+                "cudaMemcpy(candidate batch policy edges)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error =
+                execution->results.Allocate(query_count, "cudaMalloc(candidate batch results)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error = execution->labels.Allocate(
+                allocation.total_states, "cudaMalloc(candidate batch labels)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error = execution->predecessors.Allocate(
+                allocation.total_states, "cudaMalloc(candidate batch predecessors)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error = execution->state_owners.Allocate(
+                allocation.total_states, "cudaMalloc(candidate batch state owners)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error = execution->predecessor_owners.Allocate(
+                allocation.total_states, "cudaMalloc(candidate batch predecessor owners)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error =
+                query_status.Allocate(query_count, "cudaMalloc(candidate batch status)");
+            error.has_value()) {
+          return std::move(*error);
+        }
         if (std::optional<BackendError> error =
                 closed.Allocate(allocation.total_states, "cudaMalloc(candidate frontier closed)");
             error.has_value()) {
           return std::move(*error);
         }
+        device_queries = execution->device_queries.get();
+        policy_edges = execution->policy_edges.get();
+        results = execution->results.get();
+        labels = execution->labels.get();
+        predecessors = execution->predecessors.get();
+        state_owners = execution->state_owners.get();
+        predecessor_owners = execution->predecessor_owners.get();
+        statuses = query_status.get();
+        closed_states = closed.get();
+        execution->workspace_capacity_bytes = allocation.batch_bytes;
       } else {
-        if (std::optional<BackendError> error = sweep_departures.Allocate(
-                allocation.sweep_departures, "cudaMalloc(candidate sweep departures)");
+        execution->sweep_workspace_cache = uploaded->sweep_workspace_cache;
+        execution->sweep_workspace = execution->sweep_workspace_cache->Acquire();
+        CudaSweepCandidateWorkspace& workspace = *execution->sweep_workspace;
+        const std::uint64_t maximum_workspace_bytes =
+            request.maximum_device_bytes - execution->persistent_bytes;
+        __uint128_t prospective_bytes = 0;
+        prospective_bytes += static_cast<__uint128_t>(std::max(workspace.device_queries.count(),
+                                                               request.queries.size())) *
+                             sizeof(DeviceCandidateBatchQueryV1);
+        prospective_bytes += static_cast<__uint128_t>(std::max(workspace.policy_edges.count(),
+                                                               request.policy_edges.size())) *
+                             sizeof(DeviceCandidatePolicyEdgeV1);
+        prospective_bytes += static_cast<__uint128_t>(
+                                 std::max<std::size_t>(workspace.results.count(), query_count)) *
+                             sizeof(DeviceCandidateBatchResultV1);
+        prospective_bytes += static_cast<__uint128_t>(std::max<std::uint64_t>(
+                                 workspace.labels.count(), allocation.total_states)) *
+                             sizeof(std::uint64_t);
+        prospective_bytes += static_cast<__uint128_t>(std::max<std::uint64_t>(
+                                 workspace.state_owners.count(), allocation.total_states)) *
+                             sizeof(std::uint64_t);
+        prospective_bytes += static_cast<__uint128_t>(std::max<std::size_t>(
+                                 workspace.query_status.count(), query_count)) *
+                             sizeof(std::uint32_t);
+        prospective_bytes += static_cast<__uint128_t>(std::max<std::uint64_t>(
+                                 workspace.sweep_departures.count(), allocation.sweep_departures)) *
+                             sizeof(std::uint64_t);
+        prospective_bytes += static_cast<__uint128_t>(std::max<std::size_t>(
+                                 workspace.sweep_changed.count(), query_count)) *
+                             sizeof(std::uint32_t);
+        prospective_bytes += static_cast<__uint128_t>(std::max<std::size_t>(
+                                 workspace.compact_paths.count(), query_count)) *
+                             sizeof(DeviceCandidateCompactPathV1);
+        prospective_bytes += static_cast<__uint128_t>(std::max<std::uint64_t>(
+                                 workspace.compact_path_states.count(), allocation.total_states)) *
+                             sizeof(std::uint32_t);
+        if (prospective_bytes > maximum_workspace_bytes) {
+          workspace.Reset();
+        }
+        const auto ensure = [](auto& buffer, std::size_t count,
+                               const char* operation) -> std::optional<BackendError> {
+          return buffer.EnsureCapacity(count, operation);
+        };
+        if (std::optional<BackendError> error =
+                ensure(workspace.device_queries, request.queries.size(),
+                       "cudaMalloc(persistent candidate sweep queries)");
             error.has_value()) {
           return std::move(*error);
         }
         if (std::optional<BackendError> error =
-                sweep_changed.Allocate(query_count, "cudaMalloc(candidate sweep round stats)");
+                ensure(workspace.policy_edges, request.policy_edges.size(),
+                       "cudaMalloc(persistent candidate sweep policy edges)");
             error.has_value()) {
           return std::move(*error);
         }
+        if (std::optional<BackendError> error = ensure(
+                workspace.results, query_count, "cudaMalloc(persistent candidate sweep results)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error =
+                ensure(workspace.labels, static_cast<std::size_t>(allocation.total_states),
+                       "cudaMalloc(persistent candidate sweep labels)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error =
+                ensure(workspace.state_owners, static_cast<std::size_t>(allocation.total_states),
+                       "cudaMalloc(persistent candidate sweep state owners)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error =
+                ensure(workspace.query_status, query_count,
+                       "cudaMalloc(persistent candidate sweep status)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error = ensure(
+                workspace.sweep_departures, static_cast<std::size_t>(allocation.sweep_departures),
+                "cudaMalloc(persistent candidate sweep departures)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error =
+                ensure(workspace.sweep_changed, query_count,
+                       "cudaMalloc(persistent candidate sweep round stats)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error =
+                ensure(workspace.compact_paths, query_count,
+                       "cudaMalloc(persistent candidate sweep compact path headers)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error = ensure(
+                workspace.compact_path_states, static_cast<std::size_t>(allocation.total_states),
+                "cudaMalloc(persistent candidate sweep compact path states)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error =
+                CopyToDevice(workspace.device_queries.get(), request.queries.data(),
+                             request.queries.size() * sizeof(DeviceCandidateBatchQueryV1),
+                             "cudaMemcpy(persistent candidate sweep queries)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        if (std::optional<BackendError> error =
+                CopyToDevice(workspace.policy_edges.get(), request.policy_edges.data(),
+                             request.policy_edges.size() * sizeof(DeviceCandidatePolicyEdgeV1),
+                             "cudaMemcpy(persistent candidate sweep policy edges)");
+            error.has_value()) {
+          return std::move(*error);
+        }
+        execution->workspace_capacity_bytes = workspace.bytes();
+        device_queries = workspace.device_queries.get();
+        policy_edges = workspace.policy_edges.get();
+        results = workspace.results.get();
+        labels = workspace.labels.get();
+        state_owners = workspace.state_owners.get();
+        statuses = workspace.query_status.get();
+        departures = workspace.sweep_departures.get();
+        changed = workspace.sweep_changed.get();
+        compact_paths = workspace.compact_paths.get();
+        compact_path_states = workspace.compact_path_states.get();
       }
 
-      const std::uint64_t actual_batch_bytes =
-          execution->device_queries.bytes() + execution->policy_edges.bytes() +
-          execution->results.bytes() + execution->labels.bytes() + execution->predecessors.bytes() +
-          execution->state_owners.bytes() + execution->predecessor_owners.bytes() +
-          query_status.bytes() + closed.bytes() + sweep_departures.bytes() + sweep_changed.bytes();
-      if (actual_batch_bytes != allocation.batch_bytes) {
+      if (execution->workspace_capacity_bytes < allocation.batch_bytes ||
+          execution->workspace_capacity_bytes >
+              request.maximum_device_bytes - execution->persistent_bytes) {
         return BackendError{
             .code = BackendErrorCode::kInternalInvariant,
-            .detail =
-                "CUDA candidate batch allocation bytes disagree with deterministic accounting",
+            .detail = "CUDA candidate batch workspace capacity disagrees with deterministic bounds",
         };
       }
 
@@ -2072,10 +2463,8 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
       const std::uint64_t initialization_work =
           std::max<std::uint64_t>(allocation.total_states, query_count);
       InitializeCandidateBatch<<<BlockCount(initialization_work), kThreadsPerBlock>>>(
-          uploaded->device_header.get(), execution->device_queries.get(), query_count,
-          execution->results.get(), execution->labels.get(), execution->predecessors.get(),
-          execution->state_owners.get(), execution->predecessor_owners.get(), closed.get(),
-          query_status.get());
+          uploaded->device_header.get(), device_queries, query_count, results, labels, predecessors,
+          state_owners, predecessor_owners, closed_states, statuses);
       ++execution->kernel_launch_count;
       run_error = CheckLaunch("InitializeCandidateBatch launch");
 
@@ -2091,10 +2480,8 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
             std::min(maximum_chunk_rounds, request.maximum_rounds - dispatched_rounds);
         if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
           CandidateFrontierChunk<<<query_count, kThreadsPerBlock>>>(
-              uploaded->nodes.get(), uploaded->header, execution->device_queries.get(),
-              execution->policy_edges.get(), query_count, chunk_rounds, execution->labels.get(),
-              execution->state_owners.get(), closed.get(), execution->results.get(),
-              query_status.get());
+              uploaded->nodes.get(), uploaded->header, device_queries, policy_edges, query_count,
+              chunk_rounds, labels, state_owners, closed_states, results, statuses);
           ++execution->kernel_launch_count;
           run_error = CheckLaunch("CandidateFrontierChunk launch");
         } else {
@@ -2102,18 +2489,17 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
               static_cast<std::uint64_t>(query_count) * uploaded->runs.count();
           for (std::uint32_t chunk_round = 0; !run_error.has_value() && chunk_round < chunk_rounds;
                ++chunk_round) {
-            ResetCandidateSweepRound<<<BlockCount(query_count), kThreadsPerBlock>>>(
-                query_count, sweep_changed.get());
+            ResetCandidateSweepRound<<<BlockCount(query_count), kThreadsPerBlock>>>(query_count,
+                                                                                    changed);
             ++execution->kernel_launch_count;
             run_error = CheckLaunch("ResetCandidateSweepRound launch");
             if (run_error.has_value()) {
               break;
             }
             ComputeCandidateSweepDepartures<<<BlockCount(allocation.sweep_departures),
-                                              kThreadsPerBlock>>>(
-                uploaded->header, execution->device_queries.get(), query_count,
-                execution->labels.get(), sweep_departures.get(), execution->results.get(),
-                query_status.get());
+                                              kThreadsPerBlock>>>(uploaded->header, device_queries,
+                                                                  query_count, labels, departures,
+                                                                  results, statuses);
             ++execution->kernel_launch_count;
             run_error = CheckLaunch("ComputeCandidateSweepDepartures launch");
             if (run_error.has_value()) {
@@ -2122,10 +2508,8 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
             if (batched_runs != 0) {
               SweepCandidateRuns<<<BlockCount(batched_runs), kThreadsPerBlock>>>(
                   uploaded->nodes.get(), uploaded->runs.get(), uploaded->runs.count(),
-                  uploaded->run_nodes.get(), uploaded->header, execution->device_queries.get(),
-                  execution->policy_edges.get(), query_count, sweep_departures.get(),
-                  execution->labels.get(), execution->state_owners.get(), execution->results.get(),
-                  sweep_changed.get(), query_status.get());
+                  uploaded->run_nodes.get(), uploaded->header, device_queries, policy_edges,
+                  query_count, departures, labels, state_owners, results, changed, statuses);
               ++execution->kernel_launch_count;
               run_error = CheckLaunch("SweepCandidateRuns launch");
               if (run_error.has_value()) {
@@ -2133,9 +2517,7 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
               }
             }
             FinalizeCandidateSweepRound<<<BlockCount(query_count), kThreadsPerBlock>>>(
-                uploaded->header, execution->device_queries.get(), query_count,
-                execution->labels.get(), execution->results.get(), sweep_changed.get(),
-                query_status.get());
+                uploaded->header, device_queries, query_count, labels, results, changed, statuses);
             ++execution->kernel_launch_count;
             run_error = CheckLaunch("FinalizeCandidateSweepRound launch");
           }
@@ -2145,7 +2527,8 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
         }
         dispatched_rounds += chunk_rounds;
         execution->dispatched_rounds = dispatched_rounds;
-        status = cudaMemcpy(host_status.data(), query_status.get(), query_status.bytes(),
+        status = cudaMemcpy(host_status.data(), statuses,
+                            static_cast<std::size_t>(query_count) * sizeof(std::uint32_t),
                             cudaMemcpyDeviceToHost);
         if (status != cudaSuccess) {
           run_error = CudaError("cudaMemcpy(candidate batch status)", status);
@@ -2167,19 +2550,41 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
                 ? kBatchQueryCancelled
                 : kBatchQueryBudgetExhausted;
         FinalizeCandidateBatchStatus<<<BlockCount(query_count), kThreadsPerBlock>>>(
-            query_count, execution->results.get(), query_status.get(), completion);
+            query_count, results, statuses, completion);
         ++execution->kernel_launch_count;
         ++execution->finalization_launch_count;
         run_error = CheckLaunch("FinalizeCandidateBatchStatus launch");
       }
       if (!run_error.has_value()) {
-        SelectCandidateBatchPredecessors<<<BlockCount(allocation.total_states), kThreadsPerBlock>>>(
-            uploaded->nodes.get(), uploaded->header, execution->device_queries.get(),
-            execution->policy_edges.get(), query_count, execution->labels.get(),
-            execution->state_owners.get(), execution->predecessors.get(),
-            execution->predecessor_owners.get(), execution->results.get());
+        if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
+          SelectCandidateBatchPredecessors<<<BlockCount(allocation.total_states),
+                                             kThreadsPerBlock>>>(
+              uploaded->nodes.get(), uploaded->header, device_queries, policy_edges, query_count,
+              labels, state_owners, predecessors, predecessor_owners, results);
+        } else {
+          BuildQueryMajorCandidateSweepPaths<<<query_count, 1>>>(
+              uploaded->nodes.get(), uploaded->header, device_queries, policy_edges, query_count,
+              labels, state_owners, results, compact_paths, compact_path_states);
+        }
         ++execution->kernel_launch_count;
-        run_error = CheckLaunch("SelectCandidateBatchPredecessors launch");
+        run_error = CheckLaunch(descriptor->workspace == PlanarGeneratorWorkspace::kFrontier
+                                    ? "SelectCandidateBatchPredecessors launch"
+                                    : "BuildQueryMajorCandidateSweepPaths launch");
+      }
+      if (!run_error.has_value() && descriptor->workspace == PlanarGeneratorWorkspace::kSweep) {
+        ScanCandidateSweepPathOffsets<<<1, kThreadsPerBlock>>>(query_count, compact_paths);
+        ++execution->kernel_launch_count;
+        run_error = CheckLaunch("ScanCandidateSweepPathOffsets launch");
+      }
+      if (!run_error.has_value() && descriptor->workspace == PlanarGeneratorWorkspace::kSweep) {
+        // Final labels are dead after path reconstruction. Reuse that larger
+        // allocation as the non-overlapping packed destination so parallel
+        // query blocks cannot clobber unread query-major source slices.
+        ScatterCandidateSweepPaths<<<query_count, kThreadsPerBlock>>>(
+            query_count, uploaded->header.represented_states, compact_paths, compact_path_states,
+            reinterpret_cast<std::uint32_t*>(labels));
+        ++execution->kernel_launch_count;
+        run_error = CheckLaunch("ScatterCandidateSweepPaths launch");
       }
       if (!run_error.has_value()) {
         status = cudaEventRecord(stop_event);
@@ -2230,9 +2635,20 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
           error.has_value()) {
         return std::move(*error);
       }
+      const bool compact_paths = execution->generator == PlanarGenerator::kHeadingAwareSweep;
+      if (compact_paths && execution->sweep_workspace == nullptr) {
+        return BackendError{
+            .code = BackendErrorCode::kInternalInvariant,
+            .detail = "CUDA compact sweep readback lost its persistent workspace lease",
+        };
+      }
+      const DeviceCandidateBatchResultV1* device_results =
+          compact_paths ? execution->sweep_workspace->results.get() : execution->results.get();
+      const std::size_t result_bytes =
+          execution->queries.size() * sizeof(DeviceCandidateBatchResultV1);
       std::vector<DeviceCandidateBatchResultV1> headers(execution->queries.size());
-      cudaError_t status = cudaMemcpy(headers.data(), execution->results.get(),
-                                      execution->results.bytes(), cudaMemcpyDeviceToHost);
+      cudaError_t status =
+          cudaMemcpy(headers.data(), device_results, result_bytes, cudaMemcpyDeviceToHost);
       if (status != cudaSuccess) {
         return CudaError("cudaMemcpy(candidate batch results)", status);
       }
@@ -2240,11 +2656,15 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
           .schema_version = kDeviceCandidateBatchSchemaVersion,
           .batch_id = execution->batch_id,
           .generator = execution->generator,
+          .readback_kind = compact_paths ? CandidateBatchReadbackKind::kCompactPaths
+                                         : CandidateBatchReadbackKind::kFullWorkspace,
           .telemetry =
               CandidateBatchTelemetry{
                   .persistent_device_bytes = execution->persistent_bytes,
                   .batch_device_bytes = execution->batch_bytes,
-                  .peak_device_bytes = execution->persistent_bytes + execution->batch_bytes,
+                  .workspace_capacity_device_bytes = execution->workspace_capacity_bytes,
+                  .peak_device_bytes =
+                      execution->persistent_bytes + execution->workspace_capacity_bytes,
                   .batch_host_bytes = execution->batch_host_bytes,
                   .kernel_launch_count = execution->kernel_launch_count,
                   .blocking_status_readback_count = execution->blocking_status_readback_count,
@@ -2254,42 +2674,96 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
                   .kernel_milliseconds = execution->kernel_milliseconds,
               },
           .queries = {},
-          .labels = std::vector<std::uint64_t>(execution->labels.count()),
-          .predecessors = std::vector<std::uint32_t>(execution->predecessors.count()),
-          .state_owners = std::vector<std::uint64_t>(execution->state_owners.count()),
-          .predecessor_owners = std::vector<std::uint64_t>(execution->predecessor_owners.count()),
+          .labels = {},
+          .predecessors = {},
+          .state_owners = {},
+          .predecessor_owners = {},
+          .compact_path_states = {},
       };
-      status = cudaMemcpy(readback.labels.data(), execution->labels.get(),
-                          execution->labels.bytes(), cudaMemcpyDeviceToHost);
-      if (status != cudaSuccess) {
-        return CudaError("cudaMemcpy(candidate batch labels)", status);
+      std::vector<DeviceCandidateCompactPathV1> compact_headers;
+      std::uint64_t readback_bytes = result_bytes;
+      if (compact_paths) {
+        compact_headers.resize(execution->queries.size());
+        const std::size_t compact_header_bytes =
+            compact_headers.size() * sizeof(DeviceCandidateCompactPathV1);
+        status = cudaMemcpy(compact_headers.data(), execution->sweep_workspace->compact_paths.get(),
+                            compact_header_bytes, cudaMemcpyDeviceToHost);
+        if (status != cudaSuccess) {
+          return CudaError("cudaMemcpy(candidate compact sweep path headers)", status);
+        }
+        readback_bytes += compact_header_bytes;
+        const std::uint64_t maximum_compact_states =
+            static_cast<std::uint64_t>(execution->queries.size()) * execution->state_count;
+        std::uint64_t used_states = 0;
+        bool canonical = true;
+        for (const DeviceCandidateCompactPathV1& compact : compact_headers) {
+          if (compact.state_offset != used_states || compact.state_count > execution->state_count ||
+              compact.state_count > maximum_compact_states - used_states) {
+            canonical = false;
+            break;
+          }
+          used_states += compact.state_count;
+        }
+        if (!canonical) {
+          used_states = 0;
+        }
+        readback.compact_path_states.resize(static_cast<std::size_t>(used_states));
+        const std::size_t compact_state_bytes =
+            readback.compact_path_states.size() * sizeof(std::uint32_t);
+        if (compact_state_bytes != 0) {
+          status = cudaMemcpy(
+              readback.compact_path_states.data(),
+              reinterpret_cast<const std::uint32_t*>(execution->sweep_workspace->labels.get()),
+              compact_state_bytes, cudaMemcpyDeviceToHost);
+          if (status != cudaSuccess) {
+            return CudaError("cudaMemcpy(candidate compact sweep path states)", status);
+          }
+        }
+        readback_bytes += compact_state_bytes;
+      } else {
+        const std::size_t total_states =
+            execution->queries.size() * static_cast<std::size_t>(execution->state_count);
+        readback.labels.resize(total_states);
+        readback.predecessors.resize(total_states);
+        readback.state_owners.resize(total_states);
+        readback.predecessor_owners.resize(total_states);
+        const std::size_t label_bytes = total_states * sizeof(std::uint64_t);
+        const std::size_t predecessor_bytes = total_states * sizeof(std::uint32_t);
+        const std::size_t owner_bytes = total_states * sizeof(std::uint64_t);
+        status = cudaMemcpy(readback.labels.data(), execution->labels.get(), label_bytes,
+                            cudaMemcpyDeviceToHost);
+        if (status != cudaSuccess) {
+          return CudaError("cudaMemcpy(candidate batch labels)", status);
+        }
+        status = cudaMemcpy(readback.predecessors.data(), execution->predecessors.get(),
+                            predecessor_bytes, cudaMemcpyDeviceToHost);
+        if (status != cudaSuccess) {
+          return CudaError("cudaMemcpy(candidate batch predecessors)", status);
+        }
+        status = cudaMemcpy(readback.state_owners.data(), execution->state_owners.get(),
+                            owner_bytes, cudaMemcpyDeviceToHost);
+        if (status != cudaSuccess) {
+          return CudaError("cudaMemcpy(candidate batch state owners)", status);
+        }
+        status = cudaMemcpy(readback.predecessor_owners.data(), execution->predecessor_owners.get(),
+                            owner_bytes, cudaMemcpyDeviceToHost);
+        if (status != cudaSuccess) {
+          return CudaError("cudaMemcpy(candidate batch predecessor owners)", status);
+        }
+        readback_bytes += label_bytes + predecessor_bytes + 2U * owner_bytes;
       }
-      status = cudaMemcpy(readback.predecessors.data(), execution->predecessors.get(),
-                          execution->predecessors.bytes(), cudaMemcpyDeviceToHost);
-      if (status != cudaSuccess) {
-        return CudaError("cudaMemcpy(candidate batch predecessors)", status);
-      }
-      status = cudaMemcpy(readback.state_owners.data(), execution->state_owners.get(),
-                          execution->state_owners.bytes(), cudaMemcpyDeviceToHost);
-      if (status != cudaSuccess) {
-        return CudaError("cudaMemcpy(candidate batch state owners)", status);
-      }
-      status = cudaMemcpy(readback.predecessor_owners.data(), execution->predecessor_owners.get(),
-                          execution->predecessor_owners.bytes(), cudaMemcpyDeviceToHost);
-      if (status != cudaSuccess) {
-        return CudaError("cudaMemcpy(candidate batch predecessor owners)", status);
-      }
+      readback.telemetry.device_to_host_readback_bytes = readback_bytes;
 
       readback.queries.reserve(execution->queries.size());
-      // Query envelopes expose checked non-owning slices over the four final
-      // bulk readback buffers. This keeps four D2H workspace transfers for the
-      // whole batch and performs no host-to-host partition copies.
       for (std::size_t query_index = 0; query_index < execution->queries.size(); ++query_index) {
         const DeviceCandidateBatchQueryV1& query = execution->queries[query_index];
         UntrustedCandidateBatchQueryResult result{
             .header = headers[query_index],
             .workspace_offset = query.workspace_offset,
             .workspace_state_count = query.workspace_state_count,
+            .compact_path = compact_paths ? std::optional<DeviceCandidateCompactPathV1>(
+                                                compact_headers[query_index])
+                                          : std::nullopt,
             .telemetry =
                 CandidateQueryTelemetry{
                     .examined_work = headers[query_index].examined_work,

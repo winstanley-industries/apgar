@@ -277,12 +277,18 @@ class ScriptedDisconnectedBatchBackend final : public IPlanarRouteBackend {
     UntrustedCandidateBatchResult result{
         .batch_id = request_.batch_id,
         .generator = request_.generator,
+        .readback_kind = CandidateBatchReadbackKind::kFullWorkspace,
         .telemetry =
             CandidateBatchTelemetry{
                 .persistent_device_bytes = device_.header.estimated_persistent_device_bytes,
                 .batch_device_bytes = batch_bytes,
+                .workspace_capacity_device_bytes = batch_bytes,
                 .peak_device_bytes = device_.header.estimated_persistent_device_bytes + batch_bytes,
                 .batch_host_bytes = host_bytes.value_or(0),
+                .device_to_host_readback_bytes =
+                    query_count * sizeof(DeviceCandidateBatchResultV1) +
+                    total_states * (sizeof(std::uint64_t) + sizeof(std::uint32_t) +
+                                    2U * sizeof(std::uint64_t)),
                 .kernel_launch_count = 3,
                 .blocking_status_readback_count = 1,
                 .dispatched_rounds = 1,
@@ -295,6 +301,7 @@ class ScriptedDisconnectedBatchBackend final : public IPlanarRouteBackend {
         .predecessors = std::vector<std::uint32_t>(total_states, kInvalidStateIndex),
         .state_owners = std::vector<std::uint64_t>(total_states),
         .predecessor_owners = std::vector<std::uint64_t>(total_states),
+        .compact_path_states = {},
     };
     result.queries.reserve(request_.queries.size());
     for (const DeviceCandidateBatchQueryV1& query : request_.queries) {
@@ -323,6 +330,7 @@ class ScriptedDisconnectedBatchBackend final : public IPlanarRouteBackend {
           .header = header,
           .workspace_offset = query.workspace_offset,
           .workspace_state_count = query.workspace_state_count,
+          .compact_path = std::nullopt,
           .telemetry = CandidateQueryTelemetry{.rounds = 1},
       };
       const std::size_t first = static_cast<std::size_t>(query.workspace_offset);
@@ -457,6 +465,50 @@ TEST(DeviceCandidateBatchTest, HostAccountingContainsOneFinalQueryWorkspace) {
       kAdmitted * kStates *
           (sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2U * sizeof(std::uint64_t));
   EXPECT_EQ(EstimateCandidateBatchHostBytesV1(kInputs, kAdmitted, kPolicyEdges, kStates), expected);
+}
+
+TEST(DeviceCandidateBatchTest, CompactSweepAccountingIncludesOneReusableValidationBitset) {
+  constexpr std::uint64_t kInputs = 3;
+  constexpr std::uint64_t kAdmitted = 2;
+  constexpr std::uint64_t kPolicyEdges = 5;
+  constexpr std::uint64_t kStates = 7;
+  const std::uint64_t expected =
+      kInputs *
+          (sizeof(DeviceCandidateBatchQueryV1) + sizeof(DeviceCandidateBatchResultV1) + 128U) +
+      kAdmitted * (2U * sizeof(DeviceCandidateBatchQueryV1) + 2U * sizeof(std::uint32_t) +
+                   sizeof(DeviceCandidateCompactPathV1)) +
+      kPolicyEdges * (sizeof(DeviceCandidatePolicyEdgeV1) + 40U) +
+      kAdmitted * kStates * sizeof(std::uint32_t) + ((kStates + 63U) / 64U) * sizeof(std::uint64_t);
+  EXPECT_EQ(EstimateCandidateBatchHostBytesV1(kInputs, kAdmitted, kPolicyEdges, kStates,
+                                              PlanarGenerator::kHeadingAwareSweep),
+            expected);
+  EXPECT_LT(expected, EstimateCandidateBatchHostBytesV1(kInputs, kAdmitted, kPolicyEdges, kStates,
+                                                        PlanarGenerator::kBucketedFrontier)
+                          .value());
+}
+
+TEST(DeviceCandidateBatchTest, CompactValidationBitsetRoundsAtSixtyFourStateBoundaries) {
+  constexpr std::uint64_t kInputs = 1;
+  constexpr std::uint64_t kAdmitted = 1;
+  constexpr std::uint64_t kCommon =
+      kInputs *
+          (sizeof(DeviceCandidateBatchQueryV1) + sizeof(DeviceCandidateBatchResultV1) + 128U) +
+      kAdmitted * (2U * sizeof(DeviceCandidateBatchQueryV1) + 2U * sizeof(std::uint32_t) +
+                   sizeof(DeviceCandidateCompactPathV1));
+  const auto expected = [](std::uint64_t states) {
+    return kCommon + states * sizeof(std::uint32_t) +
+           ((states + 63U) / 64U) * sizeof(std::uint64_t);
+  };
+
+  for (const std::uint64_t states : {1U, 63U, 64U, 65U}) {
+    EXPECT_EQ(EstimateCandidateBatchHostBytesV1(kInputs, kAdmitted, 0, states,
+                                                PlanarGenerator::kHeadingAwareSweep),
+              expected(states));
+  }
+  EXPECT_EQ(
+      EstimateCandidateBatchHostBytesV1(kInputs, 0, 0, 65, PlanarGenerator::kHeadingAwareSweep),
+      kInputs *
+          (sizeof(DeviceCandidateBatchQueryV1) + sizeof(DeviceCandidateBatchResultV1) + 128U));
 }
 
 TEST(DeviceCompiledBoardTest, StableIndicesPreserveNegativeAndCrossTileAdjacency) {

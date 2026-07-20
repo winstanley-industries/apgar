@@ -19,6 +19,8 @@
 #include <variant>
 #include <vector>
 
+#include "src/routing/cpu_astar_internal.h"
+
 namespace apgar::gpu {
 
 struct PlanarCandidateBatchItemEvidence {
@@ -717,12 +719,15 @@ std::optional<std::uint32_t> PreparedPlanarCompiledView::FindNodeIndex(
              : std::nullopt;
 }
 
-std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(
-    std::uint64_t input_query_count, std::uint64_t admitted_query_count,
-    std::uint64_t policy_edge_count, std::uint64_t represented_states) noexcept {
+std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(std::uint64_t input_query_count,
+                                                               std::uint64_t admitted_query_count,
+                                                               std::uint64_t policy_edge_count,
+                                                               std::uint64_t represented_states,
+                                                               PlanarGenerator generator) noexcept {
   if (admitted_query_count > input_query_count ||
       (admitted_query_count == 0 && policy_edge_count != 0) ||
-      policy_edge_count > routing::kMaximumPolicyResourceEntries) {
+      policy_edge_count > routing::kMaximumPolicyResourceEntries ||
+      !DescribePlanarGenerator(generator).has_value()) {
     return std::nullopt;
   }
   // Every input retains one bounded classification/result envelope. Only
@@ -733,13 +738,21 @@ std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(
   constexpr UWide kPerAdmittedEnvelopeBytes =
       2U * sizeof(DeviceCandidateBatchQueryV1) + 2U * sizeof(std::uint32_t);
   constexpr UWide kPerPolicyEdgeBytes = sizeof(DeviceCandidatePolicyEdgeV1) + 40U;
-  constexpr UWide kPerStateWorkspaceBytes =
-      sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2U * sizeof(std::uint64_t);
+  const bool compact_paths = generator == PlanarGenerator::kHeadingAwareSweep;
+  const UWide per_admitted_envelope_bytes =
+      kPerAdmittedEnvelopeBytes + (compact_paths ? sizeof(DeviceCandidateCompactPathV1) : 0U);
+  const UWide per_state_readback_bytes =
+      compact_paths ? sizeof(std::uint32_t)
+                    : sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2U * sizeof(std::uint64_t);
   const UWide total_states = static_cast<UWide>(admitted_query_count) * represented_states;
+  const UWide validation_scratch_bytes =
+      admitted_query_count != 0 && compact_paths
+          ? ((static_cast<UWide>(represented_states) + 63U) / 64U) * sizeof(std::uint64_t)
+          : 0;
   const UWide bytes = static_cast<UWide>(input_query_count) * kPerInputEnvelopeBytes +
-                      static_cast<UWide>(admitted_query_count) * kPerAdmittedEnvelopeBytes +
+                      static_cast<UWide>(admitted_query_count) * per_admitted_envelope_bytes +
                       static_cast<UWide>(policy_edge_count) * kPerPolicyEdgeBytes +
-                      total_states * kPerStateWorkspaceBytes;
+                      total_states * per_state_readback_bytes + validation_scratch_bytes;
   if (bytes > std::numeric_limits<std::uint64_t>::max()) {
     return std::nullopt;
   }
@@ -763,11 +776,12 @@ std::optional<std::uint64_t> EstimateCandidateBatchPolicyPreflightHostBytesV1(
   return static_cast<std::uint64_t>(bytes);
 }
 
-std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(
-    std::uint64_t query_count, std::uint64_t policy_edge_count,
-    std::uint64_t represented_states) noexcept {
+std::optional<std::uint64_t> EstimateCandidateBatchHostBytesV1(std::uint64_t query_count,
+                                                               std::uint64_t policy_edge_count,
+                                                               std::uint64_t represented_states,
+                                                               PlanarGenerator generator) noexcept {
   return EstimateCandidateBatchHostBytesV1(query_count, query_count, policy_edge_count,
-                                           represented_states);
+                                           represented_states, generator);
 }
 
 CandidateBatchExecutionResult IPlanarRouteBackend::ExecuteCandidateBatch(
@@ -841,38 +855,19 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
   }
 
   const std::uint32_t start_state = StateIndex(endpoints.start_node, kNoIncomingHeading);
-  std::vector<std::uint8_t> visited(
-      static_cast<std::size_t>(device_board.header.represented_states), 0);
-  std::vector<std::uint32_t> reversed_nodes;
+  std::vector<board_ir::Point64> points;
   std::uint32_t cursor = best_goal_state;
+  // ValidateAllPredecessors established an exact positive-cost descent for
+  // every finite predecessor edge. A repeated state would therefore require a
+  // strictly decreasing cycle, so the represented-state step bound is enough
+  // here without a second state-sized visited allocation.
   while (true) {
-    if (cursor >= visited.size()) {
+    if (cursor >= device_board.header.represented_states) {
       return Failure(PlanarGpuFailureCode::kInternalInvariant,
                      "GPU reconstruction escaped the allocated state array", std::nullopt,
                      untrusted.telemetry);
     }
-    if (visited[cursor] != 0) {
-      return Failure(PlanarGpuFailureCode::kInternalInvariant,
-                     "GPU predecessor reconstruction contains a cycle", std::nullopt,
-                     untrusted.telemetry);
-    }
-    visited[cursor] = 1;
-    reversed_nodes.push_back(NodeIndexForState(cursor));
-    if (cursor == start_state) {
-      break;
-    }
-    cursor = untrusted.predecessors[cursor];
-    if (reversed_nodes.size() > device_board.header.represented_states) {
-      return Failure(PlanarGpuFailureCode::kInternalInvariant,
-                     "GPU predecessor reconstruction exceeded its acyclic state bound",
-                     std::nullopt, untrusted.telemetry);
-    }
-  }
-  std::ranges::reverse(reversed_nodes);
-
-  std::vector<board_ir::Point64> points;
-  points.reserve(reversed_nodes.size());
-  for (std::uint32_t node : reversed_nodes) {
+    const std::uint32_t node = NodeIndexForState(cursor);
     if (node >= device_board.nodes.size()) {
       return Failure(PlanarGpuFailureCode::kInternalInvariant,
                      "GPU reconstruction contains an invalid node index", std::nullopt,
@@ -887,7 +882,17 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
                      untrusted.telemetry);
     }
     points.push_back(*point);
+    if (cursor == start_state) {
+      break;
+    }
+    cursor = untrusted.predecessors[cursor];
+    if (points.size() > device_board.header.represented_states) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "GPU predecessor reconstruction exceeded its acyclic state bound",
+                     std::nullopt, untrusted.telemetry);
+    }
   }
+  std::ranges::reverse(points);
   if (points.empty() || points.front() != request.start || points.back() != request.goal) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
                    "GPU reconstruction does not connect the exact requested endpoints",
@@ -896,9 +901,12 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
 
   std::vector<routing::LayerSegment> segments =
       routing::CoalesceSegments(request.start_layer, points);
-  if (std::optional<routing::RouteFailure> invalid =
-          routing::ValidateReconstructedRoute(board, compiled_board, request, segments);
-      invalid.has_value()) {
+  const std::optional<routing::RouteFailure> invalid =
+      candidate_policy == nullptr
+          ? routing::ValidateReconstructedRoute(board, compiled_board, request, segments)
+          : routing::ValidateReconstructedRouteWithNormalizedPolicy(board, compiled_board, request,
+                                                                    *candidate_policy, segments);
+  if (invalid.has_value()) {
     return Failure(PlanarGpuFailureCode::kValidationFailed,
                    "Exact GPU route validation failed: " + invalid->detail, invalid->obstacle,
                    untrusted.telemetry);
@@ -917,6 +925,169 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
       .lattice_path = std::move(points),
       .segments = std::move(segments),
       .telemetry = untrusted.telemetry,
+  };
+}
+
+[[nodiscard]] PlanarGpuRouteResult ValidateAndReconstructCompactGpuPath(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    const DeviceCompiledBoardV1& device_board, const routing::CpuRouteRequest& request,
+    const BackendMetadata& backend, const DeviceEndpoints& endpoints,
+    const UntrustedCandidateBatchQueryResult& untrusted,
+    std::span<const std::uint32_t> reverse_states, std::span<std::uint64_t> visited_words,
+    const routing::NormalizedCandidateGenerationPolicy& candidate_policy) {
+  const KernelTelemetry telemetry = QueryKernelTelemetry(untrusted.telemetry);
+  const DeviceCandidateBatchResultV1& header = untrusted.header;
+  if (header.completion != KernelCompletion::kReached || reverse_states.empty() ||
+      reverse_states.size() > device_board.header.represented_states) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "Compact GPU route reconstruction requires one bounded reached path",
+                   std::nullopt, telemetry, "gpu.batch.compact_path.bounds.v1");
+  }
+
+  const std::uint32_t start_state = StateIndex(endpoints.start_node, kNoIncomingHeading);
+  if (reverse_states.front() != header.goal_state || reverse_states.back() != start_state ||
+      NodeIndexForState(header.goal_state) != endpoints.goal_node ||
+      IncomingHeadingForState(header.goal_state) >= 8) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "Compact GPU path does not bind the reported goal to the canonical start",
+                   std::nullopt, telemetry, "gpu.batch.compact_path.endpoint.v1");
+  }
+
+  const std::size_t expected_visited_words =
+      (static_cast<std::size_t>(device_board.header.represented_states) + 63U) / 64U;
+  if (visited_words.size() != expected_visited_words) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "Compact GPU path validation scratch has an invalid bound", std::nullopt,
+                   telemetry, "gpu.batch.compact_path.bounds.v1");
+  }
+  // Clear only words touched by this path. Bits left by earlier queries in
+  // other words are irrelevant, while this keeps validation proportional to
+  // compact readback length instead of Q * represented_states.
+  for (const std::uint32_t state : reverse_states) {
+    if (state >= device_board.header.represented_states) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "Compact GPU path escaped its represented-state bound", std::nullopt,
+                     telemetry, "gpu.batch.compact_path.bounds.v1");
+    }
+    visited_words[state / 64U] = 0;
+  }
+  std::uint64_t total_cost = 0;
+  for (std::size_t index = 0; index < reverse_states.size(); ++index) {
+    const std::size_t reverse_index = reverse_states.size() - 1U - index;
+    const std::uint32_t state = reverse_states[reverse_index];
+    const std::uint64_t visited_mask = std::uint64_t{1} << (state % 64U);
+    std::uint64_t& visited_word = visited_words[state / 64U];
+    if ((visited_word & visited_mask) != 0) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "Compact GPU path contains a repeated state or cycle", std::nullopt, telemetry,
+                     "gpu.batch.compact_path.cycle.v1");
+    }
+    visited_word |= visited_mask;
+    const std::uint32_t node = NodeIndexForState(state);
+    if (node >= device_board.nodes.size()) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "Compact GPU path contains an invalid node index", std::nullopt, telemetry,
+                     "gpu.batch.compact_path.bounds.v1");
+    }
+    if (index == 0) {
+      if (state != start_state) {
+        return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                       "Compact GPU path does not begin at the canonical start state", std::nullopt,
+                       telemetry, "gpu.batch.compact_path.endpoint.v1");
+      }
+      continue;
+    }
+
+    const std::uint32_t predecessor_state = reverse_states[reverse_index + 1U];
+    const std::uint32_t predecessor_node = NodeIndexForState(predecessor_state);
+    const std::uint8_t incoming = IncomingHeadingForState(state);
+    const std::uint8_t predecessor_heading = IncomingHeadingForState(predecessor_state);
+    if (incoming >= 8 ||
+        (predecessor_heading == kNoIncomingHeading && predecessor_state != start_state)) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "Compact GPU path uses a noncanonical incoming heading", std::nullopt,
+                     telemetry, "gpu.batch.compact_path.heading.v1");
+    }
+    const Direction direction = static_cast<Direction>(incoming);
+    const std::optional<Direction> geometric_direction =
+        DirectionBetween(device_board.nodes[predecessor_node], device_board.nodes[node]);
+    if (!geometric_direction.has_value() || *geometric_direction != direction ||
+        device_board.nodes[predecessor_node].neighbors[static_cast<std::size_t>(direction)] !=
+            node ||
+        (device_board.nodes[predecessor_node].legal_edges &
+         geometry_compiler::MaskFor(direction)) == 0) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "Compact GPU path does not follow one adjacent compiled legal edge",
+                     std::nullopt, telemetry, "gpu.batch.compact_path.edge.v1");
+    }
+    const DeviceNodeV1& predecessor_device_node = device_board.nodes[predecessor_node];
+    const std::optional<routing::EdgeResourceKey> resource =
+        routing::CanonicalPhysicalEdgeResource(predecessor_device_node.layer,
+                                               LatticeIndex{.x = predecessor_device_node.lattice_x,
+                                                            .y = predecessor_device_node.lattice_y},
+                                               direction);
+    if (!resource.has_value() || routing::PolicyBansResource(candidate_policy.policy, *resource)) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "Compact GPU path traverses a banned or unaddressable resource", std::nullopt,
+                     telemetry, "gpu.policy.banned_predecessor.v1");
+    }
+    const std::optional<std::uint64_t> transition =
+        routing::StepCostUnderPolicy(compiled_board.profile(), direction, predecessor_heading,
+                                     candidate_policy.policy, *resource);
+    const std::optional<std::uint64_t> next_cost =
+        transition.has_value() ? routing::CheckedAddFiniteRouteCost(total_cost, *transition)
+                               : std::nullopt;
+    if (!next_cost.has_value()) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "Compact GPU path scalar cost is invalid or overflowed", std::nullopt,
+                     telemetry, "gpu.batch.compact_path.edge.v1");
+    }
+    total_cost = *next_cost;
+  }
+
+  std::vector<board_ir::Point64> points;
+  points.reserve(reverse_states.size());
+  for (auto state = reverse_states.rbegin(); state != reverse_states.rend(); ++state) {
+    const std::uint32_t node = NodeIndexForState(*state);
+    const DeviceNodeV1& flattened = device_board.nodes[node];
+    const std::optional<board_ir::Point64> point = geometry_compiler::LatticeIndexToExactPoint(
+        compiled_board.profile(), LatticeIndex{.x = flattened.lattice_x, .y = flattened.lattice_y});
+    if (!point.has_value()) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "Compact GPU path escaped the exact coordinate envelope", std::nullopt,
+                     telemetry, "gpu.batch.compact_path.bounds.v1");
+    }
+    points.push_back(*point);
+  }
+  if (points.front() != request.start || points.back() != request.goal) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "Compact GPU path does not connect the exact requested endpoints", std::nullopt,
+                   telemetry, "gpu.batch.compact_path.endpoint.v1");
+  }
+  std::vector<routing::LayerSegment> segments =
+      routing::CoalesceSegments(request.start_layer, points);
+  if (std::optional<routing::RouteFailure> invalid =
+          routing::ValidateReconstructedRouteWithNormalizedPolicy(board, compiled_board, request,
+                                                                  candidate_policy, segments);
+      invalid.has_value()) {
+    return Failure(PlanarGpuFailureCode::kValidationFailed,
+                   "Exact compact GPU route validation failed: " + invalid->detail,
+                   invalid->obstacle, telemetry);
+  }
+
+  return PlanarGpuRoute{
+      .source_board_content_hash = header.source_board_content_hash,
+      .compiler_profile_fingerprint = header.compiler_profile_fingerprint,
+      .compiler_version = header.compiler_version,
+      .rule_bucket_identity = header.rule_bucket_identity,
+      .device_view_fingerprint = header.device_view_fingerprint,
+      .generator = header.generator,
+      .policy_identity = candidate_policy.identity,
+      .backend = backend,
+      .total_cost = total_cost,
+      .lattice_path = std::move(points),
+      .segments = std::move(segments),
+      .telemetry = telemetry,
   };
 }
 
@@ -1255,7 +1426,7 @@ using CandidateBatchHostPreflightResult =
   }
   const std::uint64_t represented_states = static_cast<std::uint64_t>(represented_states_wide);
   const std::optional<std::uint64_t> minimum_host_bytes =
-      EstimateCandidateBatchHostBytesV1(queries.size(), 0, 0, represented_states);
+      EstimateCandidateBatchHostBytesV1(queries.size(), 0, 0, represented_states, policy.generator);
   if (!minimum_host_bytes.has_value() || *minimum_host_bytes > policy.maximum_host_bytes) {
     return Failure(
         PlanarGpuFailureCode::kResourceExhausted,
@@ -1369,9 +1540,9 @@ using CandidateBatchHostPreflightResult =
                 "GPU candidate batch aggregate normalized policy entries exceed the v1 bound");
   } else {
     preflight.aggregate_policy_edges = static_cast<std::uint64_t>(aggregate_policy_edges);
-    const std::optional<std::uint64_t> host_bytes =
-        EstimateCandidateBatchHostBytesV1(queries.size(), preflight.admitted.size(),
-                                          preflight.aggregate_policy_edges, represented_states);
+    const std::optional<std::uint64_t> host_bytes = EstimateCandidateBatchHostBytesV1(
+        queries.size(), preflight.admitted.size(), preflight.aggregate_policy_edges,
+        represented_states, policy.generator);
     if (!host_bytes.has_value() || *host_bytes > policy.maximum_host_bytes) {
       admitted_failure =
           Failure(PlanarGpuFailureCode::kResourceExhausted,
@@ -1499,11 +1670,13 @@ using CandidateBatchHostPreflightResult =
   bytes += static_cast<UWide>(request.policy_edges.size()) * sizeof(DeviceCandidatePolicyEdgeV1);
   const UWide total_states =
       static_cast<UWide>(device.header.represented_states) * request.queries.size();
-  bytes +=
-      total_states * (sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t));
   if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
+    bytes +=
+        total_states * (sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t));
     bytes += total_states * sizeof(std::uint8_t);
   } else {
+    bytes += total_states * (sizeof(std::uint64_t) + sizeof(std::uint64_t) + sizeof(std::uint32_t));
+    bytes += static_cast<UWide>(request.queries.size()) * sizeof(DeviceCandidateCompactPathV1);
     const UWide departure_count =
         static_cast<UWide>(device.header.represented_nodes) * 8 * request.queries.size();
     bytes += departure_count * sizeof(std::uint64_t);
@@ -1547,20 +1720,49 @@ using CandidateBatchHostPreflightResult =
                    "workspace");
   }
   const std::uint64_t state_count = device.header.represented_states;
-  const std::optional<CandidateBatchWorkspaceView> workspace = QueryWorkspaceView(batch, untrusted);
   if (untrusted.workspace_offset != expected.workspace_offset ||
-      untrusted.workspace_state_count != state_count || !workspace.has_value()) {
+      untrusted.workspace_state_count != state_count) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
                    "GPU candidate batch query-major workspace has invalid array bounds",
                    std::nullopt, query_telemetry, "gpu.batch.workspace.bounds.v1");
   }
-  if (std::ranges::any_of(workspace->state_owners,
-                          [&](std::uint64_t owner) { return owner != expected.workspace_owner; }) ||
-      std::ranges::any_of(workspace->predecessor_owners,
-                          [&](std::uint64_t owner) { return owner != expected.workspace_owner; })) {
-    return Failure(PlanarGpuFailureCode::kInternalInvariant,
-                   "GPU candidate batch workspace contains foreign query ownership", std::nullopt,
-                   query_telemetry, "gpu.batch.workspace.owner.v1");
+  if (batch.readback_kind == CandidateBatchReadbackKind::kFullWorkspace) {
+    const std::optional<CandidateBatchWorkspaceView> workspace =
+        QueryWorkspaceView(batch, untrusted);
+    if (!workspace.has_value()) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "GPU candidate batch query-major workspace has invalid array bounds",
+                     std::nullopt, query_telemetry, "gpu.batch.workspace.bounds.v1");
+    }
+    if (std::ranges::any_of(
+            workspace->state_owners,
+            [&](std::uint64_t owner) { return owner != expected.workspace_owner; }) ||
+        std::ranges::any_of(workspace->predecessor_owners, [&](std::uint64_t owner) {
+          return owner != expected.workspace_owner;
+        })) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "GPU candidate batch workspace contains foreign query ownership", std::nullopt,
+                     query_telemetry, "gpu.batch.workspace.owner.v1");
+    }
+  } else {
+    if (!untrusted.compact_path.has_value()) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "GPU compact sweep readback omitted its query path envelope", std::nullopt,
+                     query_telemetry, "gpu.batch.compact_path.bounds.v1");
+    }
+    const DeviceCandidateCompactPathV1& compact = *untrusted.compact_path;
+    const bool reached = header.completion == KernelCompletion::kReached;
+    const std::uint64_t compact_end =
+        compact.state_offset + static_cast<std::uint64_t>(compact.state_count);
+    if (compact.schema_version != kDeviceCandidateCompactPathSchemaVersion ||
+        compact.query_id != expected.query_id ||
+        compact.workspace_owner != expected.workspace_owner || compact.state_count > state_count ||
+        compact_end < compact.state_offset || compact_end > batch.compact_path_states.size() ||
+        (reached ? compact.state_count == 0 : compact.state_count != 0)) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "GPU compact sweep path has invalid associations or array bounds",
+                     std::nullopt, query_telemetry, "gpu.batch.compact_path.bounds.v1");
+    }
   }
   if (untrusted.telemetry.rounds != header.rounds || header.rounds > dispatched_rounds) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
@@ -1608,14 +1810,43 @@ using CandidateBatchHostPreflightResult =
   }
   const UWide total_states =
       static_cast<UWide>(request.queries.size()) * device.header.represented_states;
-  if (total_states > std::numeric_limits<std::size_t>::max() ||
-      untrusted.labels.size() != static_cast<std::size_t>(total_states) ||
-      untrusted.predecessors.size() != static_cast<std::size_t>(total_states) ||
-      untrusted.state_owners.size() != static_cast<std::size_t>(total_states) ||
-      untrusted.predecessor_owners.size() != static_cast<std::size_t>(total_states)) {
+  if (total_states > std::numeric_limits<std::size_t>::max()) {
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
                    "GPU candidate batch flat readback workspace has invalid array bounds",
                    std::nullopt, std::nullopt, "gpu.batch.workspace.bounds.v1");
+  }
+  const bool compact_paths = request.generator == PlanarGenerator::kHeadingAwareSweep;
+  if ((compact_paths &&
+       (untrusted.readback_kind != CandidateBatchReadbackKind::kCompactPaths ||
+        !untrusted.labels.empty() || !untrusted.predecessors.empty() ||
+        !untrusted.state_owners.empty() || !untrusted.predecessor_owners.empty() ||
+        untrusted.compact_path_states.size() > static_cast<std::size_t>(total_states))) ||
+      (!compact_paths &&
+       (untrusted.readback_kind != CandidateBatchReadbackKind::kFullWorkspace ||
+        untrusted.labels.size() != static_cast<std::size_t>(total_states) ||
+        untrusted.predecessors.size() != static_cast<std::size_t>(total_states) ||
+        untrusted.state_owners.size() != static_cast<std::size_t>(total_states) ||
+        untrusted.predecessor_owners.size() != static_cast<std::size_t>(total_states) ||
+        !untrusted.compact_path_states.empty()))) {
+    return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                   "GPU candidate batch readback kind or flat workspace bounds are invalid",
+                   std::nullopt, std::nullopt, "gpu.batch.workspace.bounds.v1");
+  }
+  if (compact_paths) {
+    std::uint64_t expected_offset = 0;
+    for (const UntrustedCandidateBatchQueryResult& query : untrusted.queries) {
+      if (!query.compact_path.has_value() || query.compact_path->state_offset != expected_offset) {
+        return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                       "GPU compact sweep paths are not one canonical contiguous batch",
+                       std::nullopt, std::nullopt, "gpu.batch.compact_path.bounds.v1");
+      }
+      expected_offset += query.compact_path->state_count;
+    }
+    if (expected_offset != untrusted.compact_path_states.size()) {
+      return Failure(PlanarGpuFailureCode::kInternalInvariant,
+                     "GPU compact sweep path storage has trailing or missing states", std::nullopt,
+                     std::nullopt, "gpu.batch.compact_path.bounds.v1");
+    }
   }
   if (telemetry.persistent_device_bytes != device.header.estimated_persistent_device_bytes ||
       telemetry.batch_device_bytes != expected_batch_bytes ||
@@ -1625,10 +1856,28 @@ using CandidateBatchHostPreflightResult =
                    "deterministic accounting",
                    std::nullopt, std::nullopt, "gpu.batch.memory.accounting.v1");
   }
-  const std::optional<std::uint64_t> peak =
-      routing::CheckedAdd(telemetry.persistent_device_bytes, telemetry.batch_device_bytes);
+  const std::optional<std::uint64_t> peak = routing::CheckedAdd(
+      telemetry.persistent_device_bytes, telemetry.workspace_capacity_device_bytes);
+  UWide expected_readback_bytes =
+      static_cast<UWide>(request.queries.size()) * sizeof(DeviceCandidateBatchResultV1);
+  if (compact_paths) {
+    expected_readback_bytes +=
+        static_cast<UWide>(request.queries.size()) * sizeof(DeviceCandidateCompactPathV1);
+    expected_readback_bytes +=
+        static_cast<UWide>(untrusted.compact_path_states.size()) * sizeof(std::uint32_t);
+  } else {
+    expected_readback_bytes +=
+        total_states * (sizeof(std::uint64_t) + sizeof(std::uint32_t) + 2U * sizeof(std::uint64_t));
+  }
   const std::uint32_t expected_chunk_rounds = descriptor->chunk_rounds;
   if (!peak.has_value() || telemetry.peak_device_bytes != *peak ||
+      telemetry.workspace_capacity_device_bytes < telemetry.batch_device_bytes ||
+      telemetry.persistent_device_bytes > request.maximum_device_bytes ||
+      telemetry.workspace_capacity_device_bytes >
+          request.maximum_device_bytes - telemetry.persistent_device_bytes ||
+      expected_readback_bytes > std::numeric_limits<std::uint64_t>::max() ||
+      telemetry.device_to_host_readback_bytes !=
+          static_cast<std::uint64_t>(expected_readback_bytes) ||
       !std::isfinite(telemetry.kernel_milliseconds) || telemetry.kernel_milliseconds < 0.0 ||
       telemetry.chunk_rounds != expected_chunk_rounds ||
       telemetry.dispatched_rounds > request.maximum_rounds ||
@@ -1644,8 +1893,7 @@ using CandidateBatchHostPreflightResult =
           ? 0
           : (static_cast<std::uint64_t>(telemetry.dispatched_rounds) + expected_chunk_rounds - 1U) /
                 expected_chunk_rounds;
-  UWide expected_launches =
-      kCandidateBatchFixedLaunches;  // initialization and stable predecessor selection
+  UWide expected_launches = descriptor->fixed_launches;
   if (descriptor->launches_once_per_chunk) {
     expected_launches += expected_readbacks;
   } else {
@@ -1854,7 +2102,7 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
   }
   const std::optional<std::uint64_t> expected_host_bytes = EstimateCandidateBatchHostBytesV1(
       backend_request.queries.size(), backend_request.policy_edges.size(),
-      device.header.represented_states);
+      device.header.represented_states, policy.generator);
   if (!expected_host_bytes.has_value() || *expected_host_bytes > policy.maximum_host_bytes) {
     SetAdmittedBatchFailure(
         admitted,
@@ -1923,6 +2171,13 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
   }
   output.telemetry = readback.telemetry;
 
+  std::vector<std::uint64_t> compact_visited_words;
+  if (readback.readback_kind == CandidateBatchReadbackKind::kCompactPaths) {
+    const std::size_t word_count =
+        (static_cast<std::size_t>(device.header.represented_states) + 63U) / 64U;
+    compact_visited_words.resize(word_count);
+  }
+
   std::map<std::uint64_t, const UntrustedCandidateBatchQueryResult*> by_query;
   std::set<std::uint64_t> duplicate_query_ids;
   for (const UntrustedCandidateBatchQueryResult& query : readback.queries) {
@@ -1947,6 +2202,50 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
             readback.telemetry.dispatched_rounds, readback.telemetry.finalization_launch_count);
         invalid.has_value()) {
       ReplaceUnsealedResult(item, std::move(*invalid));
+      continue;
+    }
+    if (readback.readback_kind == CandidateBatchReadbackKind::kCompactPaths) {
+      const KernelTelemetry compact_telemetry = QueryKernelTelemetry(untrusted.telemetry);
+      const routing::CpuRouteRequest& request =
+          preflight.ordered[admitted_query.item_index]->request;
+      switch (untrusted.header.completion) {
+        case KernelCompletion::kReached: {
+          const DeviceCandidateCompactPathV1& compact = *untrusted.compact_path;
+          const std::span<const std::uint32_t> reverse_states =
+              std::span<const std::uint32_t>(readback.compact_path_states)
+                  .subspan(static_cast<std::size_t>(compact.state_offset), compact.state_count);
+          ReplaceUnsealedResult(
+              item, ValidateAndReconstructCompactGpuPath(
+                        board, compiled_board, device, request, prepared.metadata(),
+                        admitted_query.endpoints, untrusted, reverse_states, compact_visited_words,
+                        admitted_query.normalized_policy));
+          break;
+        }
+        case KernelCompletion::kDisconnected:
+          if (std::optional<PlanarGpuFailure> unconfirmed = ConfirmDisconnectedWithCpuOracle(
+                  board, compiled_board, request, admitted_query.normalized_policy);
+              unconfirmed.has_value()) {
+            ReplaceUnsealedResult(item, WithTelemetry(std::move(*unconfirmed), compact_telemetry));
+          } else {
+            ReplaceUnsealedResult(
+                item, Failure(PlanarGpuFailureCode::kDisconnected,
+                              "No planar path connects this candidate query under its policy",
+                              std::nullopt, compact_telemetry));
+          }
+          break;
+        case KernelCompletion::kBudgetExhausted:
+          ReplaceUnsealedResult(
+              item, Failure(PlanarGpuFailureCode::kResourceExhausted,
+                            "GPU candidate query did not converge within its round budget",
+                            std::nullopt, compact_telemetry));
+          break;
+        case KernelCompletion::kCancelled:
+          ReplaceUnsealedResult(
+              item, Failure(PlanarGpuFailureCode::kCancelled,
+                            "GPU candidate query was cancelled at a bounded batch boundary",
+                            std::nullopt, compact_telemetry));
+          break;
+      }
       continue;
     }
     const std::optional<UntrustedKernelResultView> kernel_view =

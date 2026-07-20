@@ -17,6 +17,15 @@ struct CpuRouteProducerEvidence {
   std::vector<LayerSegment> segments;
 };
 
+// Allocation-free validation seam for internal batch callers that hold the
+// exact normalization result produced for `request` during admission. This is
+// intentionally not part of the public routing API: supplying a normalization
+// result from another request is a caller invariant violation.
+[[nodiscard]] std::optional<RouteFailure> ValidateReconstructedRouteWithNormalizedPolicy(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    const CpuRouteRequest& request, const NormalizedCandidateGenerationPolicy& normalized_policy,
+    std::span<const LayerSegment> segments);
+
 }  // namespace apgar::routing
 
 #endif  // APGAR_SRC_ROUTING_CPU_ASTAR_INTERNAL_H_

@@ -115,9 +115,11 @@ void ExpectCpuDifferential(const BoardSnapshot& board, const CompiledBoard& comp
   EXPECT_GT(batch.prepared_node_lookup_host_bytes, 0U);
   EXPECT_GT(batch.telemetry.persistent_device_bytes, 0U);
   EXPECT_GT(batch.telemetry.batch_device_bytes, 0U);
+  EXPECT_GE(batch.telemetry.workspace_capacity_device_bytes, batch.telemetry.batch_device_bytes);
   EXPECT_GT(batch.telemetry.batch_host_bytes, 0U);
-  EXPECT_EQ(batch.telemetry.peak_device_bytes,
-            batch.telemetry.persistent_device_bytes + batch.telemetry.batch_device_bytes);
+  EXPECT_GT(batch.telemetry.device_to_host_readback_bytes, 0U);
+  EXPECT_EQ(batch.telemetry.peak_device_bytes, batch.telemetry.persistent_device_bytes +
+                                                   batch.telemetry.workspace_capacity_device_bytes);
   EXPECT_GE(batch.telemetry.kernel_milliseconds, 0.0);
   EXPECT_GE(batch.telemetry.kernel_launch_count, 2U);
   EXPECT_GT(batch.telemetry.blocking_status_readback_count, 0U);
@@ -161,8 +163,12 @@ void ExpectRepeatableBatch(const PlanarCandidateBatch& first, const PlanarCandid
   EXPECT_EQ(first.prepared_node_lookup_host_bytes, second.prepared_node_lookup_host_bytes);
   EXPECT_EQ(first.telemetry.persistent_device_bytes, second.telemetry.persistent_device_bytes);
   EXPECT_EQ(first.telemetry.batch_device_bytes, second.telemetry.batch_device_bytes);
+  EXPECT_EQ(first.telemetry.workspace_capacity_device_bytes,
+            second.telemetry.workspace_capacity_device_bytes);
   EXPECT_EQ(first.telemetry.peak_device_bytes, second.telemetry.peak_device_bytes);
   EXPECT_EQ(first.telemetry.batch_host_bytes, second.telemetry.batch_host_bytes);
+  EXPECT_EQ(first.telemetry.device_to_host_readback_bytes,
+            second.telemetry.device_to_host_readback_bytes);
   EXPECT_EQ(first.telemetry.kernel_launch_count, second.telemetry.kernel_launch_count);
   EXPECT_EQ(first.telemetry.blocking_status_readback_count,
             second.telemetry.blocking_status_readback_count);
@@ -206,6 +212,8 @@ enum class BatchReadbackFault : std::uint8_t {
   kQueryTelemetryRounds,
   kQueryHeaderRounds,
   kQueryHeaderCompletion,
+  kCompactPathOwner,
+  kCompactPathState,
 };
 
 class CorruptingBatchBackend final : public IPlanarRouteBackend {
@@ -305,6 +313,20 @@ class CorruptingBatchBackend final : public IPlanarRouteBackend {
       case BatchReadbackFault::kQueryHeaderCompletion:
         batch.queries[1].header.completion = KernelCompletion::kBudgetExhausted;
         break;
+      case BatchReadbackFault::kCompactPathOwner:
+        if (batch.queries[1].compact_path.has_value()) {
+          batch.queries[1].compact_path->workspace_owner =
+              batch.queries.front().header.workspace_owner;
+        }
+        break;
+      case BatchReadbackFault::kCompactPathState:
+        if (batch.queries[1].compact_path.has_value() &&
+            batch.queries[1].compact_path->state_count != 0 &&
+            batch.queries[1].compact_path->state_offset < batch.compact_path_states.size()) {
+          batch.compact_path_states[static_cast<std::size_t>(
+              batch.queries[1].compact_path->state_offset)] = kInvalidStateIndex;
+        }
+        break;
     }
     return result;
   }
@@ -355,6 +377,198 @@ TEST(CudaCandidateBatchTest, FrontierAndSweepMatchCpuPoliciesAndRepeatExactly) {
     ExpectCpuDifferential(board, compiled, queries, first_batch);
     ExpectRepeatableBatch(first_batch, second_batch);
   }
+}
+
+TEST(CudaCandidateBatchTest, SweepWorkspacePersistsCapacityAndShrinksForATighterBound) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  const std::vector<PlanarCandidateBatchQuery> queries = PolicyQueries(board, device);
+  std::unique_ptr<IPlanarRouteBackend> backend = CreateCudaPlanarRouteBackend();
+  ASSERT_NE(backend, nullptr);
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, compiled, *backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+
+  const PlanarCandidateBatchResult large = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, queries,
+      PlanarCandidateBatchPolicy{.batch_id = 0x601,
+                                 .generator = PlanarGenerator::kHeadingAwareSweep},
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(large));
+  const CandidateBatchTelemetry large_telemetry = std::get<PlanarCandidateBatch>(large).telemetry;
+  EXPECT_EQ(large_telemetry.workspace_capacity_device_bytes, large_telemetry.batch_device_bytes);
+
+  const std::span<const PlanarCandidateBatchQuery> small_queries = std::span(queries).first(2);
+  const PlanarCandidateBatchResult reused = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, small_queries,
+      PlanarCandidateBatchPolicy{.batch_id = 0x602,
+                                 .generator = PlanarGenerator::kHeadingAwareSweep},
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(reused));
+  const CandidateBatchTelemetry reused_telemetry = std::get<PlanarCandidateBatch>(reused).telemetry;
+  EXPECT_EQ(reused_telemetry.workspace_capacity_device_bytes,
+            large_telemetry.workspace_capacity_device_bytes);
+  EXPECT_GT(reused_telemetry.workspace_capacity_device_bytes, reused_telemetry.batch_device_bytes);
+
+  const PlanarCandidateBatchResult bounded = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, small_queries,
+      PlanarCandidateBatchPolicy{
+          .batch_id = 0x603,
+          .generator = PlanarGenerator::kHeadingAwareSweep,
+          .maximum_device_bytes =
+              device.header.estimated_persistent_device_bytes + reused_telemetry.batch_device_bytes,
+      },
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(bounded));
+  const CandidateBatchTelemetry bounded_telemetry =
+      std::get<PlanarCandidateBatch>(bounded).telemetry;
+  EXPECT_EQ(bounded_telemetry.workspace_capacity_device_bytes,
+            bounded_telemetry.batch_device_bytes);
+  EXPECT_EQ(bounded_telemetry.peak_device_bytes,
+            device.header.estimated_persistent_device_bytes + bounded_telemetry.batch_device_bytes);
+}
+
+TEST(CudaCandidateBatchTest, CompactHostBudgetAcceptsExactEstimateAndRejectsOneByteBelow) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  const std::vector<PlanarCandidateBatchQuery> all_queries = PolicyQueries(board, device);
+  const std::span<const PlanarCandidateBatchQuery> queries = std::span(all_queries).first(2);
+  std::unique_ptr<IPlanarRouteBackend> backend = CreateCudaPlanarRouteBackend();
+  ASSERT_NE(backend, nullptr);
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, compiled, *backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+
+  const PlanarCandidateBatchResult reference = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, queries,
+      PlanarCandidateBatchPolicy{.batch_id = 0x606,
+                                 .generator = PlanarGenerator::kHeadingAwareSweep},
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(reference));
+  const std::uint64_t exact_bytes =
+      std::get<PlanarCandidateBatch>(reference).telemetry.batch_host_bytes;
+  ASSERT_GT(exact_bytes, 0U);
+
+  const PlanarCandidateBatchResult exact = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, queries,
+      PlanarCandidateBatchPolicy{.batch_id = 0x607,
+                                 .generator = PlanarGenerator::kHeadingAwareSweep,
+                                 .maximum_host_bytes = exact_bytes},
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(exact));
+  for (const PlanarCandidateBatchItem& item : std::get<PlanarCandidateBatch>(exact).items) {
+    EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(item.result()));
+  }
+
+  const PlanarCandidateBatchResult below = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, queries,
+      PlanarCandidateBatchPolicy{.batch_id = 0x608,
+                                 .generator = PlanarGenerator::kHeadingAwareSweep,
+                                 .maximum_host_bytes = exact_bytes - 1U},
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(below));
+  for (const PlanarCandidateBatchItem& item : std::get<PlanarCandidateBatch>(below).items) {
+    ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(item.result()));
+    EXPECT_EQ(std::get<PlanarGpuFailure>(item.result()).code,
+              PlanarGpuFailureCode::kResourceExhausted);
+  }
+}
+
+TEST(CudaCandidateBatchTest, BoundedFrontierEvictsAnIdleSweepWorkspace) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  const std::vector<PlanarCandidateBatchQuery> queries = PolicyQueries(board, device);
+  const std::span<const PlanarCandidateBatchQuery> small_queries = std::span(queries).first(2);
+  std::unique_ptr<IPlanarRouteBackend> backend = CreateCudaPlanarRouteBackend();
+  ASSERT_NE(backend, nullptr);
+
+  PreparedPlanarCompiledViewResult reference_result =
+      PreparePlanarCompiledView(board, compiled, *backend);
+  ASSERT_TRUE(
+      std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(reference_result));
+  std::unique_ptr<PreparedPlanarCompiledView> reference =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(reference_result));
+  const PlanarCandidateBatchResult reference_frontier =
+      RouteCandidateBatchWithPreparedPlanarGpuBackend(
+          board, compiled, small_queries,
+          PlanarCandidateBatchPolicy{.batch_id = 0x611,
+                                     .generator = PlanarGenerator::kBucketedFrontier},
+          *reference);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(reference_frontier));
+  const CandidateBatchTelemetry reference_telemetry =
+      std::get<PlanarCandidateBatch>(reference_frontier).telemetry;
+  const CpuRouteRequest legacy_request = TwoTerminalRequest(board);
+  const PlanarGpuRouteResult reference_legacy = RouteWithPreparedPlanarGpuBackend(
+      board, compiled, legacy_request, PlanarRoutePolicy{}, *reference);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(reference_legacy));
+  const KernelTelemetry reference_legacy_telemetry =
+      std::get<PlanarGpuRoute>(reference_legacy).telemetry;
+
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, compiled, *backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+  const PlanarCandidateBatchResult large_sweep = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, queries,
+      PlanarCandidateBatchPolicy{.batch_id = 0x612,
+                                 .generator = PlanarGenerator::kHeadingAwareSweep},
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(large_sweep));
+  const CandidateBatchTelemetry large_sweep_telemetry =
+      std::get<PlanarCandidateBatch>(large_sweep).telemetry;
+
+  const PlanarCandidateBatchResult bounded_frontier =
+      RouteCandidateBatchWithPreparedPlanarGpuBackend(
+          board, compiled, small_queries,
+          PlanarCandidateBatchPolicy{
+              .batch_id = 0x613,
+              .generator = PlanarGenerator::kBucketedFrontier,
+              .maximum_device_bytes = device.header.estimated_persistent_device_bytes +
+                                      reference_telemetry.batch_device_bytes,
+          },
+          *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(bounded_frontier));
+  const CandidateBatchTelemetry bounded_frontier_telemetry =
+      std::get<PlanarCandidateBatch>(bounded_frontier).telemetry;
+  EXPECT_EQ(bounded_frontier_telemetry.batch_device_bytes, reference_telemetry.batch_device_bytes);
+  EXPECT_EQ(bounded_frontier_telemetry.peak_device_bytes,
+            device.header.estimated_persistent_device_bytes +
+                bounded_frontier_telemetry.batch_device_bytes);
+
+  const PlanarCandidateBatchResult small_sweep = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, compiled, small_queries,
+      PlanarCandidateBatchPolicy{.batch_id = 0x614,
+                                 .generator = PlanarGenerator::kHeadingAwareSweep},
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(small_sweep));
+  const CandidateBatchTelemetry small_sweep_telemetry =
+      std::get<PlanarCandidateBatch>(small_sweep).telemetry;
+  EXPECT_LT(small_sweep_telemetry.workspace_capacity_device_bytes,
+            large_sweep_telemetry.workspace_capacity_device_bytes);
+  EXPECT_EQ(small_sweep_telemetry.workspace_capacity_device_bytes,
+            small_sweep_telemetry.batch_device_bytes);
+
+  const PlanarGpuRouteResult bounded_legacy = RouteWithPreparedPlanarGpuBackend(
+      board, compiled, legacy_request,
+      PlanarRoutePolicy{.maximum_device_bytes = reference_legacy_telemetry.peak_device_bytes},
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(bounded_legacy));
+  const KernelTelemetry& bounded_legacy_telemetry =
+      std::get<PlanarGpuRoute>(bounded_legacy).telemetry;
+  EXPECT_EQ(bounded_legacy_telemetry.persistent_device_bytes,
+            reference_legacy_telemetry.persistent_device_bytes);
+  EXPECT_EQ(bounded_legacy_telemetry.batch_device_bytes,
+            reference_legacy_telemetry.batch_device_bytes);
+  EXPECT_EQ(bounded_legacy_telemetry.peak_device_bytes,
+            reference_legacy_telemetry.peak_device_bytes);
 }
 
 TEST(CudaCandidateBatchTest, SingleQueryApiDelegatesNonDefaultPolicyToBatchOfOne) {
@@ -790,6 +1004,35 @@ TEST(CudaCandidateBatchTest, RejectsCorruptedQueryTelemetryWithoutRejectingPeer)
   }
 }
 
+TEST(CudaCandidateBatchTest, RejectsCorruptedCompactSweepPathWithoutRejectingPeer) {
+  const BoardSnapshot board = Snapshot();
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const DeviceCompiledBoardV1 device = Flatten(board, compiled);
+  std::vector<PlanarCandidateBatchQuery> queries = PolicyQueries(board, device);
+  queries.resize(2);
+
+  for (const auto [fault, expected_invariant] :
+       {std::pair{BatchReadbackFault::kCompactPathOwner, "gpu.batch.compact_path.bounds.v1"},
+        std::pair{BatchReadbackFault::kCompactPathState, "gpu.batch.compact_path.endpoint.v1"}}) {
+    std::unique_ptr<IPlanarRouteBackend> cuda = CreateCudaPlanarRouteBackend();
+    ASSERT_NE(cuda, nullptr);
+    CorruptingBatchBackend corrupting(*cuda, fault);
+    PlanarCandidateBatchResult result = RouteCandidateBatchWithPlanarGpuBackend(
+        board, compiled, queries,
+        PlanarCandidateBatchPolicy{.batch_id = 0x5b,
+                                   .generator = PlanarGenerator::kHeadingAwareSweep},
+        corrupting);
+    ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result));
+    const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
+    ASSERT_EQ(batch.items.size(), 2U);
+    EXPECT_TRUE(std::holds_alternative<PlanarGpuRoute>(batch.items[0].result()));
+    ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(batch.items[1].result()));
+    const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(batch.items[1].result());
+    EXPECT_EQ(failure.code, PlanarGpuFailureCode::kInternalInvariant);
+    EXPECT_EQ(failure.invariant_id, expected_invariant);
+  }
+}
+
 TEST(CudaCandidateBatchTest, RejectsDuplicateOrZeroQueryIdentityBeforeExecution) {
   const BoardSnapshot board = Snapshot();
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
@@ -976,7 +1219,7 @@ TEST(CudaCandidateBatchDifferentialTest,
   ASSERT_NE(prepared, nullptr);
 
   std::uint64_t batch_id = 0xbeef;
-  for (std::uint32_t candidate_count : {4U, 8U, 16U, 32U, 64U, 128U}) {
+  for (std::uint32_t candidate_count : {4U, 8U, 16U, 32U, 64U, 128U, 256U, 257U, 512U}) {
     SCOPED_TRACE(candidate_count);
     std::vector<PlanarCandidateBatchQuery> queries;
     queries.reserve(candidate_count);

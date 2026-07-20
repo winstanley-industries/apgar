@@ -37,8 +37,8 @@ namespace {
 inline constexpr int kBenchmarkRepetitions = 20;
 inline constexpr double kBenchmarkMinimumSeconds = 0.02;
 inline constexpr double kBenchmarkWarmupSeconds = 0.01;
-inline constexpr std::uint32_t kMaximumCandidateCount = 128;
-inline constexpr std::array<std::uint32_t, 6> kCandidateCounts = {4, 8, 16, 32, 64, 128};
+inline constexpr std::uint32_t kMaximumCandidateCount = 512;
+inline constexpr std::array<std::uint32_t, 8> kCandidateCounts = {4, 8, 16, 32, 64, 128, 256, 512};
 enum class FailureClass : std::uint8_t {
   kReached = 0,
   kInvalidInput = 1,
@@ -95,9 +95,11 @@ struct BatchExecution {
   std::optional<apgar::gpu::PlanarCandidateBatch> validated_gpu_batch;
   std::uint64_t persistent_owned_device_bytes = 0;
   std::uint64_t batch_owned_device_bytes = 0;
+  std::uint64_t workspace_capacity_device_bytes = 0;
   std::uint64_t peak_owned_device_bytes = 0;
   std::uint64_t prepared_node_lookup_host_bytes = 0;
   std::uint64_t batch_owned_host_bytes = 0;
+  std::uint64_t device_to_host_readback_bytes = 0;
   std::uint64_t kernel_launch_count = 0;
   std::uint64_t blocking_status_readback_count = 0;
   std::uint32_t dispatched_rounds = 0;
@@ -460,9 +462,11 @@ void CanonicalizeQueryOrder(BatchExecution* batch) {
       std::get<apgar::gpu::PlanarCandidateBatch>(std::move(result));
   execution.persistent_owned_device_bytes = batch.telemetry.persistent_device_bytes;
   execution.batch_owned_device_bytes = batch.telemetry.batch_device_bytes;
+  execution.workspace_capacity_device_bytes = batch.telemetry.workspace_capacity_device_bytes;
   execution.peak_owned_device_bytes = batch.telemetry.peak_device_bytes;
   execution.prepared_node_lookup_host_bytes = batch.prepared_node_lookup_host_bytes;
   execution.batch_owned_host_bytes = batch.telemetry.batch_host_bytes;
+  execution.device_to_host_readback_bytes = batch.telemetry.device_to_host_readback_bytes;
   execution.kernel_launch_count = batch.telemetry.kernel_launch_count;
   execution.blocking_status_readback_count = batch.telemetry.blocking_status_readback_count;
   execution.dispatched_rounds = batch.telemetry.dispatched_rounds;
@@ -999,9 +1003,11 @@ struct ExecutionSummary {
   std::uint32_t rounds_maximum = 0;
   std::uint64_t persistent_owned_device_bytes = 0;
   std::uint64_t batch_owned_device_bytes = 0;
+  std::uint64_t workspace_capacity_device_bytes = 0;
   std::uint64_t peak_owned_device_bytes = 0;
   std::uint64_t prepared_node_lookup_host_bytes = 0;
   std::uint64_t batch_owned_host_bytes = 0;
+  std::uint64_t device_to_host_readback_bytes = 0;
   std::uint64_t kernel_launch_count = 0;
   std::uint64_t blocking_status_readback_count = 0;
   std::uint32_t dispatched_rounds = 0;
@@ -1018,9 +1024,11 @@ struct ExecutionSummary {
       .ordered_semantic_checksum = SemanticBatchChecksum(execution),
       .persistent_owned_device_bytes = execution.persistent_owned_device_bytes,
       .batch_owned_device_bytes = execution.batch_owned_device_bytes,
+      .workspace_capacity_device_bytes = execution.workspace_capacity_device_bytes,
       .peak_owned_device_bytes = execution.peak_owned_device_bytes,
       .prepared_node_lookup_host_bytes = execution.prepared_node_lookup_host_bytes,
       .batch_owned_host_bytes = execution.batch_owned_host_bytes,
+      .device_to_host_readback_bytes = execution.device_to_host_readback_bytes,
       .kernel_launch_count = execution.kernel_launch_count,
       .blocking_status_readback_count = execution.blocking_status_readback_count,
       .dispatched_rounds = execution.dispatched_rounds,
@@ -1071,9 +1079,11 @@ struct ExecutionSummary {
          left.rounds_maximum == right.rounds_maximum &&
          left.persistent_owned_device_bytes == right.persistent_owned_device_bytes &&
          left.batch_owned_device_bytes == right.batch_owned_device_bytes &&
+         left.workspace_capacity_device_bytes == right.workspace_capacity_device_bytes &&
          left.peak_owned_device_bytes == right.peak_owned_device_bytes &&
          left.prepared_node_lookup_host_bytes == right.prepared_node_lookup_host_bytes &&
          left.batch_owned_host_bytes == right.batch_owned_host_bytes &&
+         left.device_to_host_readback_bytes == right.device_to_host_readback_bytes &&
          left.kernel_launch_count == right.kernel_launch_count &&
          left.blocking_status_readback_count == right.blocking_status_readback_count &&
          left.dispatched_rounds == right.dispatched_rounds &&
@@ -1121,11 +1131,15 @@ void PublishExecutionCounters(benchmark::State& state, const ExecutionSummary& s
   state.counters["persistent_owned_vram_bytes"] =
       static_cast<double>(summary.persistent_owned_device_bytes);
   state.counters["batch_owned_vram_bytes"] = static_cast<double>(summary.batch_owned_device_bytes);
+  state.counters["workspace_capacity_vram_bytes"] =
+      static_cast<double>(summary.workspace_capacity_device_bytes);
   state.counters["peak_owned_vram_bytes"] = static_cast<double>(summary.peak_owned_device_bytes);
   state.counters["prepared_node_lookup_host_bytes"] =
       static_cast<double>(summary.prepared_node_lookup_host_bytes);
   state.counters["gpu_batch_owned_host_bytes"] =
       static_cast<double>(summary.batch_owned_host_bytes);
+  state.counters["device_to_host_readback_bytes"] =
+      static_cast<double>(summary.device_to_host_readback_bytes);
   state.counters["batch_cuda_event_milliseconds"] = average_cuda_event_milliseconds;
   state.counters["dispatched_rounds"] = static_cast<double>(summary.dispatched_rounds);
   state.counters["finalization_launch_count"] =
@@ -1653,6 +1667,8 @@ struct EvidenceLabels {
       std::to_string(apgar::routing::kCandidateGenerationPolicySchemaVersion));
   benchmark::AddCustomContext("apgar_device_candidate_batch_schema_version",
                               std::to_string(apgar::gpu::kDeviceCandidateBatchSchemaVersion));
+  benchmark::AddCustomContext("apgar_device_candidate_compact_path_schema_version",
+                              std::to_string(apgar::gpu::kDeviceCandidateCompactPathSchemaVersion));
   benchmark::AddCustomContext("apgar_google_benchmark_version", "1.9.5");
   benchmark::AddCustomContext("apgar_google_benchmark_module_lock_sha256",
                               "0bd357fd9db30ee31d5eb4c78b1086ce3d79b4423ce76de19e8a2fa7b2fa2e10");
@@ -1695,7 +1711,7 @@ struct EvidenceLabels {
       "getrusage_RUSAGE_SELF_process_lifetime_high_water_not_row_attributable");
   benchmark::AddCustomContext(
       "apgar_vram_scope",
-      "backend_owned_persistent_plus_query_major_batch_not_driver_or_allocator_pool");
+      "backend_owned_persistent_plus_actual_workspace_capacity_not_driver_or_allocator_pool");
   benchmark::AddCustomContext(
       "apgar_cuda_frontier_launch_model",
       "one_256_thread_block_per_query_cooperative_stable_astar_32_round_device_chunks");
@@ -1719,7 +1735,20 @@ struct EvidenceLabels {
   benchmark::AddCustomContext("apgar_cuda_sweep_kernels_per_round_with_runs",
                               std::to_string(kSweepDescriptor->kernels_per_round_with_runs));
   benchmark::AddCustomContext("apgar_cuda_fixed_batch_launches",
-                              std::to_string(apgar::gpu::kCandidateBatchFixedLaunches));
+                              std::to_string(apgar::gpu::kCandidateFrontierFixedLaunches));
+  benchmark::AddCustomContext("apgar_cuda_frontier_fixed_batch_launches",
+                              std::to_string(apgar::gpu::kCandidateFrontierFixedLaunches));
+  benchmark::AddCustomContext("apgar_cuda_sweep_fixed_batch_launches",
+                              std::to_string(apgar::gpu::kCandidateSweepFixedLaunches));
+  benchmark::AddCustomContext(
+      "apgar_cuda_sweep_workspace_model",
+      "prepared_view_cached_bounded_capacity_with_exclusive_execution_lease");
+  benchmark::AddCustomContext(
+      "apgar_cuda_sweep_readback_model",
+      "result_headers_plus_compact_path_headers_plus_used_packed_path_states");
+  benchmark::AddCustomContext(
+      "apgar_device_to_host_readback_bytes_scope",
+      "final_result_payload_excluding_separately_counted_blocking_status_copies");
   benchmark::AddCustomContext(
       "apgar_cuda_maximum_finalization_launches",
       std::to_string(apgar::gpu::kCandidateBatchMaximumFinalizationLaunches));
@@ -1728,7 +1757,7 @@ struct EvidenceLabels {
       "one_blocking_query_status_readback_after_each_32_frontier_or_8_sweep_round_chunk");
   benchmark::AddCustomContext(
       "apgar_cuda_event_timing_scope",
-      "initialization_search_chunks_status_copies_finalization_and_predecessor_selection_envelope");
+      "initialization_search_chunks_status_copies_finalization_and_final_path_production_envelope");
   benchmark::AddCustomContext(
       "apgar_round_sync_cost_visibility",
       "exact_launch_and_blocking_status_readback_counts_plus_cuda_event_and_execution_wall_time");

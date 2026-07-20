@@ -26,30 +26,54 @@ using apgar::gpu::UntrustedCandidateBatchResultFault;
 struct FaultContract {
   std::string_view name;
   UntrustedCandidateBatchResultFault fault;
+  apgar::gpu::PlanarGenerator generator;
   std::string_view expected_failure;
   std::string_view invariant;
 };
 
-inline constexpr std::array<FaultContract, 8> kFaultContracts{{
-    {"workspace_bounds", UntrustedCandidateBatchResultFault::kWorkspaceBounds, "internal_invariant",
+inline constexpr std::array<FaultContract, 13> kFaultContracts{{
+    {"workspace_bounds", UntrustedCandidateBatchResultFault::kWorkspaceBounds,
+     apgar::gpu::PlanarGenerator::kBucketedFrontier, "internal_invariant",
      "gpu.batch.workspace.bounds.v1"},
-    {"workspace_owner", UntrustedCandidateBatchResultFault::kWorkspaceOwner, "internal_invariant",
+    {"workspace_owner", UntrustedCandidateBatchResultFault::kWorkspaceOwner,
+     apgar::gpu::PlanarGenerator::kBucketedFrontier, "internal_invariant",
      "gpu.batch.workspace.owner.v1"},
-    {"query_telemetry", UntrustedCandidateBatchResultFault::kQueryTelemetry, "internal_invariant",
+    {"query_telemetry", UntrustedCandidateBatchResultFault::kQueryTelemetry,
+     apgar::gpu::PlanarGenerator::kBucketedFrontier, "internal_invariant",
      "gpu.batch.query.telemetry.v1"},
     {"memory_accounting", UntrustedCandidateBatchResultFault::kMemoryAccounting,
-     "internal_invariant", "gpu.batch.memory.accounting.v1"},
-    {"batch_telemetry", UntrustedCandidateBatchResultFault::kBatchTelemetry, "internal_invariant",
+     apgar::gpu::PlanarGenerator::kBucketedFrontier, "internal_invariant",
+     "gpu.batch.memory.accounting.v1"},
+    {"batch_telemetry", UntrustedCandidateBatchResultFault::kBatchTelemetry,
+     apgar::gpu::PlanarGenerator::kBucketedFrontier, "internal_invariant",
      "gpu.batch.telemetry.v1"},
-    {"query_identity", UntrustedCandidateBatchResultFault::kQueryIdentity, "internal_invariant",
+    {"query_identity", UntrustedCandidateBatchResultFault::kQueryIdentity,
+     apgar::gpu::PlanarGenerator::kBucketedFrontier, "internal_invariant",
      "gpu.batch.query.identity.v1"},
     {"false_disconnected", UntrustedCandidateBatchResultFault::kFalseDisconnected,
-     "internal_invariant", "gpu.disconnected.cpu_reachable.v1"},
-    {"unauthenticated_cuda_producer", UntrustedCandidateBatchResultFault::kNone, "unsupported",
+     apgar::gpu::PlanarGenerator::kBucketedFrontier, "internal_invariant",
+     "gpu.disconnected.cpu_reachable.v1"},
+    {"compact_path_bounds", UntrustedCandidateBatchResultFault::kCompactPathBounds,
+     apgar::gpu::PlanarGenerator::kHeadingAwareSweep, "internal_invariant",
+     "gpu.batch.compact_path.bounds.v1"},
+    {"compact_path_endpoint", UntrustedCandidateBatchResultFault::kCompactPathEndpoint,
+     apgar::gpu::PlanarGenerator::kHeadingAwareSweep, "internal_invariant",
+     "gpu.batch.compact_path.endpoint.v1"},
+    {"compact_path_cycle", UntrustedCandidateBatchResultFault::kCompactPathCycle,
+     apgar::gpu::PlanarGenerator::kHeadingAwareSweep, "internal_invariant",
+     "gpu.batch.compact_path.cycle.v1"},
+    {"compact_path_heading", UntrustedCandidateBatchResultFault::kCompactPathHeading,
+     apgar::gpu::PlanarGenerator::kHeadingAwareSweep, "internal_invariant",
+     "gpu.batch.compact_path.heading.v1"},
+    {"compact_path_edge", UntrustedCandidateBatchResultFault::kCompactPathEdge,
+     apgar::gpu::PlanarGenerator::kHeadingAwareSweep, "internal_invariant",
+     "gpu.batch.compact_path.edge.v1"},
+    {"unauthenticated_cuda_producer", UntrustedCandidateBatchResultFault::kNone,
+     apgar::gpu::PlanarGenerator::kBucketedFrontier, "unsupported",
      "candidate.builder.gpu_producer_authentication.v1"},
 }};
 
-inline constexpr std::array<std::string_view, 8> kDefaultArtifacts{{
+inline constexpr std::array<std::string_view, 13> kDefaultArtifacts{{
     "replays/gpu/batch_workspace_bounds_v1.replay",
     "replays/gpu/batch_workspace_owner_v1.replay",
     "replays/gpu/batch_query_telemetry_v1.replay",
@@ -57,7 +81,16 @@ inline constexpr std::array<std::string_view, 8> kDefaultArtifacts{{
     "replays/gpu/batch_telemetry_v1.replay",
     "replays/gpu/batch_query_identity_v1.replay",
     "replays/gpu/batch_false_disconnected_v1.replay",
+    "replays/gpu/batch_compact_path_bounds_v1.replay",
+    "replays/gpu/batch_compact_path_endpoint_v1.replay",
+    "replays/gpu/batch_compact_path_cycle_v1.replay",
+    "replays/gpu/batch_compact_path_heading_v1.replay",
+    "replays/gpu/batch_compact_path_edge_v1.replay",
     "replays/gpu/batch_unauthenticated_cuda_producer_v1.replay",
+}};
+
+inline constexpr std::array<std::string_view, 1> kRejectedArtifacts{{
+    "replays/gpu/batch_compact_path_wrong_generator_v1.replay",
 }};
 
 struct ReplayArtifact {
@@ -140,16 +173,24 @@ struct ReplayArtifact {
   const auto& values = envelope->values;
 
   const FaultContract* fault = FindFault(values[6]);
+  const std::optional<apgar::gpu::PlanarGenerator> generator =
+      values[5] == "bucketed_frontier"
+          ? std::optional{apgar::gpu::PlanarGenerator::kBucketedFrontier}
+      : values[5] == "heading_aware_sweep"
+          ? std::optional{apgar::gpu::PlanarGenerator::kHeadingAwareSweep}
+          : std::nullopt;
   if (values[0] != "apgar_gpu_batch_invariant_replay" || values[1] != "1" || values[2] != "1" ||
-      values[5] != "bucketed_frontier" || fault == nullptr || values[16] != "1" ||
-      values[17] != "base_scalar_cost" || values[23] != "none" || values[24] != "none" ||
-      values[32] != fault->expected_failure || values[33] != fault->invariant) {
+      !generator.has_value() || fault == nullptr || *generator != fault->generator ||
+      values[16] != "1" || values[17] != "base_scalar_cost" || values[23] != "none" ||
+      values[24] != "none" || values[32] != fault->expected_failure ||
+      values[33] != fault->invariant) {
     *error = "replay format, schema, generator, policy, fault, or expected outcome is unsupported";
     return std::nullopt;
   }
 
   ReplayArtifact artifact;
   artifact.fixture = values[3];
+  artifact.generator = *generator;
   artifact.fault = fault->fault;
   artifact.expected_invariant = std::string(values[33]);
   artifact.candidate_policy.objective = apgar::routing::CandidateObjective::kBaseScalarCost;
@@ -374,6 +415,26 @@ int Replay(std::string_view artifact_path) {
   return 0;
 }
 
+int RejectArtifact(std::string_view artifact_path) {
+  const std::optional<std::string> artifact_contents = apgar::tooling::ReadRunfile(artifact_path);
+  if (!artifact_contents.has_value()) {
+    std::cerr << artifact_path << ": unable to read rejected replay artifact\n";
+    return 2;
+  }
+  std::string parse_error;
+  const std::optional<ReplayArtifact> parsed = ParseArtifact(*artifact_contents, &parse_error);
+  constexpr std::string_view kExpectedAssociationError =
+      "replay format, schema, generator, policy, fault, or expected outcome is unsupported";
+  if (parsed.has_value() || parse_error != kExpectedAssociationError) {
+    std::cerr << artifact_path
+              << ": invalid generator/fault association did not reach the semantic parser: "
+              << parse_error << '\n';
+    return 1;
+  }
+  std::cout << "rejected=generator_fault_association artifact=" << artifact_path << '\n';
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -389,6 +450,14 @@ int main(int argc, char** argv) {
   if (argc == 1) {
     for (std::string_view artifact : kDefaultArtifacts) {
       replay(artifact);
+    }
+    for (std::string_view artifact : kRejectedArtifacts) {
+      const int result = RejectArtifact(artifact);
+      if (result == 2) {
+        exit_code = 2;
+      } else if (result != 0 && exit_code == 0) {
+        exit_code = 1;
+      }
     }
   } else {
     for (int index = 1; index < argc; ++index) {
