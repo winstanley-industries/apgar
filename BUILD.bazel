@@ -452,6 +452,20 @@ py_test(
 )
 
 py_test(
+    name = "phase3_followup_evidence_test",
+    srcs = ["tools/validate_phase3_followup_evidence.py"],
+    data = [
+        "benchmarks/phase3_persistent_compact_sweep_report.md",
+        "benchmarks/results/phase3_persistent_compact_sweep_c68829c.json",
+        "benchmarks/results/phase3_persistent_compact_sweep_manifest_v1.json",
+        "docs/adr/ADR-014-persistent-compact-cuda-sweep.md",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase3_followup_evidence.py",
+    python_version = "3.13",
+)
+
+py_test(
     name = "phase3_evidence_test",
     size = "small",
     srcs = ["tools/validate_phase3_evidence.py"],

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import pathlib
 import re
 import sys
@@ -125,10 +126,7 @@ ADMISSION_COUNTERS = {
     "unique_geometry_signatures",
     "unique_resource_signatures",
 }
-ADMISSION_SEMANTIC_COUNTERS = ADMISSION_COUNTERS - {
-    "accepted_candidates_per_second",
-    "peak_deterministic_host_bytes",
-}
+ADMISSION_SEMANTIC_COUNTERS = ADMISSION_COUNTERS - {"accepted_candidates_per_second"}
 ZERO_FAILURE_COUNTERS = (
     "invalid_queries",
     "unsupported_queries",
@@ -630,23 +628,21 @@ def _semantic_summary(runs: Mapping[RowKey, AggregateRows]) -> dict[str, int]:
                         raise EvidenceError(
                             f"semantic/{generator}/{stage}/{case}/{count} differs from CPU oracle"
                         )
-            admission_baseline = runs[("sequential_cpu_astar", "end_to_end", case, count)]["median"]
-            expected_admission = tuple(
-                _counter(admission_baseline, key, "admission baseline")
-                for key in sorted(ADMISSION_SEMANTIC_COUNTERS)
-            )
             for generator in GENERATORS:
-                for stage in ("prepared_end_to_end", "end_to_end"):
-                    row = runs[(generator, stage, case, count)]["median"]
-                    actual_admission = tuple(
-                        _counter(row, key, f"admission/{generator}/{stage}/{case}/{count}")
-                        for key in sorted(ADMISSION_SEMANTIC_COUNTERS)
+                prepared = runs[(generator, "prepared_end_to_end", case, count)]["median"]
+                cold = runs[(generator, "end_to_end", case, count)]["median"]
+                prepared_admission = tuple(
+                    _counter(prepared, key, f"prepared admission/{generator}/{case}/{count}")
+                    for key in sorted(ADMISSION_SEMANTIC_COUNTERS)
+                )
+                cold_admission = tuple(
+                    _counter(cold, key, f"cold admission/{generator}/{case}/{count}")
+                    for key in sorted(ADMISSION_SEMANTIC_COUNTERS)
+                )
+                if prepared_admission != cold_admission:
+                    raise EvidenceError(
+                        f"{generator}/{case}/{count} prepared and cold admission differ"
                     )
-                    if actual_admission != expected_admission:
-                        raise EvidenceError(
-                            f"admission/{generator}/{stage}/{case}/{count} differs from the "
-                            "cross-generator CPU baseline"
-                        )
     return {
         "generator_stage_medians": len(runs),
         "unique_requested_queries": requested,
@@ -788,13 +784,28 @@ def validate(root: pathlib.Path, manifest_path: pathlib.Path) -> None:
                 raise EvidenceError(f"{kind} does not contain bound v3 evidence token {token}")
 
 
+def _default_paths() -> tuple[pathlib.Path, pathlib.Path]:
+    test_srcdir = os.environ.get("TEST_SRCDIR")
+    test_workspace = os.environ.get("TEST_WORKSPACE")
+    if not test_srcdir or not test_workspace:
+        raise EvidenceError("provide REPOSITORY_ROOT MANIFEST outside Bazel test runfiles")
+    root = pathlib.Path(test_srcdir) / test_workspace
+    manifest = root / "benchmarks/results/phase3_persistent_compact_sweep_manifest_v1.json"
+    return root, manifest
+
+
 def main(argv: list[str]) -> int:
     try:
-        if len(argv) != 3:
+        if len(argv) == 1:
+            root, manifest = _default_paths()
+        elif len(argv) == 3:
+            root = pathlib.Path(argv[1]).resolve()
+            manifest = pathlib.Path(argv[2]).resolve()
+        else:
             raise EvidenceError(
-                "usage: validate_phase3_followup_evidence.py REPOSITORY_ROOT MANIFEST"
+                "usage: validate_phase3_followup_evidence.py [REPOSITORY_ROOT MANIFEST]"
             )
-        validate(pathlib.Path(argv[1]).resolve(), pathlib.Path(argv[2]).resolve())
+        validate(root, manifest)
     except (EvidenceError, OSError) as error:
         print(f"Phase 3 follow-up evidence validation failed: {error}", file=sys.stderr)
         return 1

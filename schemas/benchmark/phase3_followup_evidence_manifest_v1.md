@@ -64,8 +64,9 @@ The canonical validator invocation is:
 
 ```sh
 bazel run //:phase3_followup_evidence_validator -- REPOSITORY_ROOT MANIFEST
+bazel test //:phase3_followup_evidence_test
 ```
 
-The validator target deliberately requires an explicit manifest until a real,
-clean-stamped v3 artifact exists; this schema does not authorize fabricated or
-placeholder evidence.
+The explicit form can validate a candidate manifest before publication. The
+test target validates the checked-in canonical artifact. This schema does not
+authorize fabricated or placeholder evidence.

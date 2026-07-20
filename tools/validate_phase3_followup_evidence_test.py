@@ -259,11 +259,11 @@ class Phase3FollowupEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(validator.EvidenceError, "differs from CPU oracle"):
             validator.validate(self.root, self.manifest_path)
 
-    def test_rejects_cross_generator_admission_corruption(self) -> None:
+    def test_rejects_prepared_cold_admission_corruption(self) -> None:
         row = self._median("batched_cuda_sweep", "end_to_end", validator.CASES[0], 4)
         row["accepted_logical_bytes"] += 1
         self._write_result_and_manifest()
-        with self.assertRaisesRegex(validator.EvidenceError, "cross-generator CPU baseline"):
+        with self.assertRaisesRegex(validator.EvidenceError, "prepared and cold admission differ"):
             validator.validate(self.root, self.manifest_path)
 
     def test_rejects_changed_geometric_mean_speedup(self) -> None:

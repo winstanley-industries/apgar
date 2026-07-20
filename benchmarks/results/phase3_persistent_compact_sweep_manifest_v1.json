@@ -1,0 +1,53 @@
+{
+  "schema": "phase3_followup_evidence_manifest_v1",
+  "result_schema": "phase3_candidate_bakeoff_v3",
+  "source_commit": "c68829c62db8c01bee81c30d106adf4ff599ae43",
+  "result_file": "benchmarks/results/phase3_persistent_compact_sweep_c68829c.json",
+  "result_sha256": "f766e267cfd5ab740a0bb4980cd75ae74e995e0c2128a297b7b5ab39328b0783",
+  "report_file": "benchmarks/phase3_persistent_compact_sweep_report.md",
+  "report_sha256": "a0cf2aca0123efb73ce6521c7c57bf43758660c7b42835b4cac005ad9491dea2",
+  "decision_file": "docs/adr/ADR-014-persistent-compact-cuda-sweep.md",
+  "decision_sha256": "e754c9a152e7a05215c73162bdb6a6bdccc8e6c78b62d9c4b93686ca9b06849a",
+  "expected_correctness_summary": {
+    "generator_stage_medians": 792,
+    "unique_requested_queries": 11220,
+    "reached_queries": 9331,
+    "unreachable_queries": 1889,
+    "unexpected_failure_queries": 0
+  },
+  "expected_stage_comparisons": {
+    "execution_readback": {
+      "comparisons": 88,
+      "nominal_cuda_median_wins": 26,
+      "nominal_cpu_median_wins": 62,
+      "nominal_median_ties": 0,
+      "clear_cuda_mean_wins": 23,
+      "clear_cpu_mean_wins": 62,
+      "unclear_mean_differences": 3,
+      "equal_row_geomean_cuda_speedup": 0.36894891000697294,
+      "pooled_cuda_throughput_speedup": 0.9505446967777404
+    },
+    "prepared_end_to_end": {
+      "comparisons": 88,
+      "nominal_cuda_median_wins": 27,
+      "nominal_cpu_median_wins": 61,
+      "nominal_median_ties": 0,
+      "clear_cuda_mean_wins": 27,
+      "clear_cpu_mean_wins": 56,
+      "unclear_mean_differences": 5,
+      "equal_row_geomean_cuda_speedup": 0.5103362865877366,
+      "pooled_cuda_throughput_speedup": 1.021244910038941
+    },
+    "end_to_end": {
+      "comparisons": 88,
+      "nominal_cuda_median_wins": 7,
+      "nominal_cpu_median_wins": 81,
+      "nominal_median_ties": 0,
+      "clear_cuda_mean_wins": 7,
+      "clear_cpu_mean_wins": 81,
+      "unclear_mean_differences": 0,
+      "equal_row_geomean_cuda_speedup": 0.30946512503839624,
+      "pooled_cuda_throughput_speedup": 0.6913863827970889
+    }
+  }
+}
