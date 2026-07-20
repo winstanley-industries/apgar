@@ -402,7 +402,7 @@ py_test(
     srcs = ["tools/validate_phase3_evidence.py"],
     data = [
         "benchmarks/phase3_candidate_dispatch_diversity_report.md",
-        "benchmarks/results/phase3_candidate_bakeoff_eee3794.json",
+        "benchmarks/results/phase3_candidate_bakeoff_3ff9f61.json",
         "benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json",
         "docs/adr/ADR-013-phase3-candidate-dispatch-conclusions.md",
     ],
@@ -420,7 +420,7 @@ py_test(
     ],
     data = [
         "benchmarks/phase3_candidate_dispatch_diversity_report.md",
-        "benchmarks/results/phase3_candidate_bakeoff_eee3794.json",
+        "benchmarks/results/phase3_candidate_bakeoff_3ff9f61.json",
         "benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json",
         "docs/adr/ADR-013-phase3-candidate-dispatch-conclusions.md",
     ],

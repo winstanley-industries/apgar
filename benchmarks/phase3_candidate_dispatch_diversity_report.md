@@ -4,9 +4,10 @@
 
 CPU A* remains APGAR's production candidate-generation dispatch. On the
 measured RTX 5080 platform, CPU won every one of the 66 end-to-end
-corpus/pool-size comparisons. Batched CUDA sweep won four execution-only rows
-after prepared upload and exact admission were excluded; neither GPU generator
-won an end-to-end row.
+corpus/pool-size comparisons. Batched CUDA frontier nominally won one and CUDA
+sweep won four execution-only rows after prepared upload and exact admission
+were excluded; both won cross-tile `k=128`. Neither GPU generator won an
+end-to-end row.
 
 This is a valid negative Phase 3 result. The immutable candidate contract,
 exact admission pipeline, deterministic store, shared alternative policies,
@@ -17,11 +18,13 @@ evidence does not justify GPU promotion.
 
 | Field | Recorded value |
 | --- | --- |
-| Source commit | `eee37945ba005e535c6dde549e083ffca7cd249d` |
+| Source commit | `3ff9f61803f1449e4956e4ac4faf783c672599db` |
 | Evidence manifest | `benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json` |
-| Machine result | `benchmarks/results/phase3_candidate_bakeoff_eee3794.json` |
-| Result SHA-256 | `2e8e4beff7b1e6f281f5b170e9f7253403925a013e95a620f888f8395f0a6462` |
-| Result schema | `phase3_candidate_bakeoff_v1` |
+| Machine result | `benchmarks/results/phase3_candidate_bakeoff_3ff9f61.json` |
+| Result SHA-256 | `ca506e2fe5768187f02b71e7fb7ee35cbd4cb40e7742f42d9436483ab45df23c` |
+| Result schema | `phase3_candidate_bakeoff_v2` |
+| Source identity | Bazel stable workspace status v1; canonical checked-in invocation; clean source tree |
+| Store admission caps | 1,024 items; 67,108,864 input bytes; 100,000,000 deterministic work units |
 | Corpus | 11 versioned cases; dense, sparse, fragmented, high-turn, cross-tile, negative-coordinate, disconnected, symmetric, multi-channel bottleneck, policy-alternative, and KiCad |
 | Requested candidates per net | 4, 8, 16, 32, 64, 128 |
 | Policy schedule | base, length, bend, strong resource penalty, resource ban v1 |
@@ -38,13 +41,18 @@ The exact reproduction command was:
 
 ```sh
 bazel run --config=cuda --config=benchmark \
-  --define=APGAR_COMMIT=eee37945ba005e535c6dde549e083ffca7cd249d \
+  --lockfile_mode=error \
   //:phase3_candidate_benchmark -- \
-  --apgar_commit=eee37945ba005e535c6dde549e083ffca7cd249d \
+  --apgar_commit=3ff9f61803f1449e4956e4ac4faf783c672599db \
   --apgar_nvidia_kmd_driver=610.62 \
-  --benchmark_out=/home/adam/code/apgar/benchmarks/results/phase3_candidate_bakeoff_eee3794.json \
+  --benchmark_out=/home/adam/code/apgar/benchmarks/results/phase3_candidate_bakeoff_3ff9f61.json \
   --benchmark_out_format=json --benchmark_format=console
 ```
+
+The source commit and clean-tree state above came from the stamped canonical
+workspace-status path, not a caller-selected benchmark label. The source
+identity is a reproducibility assertion for a trusted runner, not hostile-host
+cryptographic attestation.
 
 ## Platform and hermetic toolchains
 
@@ -76,7 +84,7 @@ or system GCC was used.
 ## Measurement scopes
 
 - `prepared_upload` measures board flattening and upload; prepared-view release
-  is excluded. Its median across cases was 0.413 ms, with a 0.378-0.644 ms
+  is excluded. Its median across cases was 0.408 ms, with a 0.370-0.615 ms
   range.
 - `execution_readback` reuses one prepared upload. CPU rows measure CPU search;
   GPU rows measure batched execution, readback, reconstruction, and untrusted
@@ -98,6 +106,13 @@ to one row. GPU memory is backend-owned prepared plus batch memory and excludes
 driver or allocator-pool overhead. Generator-specific examined-state and work
 units are diagnostic and are not compared as if they were identical work.
 
+The maximum backend-owned VRAM counter was 28,288,168 bytes on KiCad sweep at
+`k=128`. The maximum deterministic GPU batch host payload was 45,047,240 bytes
+on KiCad `k=128`, tied by frontier and sweep, and the maximum deterministic
+admission/store host payload was 218,086 bytes. The process-lifetime RSS
+high-water mark was 539,598,848 bytes. That last value is process-wide and
+row-unattributable; it is not assigned to a subsystem without profiling.
+
 ## Correctness and determinism
 
 The artifact contains 3,212 aggregate rows: mean, median, standard deviation,
@@ -105,7 +120,9 @@ and coefficient of variation for 803 registered benchmarks. The 803 medians
 comprise 11 prepared-upload rows and 792 generator/stage rows.
 
 - All 792 generator/stage medians report deterministic ordered results and CPU
-  differential agreement.
+  differential agreement. The v2 artifact also carries ordered semantic
+  outcome checksums; the validator compares them across generators rather than
+  accepting a reported differential flag as proof.
 - The unique 66-case/pool policy matrix contains 2,772 requested queries:
   2,317 reachable and 455 intentionally unreachable due to disconnected fields
   or policy bans. Every generator matched those outcomes.
@@ -128,34 +145,43 @@ End-to-end winners by pool size:
 | 128 | 7 | 4 | 0 |
 | **Total** | **52** | **14** | **0** |
 
-With upload and admission excluded, CUDA sweep won only these four
-execution/readback comparisons against both CPU modes:
+With upload and admission excluded, CUDA frontier won one and CUDA sweep won
+four execution/readback comparisons against both CPU modes:
 
-| Case | k | Sweep | Next CPU | Sweep advantage |
-| --- | ---: | ---: | ---: | ---: |
-| Cross-tile edges | 64 | 0.988 ms | 0.992 ms sequential | 1.004x |
-| Cross-tile edges | 128 | 1.368 ms | 1.609 ms parallel | 1.176x |
-| Negative coordinates | 32 | 0.976 ms | 1.277 ms sequential | 1.308x |
-| Negative coordinates | 64 | 1.340 ms | 1.588 ms parallel | 1.185x |
+| Generator | Case | k | CUDA | Next CPU | CUDA advantage |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Frontier | Cross-tile edges | 128 | 1.528 ms | 1.592 ms parallel | 1.042x |
+| Sweep | Negative coordinates | 32 | 0.961 ms | 1.289 ms sequential | 1.342x |
+| Sweep | Cross-tile edges | 64 | 0.968 ms | 0.991 ms sequential | 1.024x |
+| Sweep | Negative coordinates | 64 | 1.337 ms | 1.571 ms parallel | 1.175x |
+| Sweep | Cross-tile edges | 128 | 1.343 ms | 1.592 ms parallel | 1.185x |
+
+The frontier result is a nominal median win, not a stable crossover: its
+real-time coefficient of variation was 25.7%, versus 1.6% for the parallel CPU
+row, while the median advantage was only 4.2%. Across all 792 generator/stage
+rows, 151 real-time coefficients of variation exceeded 5%, 59 exceeded 10%,
+and the maximum was 27.0%. This variability does not threaten the end-to-end
+conclusion because CUDA won none of those 66 rows, but small execution-only
+differences should not be overinterpreted.
 
 At `k=128`, the best CPU and best GPU end-to-end results were:
 
 | Case | Best CPU | CPU latency | Queries/s | Best GPU | GPU latency | Queries/s | GPU / CPU latency |
 | --- | --- | ---: | ---: | --- | ---: | ---: | ---: |
-| Cross-tile edges | parallel | 5.293 ms | 24,184 | frontier | 5.410 ms | 23,662 | 1.022x |
-| Dense corridors | parallel | 5.582 ms | 22,931 | sweep | 17.531 ms | 7,302 | 3.141x |
-| Disconnected fields | sequential | 0.186 ms | 687,653 | frontier | 1.252 ms | 102,238 | 6.726x |
-| Fragmented runs | sequential | 3.069 ms | 41,711 | frontier | 4.156 ms | 30,800 | 1.354x |
-| High-turn maze | sequential | 4.318 ms | 29,643 | sweep | 5.749 ms | 22,266 | 1.331x |
-| KiCad fixture | parallel | 7.962 ms | 16,075 | sweep | 34.052 ms | 3,759 | 4.277x |
-| Multi-channel bottleneck | sequential | 4.289 ms | 29,846 | frontier | 5.677 ms | 22,546 | 1.324x |
-| Negative coordinates | parallel | 5.355 ms | 23,903 | frontier | 6.758 ms | 18,941 | 1.262x |
-| Policy alternatives | sequential | 4.923 ms | 26,001 | frontier | 6.151 ms | 20,810 | 1.249x |
-| Sparse regions | sequential | 2.584 ms | 49,528 | sweep | 4.071 ms | 31,440 | 1.575x |
-| Symmetric dual corridor | sequential | 4.371 ms | 29,284 | frontier | 5.977 ms | 21,416 | 1.367x |
+| Cross-tile edges | parallel | 3.646 ms | 35,111 | frontier | 4.193 ms | 30,527 | 1.150x |
+| Dense corridors | parallel | 4.011 ms | 31,913 | sweep | 16.763 ms | 7,636 | 4.179x |
+| Disconnected fields | sequential | 0.185 ms | 692,681 | frontier | 1.483 ms | 86,424 | 8.025x |
+| Fragmented runs | sequential | 2.247 ms | 56,956 | frontier | 3.959 ms | 32,333 | 1.762x |
+| High-turn maze | sequential | 3.665 ms | 34,929 | frontier | 5.541 ms | 23,100 | 1.512x |
+| KiCad fixture | parallel | 6.396 ms | 20,012 | sweep | 31.580 ms | 4,053 | 4.937x |
+| Multi-channel bottleneck | sequential | 3.034 ms | 42,190 | frontier | 4.958 ms | 25,819 | 1.634x |
+| Negative coordinates | parallel | 3.750 ms | 34,134 | frontier | 5.496 ms | 23,289 | 1.466x |
+| Policy alternatives | sequential | 3.703 ms | 34,568 | frontier | 5.290 ms | 24,197 | 1.429x |
+| Sparse regions | sequential | 1.848 ms | 69,246 | sweep | 3.178 ms | 40,274 | 1.719x |
+| Symmetric dual corridor | sequential | 2.863 ms | 44,701 | sweep | 4.068 ms | 31,465 | 1.421x |
 
 The median of the eleven per-case fastest-GPU/fastest-CPU latency ratios at
-`k=128` was 1.354, with a 1.022-6.726 range. The evidence therefore does not
+`k=128` was 1.634, with a 1.150-8.025 range. The evidence therefore does not
 support dispatching to the GPU merely because a subset of prepared executions
 has higher throughput.
 
@@ -164,18 +190,18 @@ the fastest CPU mode in each matched case were:
 
 | k | CUDA frontier / CPU | CUDA sweep / CPU |
 | ---: | ---: | ---: |
-| 4 | 26.398x | 19.686x |
-| 8 | 13.993x | 10.745x |
-| 16 | 7.551x | 5.901x |
-| 32 | 4.076x | 3.447x |
-| 64 | 2.921x | 2.530x |
-| 128 | 1.991x | 1.929x |
+| 4 | 24.224x | 18.330x |
+| 8 | 13.259x | 10.100x |
+| 16 | 7.216x | 5.665x |
+| 32 | 4.082x | 3.409x |
+| 64 | 3.247x | 2.722x |
+| 128 | 2.339x | 2.222x |
 
 This favorable scaling supports continued GPU research, but it is not a
 measured crossover.
 
-CUDA sweep was not uniformly better than frontier. Sweep won 35 of 66
-GPU-only execution/readback comparisons and frontier won 31. Complete
+CUDA sweep was not uniformly better than frontier. Sweep and frontier each won
+33 of 66 GPU-only execution/readback comparisons. Complete
 end-to-end work reversed the count: frontier won 38 GPU-only comparisons and
 sweep won 28. Both remain experimental forced backends.
 
@@ -192,9 +218,9 @@ Representative `k=128` medians are:
 
 | Case and GPU generator | CUDA event envelope | GPU execution/readback | Approximate time outside event | Exact admission/store | GPU end to end | Best CPU end to end |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Dense corridors, sweep | 0.385 ms | 11.097 ms | 10.712 ms | 3.221 ms | 17.531 ms | 5.582 ms |
-| KiCad fixture, sweep | 0.720 ms | 29.195 ms | 28.474 ms | 3.637 ms | 34.052 ms | 7.962 ms |
-| Cross-tile edges, frontier | 0.619 ms | 1.823 ms | 1.204 ms | 3.138 ms | 5.410 ms | 5.293 ms |
+| Dense corridors, sweep | 0.386 ms | 11.494 ms | 11.107 ms | 2.080 ms | 16.763 ms | 4.011 ms |
+| KiCad fixture, sweep | 0.729 ms | 28.018 ms | 27.289 ms | 2.329 ms | 31.580 ms | 6.396 ms |
+| Cross-tile edges, frontier | 0.608 ms | 1.528 ms | 0.921 ms | 1.966 ms | 4.193 ms | 3.646 ms |
 
 The outside-event values are explanatory differences between independently
 registered aggregate medians, not additive profiler attribution. The CUDA
@@ -236,7 +262,7 @@ envelopes with directly inspected implementation structure.
    handling, rather than propagation, dominated their wall time.
 6. Exact Board IR admission and deterministic store publication are mandatory
    backend-neutral work. They create an end-to-end floor even when GPU search
-   becomes faster. Prepared flatten/upload adds another 0.413 ms at the median
+   becomes faster. Prepared flatten/upload adds another 0.408 ms at the median
    measured case, although execution/readback rows already prove upload is not
    the only missing crossover cost.
 7. Much of the generated work did not become stored value. Across the six CPU
@@ -247,8 +273,8 @@ envelopes with directly inspected implementation structure.
    than a complete accelerator workspace for each one.
 
 Batching nevertheless worked in the intended direction. The geometric-mean
-frontier and sweep end-to-end ratios improved from 26.398x and 19.686x at
-`k=4` to 1.991x and 1.929x at `k=128`. This is evidence of amortization, but no
+frontier and sweep end-to-end ratios improved from 24.224x and 18.330x at
+`k=4` to 2.339x and 2.222x at `k=128`. This is evidence of amortization, but no
 measured crossover through `k=128`.
 
 ### Prioritized future hypotheses
@@ -316,12 +342,13 @@ deduplication.
 Within each CPU pool, all 115 accepted candidates had unique geometry and
 resource signatures. The other 2,202 reachable CPU candidates became
 structured store rejection records after collision-safe deduplication and
-retention; there were no candidate-builder rejections. CUDA retained 122
-candidates across the same six k prefixes and recorded 2,195 store rejections,
-because it found one extra geometry in seven intermediate pools. The aggregate
-artifact does not expose the rejection-code mix, so it does not by itself
-prove how many were exact duplicates versus another store rejection class.
-Requested k is therefore not the retained pool size.
+retention; all 2,202 records were retained and there were no candidate-builder
+rejections. Each CUDA generator retained 122 candidates across the same six k
+prefixes and retained all 2,195 store rejection records, because it found one
+extra geometry in seven intermediate pools. The aggregate artifact does not
+expose the rejection-code mix, so it does not by itself prove how many were
+exact duplicates versus another store rejection class. Requested k is
+therefore not the retained pool size.
 
 At `k=128`, all four generators reported identical pool-size and overlap
 summaries, although CPU and CUDA raw geometry fingerprints can still differ:

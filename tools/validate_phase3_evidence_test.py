@@ -18,7 +18,7 @@ class Phase3EvidenceValidatorTest(unittest.TestCase):
         self.addCleanup(self._temporary.cleanup)
         self.root = pathlib.Path(self._temporary.name)
         self.paths = (
-            "benchmarks/results/phase3_candidate_bakeoff_eee3794.json",
+            "benchmarks/results/phase3_candidate_bakeoff_3ff9f61.json",
             "benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json",
             "benchmarks/phase3_candidate_dispatch_diversity_report.md",
             "docs/adr/ADR-013-phase3-candidate-dispatch-conclusions.md",
@@ -145,6 +145,46 @@ class Phase3EvidenceValidatorTest(unittest.TestCase):
             "won 51 and parallel CPU A* won 15. CUDA won none.",
         )
         with self.assertRaisesRegex(validate_phase3_evidence.EvidenceError, "dispatch conclusion"):
+            validate_phase3_evidence.validate(self.root, self.manifest_path)
+
+    def test_rejects_report_frontier_execution_summary_drift(self) -> None:
+        self._rewrite_bound_document(
+            2,
+            "report_sha256",
+            "CUDA frontier won one and CUDA sweep won",
+            "CUDA frontier won ninety-nine and CUDA sweep won",
+        )
+        with self.assertRaisesRegex(validate_phase3_evidence.EvidenceError, "execution conclusion"):
+            validate_phase3_evidence.validate(self.root, self.manifest_path)
+
+    def test_rejects_report_sweep_execution_summary_drift(self) -> None:
+        self._rewrite_bound_document(
+            2,
+            "report_sha256",
+            "CUDA sweep won\nfour execution/readback comparisons",
+            "CUDA sweep won\nninety-nine execution/readback comparisons",
+        )
+        with self.assertRaisesRegex(validate_phase3_evidence.EvidenceError, "execution conclusion"):
+            validate_phase3_evidence.validate(self.root, self.manifest_path)
+
+    def test_rejects_decision_frontier_execution_summary_drift(self) -> None:
+        self._rewrite_bound_document(
+            3,
+            "decision_sha256",
+            "frontier nominally won one",
+            "frontier nominally won ninety-nine",
+        )
+        with self.assertRaisesRegex(validate_phase3_evidence.EvidenceError, "execution conclusion"):
+            validate_phase3_evidence.validate(self.root, self.manifest_path)
+
+    def test_rejects_decision_sweep_execution_summary_drift(self) -> None:
+        self._rewrite_bound_document(
+            3,
+            "decision_sha256",
+            "CUDA sweep won only four",
+            "CUDA sweep won only ninety-nine",
+        )
+        with self.assertRaisesRegex(validate_phase3_evidence.EvidenceError, "execution conclusion"):
             validate_phase3_evidence.validate(self.root, self.manifest_path)
 
     def test_rejects_manifest_correctness_summary_drift(self) -> None:
@@ -317,21 +357,33 @@ class Phase3EvidenceValidatorTest(unittest.TestCase):
         ):
             validate_phase3_evidence.validate(self.root, self.manifest_path)
 
-    def test_v2_rejects_missing_vcs_source_identity(self) -> None:
-        result = json.loads((self.root / self.paths[0]).read_text(encoding="utf-8"))
-        result["context"]["apgar_result_schema"] = "phase3_candidate_bakeoff_v2"
-        self._rewrite_result_and_checksum(result)
-        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        manifest["result_schema"] = "phase3_candidate_bakeoff_v2"
-        self.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        with self.assertRaisesRegex(validate_phase3_evidence.EvidenceError, "source_identity"):
-            validate_phase3_evidence.validate(self.root, self.manifest_path)
+    def test_v2_rejects_missing_or_mutated_required_context(self) -> None:
+        original = self._load_result()
+        for key in validate_phase3_evidence._V2_REQUIRED_CONTEXT:
+            with self.subTest(key=key, corruption="missing"):
+                result = json.loads(json.dumps(original))
+                del result["context"][key]
+                self._rewrite_result_and_checksum(result)
+                with self.assertRaisesRegex(validate_phase3_evidence.EvidenceError, key):
+                    validate_phase3_evidence.validate(self.root, self.manifest_path)
+            with self.subTest(key=key, corruption="mutated"):
+                result = json.loads(json.dumps(original))
+                result["context"][key] += ".corrupted"
+                self._rewrite_result_and_checksum(result)
+                with self.assertRaisesRegex(validate_phase3_evidence.EvidenceError, key):
+                    validate_phase3_evidence.validate(self.root, self.manifest_path)
 
     def test_v2_rejects_missing_retained_rejection_accounting(self) -> None:
         result = self._load_result()
-        self._upgrade_result_to_v2(result, include_retained_rejections=False)
+        row = next(
+            row
+            for row in result["benchmarks"]
+            if row["aggregate_name"] == "mean"
+            and validate_phase3_evidence._ROW_PATTERN.match(row["name"]) is not None
+            and "retained_rejection_records" in row
+        )
+        del row["retained_rejection_records"]
         self._rewrite_result_and_checksum(result)
-        self._set_manifest_result_schema("phase3_candidate_bakeoff_v2")
         with self.assertRaisesRegex(
             validate_phase3_evidence.EvidenceError, "retained_rejection_records"
         ):

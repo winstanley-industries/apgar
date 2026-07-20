@@ -1,13 +1,13 @@
 {
   "schema": "phase3_evidence_manifest_v1",
-  "result_schema": "phase3_candidate_bakeoff_v1",
-  "result_file": "benchmarks/results/phase3_candidate_bakeoff_eee3794.json",
-  "result_sha256": "2e8e4beff7b1e6f281f5b170e9f7253403925a013e95a620f888f8395f0a6462",
-  "source_commit": "eee37945ba005e535c6dde549e083ffca7cd249d",
+  "result_schema": "phase3_candidate_bakeoff_v2",
+  "result_file": "benchmarks/results/phase3_candidate_bakeoff_3ff9f61.json",
+  "result_sha256": "ca506e2fe5768187f02b71e7fb7ee35cbd4cb40e7742f42d9436483ab45df23c",
+  "source_commit": "3ff9f61803f1449e4956e4ac4faf783c672599db",
   "report_file": "benchmarks/phase3_candidate_dispatch_diversity_report.md",
-  "report_sha256": "e53d91ed169968e3889ea255791617cf4d38830398c182c6401a3caaa21accae",
+  "report_sha256": "d169d6439b13b84cbacb8e6abb275150a2d9d066ae2075df27e893144b188fa4",
   "decision_file": "docs/adr/ADR-013-phase3-candidate-dispatch-conclusions.md",
-  "decision_sha256": "1f3137071a2dd7e6b6e72682aa972021020daad5e8836fa7b4a215b84ef3b11f",
+  "decision_sha256": "88e278db19f7609e5006e19fefffeadf6f04689632f2581d32080baa4250c7f2",
   "expected_correctness_summary": {
     "generator_stage_medians": 792,
     "requested_queries": 2772,
@@ -21,7 +21,7 @@
     "cuda": 0
   },
   "expected_execution_wins_against_fastest_cpu": {
-    "batched_cuda_frontier": 0,
+    "batched_cuda_frontier": 1,
     "batched_cuda_sweep": 4
   }
 }

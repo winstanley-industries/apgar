@@ -847,10 +847,25 @@ def validate(root: pathlib.Path, manifest_path: pathlib.Path) -> None:
     )
     if decision_total not in decision:
         raise EvidenceError("ADR does not contain the recomputed CPU dispatch conclusion")
-    sweep_wins = execution["batched_cuda_sweep"]
     count_words = {0: "zero", 1: "one", 2: "two", 3: "three", 4: "four"}
+    frontier_wins = execution["batched_cuda_frontier"]
+    sweep_wins = execution["batched_cuda_sweep"]
+    rendered_frontier_wins = count_words.get(frontier_wins, str(frontier_wins))
     rendered_sweep_wins = count_words.get(sweep_wins, str(sweep_wins))
-    if f"sweep won only {rendered_sweep_wins}" not in decision:
+    normalized_report = " ".join(report.split())
+    normalized_decision = " ".join(decision.split())
+    report_execution = (
+        f"CUDA frontier won {rendered_frontier_wins} and CUDA sweep won "
+        f"{rendered_sweep_wins} execution/readback comparisons"
+    )
+    if report_execution not in normalized_report:
+        raise EvidenceError("report does not contain the recomputed CUDA execution conclusion")
+    decision_execution = (
+        f"CUDA sweep won only {rendered_sweep_wins} of 66 execution/readback comparisons "
+        "against the fastest CPU mode; CUDA frontier nominally won "
+        f"{rendered_frontier_wins}"
+    )
+    if decision_execution not in normalized_decision:
         raise EvidenceError("ADR does not contain the recomputed CUDA execution conclusion")
 
     median_count = correctness["generator_stage_medians"]

@@ -14,14 +14,18 @@ store publication, and upload cost rather than promote a backend from kernel
 throughput alone. CPU A* remains the correctness oracle and production
 dispatch unless reproducible end-to-end evidence supports a change.
 
-The evidence is the Google Benchmark v1 artifact
-`benchmarks/results/phase3_candidate_bakeoff_eee3794.json`, SHA-256
-`2e8e4beff7b1e6f281f5b170e9f7253403925a013e95a620f888f8395f0a6462`,
-built from exact source commit `eee37945ba005e535c6dde549e083ffca7cd249d`.
+The evidence is the Phase 3 result-schema v2 artifact produced by Google
+Benchmark 1.9.5:
+`benchmarks/results/phase3_candidate_bakeoff_3ff9f61.json`, SHA-256
+`ca506e2fe5768187f02b71e7fb7ee35cbd4cb40e7742f42d9436483ab45df23c`,
+built from exact source commit `3ff9f61803f1449e4956e4ac4faf783c672599db`.
 The canonical
 `benchmarks/results/phase3_candidate_bakeoff_manifest_v1.json` binds the exact
 bytes of that artifact, the human report, and this ADR with independent SHA-256
 digests; validation checks those digests before recomputing the conclusions.
+The artifact identifies its source through Bazel stable workspace status,
+records a clean tree, and marks the checked-in canonical invocation as its
+trust boundary; it does not accept a caller-selected commit label as evidence.
 It covers eleven versioned corpus cases, candidate-pool requests of 4 through
 128, sequential and parallel CPU A*, batched CUDA heuristic frontier, and
 batched CUDA sweep. Each benchmark uses twenty repetitions, a 20 ms minimum
@@ -44,8 +48,8 @@ GCC 15.2 host compiler. Google Benchmark is the pinned 1.9.5 dependency.
 - Keep CUDA frontier and sweep as explicit experimental forced backends for
   differential tests, replay, and future bakeoffs. They are not silent
   fallbacks or production defaults.
-- Preserve both GPU algorithms. Sweep won 35 of 66 GPU-only
-  execution/readback comparisons and frontier won 31; after complete
+- Preserve both GPU algorithms. Sweep and frontier each won 33 of 66 GPU-only
+  execution/readback comparisons; after complete
   end-to-end work, frontier won 38 GPU-only comparisons and sweep won 28. No
   single GPU algorithm dominates the measured corpus.
 - Keep exact candidate admission and deterministic store publication outside
@@ -57,17 +61,22 @@ GCC 15.2 host compiler. Google Benchmark is the pinned 1.9.5 dependency.
 - CPU won all 66 end-to-end corpus/pool-size combinations: sequential CPU A*
   won 52 and parallel CPU A* won 14. CUDA won none.
 - With prepared upload and exact admission excluded, CUDA sweep won only four
-  of 66 execution/readback comparisons. CUDA frontier won none against the
-  fastest CPU mode.
+  of 66 execution/readback comparisons against the fastest CPU mode; CUDA
+  frontier nominally won one, overlapping sweep at cross-tile `k=128`. The
+  frontier row's 4.2% median advantage was smaller than its 25.7% real-time
+  coefficient of variation.
 - The closest end-to-end GPU result was cross-tile edges at `k=128`: CUDA
-  frontier took 5.410 ms versus parallel CPU A* at 5.293 ms, 1.022 times the
-  CPU latency. On the KiCad fixture at `k=128`, CUDA sweep took 34.052 ms versus
-  parallel CPU A* at 7.962 ms, 4.277 times the CPU latency.
-- Prepared flatten/upload medians ranged from 0.378 to 0.644 ms, with a median
-  of 0.413 ms across the eleven cases. End-to-end GPU rows include this cost
+  frontier took 4.193 ms versus parallel CPU A* at 3.646 ms, 1.150 times the
+  CPU latency. On the KiCad fixture at `k=128`, CUDA sweep took 31.580 ms versus
+  parallel CPU A* at 6.396 ms, 4.937 times the CPU latency.
+- Prepared flatten/upload medians ranged from 0.370 to 0.615 ms, with a median
+  of 0.408 ms across the eleven cases. End-to-end GPU rows include this cost
   and prepared-view release.
 - All 792 non-upload median generator/stage rows were ordered,
   deterministic, and matched CPU reachability/failure and optimal scalar cost.
+  V2 ordered semantic outcome checksums independently agree across generators;
+  all 2,202 structured store rejection records in the unique sequential-CPU
+  evidence view and all 2,195 per GPU generator were retained.
   There were no backend, validation, invariant, resource-exhaustion,
   cancellation, unsupported, or invalid outcomes. The 455 unreachable policy
   queries in the unique 2,772-query matrix were reproduced by every backend.
