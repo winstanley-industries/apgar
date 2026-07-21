@@ -69,6 +69,7 @@ struct BenchmarkContext {
     case RouteFailureCode::kValidationFailed:
       return "validation";
     case RouteFailureCode::kResourceExhausted:
+    case RouteFailureCode::kWorkBoundExceeded:
       return "resource_exhausted";
     case RouteFailureCode::kInternalInvariant:
       return "invariant";

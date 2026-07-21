@@ -1,6 +1,7 @@
 # ADR-019: Phase 4 CPU Targeted-Regeneration Execution
 
-**Status:** Accepted for the fifth Phase 4 vertical slice
+**Status:** Accepted for the fifth Phase 4 vertical slice; amended by bounded
+execution v2 for the composed-session prerequisite
 **Date:** July 20, 2026
 **Applies to:** Authentic CPU column generation, conditional store publication,
 and deterministic progress or stall classification
@@ -20,7 +21,9 @@ resource vocabulary cannot represent.
 
 ## Decision
 
-- Adopt `schemas/allocator/targeted_regeneration_execution_v1.md`.
+- Preserve `schemas/allocator/targeted_regeneration_execution_v1.md` for its
+  original replay boundary and adopt
+  `schemas/allocator/targeted_regeneration_execution_v2.md` for production.
 - Execute a plan only while its CandidateStore-issued source lease is active
   and belongs to the exact store supplied to execution.
 - Reproduce the complete source manifest, next negotiated-price snapshot, and
@@ -66,6 +69,49 @@ resource vocabulary cannot represent.
   worlds, ordered column outcomes, counters, and terminal classification into
   one versioned replay checksum. Runtime lease identities and timing are not
   replay fields.
+- Version 2 uses only bounded CPU A*. Before any query it widens and bounds
+  aggregate route work, all four complete target/price projection passes, worst
+  candidate draft and unpublished-draft bytes, canonical rejection bytes,
+  transient column/result bytes, and complete CandidateStore transaction
+  input/exact work. It also bounds the refreshed One-World request as source
+  candidates plus every possible novel column and source expanded uses plus
+  one reconstruction envelope per column. A zero-column plan does not have to
+  fit a hypothetical single draft. It retains presence-tagged available
+  per-column CPU telemetry, aggregate and peak routing counters, exact draft
+  bytes, and the complete CandidateStore configuration as replay evidence.
+- Version 2 batch identity binds the complete execution and CandidateStore
+  configurations. A per-query A* work or container bound is a typed work-bound
+  failure distinct from route-cost resource exhaustion; unpublished prior
+  columns never enter CandidateStore state.
+- Retain every complete canonical rejection in its ordered column and checksum
+  all rejection fields. Correlate CandidateStore outcomes directly through the
+  canonical one-based query identity, rejecting any non-bijective publication
+  roster. Stage canonical rejection evidence locally and move it into the
+  column before advancing rejection bytes, code, final outcome, or rejected-
+  column counters.
+- A fatal result after query start returns a checksum-covered, bounded
+  observation of the attempted column prefix, counters, and whether atomic
+  CandidateStore publication already committed. A clear commit bit guarantees
+  the pre-invocation store snapshot; a set bit records that a later host or
+  successor-handoff failure leaves the authoritative publication retained.
+  This evidence distinguishes first-query, later-query, and post-publication
+  failures without misrepresenting earlier scratch as committed state.
+- Build each complete route request before appending its query-in-flight column
+  or advancing query counters. Failure observations use explicit query-in-
+  flight, build-in-flight, rejection-evidence-in-flight, generated-pending-
+  publication, and publication-committed-outcome-correlation-pending stages.
+  Route, build, and rejection counters advance only when those facts become
+  true. After CandidateStore returns, every generated column advances
+  nonthrowingly to the committed correlation-pending stage before the commit
+  bit is set; only that stage accepts publication correlation.
+- Source pool/candidate counts are compared with the plan before footprint
+  traversal. The refreshed expanded-use envelope reserves every possible
+  generated route first, then stops source-span traversal on the first excess;
+  drifted repeated handles cannot force an already rejected suffix scan.
+- CandidateStore stages immutable session/net bindings, rejection-merge and
+  publication telemetry, replacement pools, and global-ID nodes. A staging
+  exception commits none of them. They publish only with an ordinary
+  pinned-budget diagnostic outcome or the final authoritative CAN-004 commit.
 
 ## Consequences
 
@@ -75,11 +121,22 @@ resource vocabulary cannot represent.
 - A plan cannot be replayed against a different store or against an extra,
   missing, replaced, or semantically mismatched source candidate.
 - Selected candidates remain pinned across the plan-to-refreshed-world handoff;
-  independent plan and successor leases may overlap safely.
+  independent plan and successor leases may overlap safely. The successor-pin
+  counter advances only after the successor lease is acquired, so a committed
+  publication followed by lease failure reports no pins it does not hold.
 - Execution is bounded by route-query, compiled-state work, policy-entry,
-  store-transaction, allocator, and successor-lease limits. Failures before
-  publication leave the store unchanged. Callers must serialize other
-  CandidateStore mutations with one synchronous execution invocation.
+  price-roster visits, candidate/rejection/transient bytes, store-transaction,
+  allocator, and successor-lease limits. Failures before publication leave the
+  store unchanged. Callers must serialize other CandidateStore mutations with
+  one synchronous execution invocation.
+- Deterministic refreshed One-World bound failures occur before query one.
+  Host allocation or successor-lease failure can still occur after the atomic
+  candidate publication; its failed-execution commit bit is set, and callers
+  must not assume rollback of the published candidates or diagnostics.
+- The original version-1 three-argument CPU call is not a composed-session
+  bound: its compiled-state projection does not cap records, queue,
+  reconstruction, or literal A* work. Production rejects version 1 rather than
+  assigning version-2 semantics to its old replay checksum.
 - This CPU reference does not add GPU generation, combined-route legalization,
   or host-CAD validation. Multi-world retention, the Phase 4 corpus, and
   equal-budget evidence remain open work.

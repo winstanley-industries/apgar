@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -88,6 +89,9 @@ using UWide = __uint128_t;
 thread_local std::optional<std::uint64_t> g_publication_preparation_failure_countdown;
 #if defined(APGAR_CANDIDATE_STORE_PINNED_ROLLBACK_TEST_VARIANT)
 thread_local std::optional<board_ir::EntityRef> g_forced_pinned_rollback_net;
+std::atomic<internal::SharedRequestPrePublicationHookForTesting>
+    g_shared_request_pre_publication_hook{nullptr};
+std::atomic<void*> g_shared_request_pre_publication_hook_context{nullptr};
 #endif
 
 void MaybeFailPublicationPreparationForTesting() {
@@ -1258,13 +1262,20 @@ void internal::SetPublicationPreparationFailureCountdownForTesting(
 }
 
 #if defined(APGAR_CANDIDATE_STORE_PINNED_ROLLBACK_TEST_VARIANT)
+void internal::SetSharedRequestPrePublicationHookForTesting(
+    SharedRequestPrePublicationHookForTesting hook, void* context) noexcept {
+  g_shared_request_pre_publication_hook_context.store(context, std::memory_order_relaxed);
+  g_shared_request_pre_publication_hook.store(hook, std::memory_order_release);
+}
+
 std::vector<CandidateStoreAdmissionResult> internal::PublishWithPinnedRollbackForTesting(
-    CandidateStore& store, std::vector<RouteCandidate> candidates, board_ir::EntityRef pinned_net) {
+    CandidateStore& store, std::vector<RouteCandidate> candidates, board_ir::EntityRef pinned_net,
+    std::uint64_t shared_request_policy_normalization_delta) {
   g_forced_pinned_rollback_net = pinned_net;
   try {
     std::scoped_lock lock(store.mutex_);
-    std::vector<CandidateStoreAdmissionResult> results =
-        store.PublishAcceptedBatchLocked(std::move(candidates), {});
+    std::vector<CandidateStoreAdmissionResult> results = store.PublishAcceptedBatchLocked(
+        std::move(candidates), {}, shared_request_policy_normalization_delta);
     g_forced_pinned_rollback_net.reset();
     return results;
   } catch (...) {
@@ -1328,17 +1339,20 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
   const routing::CandidatePolicyResult verified_request_policy =
       routing::NormalizeCandidateGenerationPolicy(context.compiled_board,
                                                   context.request.candidate_policy);
-  {
-    std::scoped_lock lock(mutex_);
-    ++shared_request_policy_normalizations_;
-  }
   std::vector<CandidateAdmissionResult> admitted;
   admitted.reserve(generated.size());
   for (GeneratedRouteCandidate& candidate : generated) {
     admitted.push_back(internal::AdmitRouteCandidateWithVerifiedRequestPolicy(
         context, verified_request_policy, std::move(candidate)));
   }
-  return PublishAdmissionResults(std::move(admitted));
+#if defined(APGAR_CANDIDATE_STORE_PINNED_ROLLBACK_TEST_VARIANT)
+  if (const internal::SharedRequestPrePublicationHookForTesting hook =
+          g_shared_request_pre_publication_hook.load(std::memory_order_acquire);
+      hook != nullptr) {
+    hook(g_shared_request_pre_publication_hook_context.load(std::memory_order_relaxed));
+  }
+#endif
+  return PublishAdmissionResults(std::move(admitted), 1);
 }
 
 std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
@@ -1526,7 +1540,8 @@ CandidateStoreInvocationAdmissionResult CandidateStore::AdmitInvocationIfSourceP
 }
 
 std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAdmissionResults(
-    std::vector<CandidateAdmissionResult> admitted) {
+    std::vector<CandidateAdmissionResult> admitted,
+    std::uint64_t shared_request_policy_normalization_delta) {
   std::vector<CandidateStoreAdmissionResult> results;
   results.reserve(admitted.size());
   std::vector<RouteCandidate> accepted;
@@ -1546,7 +1561,8 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAdmissionResul
 
   std::scoped_lock lock(mutex_);
   std::vector<CandidateStoreAdmissionResult> publication_results =
-      PublishAcceptedBatchLocked(std::move(accepted), std::move(canonical_rejections));
+      PublishAcceptedBatchLocked(std::move(accepted), std::move(canonical_rejections),
+                                 shared_request_policy_normalization_delta);
   results.insert(results.end(), std::make_move_iterator(publication_results.begin()),
                  std::make_move_iterator(publication_results.end()));
   std::ranges::sort(results, StoreResultBefore);
@@ -1641,6 +1657,11 @@ std::vector<CandidateRejection> CandidateStore::Rejections() const {
   return rejections_;
 }
 
+std::uint64_t CandidateStore::RejectionCount() const {
+  std::scoped_lock lock(mutex_);
+  return rejections_.size();
+}
+
 std::optional<std::uint64_t> CandidateStore::CandidateBytes(board_ir::EntityRef net) const {
   std::scoped_lock lock(mutex_);
   const auto pool = pools_.find(net);
@@ -1692,7 +1713,6 @@ std::optional<CandidateRejection> CandidateStore::RetainRejections(
 
 std::vector<CandidateRejection> CandidateStore::BuildMergedRejectionsLocked(
     std::vector<CandidateRejection> canonical_rejections) {
-  ++rejection_batch_merges_;
   std::ranges::sort(canonical_rejections, RejectionBefore);
   const std::size_t maximum_size = std::numeric_limits<std::size_t>::max();
   const std::size_t total_size = canonical_rejections.size() > maximum_size - rejections_.size()
@@ -1725,7 +1745,10 @@ void CandidateStore::RetainCanonicalRejectionsLocked(
   if (canonical_rejections.empty()) {
     return;
   }
-  rejections_ = BuildMergedRejectionsLocked(std::move(canonical_rejections));
+  std::vector<CandidateRejection> merged =
+      BuildMergedRejectionsLocked(std::move(canonical_rejections));
+  rejections_ = std::move(merged);
+  ++rejection_batch_merges_;
 }
 
 std::optional<CandidateStoreError> CandidateStore::Pin(std::uint64_t owner_id,
@@ -2170,9 +2193,10 @@ CandidateStoreAdmissionResult CandidateStore::PublishAcceptedLocked(RouteCandida
 }
 
 std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchLocked(
-    std::vector<RouteCandidate> candidates, std::vector<CandidateRejection> canonical_rejections) {
-  last_publication_candidate_inspections_ = 0;
-  last_duplicate_equality_checks_ = 0;
+    std::vector<RouteCandidate> candidates, std::vector<CandidateRejection> canonical_rejections,
+    std::uint64_t shared_request_policy_normalization_delta) {
+  std::uint64_t publication_candidate_inspections = 0;
+  std::uint64_t publication_duplicate_equality_checks = 0;
   std::vector<CandidateStoreAdmissionResult> results;
   results.reserve(candidates.size());
   std::ranges::sort(candidates, CandidateTotalBefore);
@@ -2182,7 +2206,7 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
   std::optional<CandidateAssociations> pending_session = bound_associations_;
   std::map<board_ir::EntityRef, CandidateAssociations, NetLess> pending_net_bindings;
   for (RouteCandidate& candidate : candidates) {
-    ++last_publication_candidate_inspections_;
+    ++publication_candidate_inspections;
     std::optional<CandidateRejection> rejection;
     if (!valid()) {
       rejection = StoreRejection(
@@ -2228,14 +2252,6 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
     eligible.push_back(std::make_shared<const RouteCandidate>(std::move(candidate)));
   }
 
-  // Exact admission establishes the immutable store session even when every
-  // eligible candidate is later rejected by duplicate, budget, or rollback
-  // policy. Retained-pool contents are not the association authority.
-  if (!bound_associations_.has_value() && pending_session.has_value()) {
-    bound_associations_ = *pending_session;
-  }
-  net_associations_.merge(pending_net_bindings);
-
   // Candidate identity is global even though geometry/resource deduplication
   // and retention are per-net. Stable sort selects one incoming identity
   // representative without consulting unrelated pool contents.
@@ -2243,7 +2259,7 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
   std::map<CandidateId, StoredCandidate> incoming_id_winners;
   std::map<board_ir::EntityRef, CandidatePool, NetLess> incoming_by_net;
   for (const StoredCandidate& candidate : eligible) {
-    ++last_publication_candidate_inspections_;
+    ++publication_candidate_inspections;
     const auto incumbent = candidate_id_index_.find(candidate->id());
     if (incumbent != candidate_id_index_.end()) {
       CandidateRejection rejection = StoreRejection(
@@ -2294,7 +2310,7 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
     for (const StoredCandidate& candidate : incoming) {
       entries.push_back(BatchEntry{.candidate = candidate, .incoming = true});
     }
-    last_publication_candidate_inspections_ += entries.size();
+    publication_candidate_inspections += entries.size();
 
     const auto entry_is_pinned = [this, &entries](std::size_t index) {
       return !entries[index].incoming && IsPinnedLocked(entries[index].candidate->id());
@@ -2352,8 +2368,8 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
                 geometry_winners.find(entries[index].candidate->data().geometry_signature);
             geometry != geometry_winners.end()) {
           for (const std::size_t winner_index : geometry->second) {
-            ++last_publication_candidate_inspections_;
-            ++last_duplicate_equality_checks_;
+            ++publication_candidate_inspections;
+            ++publication_duplicate_equality_checks;
             if (internal::ClassifySignatureBucketDuplicate(
                     *entries[index].candidate, *entries[winner_index].candidate, true, false) ==
                 internal::SignatureBucketDuplicate::kGeometry) {
@@ -2370,8 +2386,8 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
                 resource_winners.find(entries[index].candidate->data().resource_signature);
             resource != resource_winners.end()) {
           for (const std::size_t winner_index : resource->second) {
-            ++last_publication_candidate_inspections_;
-            ++last_duplicate_equality_checks_;
+            ++publication_candidate_inspections;
+            ++publication_duplicate_equality_checks;
             if (internal::ClassifySignatureBucketDuplicate(
                     *entries[index].candidate, *entries[winner_index].candidate, false, true) ==
                 internal::SignatureBucketDuplicate::kResources) {
@@ -2400,7 +2416,7 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
       winner_pool.push_back(entries[index].candidate);
     }
     RetentionSelectionImpl selection = SelectRetention(std::move(winner_pool), config_, pin_counts_,
-                                                       &last_publication_candidate_inspections_);
+                                                       &publication_candidate_inspections);
 #if defined(APGAR_CANDIDATE_STORE_PINNED_ROLLBACK_TEST_VARIANT)
     if (g_forced_pinned_rollback_net == net &&
         std::ranges::any_of(entries, [this](const BatchEntry& entry) {
@@ -2462,10 +2478,25 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
         results.emplace_back(std::move(rejection));
       }
     }
+    std::optional<std::vector<CandidateRejection>> merged_rejections;
     if (!canonical_rejections.empty()) {
-      rejections_ = BuildMergedRejectionsLocked(std::move(canonical_rejections));
+      merged_rejections.emplace(BuildMergedRejectionsLocked(std::move(canonical_rejections)));
     }
     std::ranges::sort(results, StoreResultBefore);
+    // A pinned-budget rollback is an ordinary, authoritative diagnostic
+    // publication. Commit its immutable association binding, history, and
+    // telemetry only after all fallible staging has completed.
+    if (!bound_associations_.has_value() && pending_session.has_value()) {
+      bound_associations_ = *pending_session;
+    }
+    net_associations_.merge(pending_net_bindings);
+    if (merged_rejections.has_value()) {
+      rejections_ = std::move(*merged_rejections);
+      ++rejection_batch_merges_;
+    }
+    last_publication_candidate_inspections_ = publication_candidate_inspections;
+    last_duplicate_equality_checks_ = publication_duplicate_equality_checks;
+    shared_request_policy_normalizations_ += shared_request_policy_normalization_delta;
     return results;
   }
 
@@ -2561,7 +2592,19 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
   candidate_id_index_.merge(prepared_candidate_ids);
   if (merged_rejections.has_value()) {
     rejections_ = std::move(*merged_rejections);
+    ++rejection_batch_merges_;
   }
+  // Exact admission establishes immutable session/net associations even when
+  // every eligible candidate is rejected by duplicate or retention policy.
+  // These bindings and publication telemetry commit with the authoritative
+  // pools, identity index, and rejection history, never with fallible staging.
+  if (!bound_associations_.has_value() && pending_session.has_value()) {
+    bound_associations_ = *pending_session;
+  }
+  net_associations_.merge(pending_net_bindings);
+  last_publication_candidate_inspections_ = publication_candidate_inspections;
+  last_duplicate_equality_checks_ = publication_duplicate_equality_checks;
+  shared_request_policy_normalizations_ += shared_request_policy_normalization_delta;
   return results;
 }
 

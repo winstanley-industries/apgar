@@ -214,6 +214,7 @@ class CandidateStore {
 
   [[nodiscard]] std::vector<StoredCandidate> Enumerate(board_ir::EntityRef net) const;
   [[nodiscard]] std::vector<CandidateRejection> Rejections() const;
+  [[nodiscard]] std::uint64_t RejectionCount() const;
   [[nodiscard]] std::optional<std::uint64_t> CandidateBytes(board_ir::EntityRef net) const;
 
   // Retains structured diagnostics produced before exact store admission (for
@@ -270,7 +271,8 @@ class CandidateStore {
   [[nodiscard]] std::vector<CandidateRejection> BuildMergedRejectionsLocked(
       std::vector<CandidateRejection> canonical_rejections);
   [[nodiscard]] std::vector<CandidateStoreAdmissionResult> PublishAdmissionResults(
-      std::vector<CandidateAdmissionResult> admitted);
+      std::vector<CandidateAdmissionResult> admitted,
+      std::uint64_t shared_request_policy_normalization_delta = 0);
   [[nodiscard]] CandidateStoreInvocationAdmissionResult PublishConditionalAdmissionResults(
       std::vector<CandidateAdmissionResult> admitted,
       const std::vector<CandidateStoreExpectedPool>& expected_source_pools);
@@ -279,7 +281,8 @@ class CandidateStore {
   [[nodiscard]] CandidateStoreAdmissionResult PublishAcceptedLocked(RouteCandidate candidate);
   [[nodiscard]] std::vector<CandidateStoreAdmissionResult> PublishAcceptedBatchLocked(
       std::vector<RouteCandidate> candidates,
-      std::vector<CandidateRejection> canonical_rejections = {});
+      std::vector<CandidateRejection> canonical_rejections = {},
+      std::uint64_t shared_request_policy_normalization_delta = 0);
   [[nodiscard]] std::optional<CandidateRejection> PruneLocked(board_ir::EntityRef net,
                                                               CandidateId newest_id);
 
@@ -312,8 +315,8 @@ class CandidateStore {
   // direct single-record lower-bound insertion is intentionally excluded.
   std::uint64_t rejection_batch_merges_ = 0;
   // Cumulative, mutex-protected source-private instrumentation. One nonempty
-  // shared-request admission transaction increments this exactly once after
-  // preflight, regardless of candidate count or outcome.
+  // shared-request admission transaction commits exactly one increment with
+  // its authoritative publication, regardless of candidate count or outcome.
   std::uint64_t shared_request_policy_normalizations_ = 0;
 
   friend class CandidateStorePinLease;

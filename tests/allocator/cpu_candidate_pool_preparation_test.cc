@@ -222,6 +222,32 @@ TEST(CpuCandidatePoolPreparationTest, ReusesPersistentWorkersAcrossFreshOwnedSto
   EXPECT_NE(&first.candidate_store(), &second.candidate_store());
 }
 
+TEST(CpuCandidatePoolPreparationTest, WorkBoundFailureLeavesPersistentWorkersReusable) {
+  const Fixture fixture = MakeTwoNetFixture();
+  std::unique_ptr<PersistentCpuCandidatePoolPreparer> preparer = Preparer(2);
+  CpuCandidatePoolPreparationConfig bounded = Config(fixture.workload.nets().size());
+  bounded.route_limits.maximum_work_units = 1;
+
+  const PreparedCpuCandidatePoolsResult failed =
+      PrepareInitialCpuCandidatePools(*preparer, fixture.board, fixture.workload, bounded);
+  ASSERT_TRUE(std::holds_alternative<CpuCandidatePoolPreparationError>(failed));
+  EXPECT_EQ(std::get<CpuCandidatePoolPreparationError>(failed).code,
+            CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded);
+  const PersistentCpuCandidatePoolTelemetry after_failure = preparer->telemetry();
+  EXPECT_EQ(after_failure.workers_started, 2U);
+  EXPECT_EQ(after_failure.invocations_started, 1U);
+  EXPECT_EQ(after_failure.invocations_completed, 1U);
+
+  const CpuCandidatePoolPreparationConfig unbounded = Config(fixture.workload.nets().size());
+  const PreparedCpuCandidatePools recovered = Prepared(
+      PrepareInitialCpuCandidatePools(*preparer, fixture.board, fixture.workload, unbounded));
+  EXPECT_EQ(recovered.pools().size(), fixture.workload.nets().size());
+  const PersistentCpuCandidatePoolTelemetry after_recovery = preparer->telemetry();
+  EXPECT_EQ(after_recovery.workers_started, 2U);
+  EXPECT_EQ(after_recovery.invocations_started, 2U);
+  EXPECT_EQ(after_recovery.invocations_completed, 2U);
+}
+
 TEST(CpuCandidatePoolPreparationTest, RecordsOneDisconnectedProofAndSkipsAlternatives) {
   const Fixture fixture = MakeDisconnectedFixture();
   const CpuCandidatePoolPreparationConfig config = Config(1);

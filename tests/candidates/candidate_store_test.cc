@@ -6,10 +6,12 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <set>
@@ -35,6 +37,21 @@
 namespace apgar::candidates {
 
 namespace {
+
+struct SharedRequestPrePublicationBarrier {
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool normalization_completed = false;
+  bool observer_finished = false;
+};
+
+void PauseSharedRequestBeforePublication(void* context) {
+  auto& barrier = *static_cast<SharedRequestPrePublicationBarrier*>(context);
+  std::unique_lock lock(barrier.mutex);
+  barrier.normalization_completed = true;
+  barrier.condition.notify_all();
+  barrier.condition.wait(lock, [&barrier] { return barrier.observer_finished; });
+}
 
 static_assert(std::is_same_v<decltype(&CandidateStore::RetainRejection),
                              void (CandidateStore::*)(const CandidateRejection&)>);
@@ -306,6 +323,54 @@ TEST(CandidateStoreTest, SharedRequestPolicyIsNormalizedOncePerNonemptyTransacti
   EXPECT_EQ(mismatch_store.telemetry().shared_request_policy_normalizations, 1U);
 }
 
+TEST(CandidateStoreTest, SharedRequestNormalizationTelemetryCommitsWithPublication) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const CandidateCase candidate = ThreeCandidates(board, compiled)[0];
+  const CandidateAdmissionContext context{
+      .board = board, .compiled_board = compiled, .request = candidate.request};
+  CandidateStore store(StoreConfig(2));
+  SharedRequestPrePublicationBarrier barrier;
+  internal::SetSharedRequestPrePublicationHookForTesting(PauseSharedRequestBeforePublication,
+                                                         &barrier);
+
+  std::vector<CandidateStoreAdmissionResult> results;
+  std::thread publisher([&] {
+    std::vector<GeneratedRouteCandidate> generated;
+    generated.push_back(CandidateCopy(candidate.generated));
+    results = store.AdmitBatch(context, std::move(generated));
+  });
+
+  {
+    std::unique_lock lock(barrier.mutex);
+    barrier.condition.wait(lock, [&barrier] { return barrier.normalization_completed; });
+  }
+  const std::vector<StoredCandidate> pool_before_publication =
+      store.Enumerate(candidate.request.net);
+  const CandidateStoreTelemetry telemetry_before_publication = store.telemetry();
+  {
+    std::scoped_lock lock(barrier.mutex);
+    barrier.observer_finished = true;
+  }
+  barrier.condition.notify_all();
+  publisher.join();
+  internal::SetSharedRequestPrePublicationHookForTesting(nullptr, nullptr);
+
+  const std::vector<StoredCandidate> pool_after_publication =
+      store.Enumerate(candidate.request.net);
+  const CandidateStoreTelemetry telemetry_after_publication = store.telemetry();
+
+  EXPECT_TRUE(pool_before_publication.empty());
+  EXPECT_EQ(telemetry_before_publication.shared_request_policy_normalizations, 0U);
+  ASSERT_EQ(pool_after_publication.size(), 1U);
+  EXPECT_EQ(pool_after_publication.front()->id(), candidate.generated.id);
+  EXPECT_EQ(telemetry_after_publication.shared_request_policy_normalizations, 1U);
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_TRUE(std::holds_alternative<StoredCandidate>(results.front()));
+}
+
 TEST(CandidateStoreTest, BatchResultsReflectFinalRetentionAfterLaterEviction) {
   BoardData data = test_support::ValidM1BoardData();
   data.obstacles.clear();
@@ -451,19 +516,32 @@ TEST(CandidateStoreTest, ExactAdmissionBindsSessionBeforeBudgetRetention) {
   EXPECT_TRUE(store.Enumerate(smaller.request.net).empty());
 }
 
-TEST(CandidateStoreTest, PublicationPreparationFailureLeavesPoolAndGlobalIdsUnchanged) {
-  BoardData data = test_support::ValidM1BoardData();
-  data.obstacles.clear();
-  const BoardSnapshot board = Snapshot(std::move(data));
+TEST(CandidateStoreTest,
+     PublicationPreparationFailureLeavesPoolsBindingsGlobalIdsAndTelemetryUnchanged) {
+  BoardData first_data = test_support::ValidM1BoardData();
+  first_data.obstacles.clear();
+  BoardData alternative_data = first_data;
+  ++alternative_data.revision;
+  const BoardSnapshot board = Snapshot(std::move(first_data));
+  const BoardSnapshot alternative_board = Snapshot(std::move(alternative_data));
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const CompiledBoard alternative_compiled =
+      Compile(alternative_board, test_support::DefaultCompilerProfile({0}));
   const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  const std::array<CandidateCase, 3> alternative_cases =
+      ThreeCandidates(alternative_board, alternative_compiled);
   const CandidateAdmissionContext context{
       .board = board, .compiled_board = compiled, .request = cases[0].request};
+  const CandidateAdmissionContext alternative_context{.board = alternative_board,
+                                                      .compiled_board = alternative_compiled,
+                                                      .request = alternative_cases[0].request};
 
   for (const std::uint64_t failure_point : {0U, 1U}) {
     CandidateStore store(StoreConfig());
     const std::vector<StoredCandidate> before = store.Enumerate(cases[0].request.net);
     ASSERT_TRUE(before.empty());
+    const std::vector<CandidateRejection> rejections_before = store.Rejections();
+    const CandidateStoreTelemetry telemetry_before = store.telemetry();
 
     internal::SetPublicationPreparationFailureCountdownForTesting(failure_point);
     EXPECT_THROW(static_cast<void>(store.Admit(context, CandidateCopy(cases[0].generated))),
@@ -472,13 +550,19 @@ TEST(CandidateStoreTest, PublicationPreparationFailureLeavesPoolAndGlobalIdsUnch
 
     const std::vector<StoredCandidate> after = store.Enumerate(cases[0].request.net);
     ASSERT_EQ(after.size(), before.size());
+    EXPECT_EQ(store.Rejections(), rejections_before);
+    EXPECT_EQ(store.telemetry(), telemetry_before);
+
+    // The failed preparation must not leak either the common session binding
+    // or this net's routing/rule association. A context that would conflict
+    // with the failed candidate therefore remains admissible.
     ASSERT_TRUE(std::holds_alternative<StoredCandidate>(
-        store.Admit(context, CandidateCopy(cases[0].generated))));
-    const CandidateStoreAdmissionResult duplicate =
+        store.Admit(alternative_context, CandidateCopy(alternative_cases[0].generated))));
+    const CandidateStoreAdmissionResult drift =
         store.Admit(context, CandidateCopy(cases[0].generated));
-    ASSERT_TRUE(std::holds_alternative<CandidateRejection>(duplicate));
-    EXPECT_EQ(std::get<CandidateRejection>(duplicate).code,
-              CandidateRejectionCode::kDuplicateIdentity);
+    ASSERT_TRUE(std::holds_alternative<CandidateRejection>(drift));
+    EXPECT_EQ(std::get<CandidateRejection>(drift).code,
+              CandidateRejectionCode::kAssociationMismatch);
   }
 }
 
@@ -2661,6 +2745,7 @@ TEST(CandidateStoreTest, FirstNetBindingPersistsAcrossPinnedMultiPoolRollback) {
   ASSERT_TRUE(std::holds_alternative<StoredCandidate>(second_incumbent));
   const CandidateId pinned_id = std::get<StoredCandidate>(second_incumbent)->id();
   ASSERT_FALSE(store.Pin(77, pinned_id).has_value());
+  const CandidateStoreTelemetry telemetry_before_rollback = store.telemetry();
 
   const CandidateAdmissionContext first_context{
       .board = board, .compiled_board = first.compiled, .request = first.request};
@@ -2671,7 +2756,7 @@ TEST(CandidateStoreTest, FirstNetBindingPersistsAcrossPinnedMultiPoolRollback) {
       second_context, test_support::CandidateDraft(board, second.compiled, second.request, 1, 3)));
   const std::vector<CandidateStoreAdmissionResult> rolled_back =
       internal::PublishWithPinnedRollbackForTesting(store, std::move(transaction),
-                                                    second.request.net);
+                                                    second.request.net, 1);
   ASSERT_EQ(rolled_back.size(), 2U);
   EXPECT_TRUE(std::ranges::all_of(rolled_back, [](const auto& result) {
     const auto* rejection = std::get_if<CandidateRejection>(&result);
@@ -2680,6 +2765,8 @@ TEST(CandidateStoreTest, FirstNetBindingPersistsAcrossPinnedMultiPoolRollback) {
   EXPECT_TRUE(store.Enumerate(first.request.net).empty());
   ASSERT_EQ(store.Enumerate(second.request.net).size(), 1U);
   EXPECT_EQ(store.Enumerate(second.request.net).front()->id(), pinned_id);
+  EXPECT_EQ(store.telemetry().shared_request_policy_normalizations,
+            telemetry_before_rollback.shared_request_policy_normalizations + 1U);
 
   const CandidateAdmissionContext changed_context{
       .board = board,

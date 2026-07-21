@@ -112,9 +112,10 @@ disconnected, unsupported, build-rejected, or admission-rejected attempt
 restores the prior winner when one exists. The column retains the exact attempt
 outcome and a separate restoration flag.
 
-CPU A* resource exhaustion is an aggregate/per-query work-bound failure, not a
-disconnected proof. Other invalid, validation, or internal route failures fail
-the session. Wall-clock time never changes routing or stopping behavior.
+CPU A* `kWorkBoundExceeded` is an aggregate/per-query work-bound failure, not a
+disconnected proof. CPU A* `kResourceExhausted` remains a distinct arithmetic
+or host-resource failure. Other invalid, validation, or internal route failures
+fail the session. Wall-clock time never changes routing or stopping behavior.
 
 ## Query policy
 

@@ -1174,11 +1174,16 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
               work_failure.has_value()) {
             return *work_failure;
           }
-          if (failure->code == routing::RouteFailureCode::kResourceExhausted) {
+          if (failure->code == routing::RouteFailureCode::kWorkBoundExceeded) {
             return Error(SequentialNegotiatedBaselineErrorCode::kWorkBoundExceeded,
                          "allocator.sequential_negotiated.cpu_astar_bound.v1",
                          "Bounded CPU A* exhausted a per-query work or container bound",
                          context.request.net);
+          }
+          if (failure->code == routing::RouteFailureCode::kResourceExhausted) {
+            return Error(SequentialNegotiatedBaselineErrorCode::kResourceExhausted,
+                         "allocator.sequential_negotiated.cpu_astar_resource.v1",
+                         "CPU A* exhausted a non-work routing resource", context.request.net);
           }
           if (failure->code != routing::RouteFailureCode::kDisconnected &&
               failure->code != routing::RouteFailureCode::kUnsupportedLayerTransition &&

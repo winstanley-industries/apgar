@@ -108,6 +108,9 @@ recomputes only touched pools; unrelated pools are not scanned. Concurrent
 callers observe linearizable snapshots. One explicit `AdmitBatch` is the
 deterministic publication boundary for candidates produced concurrently: its
 retained pool and per-item results do not depend on worker completion order.
+For the shared-request overload, its cumulative policy-normalization telemetry
+commits under the same mutex with the authoritative pool, binding, rejection,
+and publication-telemetry state; no observer can see one without the other.
 Separate single-item calls are race-safe and deterministic for their mutex
 linearization, but a bounded store does not promise the same final pool across
 different linearizations of future calls. Callers requiring schedule-independent

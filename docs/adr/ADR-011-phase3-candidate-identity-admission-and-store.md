@@ -128,10 +128,13 @@ now.
   consumers therefore also compare the retained canonical geometry's ordered
   start/end coordinates and layers with the prepared exact request; a shared
   net/profile/rule tuple alone is not exact-request evidence.
-- Publication preallocates replacement pool and global-ID map nodes before
-  mutating either authoritative index, then commits with no-allocation node
-  transfers under the store mutex. Host allocation failure therefore leaves
-  both indexes at the pre-publication snapshot.
+- Publication preallocates replacement pool and global-ID map nodes and stages
+  immutable session/net bindings plus publication, rejection-merge, and
+  shared-request-normalization telemetry before mutating authoritative state.
+  It then commits with no-allocation node transfers under the store mutex. Host
+  allocation or an injected preparation failure therefore leaves pools, the
+  global ID index, rejection history, pins, bindings, and telemetry at the
+  pre-publication snapshot.
 - Retained-pool caps do not bound hostile admission work. Store v1 therefore
   also enforces positive per-transaction item-count, recomputed aggregate-input-
   byte, and conservative deterministic-work caps before exact admission. Input

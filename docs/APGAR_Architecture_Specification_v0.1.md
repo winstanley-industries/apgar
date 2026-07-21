@@ -458,7 +458,9 @@ public:
 ### 12.1 Generator requirements
 
 - **GEN-001** A generator MUST declare supported headings, via models, terminal types, and multipin behavior.
-- **GEN-002** A generator MUST return failure explanations distinguishing unreachable, resource-exhausted, unsupported, and cancelled.
+- **GEN-002** A generator MUST return failure explanations distinguishing
+  unreachable, work-bound-exceeded, resource-exhausted, unsupported, and
+  cancelled.
 - **GEN-003** Every candidate MUST include provenance sufficient to reproduce it.
 - **GEN-004** Generators SHOULD support banned or penalized resource sets to produce diverse alternatives.
 - **GEN-005** Generators MUST NOT mutate global resource usage while searching.
@@ -794,7 +796,10 @@ public:
 - InvalidInput: malformed Board IR or unsupported semantic combination.
 - Unsupported: well-formed request outside current capability.
 - Unreachable: no path under the exact supported model and current locks.
-- ResourceExhausted: memory or bounded search budget exhausted.
+- ResourceExhausted: host/device memory or representational arithmetic range
+  exhausted.
+- WorkBoundExceeded: a declared deterministic search-work or container proxy
+  was exhausted; partial results are diagnostic only.
 - ValidationFailed: candidate or solution violates exact or host rules.
 - BackendFailure: device, driver, or kernel failure.
 - Cancelled: cooperative cancellation.
@@ -1048,6 +1053,28 @@ acceleration.
   price snapshot, and retain refreshed winners before releasing source-world
   retention. Known exact conflicts absent from the current resource vocabulary
   MUST produce resource-refinement-required rather than convergence or stall.
+- Production targeted regeneration is versioned by
+  `schemas/allocator/targeted_regeneration_execution_v2.md`. It MUST use bounded
+  CPU A*, preflight aggregate route work, all complete price-roster projection
+  passes, candidate-draft/rejection/transient bytes, and CandidateStore
+  input/exact work before the first query. The same preflight MUST prove the
+  worst-case refreshed candidate count and expanded resource uses fit the
+  complete One-World limits. It MUST retain available per-column CPU telemetry
+  and the complete canonical rejection, and bind a bounded attempted prefix
+  plus an authoritative CandidateStore-publication-committed bit into any
+  post-query failure observation. CandidateStore staging failures MUST change
+  neither pools, rejection history, pins, session/net bindings, nor telemetry;
+  post-commit failures MUST identify that committed state rather than imply
+  rollback. A complete route request MUST exist before its attempted column and
+  query counter become observable. Attempted columns MUST retain their truthful
+  query, build, rejection-evidence, unpublished-draft, or publication-committed
+  outcome-correlation stage and counters at failure time. A final rejection
+  stage MUST have complete canonical rejection evidence, and publication-
+  committed columns MUST enter the outcome-correlation stage before the commit
+  bit becomes visible. Successor-pin counters MUST advance only after the
+  successor lease is acquired. Source pool/candidate count drift MUST fail
+  before footprint traversal, and refreshed expanded-use preflight MUST stop at
+  its configured envelope without scanning a rejected suffix.
 
 #### Equal-budget decision evidence
 

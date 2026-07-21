@@ -191,7 +191,7 @@ TEST(CpuAStarTest, DeterministicWorkLimitsAcceptEqualityAndRejectOneUnder) {
     const CpuRouteResult result = RouteWithCpuAStar(board, compiled, request, limits);
     ASSERT_TRUE(std::holds_alternative<RouteFailure>(result));
     const RouteFailure& failure = std::get<RouteFailure>(result);
-    EXPECT_EQ(failure.code, RouteFailureCode::kResourceExhausted);
+    EXPECT_EQ(failure.code, RouteFailureCode::kWorkBoundExceeded);
     ASSERT_TRUE(failure.telemetry.has_value());
     EXPECT_LE(failure.telemetry->work_units, limits.maximum_work_units);
     EXPECT_LE(failure.telemetry->peak_record_count, limits.maximum_record_count);

@@ -948,8 +948,10 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
             return;
           }
           column.fatal_error =
-              Error(failure->code == routing::RouteFailureCode::kResourceExhausted
+              Error(failure->code == routing::RouteFailureCode::kWorkBoundExceeded
                         ? CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded
+                    : failure->code == routing::RouteFailureCode::kResourceExhausted
+                        ? CpuCandidatePoolPreparationErrorCode::kResourceExhausted
                         : CpuCandidatePoolPreparationErrorCode::kCandidateGeneration,
                     "allocator.cpu_candidate_pool.base_route.v1",
                     "Bounded CPU A* failed while generating a base candidate",
@@ -1094,8 +1096,10 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
             return;
           }
           column.fatal_error =
-              Error(failure->code == routing::RouteFailureCode::kResourceExhausted
+              Error(failure->code == routing::RouteFailureCode::kWorkBoundExceeded
                         ? CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded
+                    : failure->code == routing::RouteFailureCode::kResourceExhausted
+                        ? CpuCandidatePoolPreparationErrorCode::kResourceExhausted
                         : CpuCandidatePoolPreparationErrorCode::kCandidateGeneration,
                     "allocator.cpu_candidate_pool.alternative_route.v1",
                     "Bounded CPU A* failed while generating an alternative candidate",

@@ -633,7 +633,8 @@ enum class PredecessorCostValidation : std::uint8_t {
     if (failure.code == routing::RouteFailureCode::kDisconnected) {
       return std::nullopt;
     }
-    if (failure.code == routing::RouteFailureCode::kResourceExhausted) {
+    if (failure.code == routing::RouteFailureCode::kResourceExhausted ||
+        failure.code == routing::RouteFailureCode::kWorkBoundExceeded) {
       return Failure(PlanarGpuFailureCode::kResourceExhausted,
                      "CPU oracle could not confirm GPU disconnection: " + failure.detail,
                      failure.obstacle);

@@ -33,10 +33,19 @@
 
 namespace apgar::candidates::internal {
 
+using SharedRequestPrePublicationHookForTesting = void (*)(void* context);
+
+// Pauses a shared-request caller after normalization completes and before
+// publication begins. This lets tests observe the store before the candidate
+// pool and normalization telemetry become visible together.
+void SetSharedRequestPrePublicationHookForTesting(SharedRequestPrePublicationHookForTesting hook,
+                                                  void* context) noexcept;
+
 // Testonly atomic-publication probe. The production CandidateStore library and
 // installed public header contain neither this declaration nor its symbol.
 [[nodiscard]] std::vector<CandidateStoreAdmissionResult> PublishWithPinnedRollbackForTesting(
-    CandidateStore& store, std::vector<RouteCandidate> candidates, board_ir::EntityRef pinned_net);
+    CandidateStore& store, std::vector<RouteCandidate> candidates, board_ir::EntityRef pinned_net,
+    std::uint64_t shared_request_policy_normalization_delta = 0);
 
 }  // namespace apgar::candidates::internal
 

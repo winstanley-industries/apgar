@@ -9,15 +9,36 @@
 #include <vector>
 
 #include "apgar/allocator/targeted_regeneration.h"
+#include "apgar/routing/cpu_astar.h"
 
 namespace apgar::allocator {
 
-inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersion = 1;
+inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersionV1 = 1;
+inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersion = 2;
+inline constexpr std::uint64_t kMaximumTargetedRegenerationRouteQueriesV2 = 1'000'000;
+inline constexpr std::uint64_t kMaximumTargetedRegenerationRouteWorkUnitsV2 =
+    1'000'000'000'000'000ULL;
+inline constexpr std::uint64_t kTargetedRegenerationPolicyProjectionPassesV2 = 4;
+inline constexpr std::uint64_t kMaximumTargetedRegenerationPolicyProjectionVisitsV2 =
+    1'000'000'000'000'000ULL;
+inline constexpr std::uint64_t kMaximumTargetedRegenerationRejectionLogicalBytesV2 = 4'096;
+inline constexpr std::uint64_t kTargetedRegenerationColumnBaseLogicalBytesV2 = 256;
 
 struct TargetedRegenerationExecutionConfig {
   std::uint64_t maximum_route_queries = 1'000'000;
-  std::uint64_t maximum_route_work_units = 1'000'000'000;
+  routing::CpuRouteWorkLimits route_limits{
+      .maximum_work_units = 20'000'000,
+      .maximum_record_count = 1'000'000,
+      .maximum_queue_size = 8'000'000,
+      .maximum_reconstruction_states = 100'000,
+  };
+  std::uint64_t maximum_total_route_work_units = 100'000'000'000ULL;
+  std::uint64_t maximum_policy_projection_visits = 100'000'000;
   std::uint64_t maximum_policy_resource_entries = 100'000'000;
+  std::uint64_t maximum_candidate_draft_bytes = 64ULL * 1024ULL * 1024ULL;
+  std::uint64_t maximum_generated_candidate_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+  std::uint64_t maximum_rejection_bytes = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+  std::uint64_t maximum_transient_result_bytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
   // A nonzero value declares that the current allocator resource vocabulary
   // cannot represent known exact combined-route conflicts. Execution returns
   // an explicit refinement-required terminal result without generating or
@@ -35,7 +56,19 @@ enum class TargetedRegenerationColumnOutcome : std::uint8_t {
   kRouteUnsupported = 3,
   kBuildRejected = 4,
   kAdmissionRejected = 5,
+  // Failure-observation-only stages. Successful executions finalize every
+  // column to one of the six outcomes above before returning.
+  kQueryInFlight = 6,
+  kBuildInFlight = 7,
+  kGeneratedPendingPublication = 8,
+  kRejectionEvidenceInFlight = 9,
+  kPublicationCommittedOutcomeCorrelationPending = 10,
 };
+static_assert(
+    static_cast<std::uint8_t>(TargetedRegenerationColumnOutcome::kRejectionEvidenceInFlight) == 9);
+static_assert(
+    static_cast<std::uint8_t>(
+        TargetedRegenerationColumnOutcome::kPublicationCommittedOutcomeCorrelationPending) == 10);
 
 struct TargetedRegenerationColumnRecord {
   board_ir::EntityRef net{};
@@ -43,10 +76,13 @@ struct TargetedRegenerationColumnRecord {
   std::uint64_t policy_identity = 0;
   std::uint64_t batch_identity = 0;
   std::uint64_t query_identity = 0;
-  TargetedRegenerationColumnOutcome outcome = TargetedRegenerationColumnOutcome::kRouteDisconnected;
+  std::optional<routing::CpuRouteTelemetry> route_telemetry;
+  std::uint64_t candidate_draft_logical_bytes = 0;
+  TargetedRegenerationColumnOutcome outcome = TargetedRegenerationColumnOutcome::kQueryInFlight;
   std::optional<candidates::CandidateId> candidate_id;
   std::optional<std::uint64_t> candidate_payload_checksum;
   std::optional<candidates::CandidateRejectionCode> rejection_code;
+  std::optional<candidates::CandidateRejection> rejection;
 
   friend bool operator==(const TargetedRegenerationColumnRecord&,
                          const TargetedRegenerationColumnRecord&) = default;
@@ -72,6 +108,14 @@ enum class TargetedRegenerationTerminalReason : std::uint8_t {
 
 struct TargetedRegenerationExecutionCounters {
   std::uint64_t requested_columns = 0;
+  std::uint64_t route_queries = 0;
+  std::uint64_t route_work_units = 0;
+  std::uint64_t policy_projection_visits = 0;
+  std::uint64_t peak_route_record_count = 0;
+  std::uint64_t peak_route_queue_size = 0;
+  std::uint64_t generated_candidate_bytes = 0;
+  std::uint64_t rejection_record_bytes = 0;
+  std::uint64_t transient_result_bytes = 0;
   std::uint64_t successful_routes = 0;
   std::uint64_t built_candidates = 0;
   std::uint64_t admitted_candidates = 0;
@@ -108,6 +152,23 @@ struct TargetedRegenerationExecutionError {
       TargetedRegenerationExecutionErrorCode::kInvalidConfiguration;
   std::string_view invariant_id;
   std::string_view detail;
+  struct FailedExecutionObservation {
+    std::uint32_t schema_version = kTargetedRegenerationExecutionSchemaVersion;
+    std::uint64_t plan_checksum = 0;
+    TargetedRegenerationExecutionConfig config;
+    candidates::CandidateStoreConfig store_config;
+    // False means the CandidateStore remains at the pre-invocation snapshot.
+    // True means atomic candidate publication completed before this later
+    // execution failure; callers must retain or explicitly reconcile it.
+    bool candidate_store_publication_committed = false;
+    TargetedRegenerationExecutionCounters counters;
+    std::vector<TargetedRegenerationColumnRecord> columns;
+    std::uint64_t observation_checksum = 0;
+
+    friend bool operator==(const FailedExecutionObservation&,
+                           const FailedExecutionObservation&) = default;
+  };
+  std::optional<FailedExecutionObservation> failed_execution;
 
   friend bool operator==(const TargetedRegenerationExecutionError&,
                          const TargetedRegenerationExecutionError&) = default;
@@ -124,6 +185,9 @@ class TargetedRegenerationExecution {
   [[nodiscard]] const TargetedRegenerationPlan& plan() const noexcept { return plan_; }
   [[nodiscard]] const TargetedRegenerationExecutionConfig& config() const noexcept {
     return config_;
+  }
+  [[nodiscard]] const candidates::CandidateStoreConfig& store_config() const noexcept {
+    return store_config_;
   }
   [[nodiscard]] TargetedRegenerationExecutionDisposition disposition() const noexcept {
     return disposition_;
@@ -154,6 +218,7 @@ class TargetedRegenerationExecution {
  private:
   TargetedRegenerationExecution(std::uint32_t schema_version, TargetedRegenerationPlan plan,
                                 TargetedRegenerationExecutionConfig config,
+                                candidates::CandidateStoreConfig store_config,
                                 TargetedRegenerationExecutionDisposition disposition,
                                 TargetedRegenerationTerminalReason terminal_reason,
                                 TargetedRegenerationExecutionCounters counters,
@@ -166,6 +231,7 @@ class TargetedRegenerationExecution {
       : schema_version_(schema_version),
         plan_(std::move(plan)),
         config_(config),
+        store_config_(store_config),
         disposition_(disposition),
         terminal_reason_(terminal_reason),
         counters_(counters),
@@ -179,6 +245,7 @@ class TargetedRegenerationExecution {
   std::uint32_t schema_version_ = kTargetedRegenerationExecutionSchemaVersion;
   TargetedRegenerationPlan plan_;
   TargetedRegenerationExecutionConfig config_;
+  candidates::CandidateStoreConfig store_config_;
   TargetedRegenerationExecutionDisposition disposition_ =
       TargetedRegenerationExecutionDisposition::kNoWork;
   TargetedRegenerationTerminalReason terminal_reason_ =

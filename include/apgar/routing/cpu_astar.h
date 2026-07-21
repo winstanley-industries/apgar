@@ -17,13 +17,14 @@
 namespace apgar::routing {
 
 enum class RouteFailureCode : std::uint8_t {
-  kInvalidRequest,
-  kDisconnected,
-  kUnsupportedLayerTransition,
-  kValidationFailed,
-  kResourceExhausted,
-  kInternalInvariant,
-  kUnsupportedPolicy,
+  kInvalidRequest = 0,
+  kDisconnected = 1,
+  kUnsupportedLayerTransition = 2,
+  kValidationFailed = 3,
+  kResourceExhausted = 4,
+  kInternalInvariant = 5,
+  kUnsupportedPolicy = 6,
+  kWorkBoundExceeded = 7,
 };
 
 struct CpuRouteTelemetry {

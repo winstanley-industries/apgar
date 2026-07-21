@@ -181,7 +181,7 @@ struct QueueGreater {
 
 [[nodiscard]] RouteFailure WorkBoundFailure(std::string detail,
                                             const CpuRouteTelemetry& telemetry) {
-  return Failure(RouteFailureCode::kResourceExhausted, std::move(detail), std::nullopt, telemetry);
+  return Failure(RouteFailureCode::kWorkBoundExceeded, std::move(detail), std::nullopt, telemetry);
 }
 
 [[nodiscard]] std::uint64_t AbsoluteDifference(std::int64_t left, std::int64_t right) noexcept {

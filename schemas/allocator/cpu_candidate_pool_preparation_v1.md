@@ -111,8 +111,10 @@ compiled-legal edge relaxation, and each reconstructed state. Record and queue
 limits are checked before insertion; reconstruction is checked before append.
 An equality-bound execution succeeds with the same authenticated route and
 telemetry as the unbounded CPU oracle. Exhaustion returns
-`kResourceExhausted`, diagnostic telemetry no larger than the configured
-container/work bound, and no producer evidence.
+`kWorkBoundExceeded`, diagnostic telemetry no larger than the configured
+container/work bound, and no producer evidence. Arithmetic inability to
+represent a route cost remains `kResourceExhausted`. Pool preparation preserves
+that distinction, fails atomically, and leaves its persistent workers reusable.
 
 ## Column records and counters
 
