@@ -979,6 +979,10 @@ acceleration.
   fixture establishes authentic import, ownership, workload association, and
   replay identity only; it does not satisfy the representative-scale,
   candidate-pool, equal-budget, or improvement requirements below.
+- The representative descriptor roster and lazy one-case-at-a-time builders
+  are versioned by `schemas/benchmark/phase4_representative_corpus_v1.md`.
+  Calibration and held-out seeds, exact cases, fixed-query controls, and the
+  thousands-net stress ladder are frozen before canonical allocation evidence.
 - Candidate pools MUST include realistic small per-net schedules such as 4, 8,
   and 16 requested alternatives. Larger pools MAY characterize scaling but
   MUST NOT be the only regime used to claim Phase 4 success.
@@ -1053,8 +1057,11 @@ acceleration.
   strict improvement over the named sequential baseline on at least two
   allocator-stressing synthetic families at equal budgets, without reducing
   the primary feasibility outcome or violating the declared guardrails on the
-  imported supported-rule case. Pooled throughput MUST NOT hide family
-  regressions, and negative or workload-specific results MUST remain visible.
+  imported supported-rule case. At least one passing family MUST have one
+  board-wide resource-conflict graph coupling its routable nets; repeated
+  independent local motifs cannot supply both required family wins. Pooled
+  throughput MUST NOT hide family regressions, and negative or workload-
+  specific results MUST remain visible.
 - The report MUST publish per-net candidate yield and diversity consumed,
   selected-candidate quality, unresolved overuse, convergence or stall reason,
   columns requested and admitted, batch fill, prepared-view cache behavior,

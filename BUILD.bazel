@@ -440,6 +440,47 @@ cc_library(
 )
 
 cc_library(
+    name = "phase4_representative_corpus",
+    srcs = [
+        "src/benchmark/phase4_representative_corpus.cc",
+        "src/benchmark/phase4_representative_corpus_internal.h",
+    ],
+    hdrs = ["include/apgar/benchmark/phase4_representative_corpus.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":one_world_allocator",
+        ":phase4_imported_multi_net_corpus",
+    ],
+)
+
+cc_library(
+    name = "phase4_representative_corpus_fault_test_variant",
+    testonly = True,
+    srcs = [
+        "src/benchmark/phase4_representative_corpus.cc",
+        "src/benchmark/phase4_representative_corpus_internal.h",
+    ],
+    hdrs = ["include/apgar/benchmark/phase4_representative_corpus.h"],
+    copts = APGAR_COPTS,
+    defines = ["APGAR_PHASE4_REPRESENTATIVE_CORPUS_FAULT_TEST_VARIANT"],
+    strip_include_prefix = "include",
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":one_world_allocator",
+        ":phase4_imported_multi_net_corpus_fault_test_variant",
+    ],
+)
+
+cc_library(
     name = "phase3_commit",
     hdrs = ["include/apgar/benchmark/phase3_commit.h"],
     strip_include_prefix = "include",
@@ -1348,6 +1389,55 @@ cc_test(
         ":cpu_astar",
         ":kicad_fixture_adapter",
         ":phase4_imported_multi_net_corpus",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_representative_corpus_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_representative_corpus_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    deps = [
+        ":cpu_astar",
+        ":phase4_representative_corpus",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_representative_corpus_scale_test",
+    size = "medium",
+    srcs = [
+        "tests/benchmark/phase4_representative_corpus_scale_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":cpu_astar",
+        ":phase4_representative_corpus",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_representative_corpus_fault_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_representative_corpus_fault_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    deps = [
+        ":multi_net_workload",
+        ":phase4_representative_corpus_fault_test_variant",
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
