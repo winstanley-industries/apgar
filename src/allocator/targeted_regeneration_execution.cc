@@ -489,6 +489,11 @@ struct FailedExecutionState {
 
 }  // namespace
 
+bool internal::TargetedRegenerationExecutionConfigIsValidV2(
+    const TargetedRegenerationExecutionConfig& config) noexcept {
+  return ConfigIsValid(config);
+}
+
 std::optional<std::uint64_t> internal::ComputeTargetedRegenerationMaximumDraftBytesV2(
     std::uint64_t maximum_reconstruction_states,
     std::uint64_t maximum_policy_resource_entries) noexcept {

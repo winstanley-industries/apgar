@@ -163,6 +163,7 @@ class PreparedCpuCandidatePools {
     return columns_;
   }
   [[nodiscard]] const std::vector<CandidatePool>& pools() const noexcept { return pools_; }
+  [[nodiscard]] bool has_candidate_store() const noexcept { return candidate_store_ != nullptr; }
   [[nodiscard]] candidates::CandidateStore& candidate_store() noexcept { return *candidate_store_; }
   [[nodiscard]] const candidates::CandidateStore& candidate_store() const noexcept {
     return *candidate_store_;

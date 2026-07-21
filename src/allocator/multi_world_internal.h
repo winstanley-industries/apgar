@@ -9,6 +9,29 @@
 
 namespace apgar::allocator::internal {
 
+[[nodiscard]] bool MultiWorldExecutionConfigIsValidV1(
+    const MultiWorldExecutionConfig& config) noexcept;
+
+struct MultiWorldTerminalEnvelopeV1 {
+  std::uint64_t buffered_selection_records = 0;
+  std::uint64_t buffered_resource_records = 0;
+  std::uint64_t buffered_price_records = 0;
+  std::uint64_t retained_worlds = 0;
+  std::uint64_t retained_selection_records = 0;
+  std::uint64_t retained_resource_records = 0;
+  std::uint64_t retained_price_records = 0;
+  std::uint64_t retained_winner_pins = 0;
+
+  friend bool operator==(const MultiWorldTerminalEnvelopeV1&,
+                         const MultiWorldTerminalEnvelopeV1&) = default;
+};
+
+[[nodiscard]] bool MultiWorldTerminalEnvelopeFitsV1(
+    std::uint64_t world_count, std::uint64_t source_net_count,
+    std::uint64_t maximum_source_candidate_count, std::uint64_t maximum_resource_records_per_world,
+    std::uint64_t maximum_price_records_per_world, const MultiWorldExecutionConfig& config,
+    MultiWorldTerminalEnvelopeV1* projection) noexcept;
+
 struct MultiWorldKnownWorkV1 {
   std::uint64_t world_count = 0;
   std::uint64_t total_selection_rounds = 0;

@@ -409,6 +409,30 @@ cc_library(
 )
 
 cc_library(
+    name = "cpu_candidate_allocation_session",
+    srcs = [
+        "src/allocator/cpu_candidate_allocation_session.cc",
+        "src/allocator/cpu_candidate_allocation_session_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/cpu_candidate_allocation_session.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_store",
+        ":cpu_candidate_pool_preparation",
+        ":multi_net_workload",
+        ":multi_world_allocator",
+        ":negotiated_prices",
+        ":one_world_allocator",
+        ":targeted_regeneration",
+        ":targeted_regeneration_execution",
+    ],
+)
+
+cc_library(
     name = "one_world_fault_test_support",
     testonly = True,
     srcs = ["tests/support/one_world_fault_test_support.cc"],
@@ -1537,6 +1561,53 @@ cc_test(
         ":one_world_allocator",
         ":planar_route",
         ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cpu_candidate_allocation_session_test",
+    size = "small",
+    srcs = [
+        "src/allocator/cpu_candidate_allocation_session_internal.h",
+        "src/allocator/multi_world_internal.h",
+        "src/allocator/targeted_regeneration_execution_internal.h",
+        "tests/allocator/cpu_candidate_allocation_session_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":cpu_candidate_allocation_session",
+        ":cpu_candidate_pool_preparation",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":multi_world_allocator",
+        ":one_world_allocator",
+        ":targeted_regeneration_execution",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cpu_candidate_allocation_session_corpus_test",
+    size = "medium",
+    srcs = [
+        "tests/allocator/cpu_candidate_allocation_session_corpus_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":cpu_candidate_allocation_session",
+        ":cpu_candidate_pool_preparation",
+        ":multi_world_allocator",
+        ":negotiated_prices",
+        ":one_world_allocator",
+        ":phase4_representative_corpus",
+        ":targeted_regeneration",
+        ":targeted_regeneration_execution",
         "@googletest//:gtest_main",
     ],
 )

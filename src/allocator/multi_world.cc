@@ -275,6 +275,51 @@ void AddCounters(board_ir::StableHashBuilder& hash,
 
 }  // namespace
 
+bool internal::MultiWorldExecutionConfigIsValidV1(
+    const MultiWorldExecutionConfig& config) noexcept {
+  return ConfigIsValid(config);
+}
+
+bool internal::MultiWorldTerminalEnvelopeFitsV1(std::uint64_t world_count,
+                                                std::uint64_t source_net_count,
+                                                std::uint64_t maximum_source_candidate_count,
+                                                std::uint64_t maximum_resource_records_per_world,
+                                                std::uint64_t maximum_price_records_per_world,
+                                                const MultiWorldExecutionConfig& config,
+                                                MultiWorldTerminalEnvelopeV1* projection) noexcept {
+  const UWide selection_records = static_cast<UWide>(world_count) * source_net_count;
+  const UWide resource_records =
+      static_cast<UWide>(world_count) * maximum_resource_records_per_world;
+  const UWide price_records = static_cast<UWide>(world_count) * maximum_price_records_per_world;
+  const UWide winner_pins = std::min<UWide>(maximum_source_candidate_count, selection_records);
+  constexpr UWide kMax = std::numeric_limits<std::uint64_t>::max();
+  if (world_count > config.maximum_worlds ||
+      selection_records > config.maximum_buffered_terminal_selection_records ||
+      resource_records > config.maximum_buffered_terminal_resource_records ||
+      price_records > config.maximum_buffered_terminal_price_records ||
+      world_count > config.maximum_retained_worlds ||
+      selection_records > config.maximum_retained_selection_records ||
+      resource_records > config.maximum_retained_resource_records ||
+      price_records > config.maximum_retained_price_records ||
+      winner_pins > config.maximum_retained_winner_pins || selection_records > kMax ||
+      resource_records > kMax || price_records > kMax || winner_pins > kMax) {
+    return false;
+  }
+  if (projection != nullptr) {
+    *projection = MultiWorldTerminalEnvelopeV1{
+        .buffered_selection_records = static_cast<std::uint64_t>(selection_records),
+        .buffered_resource_records = static_cast<std::uint64_t>(resource_records),
+        .buffered_price_records = static_cast<std::uint64_t>(price_records),
+        .retained_worlds = world_count,
+        .retained_selection_records = static_cast<std::uint64_t>(selection_records),
+        .retained_resource_records = static_cast<std::uint64_t>(resource_records),
+        .retained_price_records = static_cast<std::uint64_t>(price_records),
+        .retained_winner_pins = static_cast<std::uint64_t>(winner_pins),
+    };
+  }
+  return true;
+}
+
 std::uint64_t internal::MultiWorldPreflightSpanInspectionsForTesting() noexcept {
   return g_preflight_span_inspections;
 }

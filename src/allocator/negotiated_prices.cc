@@ -383,6 +383,10 @@ template <typename Operation>
 
 }  // namespace
 
+bool internal::NegotiatedPriceConfigIsValidV1(const NegotiatedPriceConfig& config) noexcept {
+  return ConfigIsValid(config);
+}
+
 std::uint64_t internal::ComputeNegotiatedPriceStateChecksumV1(
     const NegotiatedPriceChecksumHeaderV1& header,
     std::span<const NegotiatedResourcePrice> prices) noexcept {

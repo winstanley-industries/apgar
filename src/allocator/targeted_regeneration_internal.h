@@ -10,6 +10,9 @@
 
 namespace apgar::allocator::internal {
 
+[[nodiscard]] bool TargetedRegenerationConfigIsValidV1(
+    const TargetedRegenerationConfig& config) noexcept;
+
 struct TargetedRegenerationChecksumHeaderV1 {
   std::uint32_t schema_version = 0;
   AllocationAssociations associations;

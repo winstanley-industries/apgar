@@ -9,6 +9,8 @@
 
 namespace apgar::allocator::internal {
 
+[[nodiscard]] bool NegotiatedPriceConfigIsValidV1(const NegotiatedPriceConfig& config) noexcept;
+
 struct ResourceCapacityChecksumHeaderV1 {
   std::uint32_t schema_version = 0;
   AllocationAssociations associations;

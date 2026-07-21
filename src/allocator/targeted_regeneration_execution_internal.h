@@ -9,6 +9,9 @@
 
 namespace apgar::allocator::internal {
 
+[[nodiscard]] bool TargetedRegenerationExecutionConfigIsValidV2(
+    const TargetedRegenerationExecutionConfig& config) noexcept;
+
 [[nodiscard]] routing::PlanarRouteRequest BuildTargetedRegenerationRouteRequestV1(
     const routing::PlanarRouteRequest& source,
     const routing::CandidateGenerationPolicy& candidate_policy);

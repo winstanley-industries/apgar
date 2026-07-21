@@ -1075,6 +1075,23 @@ acceleration.
   successor lease is acquired. Source pool/candidate count drift MUST fail
   before footprint traversal, and refreshed expanded-use preflight MUST stop at
   its configured envelope without scanning a rejected suffix.
+- The reusable CPU contender is versioned by
+  `schemas/allocator/cpu_candidate_allocation_session_v1.md`. It MUST own the
+  prepared CandidateStore and every lease-bearing terminal result on success,
+  retain caller ownership of all inputs on failure, and preserve that
+  authoritative store when a failed targeted observation says publication
+  committed. It repeats bounded targeted-regeneration epochs on one common
+  One-World lineage, declares a fixed point only when complete pool semantics,
+  selected route semantics, and complete price values are unchanged, then
+  freezes the final pools for one fixed-pool Multi-World execution. Its
+  whole-session preflight MUST cover CandidateStore transaction input bytes,
+  exact admission work, cumulative rejection retention, fixed-pool terminal
+  work, buffers, retained worlds, and winner pins before the first route query.
+  Count-known failures MUST precede source-footprint traversal, and a rejected
+  footprint suffix MUST not be scanned. The terminal preferred retained world
+  MAY upgrade the common-lineage outcome to feasible. Version 1 MUST NOT
+  simulate interleaved multi-world column generation by sequential publication
+  whose visible pool depends on world order.
 
 #### Equal-budget decision evidence
 

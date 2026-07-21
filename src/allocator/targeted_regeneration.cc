@@ -198,6 +198,11 @@ template <typename Operation>
 
 }  // namespace
 
+bool internal::TargetedRegenerationConfigIsValidV1(
+    const TargetedRegenerationConfig& config) noexcept {
+  return ConfigIsValid(config);
+}
+
 std::uint64_t internal::ComputeTargetedRegenerationPlanChecksumV1(
     const TargetedRegenerationChecksumHeaderV1& header,
     std::span<const TargetedRegenerationNet> targets) noexcept {
