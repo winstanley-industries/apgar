@@ -14,3 +14,6 @@
 
 # Cross-agent review reports, handoffs, probes, and other ephemeral artifacts.
 /.agent-scratch/
+.pytest_cache/
+__pycache__/
+*.py[cod]

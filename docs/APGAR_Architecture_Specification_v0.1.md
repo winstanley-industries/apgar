@@ -1127,13 +1127,33 @@ acceleration.
   lineage One-World otherwise. Semantic identity excludes order, worker count,
   timing, and measured resources; a separately checksum-bound external
   authority MUST name distinct arm process instances, exact enforced wall and
-  peak-host-memory limits, successful exit, and persistent-preparer lifecycle
-  evidence before pairing. The measured arm MUST capture preparer telemetry
+  virtual-address-space safety limits, observed process-lifetime peak resident
+  memory, successful exit, and persistent-preparer lifecycle evidence before
+  pairing. `RLIMIT_AS` MUST NOT be relabelled as an RSS limit. The measured arm MUST capture preparer telemetry
   around its contender call, the external observation MUST match it exactly,
   and assembly MUST revalidate both copies and the supported worker range. A
   failed paired arm MUST retain its typed child failure and any caller-owned
   or post-publication authoritative CandidateStore until explicit
   reconciliation.
+- Raw paired execution is versioned by
+  `schemas/benchmark/phase4_raw_evidence_v1.md`. One source-identical,
+  separately exec'd worker per contender MUST persist across all 20
+  repetitions in a case/pool/worker cell after one untimed warm-up. Measured
+  arms MUST execute serially with ten AB and ten BA repetitions. The parent
+  alone owns absolute monotonic watchdog timing, process and controller
+  identities, exit state, `wait4` lifetime peak RSS, external finalization,
+  and pairing. An abnormal later exit invalidates earlier arms from that
+  process. Child messages MUST use a bounded explicit wire format; typed
+  failures MUST reconcile any authoritative CandidateStore before crossing
+  the process boundary into a bounded diagnostic fingerprint; that fingerprint
+  MUST NOT be represented as the heavyweight invariant replay. Successful raw
+  cells MUST bind every case, Board IR, workload, and capacity identity to the
+  frozen machine-readable representative manifest. Source fields MUST be
+  checksum-bound to the complete cell artifact, and publication validation
+  MUST compare the artifact commit with an independently supplied expected
+  commit. Timeouts, launch/exec errors, signals, nonzero exits,
+  protocol failures, and resource-bound failures remain incomplete attempts,
+  never allocator losses.
 - The canonical sequential reference is
   `schemas/allocator/sequential_negotiated_baseline_v1.md`. Its one-current-route
   search state MUST NOT be relabeled candidate allocation: it routes and commits

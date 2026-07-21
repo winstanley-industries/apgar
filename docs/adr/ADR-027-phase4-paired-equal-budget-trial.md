@@ -44,11 +44,18 @@ contender's failed or partial state contaminate the other.
   require the external authority to repeat it exactly, and bind the captured
   counters into the arm artifact checksum.
 - Require an externally associated isolated-process observation with enforced
-  wall and peak-host-memory authority before an arm can be paired. The
+  wall, virtual-address-space, and peak-resident-memory authority before an arm
+  can be paired. `RLIMIT_AS` is a conservative safety cap and Linux `wait4`
+  supplies the distinct process-lifetime resident high-water observation. The
   checksum-bound authority names controller-run and distinct process-instance
   identities, exact enforced limits, exit status, and before/after preparer
   telemetry. Assembly revalidates the complete record. Candidate prepared
   timing uses a persistent preparer proven reused across repetitions.
+- Keep one separately exec'd worker per contender alive for all repetitions in
+  a case/pool/worker cell. Both workers perform one untimed warm-up. The
+  candidate retains the same preparer; all repetitions conservatively share
+  the worker's eventual `wait4` peak, and an abnormal exit invalidates all of
+  that process's arms.
 - Preserve every typed child failure in a move-only paired failure. Preparation
   and session failures retain the independently built case and caller-owned
   prepared/store state, including any authoritative post-publication store,
@@ -56,6 +63,9 @@ contender's failed or partial state contaminate the other.
 - Reject a declared per-epoch column opportunity that exceeds target, action,
   per-net, One-World candidate-headroom, or total-column structure. Canonically
   hash terminal schedules by key because caller schedule order is nonsemantic.
+  Separately hash the complete hidden algorithm configurations so the frozen
+  manifest can expose their case/pool identity and an independent raw validator
+  can reconstruct the complete paired-budget checksum.
 - Reject corpus query-shape pool sizes `1` and `1024` in this v1 runner rather
   than silently clamping them to Candidate-Pool Preparation v2's supported
   `4/8/16` decision sizes.
@@ -69,7 +79,8 @@ semantics can be compared independently of them. A timeout, memory kill, case
 build failure, or algorithm error cannot be mislabeled a board-level loss; the
 outer artifact must retain it as an incomplete attempt.
 
-This slice does not yet define subprocess wire format, watchdog mechanism,
-hardware manifest, repetition matrix, uncertainty calculation, family gate,
-or a Phase 4 success decision. It does not add GPU allocation or change the
-Phase 5 exact combined-route legalization boundary.
+ADR-028 and `phase4_raw_evidence_v1` now define the subprocess wire format,
+watchdog mechanism, host environment, and repetition matrix. Uncertainty,
+family aggregation, the Phase 4 success decision, GPU allocation, and the
+Phase 5 exact combined-route legalization boundary remain outside this
+contract.

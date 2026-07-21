@@ -5,6 +5,18 @@ contract for Phase 4 global-allocation evidence. Its canonical corpus checksum
 is `7311872938254494931`. The checksum covers every descriptor field and the
 raw byte/FNV identities of the imported seed.
 
+`phase4_representative_manifest_v1.json` is the machine-readable evidence
+projection of this contract for every descriptor whose declared pool intersects
+`4/8/16`. Successful entries pin descriptor, Board, workload, capacity, and
+built-case identities. A parallel per-case/pool roster pins the canonical
+algorithm-configuration budget checksum used by the raw evidence validator.
+Each successful entry also freezes the exact compiled-node, logical-host-byte,
+active-region, Board-entity, and workload-net requirements that its caller
+limits must independently cover.
+Stress entries `3001` and `3002` instead pin their
+deterministic compiled-work-bound totals and carry zero built-object identities;
+they cannot be accepted as successful raw cells.
+
 The corpus declaration is metadata only. A builder materializes exactly one
 requested case, Board snapshot, Multi-Net Workload, binary physical-edge
 capacity model, and contested-resource roster. Large cases are never
@@ -124,9 +136,11 @@ which limit or limits prevent the first unpreparable net, both required and
 configured full-case totals, the maximum net prefix that fits both bounds, and
 that first unpreparable authentic net. A full-case total may exceed a secondary
 limit without labelling it as the limiting bound when an earlier net already
-hits the primary limit. Imported cases derive the same witness by walking their already
-authenticated per-net contexts. A generic workload-build error may not launder
-caller-selected work-bound exhaustion.
+hits the primary limit. The first-unpreparable EntityRef must be present and
+nonzero; every named limiting bound must have `required > configured`.
+Imported cases derive the same witness by walking their already authenticated
+per-net contexts. A generic workload-build error may not launder caller-selected
+work-bound exhaustion.
 
 Because Multi-Net Workload v1 owns one complete compiled view per net, the
 2048- or 4096-net tiers may hit the cumulative node, logical-host-byte, process

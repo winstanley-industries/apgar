@@ -19,6 +19,8 @@ namespace apgar::benchmark {
 
 inline constexpr std::uint32_t kPhase4RepresentativeCorpusVersion = 1;
 inline constexpr std::uint32_t kMaximumPhase4RepresentativeNetsV1 = 4'096;
+inline constexpr std::uint64_t kMaximumPhase4ActiveRegionsV1 = 1'000'000;
+inline constexpr std::uint64_t kMaximumPhase4BoardEntitiesV1 = 1'000'000;
 inline constexpr std::uint32_t kPhase4PrimaryPoolSizeV1 = 8;
 
 enum class Phase4CaseSource : std::uint8_t {

@@ -17,8 +17,9 @@ layer and are never converted into algorithm losses.
 One `Phase4PairedTrialSpec` contains schema version `1`, representative case
 and pool size, repetition index, one root seed, prescribed AB or BA order,
 candidate preparation worker count, corpus build limits, complete baseline,
-preparation, and candidate-session configurations, and three external caps:
-prepared elapsed nanoseconds, cold elapsed nanoseconds, and peak host bytes.
+preparation, and candidate-session configurations, and four external caps:
+prepared elapsed nanoseconds, cold elapsed nanoseconds, virtual address-space
+bytes, and peak resident host bytes.
 
 Pool size must be both declared by the case descriptor and one of `4`, `8`, or
 `16`. The fixed-query query-shape descriptors requesting `1` or `1024` are
@@ -52,6 +53,10 @@ C = targeted-plan maximum total columns per epoch
 R = maximum selection rounds of any terminal Multi-World schedule
 W = maximum CPU A-star work units per query
 ```
+
+The canonical Isolated Raw Evidence v1 harness fixes `W` at
+`1,000,000,000`. This is an explicit finite opportunity cap, not the unbounded
+default of the standalone CPU A-star API.
 
 `C` is accepted only when it is structurally reachable through the other
 planner bounds. With maximum initial roster `N*K`, One-World candidate
@@ -120,6 +125,14 @@ work, and this board outcome:
  world checksum)
 ```
 
+Authenticated counters must still describe a possible execution. Opportunity
+work is an exact positive per-query bound. Actual and candidate-component work
+may not exceed their query counts times that bound, actual queries may not
+exceed requested columns, admitted plus rejected columns must exactly partition
+requested columns, and selected nets must fit within final candidates, which
+must fit within admitted candidates. Overused-resource count may not exceed
+total overuse units.
+
 `prepared_elapsed_nanoseconds` covers the complete selected algorithm after
 case construction. `cold_elapsed_nanoseconds` starts before case construction
 and stops only after algorithm result, case, candidate pools, worlds, and other
@@ -131,8 +144,9 @@ candidate repetitions.
 
 An arm can be finalized only when an External Authority v1 observation names
 its exact semantic checksum and checksum-binds a nonzero controller run,
-controller, and process-instance identity; the exact configured wall and
-memory limits; process exit status; outer elapsed time; `wait4` peak host use;
+controller, and process-instance identity; the exact configured wall,
+address-space, and peak-resident limits; process exit status; outer elapsed
+time; Linux `wait4` process-lifetime peak resident use;
 and candidate-preparer telemetry before and after the invocation. The arm
 worker captures those counters around the measured contender call; the
 external observation must repeat the captured values exactly. It also
@@ -140,20 +154,24 @@ asserts all of:
 
 - a distinct isolated process;
 - enforced wall-time authority;
-- enforced peak-host-memory authority;
+- enforced address-space and peak-resident-memory authority;
 - prepared inner time, cold inner time, authoritative outer time, and peak
   bytes within their declared caps; and
 - outer time not shorter than inner cold time.
 
 The disjoint case-build and prepared intervals must widened-sum to no more than
-the cold interval. The authority checksum domain is
+the cold interval. `RLIMIT_AS` is an exact, conservative virtual-address-space
+safety cap; it is not relabelled as an RSS limiter. The separately declared
+peak-host cap is checked against widened Linux `ru_maxrss * 1024`. The
+authority checksum domain is
 `APGAR-PHASE4-EXTERNAL-AUTHORITY-V1`. V1 names the Linux parent-watchdog,
 `RLIMIT_AS`, and `wait4` authority kind; a zero identity, nonzero exit, changed
 limit, zero peak observation, or checksum drift is rejected.
 
 After the domain, encode authority schema `u32`, kind `u8`, run/controller/
-process/semantic identities as four `u64`, configured wall and memory limits,
-outer elapsed time, and peak bytes as four `u64`, exit code `i32`, the four
+process/semantic identities as four `u64`, configured wall, address-space, and
+peak-host limits, outer elapsed time, and observed peak bytes as five `u64`,
+exit code `i32`, the four
 isolation/authority/reuse booleans as `u8`, and the six preparer lifecycle
 counters as `u64`, all in declaration order. The checksum field itself is
 excluded.
@@ -164,7 +182,13 @@ are all zero. Candidate telemetry must show the declared workers already
 started, at least one prior completed invocation, an idle preparer before
 measurement, and exactly one additional started and completed invocation
 without restarting workers. The declared worker count must be within the
-supported persistent-preparer range.
+supported persistent-preparer range. The process-controller contract keeps one
+separately exec'd worker per contender alive across every repetition in one
+case/pool/worker cell. Both contenders complete one declared untimed warm-up;
+the candidate retains the same preparer and its workers. All repetitions from
+that process share its conservative process-lifetime `wait4` peak; a later
+abnormal process exit invalidates every otherwise successful arm from that
+process.
 Finalization does not infer authority from a timer or self-reported allocation
 counter inside the worker.
 
@@ -196,10 +220,15 @@ All identities use Board IR v1 `StableHashBuilder`. Unsigned integers are
 little-endian at their declared width, booleans and enum tags are one byte, and
 strings are a `u64` byte count followed by bytes.
 
-`APGAR-PHASE4-PAIRED-BUDGET-V1` hashes schema/corpus/case/pool/root, corpus
-limits, derived opportunity and stopping quantities, every field of all three
-algorithm configurations in declaration order, schedules in canonical
-`schedule_key` order, and external caps. Caller schedule order is nonsemantic.
+`APGAR-PHASE4-CANONICAL-ALGORITHM-BUDGET-V1` hashes every field of all three
+algorithm configurations in declaration order, with schedules in canonical
+`schedule_key` order. `APGAR-PHASE4-PAIRED-BUDGET-V1` hashes
+schema/corpus/case/pool/root, corpus limits, derived opportunity and stopping
+quantities, that canonical algorithm checksum, and all four external caps in
+declaration order. The frozen representative manifest publishes the expected
+algorithm checksum for every case/pool cell, allowing the independent raw
+validator to reconstruct the complete budget checksum. Caller schedule order
+is nonsemantic.
 Repetition, prescribed order, and worker count are outside the budget.
 
 `APGAR-PHASE4-TRIAL-ARM-SEMANTIC-V1` hashes arm role, corpus and built-case
@@ -221,7 +250,8 @@ prescribed order, and both arm artifact checksums.
 ## Failed arms and authoritative state
 
 An execution failure is a move-only `Phase4TrialArmFailure`. Its small summary
-is indexing metadata only. A case-build failure owns the complete typed corpus
+is indexing metadata only and cannot replace a required typed payload. A
+case-build failure owns the complete typed corpus
 error. A sequential failure owns the independently built case and typed
 baseline error. A preparation failure owns the case and complete move-only
 preparation error, including any attempted-query observation and authoritative
@@ -231,3 +261,10 @@ bound witnesses, attempted work, epoch, failed regeneration, and publication-
 committed bit are never flattened into the summary. The outer artifact layer
 must retain or explicitly reconcile this payload before discarding committed
 state.
+
+Any reconciled failed-query observation has one attempted-column record per
+attempted route query, and its aggregate work cannot exceed the query count
+times the canonical Phase 4 per-query work limit. Process-setup failures that
+occur before a case-bearing typed payload exists use only summary codes valid
+for a worker at that boundary; persistent-preparer factory resource exhaustion
+is `kResourceExhausted`, not a fabricated candidate-preparation payload.

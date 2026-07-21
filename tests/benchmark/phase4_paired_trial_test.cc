@@ -68,6 +68,7 @@ template <typename Value, typename Error>
   spec.external_budget = Phase4ExternalBudget{
       .maximum_prepared_elapsed_nanoseconds = 3'600'000'000'000ULL,
       .maximum_cold_elapsed_nanoseconds = 3'600'000'000'000ULL,
+      .maximum_address_space_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL,
       .maximum_peak_host_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL,
   };
 
@@ -158,7 +159,10 @@ template <typename Value, typename Error>
       .associated_semantic_checksum = execution.semantics.semantic_checksum,
       .configured_wall_limit_nanoseconds =
           execution.semantics.external_budget.maximum_cold_elapsed_nanoseconds,
-      .configured_memory_limit_bytes = execution.semantics.external_budget.maximum_peak_host_bytes,
+      .configured_address_space_limit_bytes =
+          execution.semantics.external_budget.maximum_address_space_bytes,
+      .configured_peak_host_limit_bytes =
+          execution.semantics.external_budget.maximum_peak_host_bytes,
       .outer_elapsed_nanoseconds = execution.cold_elapsed_nanoseconds,
       .peak_host_bytes = 1,
       .isolated_process = true,
@@ -230,7 +234,7 @@ TEST(Phase4PairedTrialTest, ExecutesAndAuthenticatesEqualOpportunityPair) {
   EXPECT_EQ(result.candidate.semantics.root_seed, spec.root_seed);
   EXPECT_NE(result.semantic_checksum, 0U);
   EXPECT_NE(result.artifact_checksum, 0U);
-  EXPECT_EQ(result.semantic_checksum, 908'759'961'930'677'936ULL);
+  EXPECT_EQ(result.semantic_checksum, 6'850'076'695'171'498'078ULL);
 }
 
 TEST(Phase4PairedTrialTest, RejectsOneUnitQueryOpportunityMismatchBeforeExecution) {
@@ -426,6 +430,30 @@ TEST(Phase4PairedTrialTest, CanonicalizesNonsemanticScheduleInputOrder) {
             reversed_execution.semantics.semantic_checksum);
 }
 
+TEST(Phase4PairedTrialTest, CanonicalAlgorithmBudgetChecksumBindsHiddenConfigs) {
+  const Phase4PairedTrialSpec canonical = Spec();
+  const std::uint64_t expected =
+      internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(canonical);
+  ASSERT_NE(expected, 0U);
+
+  Phase4PairedTrialSpec changed = canonical;
+  ++changed.baseline_config.limits.maximum_trace_bytes;
+  EXPECT_NE(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(changed), expected);
+
+  changed = canonical;
+  ++changed.preparation_config.store_config.maximum_rejection_records;
+  EXPECT_NE(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(changed), expected);
+
+  changed = canonical;
+  ++changed.candidate_session_config.multi_world_config.maximum_pareto_comparisons;
+  EXPECT_NE(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(changed), expected);
+
+  changed = canonical;
+  ++changed.external_budget.maximum_cold_elapsed_nanoseconds;
+  --changed.corpus_limits.maximum_active_regions;
+  EXPECT_EQ(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(changed), expected);
+}
+
 TEST(Phase4PairedTrialTest, SemanticChecksumExcludesOrderAndWorkersButArtifactIncludesThem) {
   ExecutedPair arms = ExecutePair(Spec());
   Phase4TrialArmRecord changed = arms.candidate;
@@ -482,6 +510,43 @@ TEST(Phase4PairedTrialTest, AssemblyRejectsUnknownOutcomeSourceAfterChecksumReco
   const Phase4PairedTrialError error = ErrorOf<Phase4PairedTrialResult>(
       AssemblePhase4PairedTrialV1(std::move(arms.baseline), std::move(arms.candidate)));
   EXPECT_EQ(error.invariant_id, "P4PAIR-FINALIZE-001");
+}
+
+TEST(Phase4PairedTrialTest, AssemblyRejectsImpossibleAuthenticatedSemanticCounters) {
+  {
+    ExecutedPair arms = ExecutePair(Spec());
+    arms.candidate.semantics.final_candidate_count =
+        arms.candidate.semantics.outcome.selected_net_count - 1;
+    Reauthenticate(arms.candidate);
+    const Phase4PairedTrialError error = ErrorOf<Phase4PairedTrialResult>(
+        AssemblePhase4PairedTrialV1(std::move(arms.baseline), std::move(arms.candidate)));
+    EXPECT_EQ(error.invariant_id, "P4PAIR-FINALIZE-SEMANTICS-001");
+  }
+  {
+    ExecutedPair arms = ExecutePair(Spec());
+    ++arms.candidate.semantics.admitted_candidates;
+    Reauthenticate(arms.candidate);
+    const Phase4PairedTrialError error = ErrorOf<Phase4PairedTrialResult>(
+        AssemblePhase4PairedTrialV1(std::move(arms.baseline), std::move(arms.candidate)));
+    EXPECT_EQ(error.invariant_id, "P4PAIR-FINALIZE-SEMANTICS-001");
+  }
+  {
+    ExecutedPair arms = ExecutePair(Spec());
+    const std::uint64_t per_query_work = arms.candidate.semantics.opportunity.route_work_units /
+                                         arms.candidate.semantics.opportunity.route_queries;
+    arms.candidate.semantics.preparation_route_queries = 1;
+    arms.candidate.semantics.preparation_route_work_units = per_query_work + 1;
+    arms.candidate.semantics.regeneration_route_queries = 0;
+    arms.candidate.semantics.regeneration_route_work_units = 0;
+    arms.candidate.semantics.actual = {
+        .route_queries = 1,
+        .route_work_units = per_query_work + 1,
+    };
+    Reauthenticate(arms.candidate);
+    const Phase4PairedTrialError error = ErrorOf<Phase4PairedTrialResult>(
+        AssemblePhase4PairedTrialV1(std::move(arms.baseline), std::move(arms.candidate)));
+    EXPECT_EQ(error.invariant_id, "P4PAIR-FINALIZE-SEMANTICS-001");
+  }
 }
 
 TEST(Phase4PairedTrialTest, AssemblyRejectsZeroWorkersAfterChecksumRecomputation) {

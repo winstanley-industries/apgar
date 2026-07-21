@@ -41,6 +41,7 @@ enum class Phase4CandidateOutcomeSource : std::uint8_t {
 struct Phase4ExternalBudget {
   std::uint64_t maximum_prepared_elapsed_nanoseconds = 0;
   std::uint64_t maximum_cold_elapsed_nanoseconds = 0;
+  std::uint64_t maximum_address_space_bytes = 0;
   std::uint64_t maximum_peak_host_bytes = 0;
 
   friend bool operator==(const Phase4ExternalBudget&, const Phase4ExternalBudget&) = default;
@@ -148,6 +149,8 @@ struct Phase4TrialArmExecution {
   std::uint64_t prepared_elapsed_nanoseconds = 0;
   std::uint64_t cold_elapsed_nanoseconds = 0;
   Phase4PreparerLifecycleObservation preparer_lifecycle;
+
+  friend bool operator==(const Phase4TrialArmExecution&, const Phase4TrialArmExecution&) = default;
 };
 
 struct Phase4ExternalResourceObservation {
@@ -159,7 +162,8 @@ struct Phase4ExternalResourceObservation {
   std::uint64_t process_instance_identity = 0;
   std::uint64_t associated_semantic_checksum = 0;
   std::uint64_t configured_wall_limit_nanoseconds = 0;
-  std::uint64_t configured_memory_limit_bytes = 0;
+  std::uint64_t configured_address_space_limit_bytes = 0;
+  std::uint64_t configured_peak_host_limit_bytes = 0;
   std::uint64_t outer_elapsed_nanoseconds = 0;
   std::uint64_t peak_host_bytes = 0;
   std::int32_t process_exit_code = 0;
@@ -199,6 +203,8 @@ struct Phase4PairedTrialResult {
   Phase4LexicographicComparison comparison = Phase4LexicographicComparison::kTie;
   std::uint64_t semantic_checksum = 0;
   std::uint64_t artifact_checksum = 0;
+
+  friend bool operator==(const Phase4PairedTrialResult&, const Phase4PairedTrialResult&) = default;
 };
 
 enum class Phase4PairedTrialErrorCode : std::uint8_t {

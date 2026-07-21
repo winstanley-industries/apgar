@@ -16,6 +16,9 @@ namespace apgar::benchmark::internal {
     std::uint32_t workload_net_count, std::uint64_t candidate_columns_per_epoch,
     std::uint32_t candidate_terminal_selection_rounds);
 
+[[nodiscard]] std::uint64_t ComputePhase4CanonicalAlgorithmBudgetChecksumV1(
+    const Phase4PairedTrialSpec& spec);
+
 [[nodiscard]] std::uint64_t ComputePhase4TrialArmSemanticChecksumV1(
     const Phase4TrialArmSemantics& semantics) noexcept;
 

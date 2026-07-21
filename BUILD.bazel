@@ -622,6 +622,49 @@ cc_library(
 )
 
 cc_library(
+    name = "phase4_trial_harness",
+    srcs = [
+        "src/benchmark/phase4_trial_artifact.cc",
+        "src/benchmark/phase4_trial_harness.cc",
+        "src/benchmark/phase4_trial_process.cc",
+        "src/benchmark/phase4_trial_wire_internal.cc",
+        "src/benchmark/phase4_trial_wire_internal.h",
+    ],
+    hdrs = ["include/apgar/benchmark/phase4_trial_harness.h"],
+    copts = APGAR_COPTS,
+    linkopts = ["-pthread"],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":negotiated_prices",
+        ":phase4_paired_trial",
+    ],
+)
+
+cc_library(
+    name = "phase4_trial_harness_fault_test_variant",
+    testonly = True,
+    srcs = [
+        "src/benchmark/phase4_trial_artifact.cc",
+        "src/benchmark/phase4_trial_harness.cc",
+        "src/benchmark/phase4_trial_process.cc",
+        "src/benchmark/phase4_trial_wire_internal.cc",
+        "src/benchmark/phase4_trial_wire_internal.h",
+    ],
+    hdrs = ["include/apgar/benchmark/phase4_trial_harness.h"],
+    copts = APGAR_COPTS,
+    defines = ["APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT"],
+    linkopts = ["-pthread"],
+    strip_include_prefix = "include",
+    deps = [
+        ":board_ir",
+        ":negotiated_prices",
+        ":phase4_paired_trial",
+    ],
+)
+
+cc_library(
     name = "phase3_commit",
     hdrs = ["include/apgar/benchmark/phase3_commit.h"],
     strip_include_prefix = "include",
@@ -827,6 +870,28 @@ py_binary(
     python_version = "3.13",
 )
 
+py_binary(
+    name = "phase4_raw_evidence_validator",
+    srcs = ["tools/validate_phase4_raw_evidence.py"],
+    data = ["schemas/benchmark/phase4_representative_manifest_v1.json"],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_raw_evidence.py",
+    python_version = "3.13",
+)
+
+py_test(
+    name = "phase4_raw_evidence_validator_test",
+    size = "small",
+    srcs = [
+        "tests/tools/validate_phase4_raw_evidence_test.py",
+        "tools/validate_phase4_raw_evidence.py",
+    ],
+    data = ["schemas/benchmark/phase4_representative_manifest_v1.json"],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_raw_evidence_test.py",
+    python_version = "3.13",
+)
+
 py_test(
     name = "phase3_followup_evidence_corruption_test",
     size = "small",
@@ -995,6 +1060,48 @@ cc_binary(
         ":tool_runfiles",
         "@google_benchmark//:benchmark",
     ],
+)
+
+cc_binary(
+    name = "phase4_evidence_runner",
+    srcs = ["tools/phase4_evidence_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    linkopts = ["-pthread"],
+    tags = ["manual"],
+    deps = [
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_evidence_fault_runner",
+    testonly = True,
+    srcs = ["tools/phase4_evidence_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    linkopts = ["-pthread"],
+    deps = [
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_trial_harness_fault_test_variant",
+        ":tool_runfiles",
+    ],
+)
+
+py_test(
+    name = "phase4_trial_process_test",
+    size = "medium",
+    srcs = ["tests/benchmark/phase4_trial_process_test.py"],
+    data = [
+        "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
+        ":phase4_evidence_fault_runner",
+        ":phase4_evidence_runner",
+    ],
+    legacy_create_init = 0,
 )
 
 cc_test(
@@ -1759,6 +1866,38 @@ cc_test(
         ":cpu_candidate_allocation_session",
         ":cpu_candidate_pool_preparation",
         ":phase4_paired_trial",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_trial_wire_test",
+    size = "small",
+    srcs = [
+        "src/benchmark/phase4_trial_wire_internal.h",
+        "tests/benchmark/phase4_trial_wire_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":phase4_trial_harness",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_trial_harness_test",
+    size = "medium",
+    srcs = [
+        "src/benchmark/phase4_paired_trial_internal.h",
+        "tests/benchmark/phase4_trial_harness_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":phase4_paired_trial",
+        ":phase4_representative_corpus",
+        ":phase4_trial_harness",
         "@googletest//:gtest_main",
     ],
 )

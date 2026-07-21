@@ -32,8 +32,6 @@ using geometry_compiler::ActiveRegion;
 using geometry_compiler::CompilerProfile;
 using geometry_compiler::DeterministicCosts;
 
-constexpr std::uint64_t kMaximumActiveRegionsV1 = 1'000'000;
-constexpr std::uint64_t kMaximumBoardEntitiesV1 = 1'000'000;
 constexpr std::size_t kDescriptorCountV1 = 42;
 constexpr std::array<std::uint32_t, 3> kPrimaryPools = {4, 8, 16};
 constexpr board_ir::HeadingMask kOrthogonalHeadings =
@@ -691,9 +689,9 @@ BuildCapacities(std::uint32_t case_id, const BoardSnapshot& board,
          limits.maximum_compiled_host_bytes <=
              allocator::kMaximumMultiNetWorkloadCompiledHostBytesV1 &&
          limits.maximum_active_regions != 0 &&
-         limits.maximum_active_regions <= kMaximumActiveRegionsV1 &&
+         limits.maximum_active_regions <= kMaximumPhase4ActiveRegionsV1 &&
          limits.maximum_board_entities != 0 &&
-         limits.maximum_board_entities <= kMaximumBoardEntitiesV1;
+         limits.maximum_board_entities <= kMaximumPhase4BoardEntitiesV1;
 }
 
 [[nodiscard]] std::optional<Phase4RepresentativeCorpusError> PreparedWorkBoundError(

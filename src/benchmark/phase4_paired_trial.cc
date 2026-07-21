@@ -312,6 +312,7 @@ template <typename Payload>
   }
   if (spec.external_budget.maximum_prepared_elapsed_nanoseconds == 0 ||
       spec.external_budget.maximum_cold_elapsed_nanoseconds == 0 ||
+      spec.external_budget.maximum_address_space_bytes == 0 ||
       spec.external_budget.maximum_peak_host_bytes == 0 ||
       spec.external_budget.maximum_prepared_elapsed_nanoseconds >
           spec.external_budget.maximum_cold_elapsed_nanoseconds) {
@@ -811,6 +812,15 @@ Phase4TrialArmFailure PreservePhase4CandidateSessionFailureV1(
                              });
 }
 
+std::uint64_t ComputePhase4CanonicalAlgorithmBudgetChecksumV1(const Phase4PairedTrialSpec& spec) {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-PHASE4-CANONICAL-ALGORITHM-BUDGET-V1");
+  HashBaselineConfig(hash, spec.baseline_config);
+  HashPreparationConfig(hash, spec.preparation_config);
+  HashSessionConfig(hash, spec.candidate_session_config);
+  return hash.Finish();
+}
+
 std::uint64_t ComputePhase4PairedBudgetChecksumV1(
     const Phase4PairedTrialSpec& spec, const Phase4RouteOpportunity& opportunity,
     std::uint32_t workload_net_count, std::uint64_t candidate_columns_per_epoch,
@@ -835,11 +845,10 @@ std::uint64_t ComputePhase4PairedBudgetChecksumV1(
   hash.AddU64(opportunity.route_work_units);
   hash.AddU64(candidate_columns_per_epoch);
   hash.AddU32(candidate_terminal_selection_rounds);
-  HashBaselineConfig(hash, spec.baseline_config);
-  HashPreparationConfig(hash, spec.preparation_config);
-  HashSessionConfig(hash, spec.candidate_session_config);
+  hash.AddU64(ComputePhase4CanonicalAlgorithmBudgetChecksumV1(spec));
   hash.AddU64(spec.external_budget.maximum_prepared_elapsed_nanoseconds);
   hash.AddU64(spec.external_budget.maximum_cold_elapsed_nanoseconds);
+  hash.AddU64(spec.external_budget.maximum_address_space_bytes);
   hash.AddU64(spec.external_budget.maximum_peak_host_bytes);
   return hash.Finish();
 }
@@ -871,6 +880,7 @@ std::uint64_t ComputePhase4TrialArmSemanticChecksumV1(
   hash.AddU32(semantics.candidate_terminal_selection_rounds);
   hash.AddU64(semantics.external_budget.maximum_prepared_elapsed_nanoseconds);
   hash.AddU64(semantics.external_budget.maximum_cold_elapsed_nanoseconds);
+  hash.AddU64(semantics.external_budget.maximum_address_space_bytes);
   hash.AddU64(semantics.external_budget.maximum_peak_host_bytes);
   hash.AddU64(semantics.opportunity.route_queries);
   hash.AddU64(semantics.opportunity.route_work_units);
@@ -905,7 +915,8 @@ std::uint64_t ComputePhase4ExternalAuthorityChecksumV1(
   hash.AddU64(observation.process_instance_identity);
   hash.AddU64(observation.associated_semantic_checksum);
   hash.AddU64(observation.configured_wall_limit_nanoseconds);
-  hash.AddU64(observation.configured_memory_limit_bytes);
+  hash.AddU64(observation.configured_address_space_limit_bytes);
+  hash.AddU64(observation.configured_peak_host_limit_bytes);
   hash.AddU64(observation.outer_elapsed_nanoseconds);
   hash.AddU64(observation.peak_host_bytes);
   hash.AddI32(observation.process_exit_code);
@@ -999,9 +1010,29 @@ namespace {
       static_cast<Wide>(semantics.preparation_route_queries) + semantics.regeneration_route_queries;
   const Wide partition_work = static_cast<Wide>(semantics.preparation_route_work_units) +
                               semantics.regeneration_route_work_units;
-  if (roster_count != semantics.workload_net_count ||
+  const Wide terminal_columns =
+      static_cast<Wide>(semantics.admitted_candidates) + semantics.rejected_columns;
+  const bool valid_per_query_work =
+      semantics.opportunity.route_queries != 0 &&
+      semantics.opportunity.route_work_units % semantics.opportunity.route_queries == 0 &&
+      semantics.opportunity.route_work_units / semantics.opportunity.route_queries != 0;
+  const std::uint64_t per_query_work =
+      valid_per_query_work
+          ? semantics.opportunity.route_work_units / semantics.opportunity.route_queries
+          : 0;
+  const auto work_within_query_count = [per_query_work](std::uint64_t route_queries,
+                                                        std::uint64_t route_work_units) {
+    return static_cast<Wide>(route_work_units) <= static_cast<Wide>(route_queries) * per_query_work;
+  };
+  if (roster_count != semantics.workload_net_count || !valid_per_query_work ||
       semantics.actual.route_queries > semantics.opportunity.route_queries ||
       semantics.actual.route_work_units > semantics.opportunity.route_work_units ||
+      !work_within_query_count(semantics.actual.route_queries, semantics.actual.route_work_units) ||
+      semantics.actual.route_queries > semantics.requested_columns || !FitsU64(terminal_columns) ||
+      ToU64(terminal_columns) != semantics.requested_columns ||
+      semantics.final_candidate_count > semantics.admitted_candidates ||
+      semantics.outcome.selected_net_count > semantics.final_candidate_count ||
+      semantics.outcome.overused_resource_count > semantics.outcome.total_overuse_units ||
       (baseline &&
        (semantics.candidate_outcome_source != Phase4CandidateOutcomeSource::kNotCandidateArm ||
         semantics.preparation_route_queries != 0 || semantics.preparation_route_work_units != 0 ||
@@ -1011,7 +1042,11 @@ namespace {
        (semantics.candidate_outcome_source == Phase4CandidateOutcomeSource::kNotCandidateArm ||
         !FitsU64(partition_queries) || !FitsU64(partition_work) ||
         ToU64(partition_queries) != semantics.actual.route_queries ||
-        ToU64(partition_work) != semantics.actual.route_work_units)) ||
+        ToU64(partition_work) != semantics.actual.route_work_units ||
+        !work_within_query_count(semantics.preparation_route_queries,
+                                 semantics.preparation_route_work_units) ||
+        !work_within_query_count(semantics.regeneration_route_queries,
+                                 semantics.regeneration_route_work_units))) ||
       (semantics.terminal_reason == Phase4NormalizedTerminalReason::kFeasible &&
        (semantics.outcome.selected_net_count != semantics.workload_net_count ||
         semantics.outcome.no_candidate_net_count != 0 ||
@@ -1041,10 +1076,12 @@ namespace {
       !observation.memory_authority_enforced || observation.peak_host_bytes == 0 ||
       observation.configured_wall_limit_nanoseconds !=
           semantics.external_budget.maximum_cold_elapsed_nanoseconds ||
-      observation.configured_memory_limit_bytes !=
+      observation.configured_address_space_limit_bytes !=
+          semantics.external_budget.maximum_address_space_bytes ||
+      observation.configured_peak_host_limit_bytes !=
           semantics.external_budget.maximum_peak_host_bytes) {
     return Error(Phase4PairedTrialErrorCode::kExternalAuthorityUnavailable, "P4PAIR-FINALIZE-003",
-                 "isolated wall and memory authorities must attest the exact declared caps",
+                 "isolated wall, address-space, and peak-RSS authorities must attest exact caps",
                  semantics.arm);
   }
   const bool candidate = !baseline;
