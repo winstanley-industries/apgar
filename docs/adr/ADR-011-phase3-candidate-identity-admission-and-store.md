@@ -123,6 +123,11 @@ now.
   duplicate, budget, or pinned-rollback processing retains no candidate.
   Association drift is rejected rather than mixing stale and current
   candidates under the same net identity.
+- CandidateStore associations intentionally group alternate generation
+  policies for one authentic net. Authentic One-World and Multi-World workload
+  consumers therefore also compare the retained canonical geometry's ordered
+  start/end coordinates and layers with the prepared exact request; a shared
+  net/profile/rule tuple alone is not exact-request evidence.
 - Publication preallocates replacement pool and global-ID map nodes before
   mutating either authoritative index, then commits with no-allocation node
   transfers under the store mutex. Host allocation failure therefore leaves
@@ -233,6 +238,17 @@ now.
   plans; ordinary empty group acquisition remains invalid. A pinned candidate
   is never pruned; Phase 3 does not define worlds, selection, congestion, or
   prices.
+- A later allocator may need to freeze a complete source-pool snapshot and pin
+  some or all of its candidates without a validation-to-lease race.
+  `AcquirePinLeaseIfSourcePoolsMatch` therefore canonicalizes and validates one
+  nonempty bounded expected roster plus one bounded deduplicated pin group,
+  then compares exact pool associations and complete immutable candidate values
+  and installs the lease under the same store mutex. Every requested pin must
+  be an exact member of the declared roster. Empty requested groups create an
+  active store-identity lease, while an empty expected roster, duplicate pools,
+  duplicate expected IDs, and duplicate pin IDs are rejected. Every failure is
+  mutation-free; no prefix pin survives allocation, drift, semantic, or lease-
+  identity failure.
 - Concurrent generation publishes through one explicit batch, which is sorted
   and serialized using stable total keys. Batch results do not depend on worker
   completion order, pointer identity, or unordered-container iteration.

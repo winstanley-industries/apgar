@@ -163,6 +163,34 @@ independent of worker/input order across distinct authentic net profiles and
 rule buckets. An empty item vector is a side-effect-free exact drift-validation
 operation.
 
+### Conditional source-pool pin lease
+
+`AcquirePinLeaseIfSourcePoolsMatch` closes the validation-to-retention race for
+allocator snapshots. Its caller transfers one nonempty complete expected-pool
+roster and supplies a non-owning requested pin group. Before proportional
+scratch is allocated, the store validates the configured expected-pool,
+aggregate expected-candidate, and pin-item caps. Expected pool and pin input
+order are not semantic. Pools are canonicalized by exact net, candidates by
+the store retention order, and pins by candidate ID.
+
+Duplicate pool nets, expected candidate IDs, or requested pin IDs are rejected.
+Every expected candidate must be nonnull and exactly match its pool net and
+Candidate Associations. Every requested pin must name one exact candidate in
+the declared expected roster and must match its ID, net, payload checksum, and
+complete typed immutable value. A requested group may be a subset of the
+expected pools or the complete candidate roster. An empty requested group is
+valid and creates an active store-identity lease; the expected roster itself
+may not be empty.
+
+Under the same store mutex, the operation compares every expected pool and its
+persistent association binding with current store state, revalidates the exact
+pin targets, reserves one fresh lease identity, and installs every pin count.
+Thus no prune, admission, or other store mutation can occur between exact
+source-roster validation and lease acquisition. Store drift, semantic mismatch,
+allocation failure, identity exhaustion, or any invalid input returns a typed
+error with no prefix pin, empty lease, pool, rejection, association, or telemetry
+mutation. Runtime lease identity remains outside deterministic replay.
+
 The v1 retention rank compares this exact tuple, lower first:
 
 ```text

@@ -41,6 +41,10 @@ static_assert(std::is_same_v<decltype(&CandidateStore::RetainRejection),
 static_assert(std::is_same_v<decltype(&CandidateStore::Admit),
                              CandidateStoreAdmissionResult (CandidateStore::*)(
                                  const CandidateAdmissionContext&, GeneratedRouteCandidate&&)>);
+static_assert(std::is_same_v<decltype(&CandidateStore::AcquirePinLeaseIfSourcePoolsMatch),
+                             CandidateStorePinLeaseResult (CandidateStore::*)(
+                                 std::vector<CandidateStoreExpectedPool>&&,
+                                 std::span<const CandidatePinRequest>)>);
 static_assert(CandidateStoreConfig{}.maximum_rejection_items_per_transaction ==
               kDefaultMaximumRejectionItemsPerTransaction);
 static_assert(CandidateStoreConfig{}.maximum_admission_items_per_transaction ==
@@ -155,6 +159,15 @@ struct CandidateCase {
     ids.push_back(candidate->id());
   }
   return ids;
+}
+
+[[nodiscard]] CandidatePinRequest PinRequestFor(const StoredCandidate& candidate) {
+  return CandidatePinRequest{
+      .net = candidate->net(),
+      .candidate_id = candidate->id(),
+      .candidate_payload_checksum = candidate->data().payload_checksum,
+      .expected_candidate = candidate,
+  };
 }
 
 [[nodiscard]] CandidateStoreConfig StoreConfig(std::uint64_t count = 8,
@@ -941,6 +954,387 @@ TEST(CandidateStoreTest, EmptyStoreIdentityLeaseIsExplicitOwnedAndLifetimeSafe) 
   EXPECT_FALSE(outliving->belongs_to(unrelated));
   outliving->Release();
   EXPECT_FALSE(outliving->active());
+}
+
+TEST(CandidateStoreTest,
+     ConditionalPinLeaseCanonicalizesRosterAndSupportsSubsetFullAndEmptyGroups) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  CandidateStore store(StoreConfig(3));
+  std::vector<StoredCandidate> stored;
+  for (const CandidateCase& candidate_case : cases) {
+    const CandidateAdmissionContext context{
+        .board = board, .compiled_board = compiled, .request = candidate_case.request};
+    CandidateStoreAdmissionResult admitted =
+        store.Admit(context, CandidateCopy(candidate_case.generated));
+    ASSERT_TRUE(std::holds_alternative<StoredCandidate>(admitted));
+    stored.push_back(std::get<StoredCandidate>(std::move(admitted)));
+  }
+  const CandidateAssociations associations = AssociationsFor(board, compiled);
+  const auto expected = [&](bool reverse) {
+    std::vector<StoredCandidate> candidates = stored;
+    if (reverse) {
+      std::ranges::reverse(candidates);
+    }
+    return std::vector<CandidateStoreExpectedPool>{CandidateStoreExpectedPool{
+        .net = cases[0].request.net,
+        .associations = associations,
+        .candidates = std::move(candidates),
+    }};
+  };
+
+  std::array subset = {PinRequestFor(stored[2]), PinRequestFor(stored[0])};
+  CandidateStorePinLeaseResult subset_result =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(true), subset);
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(subset_result));
+  CandidateStorePinLease subset_lease = std::get<CandidateStorePinLease>(std::move(subset_result));
+  EXPECT_TRUE(subset_lease.belongs_to(store));
+  EXPECT_TRUE(store.IsPinned(stored[0]->id()));
+  EXPECT_FALSE(store.IsPinned(stored[1]->id()));
+  EXPECT_TRUE(store.IsPinned(stored[2]->id()));
+  subset_lease.Release();
+
+  std::array full = {PinRequestFor(stored[1]), PinRequestFor(stored[2]), PinRequestFor(stored[0])};
+  CandidateStorePinLeaseResult full_result =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(false), full);
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(full_result));
+  CandidateStorePinLease full_lease = std::get<CandidateStorePinLease>(std::move(full_result));
+  for (const StoredCandidate& candidate : stored) {
+    EXPECT_TRUE(store.IsPinned(candidate->id()));
+  }
+  full_lease.Release();
+
+  const std::span<const CandidatePinRequest> no_pins;
+  CandidateStorePinLeaseResult identity_result =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(true), no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(identity_result));
+  CandidateStorePinLease identity = std::get<CandidateStorePinLease>(std::move(identity_result));
+  EXPECT_TRUE(identity.active());
+  EXPECT_TRUE(identity.belongs_to(store));
+  for (const StoredCandidate& candidate : stored) {
+    EXPECT_FALSE(store.IsPinned(candidate->id()));
+  }
+  identity.Release();
+
+  CandidateStorePinLeaseResult empty_roster = store.AcquirePinLeaseIfSourcePoolsMatch({}, no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(empty_roster));
+  EXPECT_EQ(std::get<CandidateStoreError>(empty_roster).code,
+            CandidateStoreErrorCode::kInvalidInvocation);
+
+  std::array duplicate_pins = {PinRequestFor(stored[0]), PinRequestFor(stored[0])};
+  CandidateStorePinLeaseResult duplicate_pin =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(false), duplicate_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(duplicate_pin));
+  EXPECT_EQ(std::get<CandidateStoreError>(duplicate_pin).code,
+            CandidateStoreErrorCode::kInvalidPinLeaseRequest);
+  EXPECT_FALSE(store.IsPinned(stored[0]->id()));
+
+  std::vector<CandidateStoreExpectedPool> duplicate_pools = expected(false);
+  duplicate_pools.push_back(duplicate_pools.front());
+  CandidateStorePinLeaseResult duplicate_pool =
+      store.AcquirePinLeaseIfSourcePoolsMatch(std::move(duplicate_pools), no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(duplicate_pool));
+  EXPECT_EQ(std::get<CandidateStoreError>(duplicate_pool).code,
+            CandidateStoreErrorCode::kInvalidInvocation);
+
+  std::vector<CandidateStoreExpectedPool> duplicate_candidates = expected(false);
+  duplicate_candidates.front().candidates.push_back(stored[0]);
+  CandidateStorePinLeaseResult duplicate_candidate =
+      store.AcquirePinLeaseIfSourcePoolsMatch(std::move(duplicate_candidates), no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(duplicate_candidate));
+  EXPECT_EQ(std::get<CandidateStoreError>(duplicate_candidate).code,
+            CandidateStoreErrorCode::kInvalidInvocation);
+}
+
+TEST(CandidateStoreTest, ConditionalPinLeaseCapsAcceptEqualityAndRejectOneOverBeforeMutation) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  CandidateStoreConfig config = StoreConfig(3);
+  config.maximum_expected_pools_per_invocation = 1;
+  config.maximum_expected_candidates_per_invocation = 2;
+  config.maximum_pin_lease_items_per_transaction = 1;
+  CandidateStore store(config);
+  std::vector<StoredCandidate> stored;
+  for (std::size_t index = 0; index < 2; ++index) {
+    const CandidateAdmissionContext context{
+        .board = board, .compiled_board = compiled, .request = cases[index].request};
+    CandidateStoreAdmissionResult admitted =
+        store.Admit(context, CandidateCopy(cases[index].generated));
+    ASSERT_TRUE(std::holds_alternative<StoredCandidate>(admitted));
+    stored.push_back(std::get<StoredCandidate>(std::move(admitted)));
+  }
+  const CandidateAssociations associations = AssociationsFor(board, compiled);
+  const auto expected = [&] {
+    return std::vector<CandidateStoreExpectedPool>{CandidateStoreExpectedPool{
+        .net = cases[0].request.net, .associations = associations, .candidates = stored}};
+  };
+  const CandidatePinRequest first = PinRequestFor(stored[0]);
+  const CandidatePinRequest second = PinRequestFor(stored[1]);
+
+  CandidateStorePinLeaseResult equality =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(), std::span(&first, 1));
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(equality));
+  CandidateStorePinLease equality_lease = std::get<CandidateStorePinLease>(std::move(equality));
+  EXPECT_TRUE(store.IsPinned(first.candidate_id));
+  equality_lease.Release();
+
+  const std::vector<CandidateRejection> rejections_before = store.Rejections();
+  const CandidateStoreTelemetry telemetry_before = store.telemetry();
+  std::vector<CandidateStoreExpectedPool> pools_one_over = expected();
+  pools_one_over.push_back(CandidateStoreExpectedPool{
+      .net = {.id = cases[0].request.net.id + 1, .generation = cases[0].request.net.generation},
+      .associations = associations,
+      .candidates = {},
+  });
+  const std::span<const CandidatePinRequest> no_pins;
+  CandidateStorePinLeaseResult pool_bound =
+      store.AcquirePinLeaseIfSourcePoolsMatch(std::move(pools_one_over), no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(pool_bound));
+  EXPECT_EQ(std::get<CandidateStoreError>(pool_bound).code,
+            CandidateStoreErrorCode::kInvocationInputBoundExceeded);
+
+  std::vector<CandidateStoreExpectedPool> candidates_one_over = expected();
+  candidates_one_over.front().candidates.push_back(stored[0]);
+  CandidateStorePinLeaseResult candidate_bound =
+      store.AcquirePinLeaseIfSourcePoolsMatch(std::move(candidates_one_over), no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(candidate_bound));
+  EXPECT_EQ(std::get<CandidateStoreError>(candidate_bound).code,
+            CandidateStoreErrorCode::kInvocationInputBoundExceeded);
+
+  const std::array pins_one_over = {first, second};
+  CandidateStorePinLeaseResult pin_bound =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(), pins_one_over);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(pin_bound));
+  EXPECT_EQ(std::get<CandidateStoreError>(pin_bound).code,
+            CandidateStoreErrorCode::kPinLeaseInputBoundExceeded);
+  EXPECT_FALSE(store.IsPinned(first.candidate_id));
+  EXPECT_FALSE(store.IsPinned(second.candidate_id));
+  EXPECT_EQ(store.Rejections(), rejections_before);
+  EXPECT_EQ(store.telemetry(), telemetry_before);
+}
+
+TEST(CandidateStoreTest, ConditionalPinLeaseCanonicalizesMultiPoolAndPinPermutations) {
+  BoardData data = test_support::ValidM1TwoNetBoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const geometry_compiler::CompilerProfile compiler_profile =
+      test_support::DefaultCompilerProfile({0});
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = board.data().nets[1].ref;
+  const AuthenticNetCase first =
+      PrepareAuthenticNetCase(board, compiler_profile, board.data().routing_profile);
+  const AuthenticNetCase second =
+      PrepareAuthenticNetCase(board, compiler_profile, std::move(second_profile));
+  CandidateStore store(StoreConfig());
+  const CandidateAdmissionContext first_context{
+      .board = board, .compiled_board = first.compiled, .request = first.request};
+  const CandidateAdmissionContext second_context{
+      .board = board, .compiled_board = second.compiled, .request = second.request};
+  CandidateStoreAdmissionResult first_result = store.Admit(
+      first_context, test_support::CandidateDraft(board, first.compiled, first.request, 1, 1));
+  CandidateStoreAdmissionResult second_result = store.Admit(
+      second_context, test_support::CandidateDraft(board, second.compiled, second.request, 1, 2));
+  ASSERT_TRUE(std::holds_alternative<StoredCandidate>(first_result));
+  ASSERT_TRUE(std::holds_alternative<StoredCandidate>(second_result));
+  const StoredCandidate first_candidate = std::get<StoredCandidate>(std::move(first_result));
+  const StoredCandidate second_candidate = std::get<StoredCandidate>(std::move(second_result));
+  const auto expected = [&](bool reverse) {
+    std::vector<CandidateStoreExpectedPool> pools = {
+        CandidateStoreExpectedPool{.net = first.request.net,
+                                   .associations = AssociationsFor(board, first.compiled),
+                                   .candidates = {first_candidate}},
+        CandidateStoreExpectedPool{.net = second.request.net,
+                                   .associations = AssociationsFor(board, second.compiled),
+                                   .candidates = {second_candidate}},
+    };
+    if (reverse) {
+      std::ranges::reverse(pools);
+    }
+    return pools;
+  };
+
+  const std::array forward = {PinRequestFor(first_candidate), PinRequestFor(second_candidate)};
+  CandidateStorePinLeaseResult forward_result =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(false), forward);
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(forward_result));
+  CandidateStorePinLease forward_lease =
+      std::get<CandidateStorePinLease>(std::move(forward_result));
+  EXPECT_TRUE(store.IsPinned(first_candidate->id()));
+  EXPECT_TRUE(store.IsPinned(second_candidate->id()));
+  forward_lease.Release();
+
+  const std::array reversed = {PinRequestFor(second_candidate), PinRequestFor(first_candidate)};
+  CandidateStorePinLeaseResult reverse_result =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(true), reversed);
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(reverse_result));
+  CandidateStorePinLease reverse_lease =
+      std::get<CandidateStorePinLease>(std::move(reverse_result));
+  EXPECT_TRUE(store.IsPinned(first_candidate->id()));
+  EXPECT_TRUE(store.IsPinned(second_candidate->id()));
+  reverse_lease.Release();
+}
+
+TEST(CandidateStoreTest, ConditionalPinLeaseDetectsDriftAndSemanticMismatchAtomically) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  CandidateStore store(StoreConfig(3));
+  const CandidateAdmissionContext first_context{
+      .board = board, .compiled_board = compiled, .request = cases[0].request};
+  const CandidateAdmissionContext second_context{
+      .board = board, .compiled_board = compiled, .request = cases[1].request};
+  CandidateStoreAdmissionResult first_result =
+      store.Admit(first_context, CandidateCopy(cases[0].generated));
+  CandidateStoreAdmissionResult second_result =
+      store.Admit(second_context, CandidateCopy(cases[1].generated));
+  ASSERT_TRUE(std::holds_alternative<StoredCandidate>(first_result));
+  ASSERT_TRUE(std::holds_alternative<StoredCandidate>(second_result));
+  const StoredCandidate first = std::get<StoredCandidate>(std::move(first_result));
+  const StoredCandidate second = std::get<StoredCandidate>(std::move(second_result));
+  const CandidateAssociations associations = AssociationsFor(board, compiled);
+  const auto expected = [&](std::vector<StoredCandidate> candidates,
+                            CandidateAssociations expected_associations = {}) {
+    if (expected_associations.board_content_hash == 0) {
+      expected_associations = associations;
+    }
+    return std::vector<CandidateStoreExpectedPool>{CandidateStoreExpectedPool{
+        .net = cases[0].request.net,
+        .associations = expected_associations,
+        .candidates = std::move(candidates),
+    }};
+  };
+  const std::span<const CandidatePinRequest> no_pins;
+
+  CandidateStorePinLeaseResult missing =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected({first}), no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(missing));
+  EXPECT_EQ(std::get<CandidateStoreError>(missing).code, CandidateStoreErrorCode::kStoreDrift);
+
+  CandidateAssociations association_drift = associations;
+  ++association_drift.routing_profile_fingerprint;
+  CandidateStorePinLeaseResult wrong_association = store.AcquirePinLeaseIfSourcePoolsMatch(
+      expected({first, second}, association_drift), no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(wrong_association));
+  EXPECT_EQ(std::get<CandidateStoreError>(wrong_association).code,
+            CandidateStoreErrorCode::kInvalidInvocation);
+
+  std::vector<LayerSegment> semantic_segments;
+  for (const CandidatePrimitive& primitive : cases[1].generated.geometry) {
+    const auto* line = std::get_if<ExactLinePrimitive>(&primitive);
+    ASSERT_NE(line, nullptr);
+    semantic_segments.push_back(LayerSegment{.layer = line->layer, .centerline = line->centerline});
+  }
+  CpuRouteRequest semantic_request = cases[0].request;
+  const GeneratedRouteCandidate semantic_draft = test_support::CandidateDraftAlongSegments(
+      board, compiled, semantic_request, semantic_segments,
+      CandidateSchedulingIdentity{.batch_identity = 99, .query_identity = 1});
+  ASSERT_EQ(semantic_draft.id, first->id());
+  ASSERT_NE(semantic_draft.payload_checksum, first->data().payload_checksum);
+  const CandidateAdmissionContext semantic_context{
+      .board = board, .compiled_board = compiled, .request = semantic_request};
+  const StoredCandidate semantic = std::make_shared<const RouteCandidate>(
+      test_support::AcceptedCandidate(semantic_context, CandidateCopy(semantic_draft)));
+  CandidateStorePinLeaseResult semantic_roster =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected({semantic, second}), no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(semantic_roster));
+  EXPECT_EQ(std::get<CandidateStoreError>(semantic_roster).code,
+            CandidateStoreErrorCode::kStoreDrift);
+
+  CandidatePinRequest valid = PinRequestFor(first);
+  CandidatePinRequest invalid = valid;
+  invalid.expected_candidate = second;
+  const std::array mixed = {valid, invalid};
+  CandidateStorePinLeaseResult mixed_result =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected({first, second}), mixed);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(mixed_result));
+  EXPECT_EQ(std::get<CandidateStoreError>(mixed_result).code,
+            CandidateStoreErrorCode::kInvalidPinLeaseRequest);
+  EXPECT_FALSE(store.IsPinned(first->id()));
+  EXPECT_FALSE(store.IsPinned(second->id()));
+}
+
+TEST(CandidateStoreTest, ConditionalPinLeaseValidatesBoundEmptyAssociation) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  const CandidateAdmissionContext context{
+      .board = board, .compiled_board = compiled, .request = cases[0].request};
+  CandidateStoreConfig config = StoreConfig();
+  config.maximum_candidate_bytes_per_net = 1;
+  CandidateStore store(config);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(
+      store.Admit(context, CandidateCopy(cases[0].generated))));
+  ASSERT_TRUE(store.Enumerate(cases[0].request.net).empty());
+  const CandidateAssociations associations = AssociationsFor(board, compiled);
+  const auto expected = [&](CandidateAssociations value) {
+    return std::vector<CandidateStoreExpectedPool>{CandidateStoreExpectedPool{
+        .net = cases[0].request.net, .associations = value, .candidates = {}}};
+  };
+  const std::span<const CandidatePinRequest> no_pins;
+  CandidateStorePinLeaseResult matching =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(associations), no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(matching));
+  CandidateStorePinLease identity = std::get<CandidateStorePinLease>(std::move(matching));
+  EXPECT_TRUE(identity.belongs_to(store));
+  identity.Release();
+
+  CandidateAssociations drift = associations;
+  ++drift.rule_bucket_identity;
+  CandidateStorePinLeaseResult mismatch =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(drift), no_pins);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(mismatch));
+  EXPECT_EQ(std::get<CandidateStoreError>(mismatch).code, CandidateStoreErrorCode::kStoreDrift);
+}
+
+TEST(CandidateStoreTest, ConditionalPinLeasePreventsPruningUntilReleased) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  CandidateStore store(StoreConfig(1));
+  const CandidateAdmissionContext worse_context{
+      .board = board, .compiled_board = compiled, .request = cases[1].request};
+  const CandidateAdmissionContext better_context{
+      .board = board, .compiled_board = compiled, .request = cases[0].request};
+  CandidateStoreAdmissionResult admitted =
+      store.Admit(worse_context, CandidateCopy(cases[1].generated));
+  ASSERT_TRUE(std::holds_alternative<StoredCandidate>(admitted));
+  const StoredCandidate pinned = std::get<StoredCandidate>(std::move(admitted));
+  const CandidateAssociations associations = AssociationsFor(board, compiled);
+  const auto expected = [&] {
+    return std::vector<CandidateStoreExpectedPool>{CandidateStoreExpectedPool{
+        .net = cases[0].request.net, .associations = associations, .candidates = {pinned}}};
+  };
+  const CandidatePinRequest request = PinRequestFor(pinned);
+  CandidateStorePinLeaseResult lease_result =
+      store.AcquirePinLeaseIfSourcePoolsMatch(expected(), std::span(&request, 1));
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(lease_result));
+  CandidateStorePinLease lease = std::get<CandidateStorePinLease>(std::move(lease_result));
+
+  CandidateStoreAdmissionResult blocked =
+      store.Admit(better_context, CandidateCopy(cases[0].generated));
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(blocked));
+  EXPECT_EQ(std::get<CandidateRejection>(blocked).code, CandidateRejectionCode::kBudgetExhausted);
+  ASSERT_EQ(store.Enumerate(cases[0].request.net).size(), 1U);
+  EXPECT_EQ(store.Enumerate(cases[0].request.net).front()->id(), pinned->id());
+
+  lease.Release();
+  CandidateStoreAdmissionResult replacement =
+      store.Admit(better_context, CandidateCopy(cases[0].generated));
+  ASSERT_TRUE(std::holds_alternative<StoredCandidate>(replacement));
+  ASSERT_EQ(store.Enumerate(cases[0].request.net).size(), 1U);
+  EXPECT_EQ(store.Enumerate(cases[0].request.net).front()->id(), cases[0].generated.id);
 }
 
 TEST(CandidateStoreTest, DuplicateIdsAndGeometryRetainStableRepresentatives) {

@@ -604,6 +604,20 @@ Multiple worlds share the immutable candidate pool and base resource model but m
 - **ALL-002** The allocator MUST retain a Pareto set of feasible or near-feasible worlds.
 - **ALL-003** Price updates MUST be bounded and recorded to prevent silent numerical instability.
 
+The first versioned multi-world CPU reference branches canonical schedules
+from one authenticated negotiated-price state over one fixed complete
+candidate-pool snapshot. Each branch runs the One-World and price-update CPU
+references independently and retains compact checksum traces. Near-feasible
+worlds enter an exact Pareto archive by selected-net count, total overuse, and
+common unweighted intrinsic candidate cost; a separate stable lexicographic
+choice identifies the Phase 4 decision world. Source candidates remain leased
+before production pool authentication and until the retained-winner lease is
+acquired. One fixed authentication pass is included in bounded work and replay
+counters even when a known unmapped exact conflict short-circuits branch
+execution. Interleaved column publication is deferred until a global freeze/
+gather/publish/refresh epoch can prevent world or worker order from changing
+the shared pool.
+
 ### 14.4 Column generation
 
 Candidate generation acts as a pricing subproblem: nets touching high-price resources are rerouted against the latest price field to discover alternatives with lower reduced cost. The allocator is therefore not limited to its initial candidate pool.
@@ -981,8 +995,8 @@ acceleration.
 - Each world MUST select exactly one immutable candidate for every routable net
   with an admissible pool and retain a structured outcome for a net with no
   admissible candidate. Selected candidate identity and provenance MUST remain
-  bound to its exact net, terminals, Board IR snapshot, compiled view, rule
-  bucket, and policy.
+  bound to its exact net, ordered request endpoint coordinates and layers,
+  terminals, Board IR snapshot, compiled view, rule bucket, and policy.
 - Resource usage and over-capacity totals MUST equal an independent CPU
   recomputation from canonical candidate footprints. Resource refinement MUST
   remain available when exact conflicts cannot be represented by the current
@@ -991,6 +1005,15 @@ acceleration.
   MUST be bounded, versioned, and replayable. Identical board, configuration,
   seed, candidate pools, and supported backend/device class MUST produce the
   same externally visible selections and diagnostics.
+- Fixed-pool multi-world execution MUST branch every schedule from one common
+  authenticated price state, retain exact nondominated feasible or declared
+  near-feasible outcomes, and separately identify the stable lexicographic
+  decision world. Search-weighted selection scores from different schedules
+  MUST NOT be compared as a common quality metric.
+- Multi-world source preflight MUST enforce its store, One-World input/expanded-
+  use, and aggregate work caps before traversing any already rejected suffix;
+  a deterministic bound error MUST itself have bounded work under adversarial
+  repeated candidate handles.
 - Candidate generators MUST continue to read immutable price snapshots and
   MUST NOT mutate global occupancy while searching. Unsupported rules or
   resource semantics MUST be declared and delegated rather than approximated

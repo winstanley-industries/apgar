@@ -236,6 +236,13 @@ class CandidateStore {
   // lock. Failure leaves every candidate's pin state unchanged.
   [[nodiscard]] CandidateStorePinLeaseResult AcquirePinLease(
       std::span<const CandidatePinRequest> requests);
+  // Atomically validates one complete canonical source-pool roster and
+  // acquires a lease over a deduplicated subset of those exact candidates.
+  // Unlike AcquirePinLease, an empty requested group is valid and returns a
+  // store-identity lease. The expected roster itself must be nonempty.
+  [[nodiscard]] CandidateStorePinLeaseResult AcquirePinLeaseIfSourcePoolsMatch(
+      std::vector<CandidateStoreExpectedPool>&& expected_source_pools,
+      std::span<const CandidatePinRequest> requests);
   // Acquires a store-identity lease without pinning candidates. This is an
   // explicit capability for zero-selection allocator plans; AcquirePinLease
   // continues to reject an empty candidate group.

@@ -51,6 +51,14 @@ struct OneWorldSelectionEvidence {
 
 using OneWorldSelectionEvidenceResult = std::variant<OneWorldSelectionEvidence, AllocationError>;
 
+// RouteCandidate v1 associations intentionally allow multiple generation
+// policies for one net, but the exact workload request still fixes ordered
+// endpoint coordinates and layers. Validate that retained canonical geometry
+// remains bound to that request after transient producer evidence is stripped.
+[[nodiscard]] bool CandidateMatchesWorkloadRequestV1(
+    const candidates::RouteCandidate& candidate,
+    const PreparedNetRoutingContext& workload_context) noexcept;
+
 [[nodiscard]] OneWorldSelectionEvidenceResult SelectOneWorldWithoutAccounting(
     const OneWorldAllocationRequest& request);
 
@@ -79,6 +87,9 @@ using ResourceSpanStream = std::span<const candidates::PhysicalEdgeSpan>;
   return capacity_count <= kMaximumAllocatorResourceRecordsV1 &&
          price_count <= kMaximumAllocatorResourceRecordsV1 - capacity_count;
 }
+
+[[nodiscard]] bool OneWorldAllocatorLimitsAreValidV1(
+    const OneWorldAllocatorLimits& limits) noexcept;
 
 // Same production reducer over validated immutable-footprint representation,
 // exposed source-privately for four-direction and overlap boundary tables.

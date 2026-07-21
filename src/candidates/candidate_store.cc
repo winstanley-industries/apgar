@@ -1893,6 +1893,208 @@ CandidateStorePinLeaseResult CandidateStore::AcquirePinLease(
   return CandidateStorePinLease(pin_lease_control_, lease_id);
 }
 
+CandidateStorePinLeaseResult CandidateStore::AcquirePinLeaseIfSourcePoolsMatch(
+    std::vector<CandidateStoreExpectedPool>&& expected_source_pools,
+    std::span<const CandidatePinRequest> requests) {
+  if (!valid()) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kInvalidConfiguration,
+        .detail = "Cannot acquire a conditional lease from an invalid candidate store"};
+  }
+  if (expected_source_pools.empty()) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kInvalidInvocation,
+        .detail = "Conditional pin lease requires a nonempty expected source-pool roster"};
+  }
+  if (expected_source_pools.size() > config_.maximum_expected_pools_per_invocation) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kInvocationInputBoundExceeded,
+        .detail = "Conditional pin lease exceeds the configured expected-pool bound"};
+  }
+  if (requests.size() > config_.maximum_pin_lease_items_per_transaction) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kPinLeaseInputBoundExceeded,
+        .detail = "Conditional pin lease exceeds the configured pin-item bound"};
+  }
+
+  UWide expected_candidate_count = 0;
+  for (const CandidateStoreExpectedPool& pool : expected_source_pools) {
+    expected_candidate_count += static_cast<UWide>(pool.candidates.size());
+  }
+  if (expected_candidate_count > config_.maximum_expected_candidates_per_invocation) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kInvocationInputBoundExceeded,
+        .detail = "Conditional pin lease exceeds the configured expected-candidate bound"};
+  }
+
+  struct ExpectedCandidateReference {
+    CandidateId id;
+    board_ir::EntityRef net{};
+    const StoredCandidate* candidate = nullptr;
+  };
+  std::vector<ExpectedCandidateReference> expected_candidates;
+  std::vector<CandidatePinRequest> canonical_requests;
+  std::vector<CandidateId> candidate_ids;
+  std::vector<CandidateId> inserted_count_records;
+  try {
+    std::ranges::sort(expected_source_pools, [](const CandidateStoreExpectedPool& left,
+                                                const CandidateStoreExpectedPool& right) {
+      return std::tie(left.net.id, left.net.generation) <
+             std::tie(right.net.id, right.net.generation);
+    });
+    if (std::ranges::adjacent_find(expected_source_pools, {}, &CandidateStoreExpectedPool::net) !=
+        expected_source_pools.end()) {
+      return CandidateStoreError{
+          .code = CandidateStoreErrorCode::kInvalidInvocation,
+          .detail = "Conditional pin lease contains a duplicate expected source pool"};
+    }
+
+    expected_candidates.reserve(static_cast<std::size_t>(expected_candidate_count));
+    for (CandidateStoreExpectedPool& pool : expected_source_pools) {
+      for (const StoredCandidate& candidate : pool.candidates) {
+        if (candidate == nullptr || candidate->net() != pool.net ||
+            candidate->data().associations != pool.associations) {
+          return CandidateStoreError{
+              .code = CandidateStoreErrorCode::kInvalidInvocation,
+              .detail =
+                  "Conditional pin lease expected pool contains a null candidate or a candidate "
+                  "for another net or association binding"};
+        }
+      }
+      std::ranges::sort(pool.candidates, CandidatePointerRanksBefore);
+      for (const StoredCandidate& candidate : pool.candidates) {
+        expected_candidates.push_back(ExpectedCandidateReference{
+            .id = candidate->id(), .net = pool.net, .candidate = &candidate});
+      }
+    }
+    std::ranges::sort(expected_candidates,
+                      [](const ExpectedCandidateReference& left,
+                         const ExpectedCandidateReference& right) { return left.id < right.id; });
+    if (std::ranges::adjacent_find(expected_candidates, {}, &ExpectedCandidateReference::id) !=
+        expected_candidates.end()) {
+      return CandidateStoreError{
+          .code = CandidateStoreErrorCode::kInvalidInvocation,
+          .detail = "Conditional pin lease expected pools contain a duplicate candidate identity"};
+    }
+
+    canonical_requests.assign(requests.begin(), requests.end());
+    std::ranges::sort(canonical_requests,
+                      [](const CandidatePinRequest& left, const CandidatePinRequest& right) {
+                        return std::tie(left.candidate_id, left.net.id, left.net.generation,
+                                        left.candidate_payload_checksum) <
+                               std::tie(right.candidate_id, right.net.id, right.net.generation,
+                                        right.candidate_payload_checksum);
+                      });
+    if (std::ranges::adjacent_find(canonical_requests, {}, &CandidatePinRequest::candidate_id) !=
+        canonical_requests.end()) {
+      return CandidateStoreError{
+          .code = CandidateStoreErrorCode::kInvalidPinLeaseRequest,
+          .detail = "Conditional pin lease contains a duplicate candidate identity"};
+    }
+    candidate_ids.reserve(canonical_requests.size());
+    inserted_count_records.reserve(canonical_requests.size());
+    for (const CandidatePinRequest& request : canonical_requests) {
+      if (request.expected_candidate == nullptr ||
+          request.expected_candidate->id() != request.candidate_id ||
+          request.expected_candidate->net() != request.net ||
+          request.expected_candidate->data().payload_checksum !=
+              request.candidate_payload_checksum) {
+        return CandidateStoreError{
+            .code = CandidateStoreErrorCode::kInvalidPinLeaseRequest,
+            .detail = "Conditional pin request does not match its exact immutable candidate"};
+      }
+      const auto expected = std::ranges::lower_bound(expected_candidates, request.candidate_id, {},
+                                                     &ExpectedCandidateReference::id);
+      if (expected == expected_candidates.end() || expected->id != request.candidate_id ||
+          expected->net != request.net || expected->candidate == nullptr ||
+          *expected->candidate == nullptr ||
+          (*expected->candidate)->id() != request.expected_candidate->id() ||
+          (*expected->candidate)->net() != request.expected_candidate->net() ||
+          (*expected->candidate)->data() != request.expected_candidate->data()) {
+        return CandidateStoreError{
+            .code = CandidateStoreErrorCode::kInvalidPinLeaseRequest,
+            .detail = "Conditional pin request is not an exact member of its expected source pool"};
+      }
+      candidate_ids.push_back(request.candidate_id);
+    }
+  } catch (const std::bad_alloc&) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kResourceExhausted,
+        .detail = "Host allocation failed while preparing a conditional pin lease"};
+  } catch (const std::length_error&) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kResourceExhausted,
+        .detail = "Host container limits were exhausted while preparing a conditional pin lease"};
+  }
+
+  std::scoped_lock lock(mutex_);
+  if (!ExpectedPoolsMatchLocked(expected_source_pools)) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kStoreDrift,
+        .detail = "Candidate store source pools changed before conditional pin acquisition"};
+  }
+  for (const CandidatePinRequest& request : canonical_requests) {
+    const auto stored = candidate_id_index_.find(request.candidate_id);
+    if (stored == candidate_id_index_.end() || stored->second == nullptr ||
+        stored->second->id() != request.expected_candidate->id() ||
+        stored->second->net() != request.expected_candidate->net() ||
+        stored->second->data() != request.expected_candidate->data()) {
+      return CandidateStoreError{
+          .code = CandidateStoreErrorCode::kStoreDrift,
+          .detail = "Candidate store pin target changed before conditional pin acquisition"};
+    }
+    const auto count = pin_counts_.find(request.candidate_id);
+    if (count != pin_counts_.end() && count->second == std::numeric_limits<std::uint64_t>::max()) {
+      return CandidateStoreError{.code = CandidateStoreErrorCode::kPinLeaseIdentityExhausted,
+                                 .detail = "Candidate pin reference count is exhausted"};
+    }
+  }
+  if (next_pin_lease_id_ == 0) {
+    return CandidateStoreError{.code = CandidateStoreErrorCode::kPinLeaseIdentityExhausted,
+                               .detail = "Candidate pin lease identity space is exhausted"};
+  }
+
+  const std::uint64_t lease_id = next_pin_lease_id_;
+  try {
+    for (const CandidateId candidate_id : candidate_ids) {
+      const auto [unused, inserted] = pin_counts_.try_emplace(candidate_id, 0);
+      static_cast<void>(unused);
+      if (inserted) {
+        inserted_count_records.push_back(candidate_id);
+      }
+    }
+    const auto [unused, inserted] = pin_leases_.emplace(lease_id, std::move(candidate_ids));
+    static_cast<void>(unused);
+    if (!inserted) {
+      for (const CandidateId candidate_id : inserted_count_records) {
+        pin_counts_.erase(candidate_id);
+      }
+      return CandidateStoreError{.code = CandidateStoreErrorCode::kPinLeaseIdentityExhausted,
+                                 .detail = "Candidate pin lease identity was already active"};
+    }
+  } catch (const std::bad_alloc&) {
+    for (const CandidateId candidate_id : inserted_count_records) {
+      pin_counts_.erase(candidate_id);
+    }
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kResourceExhausted,
+        .detail = "Host allocation failed while acquiring a conditional pin lease"};
+  } catch (const std::length_error&) {
+    for (const CandidateId candidate_id : inserted_count_records) {
+      pin_counts_.erase(candidate_id);
+    }
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kResourceExhausted,
+        .detail = "Host container limits were exhausted while acquiring a conditional pin lease"};
+  }
+
+  for (const CandidatePinRequest& request : canonical_requests) {
+    ++pin_counts_.find(request.candidate_id)->second;
+  }
+  next_pin_lease_id_ = lease_id == std::numeric_limits<std::uint64_t>::max() ? 0 : lease_id + 1;
+  return CandidateStorePinLease(pin_lease_control_, lease_id);
+}
+
 CandidateStorePinLeaseResult CandidateStore::AcquireEmptyPinLease() {
   if (!valid()) {
     return CandidateStoreError{.code = CandidateStoreErrorCode::kInvalidConfiguration,

@@ -16,6 +16,12 @@ net remains present as an explicit empty pool. A v2 request without a workload
 records workload checksum zero and remains useful for source-compatible
 single-slice execution, but it is not authentic multi-net evidence.
 
+For each nonempty workload pool, the canonical immutable candidate geometry
+must also begin at the prepared request's exact start coordinate/layer and end
+at its exact goal coordinate/layer. Routing-profile and rule-bucket association
+alone do not bind endpoint layers. A candidate admitted for a different exact
+request on the same authentic net is an association mismatch.
+
 ## Output and checksum
 
 The v2 world adds `workload_checksum` immediately after the shared association

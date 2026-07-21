@@ -93,16 +93,6 @@ using Wide = __int128_t;
   return std::nullopt;
 }
 
-[[nodiscard]] bool LimitsAreValid(const OneWorldAllocatorLimits& limits) noexcept {
-  return limits.maximum_nets > 0 && limits.maximum_nets <= kMaximumAllocatorNetsV1 &&
-         limits.maximum_candidates > 0 &&
-         limits.maximum_candidates <= kMaximumAllocatorCandidatesV1 &&
-         limits.maximum_resource_records > 0 &&
-         limits.maximum_resource_records <= kMaximumAllocatorResourceRecordsV1 &&
-         limits.maximum_expanded_resource_uses > 0 &&
-         limits.maximum_expanded_resource_uses <= kMaximumAllocatorExpandedResourceUsesV1;
-}
-
 struct CanonicalResourceInputs {
   std::map<routing::EdgeResourceKey, std::uint32_t> capacities;
   std::map<routing::EdgeResourceKey, std::uint64_t> prices;
@@ -265,6 +255,12 @@ using CanonicalPoolsResult = std::variant<CanonicalPools, AllocationError>;
         return Error(AllocationErrorCode::kCandidateAssociationMismatch,
                      "allocator.pool.workload_context.v1",
                      "Candidate profile/rule association does not match its workload net");
+      }
+      if (workload_context != nullptr &&
+          !internal::CandidateMatchesWorkloadRequestV1(candidate, *workload_context)) {
+        return Error(AllocationErrorCode::kCandidateAssociationMismatch,
+                     "allocator.pool.workload_request.v1",
+                     "Candidate endpoint coordinates or layers do not match its workload net");
       }
       if (!pool_profile.has_value()) {
         pool_profile = profile;
@@ -715,8 +711,8 @@ using PreparedOneWorldSelectionResult = std::variant<PreparedOneWorldSelection, 
     return Error(AllocationErrorCode::kUnsupportedSchema, "allocator.workload.schema.v2",
                  "Canonical workload binding requires One-World schema v2");
   }
-  if (!LimitsAreValid(request.limits) || request.intrinsic_cost_weight == 0 ||
-      request.associations.board_content_hash == 0 ||
+  if (!internal::OneWorldAllocatorLimitsAreValidV1(request.limits) ||
+      request.intrinsic_cost_weight == 0 || request.associations.board_content_hash == 0 ||
       request.associations.compiler_profile_fingerprint == 0 ||
       request.associations.geometry_compiler_version == 0 ||
       request.capacities.default_capacity_units() > 1U) {
@@ -992,6 +988,32 @@ using PreparedOneWorldSelectionResult = std::variant<PreparedOneWorldSelection, 
 }
 
 }  // namespace
+
+bool internal::OneWorldAllocatorLimitsAreValidV1(const OneWorldAllocatorLimits& limits) noexcept {
+  return limits.maximum_nets > 0 && limits.maximum_nets <= kMaximumAllocatorNetsV1 &&
+         limits.maximum_candidates > 0 &&
+         limits.maximum_candidates <= kMaximumAllocatorCandidatesV1 &&
+         limits.maximum_resource_records > 0 &&
+         limits.maximum_resource_records <= kMaximumAllocatorResourceRecordsV1 &&
+         limits.maximum_expanded_resource_uses > 0 &&
+         limits.maximum_expanded_resource_uses <= kMaximumAllocatorExpandedResourceUsesV1;
+}
+
+bool internal::CandidateMatchesWorkloadRequestV1(
+    const candidates::RouteCandidate& candidate,
+    const PreparedNetRoutingContext& workload_context) noexcept {
+  const std::vector<candidates::CandidatePrimitive>& geometry = candidate.data().geometry;
+  if (geometry.empty()) {
+    return false;
+  }
+  const auto* first = std::get_if<candidates::ExactLinePrimitive>(&geometry.front());
+  const auto* last = std::get_if<candidates::ExactLinePrimitive>(&geometry.back());
+  return first != nullptr && last != nullptr &&
+         first->layer == workload_context.request.start_layer &&
+         first->centerline.start == workload_context.request.start &&
+         last->layer == workload_context.request.goal_layer &&
+         last->centerline.end == workload_context.request.goal;
+}
 
 ResourceCapacityModelResult BuildResourceCapacityModel(
     std::uint32_t schema_version, const board_ir::BoardSnapshot& board,

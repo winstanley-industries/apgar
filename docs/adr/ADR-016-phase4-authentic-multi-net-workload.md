@@ -39,8 +39,11 @@ the fact that owned obstacles affect exact compilation per routed net.
   to net count, and return allocation-free structured exhaustion diagnostics.
 - When a one-world request binds a workload, require exactly one pool for every
   workload net, including explicit empty pools, and validate every nonempty
-  pool against its net's prepared profile and rule bucket. Record the workload
-  checksum in world replay identity.
+  pool against its net's prepared profile, rule bucket, and exact ordered
+  endpoint coordinates/layers. Candidate associations deliberately allow
+  multiple generation policies, so canonical immutable geometry supplies the
+  retained exact-request binding after producer evidence is stripped. Record
+  the workload checksum in world replay identity.
 - Bind CandidateStore globally to the common Board/compiler association and
   independently bind routing-profile/rule-bucket association per net pool.
   The per-net binding persists independently of retention or transaction

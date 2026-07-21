@@ -436,6 +436,47 @@ TEST(OneWorldAllocatorTest, SelectionOnlyEvidenceMatchesAllocatorAndBindsCanonic
   EXPECT_NE(changed_limit.request_manifest_checksum, evidence.request_manifest_checksum);
 }
 
+TEST(OneWorldAllocatorTest, RejectsCandidateFromDifferentAuthenticEndpointLayer) {
+  const board_ir::BoardSnapshot board = test_support::Snapshot();
+  const geometry_compiler::CompilerProfile compiler_profile =
+      test_support::DefaultCompilerProfile({0, 31});
+  const geometry_compiler::CompiledBoard compiled = test_support::Compile(board, compiler_profile);
+  const routing::CpuRouteRequest layer_zero_request = test_support::TwoTerminalRequest(board, 0, 0);
+  const StoredCandidate layer_zero_candidate = Admit(board, compiled, layer_zero_request, 1);
+  const std::array specs = {MultiNetRoutingSpec{
+      .routing_profile = board.data().routing_profile, .start_layer = 31, .goal_layer = 31}};
+  MultiNetWorkloadResult workload_result = BuildMultiNetWorkload(
+      kMultiNetWorkloadSchemaVersion, board, compiler_profile, specs, specs.size());
+  ASSERT_TRUE(std::holds_alternative<MultiNetWorkload>(workload_result));
+  const MultiNetWorkload layer_31_workload = std::get<MultiNetWorkload>(std::move(workload_result));
+  const ResourceCapacityModel capacities = Built<ResourceCapacityModel>(
+      BuildResourceCapacityModel(kResourceCapacityModelSchemaVersion, board, compiled, 1, {}));
+  const PriceSnapshot prices =
+      Built<PriceSnapshot>(BuildPriceSnapshot(kPriceSnapshotSchemaVersion, capacities, 0, {}));
+  const candidates::CandidateAssociations& candidate_associations =
+      layer_zero_candidate->data().associations;
+  const OneWorldAllocationRequest request{
+      .associations =
+          AllocationAssociations{
+              .board_content_hash = candidate_associations.board_content_hash,
+              .compiler_profile_fingerprint = candidate_associations.compiler_profile_fingerprint,
+              .geometry_compiler_version = candidate_associations.geometry_compiler_version,
+          },
+      .capacities = capacities,
+      .prices = prices,
+      .limits = OneWorldAllocatorLimits{},
+      .pools = {CandidatePool{.net = layer_zero_request.net, .candidates = {layer_zero_candidate}}},
+      .workload = &layer_31_workload,
+  };
+
+  const internal::OneWorldSelectionEvidenceResult result =
+      internal::SelectOneWorldWithoutAccounting(request);
+  ASSERT_TRUE(std::holds_alternative<AllocationError>(result));
+  const AllocationError& error = std::get<AllocationError>(result);
+  EXPECT_EQ(error.code, AllocationErrorCode::kCandidateAssociationMismatch);
+  EXPECT_EQ(error.invariant_id, "allocator.pool.workload_request.v1");
+}
+
 TEST(OneWorldAllocatorTest, RequestAndPoolManifestEncodersHaveGoldenRepresentations) {
   const CandidateFixture fixture = ProductionCandidates();
   const EdgeResourceKey capacity_resource{.layer = 0,

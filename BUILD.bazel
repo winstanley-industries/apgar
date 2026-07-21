@@ -291,6 +291,26 @@ cc_library(
 )
 
 cc_library(
+    name = "multi_world_allocator",
+    srcs = [
+        "src/allocator/multi_world.cc",
+        "src/allocator/multi_world_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/multi_world.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_store",
+        ":multi_net_workload",
+        ":negotiated_prices",
+        ":one_world_allocator",
+    ],
+)
+
+cc_library(
     name = "one_world_fault_test_support",
     testonly = True,
     srcs = ["tests/support/one_world_fault_test_support.cc"],
@@ -1178,6 +1198,35 @@ cc_test(
         ":planar_route",
         ":targeted_regeneration",
         ":targeted_regeneration_execution",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "multi_world_allocator_test",
+    size = "small",
+    srcs = [
+        "tests/allocator/multi_world_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":multi_world_allocator",
+        ":negotiated_prices",
+        ":one_world_allocator",
+        ":planar_route",
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
