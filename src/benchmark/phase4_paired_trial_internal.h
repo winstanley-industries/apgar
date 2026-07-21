@@ -23,6 +23,12 @@ namespace apgar::benchmark::internal {
 [[nodiscard]] std::uint64_t ComputePhase4TrialArmSemanticChecksumV1(
     const Phase4TrialArmSemantics& semantics) noexcept;
 
+// Shared validation for a semantic-only arm. Finalization, diagnostic report
+// artifacts, and telemetry must reject the same enum, counter, component, and
+// baseline/candidate source-shape drift before trusting its checksum.
+[[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmSemanticsV1(
+    const Phase4TrialArmSemantics& semantics) noexcept;
+
 [[nodiscard]] std::uint64_t ComputePhase4ArmReportTelemetryChecksumV1(
     const Phase4ArmReportTelemetryV1& telemetry) noexcept;
 

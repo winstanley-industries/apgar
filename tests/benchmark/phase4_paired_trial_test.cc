@@ -1215,6 +1215,16 @@ TEST(Phase4PairedTrialTest, DiagnosticValidatorRejectsReauthenticatedRosterAndCl
         internal::ValidatePhase4ArmReportTelemetryV1(diagnostic.semantics, corpus.workload, changed)
             .has_value());
   }
+  {
+    Phase4ArmReportTelemetryV1 oversized = diagnostic.telemetry;
+    oversized.per_net.resize(kMaximumPhase4RepresentativeNetsV1 + 1U,
+                             diagnostic.telemetry.per_net.front());
+    const std::optional<Phase4PairedTrialError> error =
+        internal::ValidatePhase4ArmReportTelemetryV1(diagnostic.semantics, corpus.workload,
+                                                     oversized);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4REPORT-BOUND-001");
+  }
   Phase4ArmReportTelemetryV1 checksum_changed = diagnostic.telemetry;
   ++checksum_changed.per_net[0].mean_resource_overlap_ppm;
   EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(checksum_changed),

@@ -1268,6 +1268,87 @@ std::uint64_t ComputePhase4TrialArmSemanticChecksumV1(
   return hash.Finish();
 }
 
+std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmSemanticsV1(
+    const Phase4TrialArmSemantics& semantics) noexcept {
+  if (semantics.schema_version != kPhase4PairedTrialSchemaVersion || !ValidArm(semantics.arm) ||
+      !ValidOrder(semantics.execution_order) || !ValidTerminalReason(semantics.terminal_reason) ||
+      !ValidOutcomeSource(semantics.candidate_outcome_source) ||
+      semantics.preparation_worker_count == 0 ||
+      semantics.preparation_worker_count > allocator::kMaximumPersistentCpuCandidateWorkersV1 ||
+      semantics.corpus_version != kPhase4RepresentativeCorpusVersion ||
+      semantics.corpus_checksum != Phase4RepresentativeCorpusChecksumV1() ||
+      semantics.semantic_checksum == 0 ||
+      semantics.semantic_checksum != ComputePhase4TrialArmSemanticChecksumV1(semantics)) {
+    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4PAIR-FINALIZE-001",
+                 "the arm semantic identity, enum, or checksum is invalid", semantics.arm);
+  }
+  const Wide roster_count = static_cast<Wide>(semantics.outcome.selected_net_count) +
+                            semantics.outcome.no_candidate_net_count;
+  const bool baseline = semantics.arm == Phase4TrialArm::kSequentialBaseline;
+  const Wide partition_queries =
+      static_cast<Wide>(semantics.preparation_route_queries) + semantics.regeneration_route_queries;
+  const Wide partition_work = static_cast<Wide>(semantics.preparation_route_work_units) +
+                              semantics.regeneration_route_work_units;
+  const Wide terminal_columns =
+      static_cast<Wide>(semantics.admitted_candidates) + semantics.rejected_columns;
+  const bool valid_per_query_work =
+      semantics.opportunity.route_queries != 0 &&
+      semantics.opportunity.route_work_units % semantics.opportunity.route_queries == 0 &&
+      semantics.opportunity.route_work_units / semantics.opportunity.route_queries != 0;
+  const std::uint64_t per_query_work =
+      valid_per_query_work
+          ? semantics.opportunity.route_work_units / semantics.opportunity.route_queries
+          : 0;
+  const auto work_within_query_count = [per_query_work](std::uint64_t route_queries,
+                                                        std::uint64_t route_work_units) {
+    return static_cast<Wide>(route_work_units) <= static_cast<Wide>(route_queries) * per_query_work;
+  };
+  const bool baseline_component_shape = semantics.preparation_checksum == 0 &&
+                                        semantics.algorithm_session_checksum != 0 &&
+                                        semantics.final_pool_manifest_checksum == 0 &&
+                                        semantics.final_rejection_manifest_checksum == 0;
+  const bool candidate_component_shape = semantics.preparation_checksum != 0 &&
+                                         semantics.algorithm_session_checksum != 0 &&
+                                         semantics.final_pool_manifest_checksum != 0 &&
+                                         semantics.final_rejection_manifest_checksum != 0;
+  if (roster_count != semantics.workload_net_count || !valid_per_query_work ||
+      semantics.capacity_model_checksum == 0 || semantics.outcome.world_checksum == 0 ||
+      semantics.actual.route_queries > semantics.opportunity.route_queries ||
+      semantics.actual.route_work_units > semantics.opportunity.route_work_units ||
+      !work_within_query_count(semantics.actual.route_queries, semantics.actual.route_work_units) ||
+      semantics.actual.route_queries > semantics.requested_columns || !FitsU64(terminal_columns) ||
+      ToU64(terminal_columns) != semantics.requested_columns ||
+      semantics.final_candidate_count > semantics.admitted_candidates ||
+      semantics.outcome.selected_net_count > semantics.final_candidate_count ||
+      semantics.outcome.overused_resource_count > semantics.outcome.total_overuse_units ||
+      (baseline &&
+       (semantics.candidate_outcome_source != Phase4CandidateOutcomeSource::kNotCandidateArm ||
+        semantics.preparation_route_queries != 0 || semantics.preparation_route_work_units != 0 ||
+        semantics.regeneration_route_queries != 0 || semantics.regeneration_route_work_units != 0 ||
+        semantics.requested_columns != semantics.actual.route_queries ||
+        !baseline_component_shape)) ||
+      (!baseline &&
+       (semantics.candidate_outcome_source == Phase4CandidateOutcomeSource::kNotCandidateArm ||
+        !FitsU64(partition_queries) || !FitsU64(partition_work) ||
+        ToU64(partition_queries) != semantics.actual.route_queries ||
+        ToU64(partition_work) != semantics.actual.route_work_units ||
+        !work_within_query_count(semantics.preparation_route_queries,
+                                 semantics.preparation_route_work_units) ||
+        !work_within_query_count(semantics.regeneration_route_queries,
+                                 semantics.regeneration_route_work_units) ||
+        !candidate_component_shape)) ||
+      (semantics.terminal_reason == Phase4NormalizedTerminalReason::kFeasible &&
+       (semantics.outcome.selected_net_count != semantics.workload_net_count ||
+        semantics.outcome.no_candidate_net_count != 0 ||
+        semantics.outcome.total_overuse_units != 0))) {
+    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation,
+                 "P4PAIR-FINALIZE-SEMANTICS-001",
+                 "the arm counters, component checksums, outcome roster, or source are invalid",
+                 semantics.arm);
+  }
+  return std::nullopt;
+}
+
 bool AccumulatePhase4BaselineColumnV1(const allocator::SequentialNegotiatedColumnRecord& column,
                                       Phase4PerNetColumnOutcomesV1* outcomes) noexcept {
   return outcomes != nullptr && AddBaselineColumn(column, outcomes);
@@ -1345,17 +1426,25 @@ std::uint64_t ComputePhase4ArmReportTelemetryChecksumV1(
 std::optional<Phase4PairedTrialError> ValidatePhase4ArmReportTelemetryV1(
     const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
     const Phase4ArmReportTelemetryV1& telemetry) noexcept {
-  if (semantics.semantic_checksum == 0 ||
-      semantics.semantic_checksum != ComputePhase4TrialArmSemanticChecksumV1(semantics) ||
-      workload.board_content_hash() != semantics.board_content_hash ||
-      workload.workload_checksum() != semantics.workload_checksum ||
+  if (std::optional<Phase4PairedTrialError> error = ValidatePhase4TrialArmSemanticsV1(semantics);
+      error.has_value()) {
+    return error;
+  }
+  if (workload.nets().size() > kMaximumPhase4RepresentativeNetsV1 ||
+      telemetry.per_net.size() > kMaximumPhase4RepresentativeNetsV1 ||
       workload.nets().size() != semantics.workload_net_count ||
+      telemetry.per_net.size() != semantics.workload_net_count) {
+    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4REPORT-BOUND-001",
+                 "the authentic workload or telemetry roster count is invalid or out of bounds",
+                 semantics.arm);
+  }
+  if (workload.board_content_hash() != semantics.board_content_hash ||
+      workload.workload_checksum() != semantics.workload_checksum ||
       telemetry.schema_version != kPhase4ArmReportTelemetrySchemaVersion ||
       telemetry.associated_semantic_checksum == 0 ||
       telemetry.associated_semantic_checksum != semantics.semantic_checksum ||
       telemetry.telemetry_checksum == 0 ||
-      telemetry.telemetry_checksum != ComputePhase4ArmReportTelemetryChecksumV1(telemetry) ||
-      telemetry.per_net.size() != semantics.workload_net_count) {
+      telemetry.telemetry_checksum != ComputePhase4ArmReportTelemetryChecksumV1(telemetry)) {
     return Error(
         Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4REPORT-AUTH-001",
         "the workload, telemetry schema, count, semantic association, or checksum is invalid",
@@ -1556,72 +1645,12 @@ namespace {
     const Phase4TrialArmExecution& execution,
     const Phase4ExternalResourceObservation& observation) noexcept {
   const Phase4TrialArmSemantics& semantics = execution.semantics;
-  if (semantics.schema_version != kPhase4PairedTrialSchemaVersion || !ValidArm(semantics.arm) ||
-      !ValidOrder(semantics.execution_order) || !ValidTerminalReason(semantics.terminal_reason) ||
-      !ValidOutcomeSource(semantics.candidate_outcome_source) ||
-      semantics.preparation_worker_count == 0 ||
-      semantics.preparation_worker_count > allocator::kMaximumPersistentCpuCandidateWorkersV1 ||
-      semantics.corpus_version != kPhase4RepresentativeCorpusVersion ||
-      semantics.corpus_checksum != Phase4RepresentativeCorpusChecksumV1() ||
-      semantics.semantic_checksum == 0 ||
-      semantics.semantic_checksum != internal::ComputePhase4TrialArmSemanticChecksumV1(semantics)) {
-    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4PAIR-FINALIZE-001",
-                 "the arm semantic identity is invalid or does not authenticate the execution",
-                 semantics.arm);
+  if (std::optional<Phase4PairedTrialError> error =
+          internal::ValidatePhase4TrialArmSemanticsV1(semantics);
+      error.has_value()) {
+    return error;
   }
-  const Wide roster_count = static_cast<Wide>(semantics.outcome.selected_net_count) +
-                            semantics.outcome.no_candidate_net_count;
   const bool baseline = semantics.arm == Phase4TrialArm::kSequentialBaseline;
-  const Wide partition_queries =
-      static_cast<Wide>(semantics.preparation_route_queries) + semantics.regeneration_route_queries;
-  const Wide partition_work = static_cast<Wide>(semantics.preparation_route_work_units) +
-                              semantics.regeneration_route_work_units;
-  const Wide terminal_columns =
-      static_cast<Wide>(semantics.admitted_candidates) + semantics.rejected_columns;
-  const bool valid_per_query_work =
-      semantics.opportunity.route_queries != 0 &&
-      semantics.opportunity.route_work_units % semantics.opportunity.route_queries == 0 &&
-      semantics.opportunity.route_work_units / semantics.opportunity.route_queries != 0;
-  const std::uint64_t per_query_work =
-      valid_per_query_work
-          ? semantics.opportunity.route_work_units / semantics.opportunity.route_queries
-          : 0;
-  const auto work_within_query_count = [per_query_work](std::uint64_t route_queries,
-                                                        std::uint64_t route_work_units) {
-    return static_cast<Wide>(route_work_units) <= static_cast<Wide>(route_queries) * per_query_work;
-  };
-  if (roster_count != semantics.workload_net_count || !valid_per_query_work ||
-      semantics.actual.route_queries > semantics.opportunity.route_queries ||
-      semantics.actual.route_work_units > semantics.opportunity.route_work_units ||
-      !work_within_query_count(semantics.actual.route_queries, semantics.actual.route_work_units) ||
-      semantics.actual.route_queries > semantics.requested_columns || !FitsU64(terminal_columns) ||
-      ToU64(terminal_columns) != semantics.requested_columns ||
-      semantics.final_candidate_count > semantics.admitted_candidates ||
-      semantics.outcome.selected_net_count > semantics.final_candidate_count ||
-      semantics.outcome.overused_resource_count > semantics.outcome.total_overuse_units ||
-      (baseline &&
-       (semantics.candidate_outcome_source != Phase4CandidateOutcomeSource::kNotCandidateArm ||
-        semantics.preparation_route_queries != 0 || semantics.preparation_route_work_units != 0 ||
-        semantics.regeneration_route_queries != 0 || semantics.regeneration_route_work_units != 0 ||
-        semantics.requested_columns != semantics.actual.route_queries)) ||
-      (!baseline &&
-       (semantics.candidate_outcome_source == Phase4CandidateOutcomeSource::kNotCandidateArm ||
-        !FitsU64(partition_queries) || !FitsU64(partition_work) ||
-        ToU64(partition_queries) != semantics.actual.route_queries ||
-        ToU64(partition_work) != semantics.actual.route_work_units ||
-        !work_within_query_count(semantics.preparation_route_queries,
-                                 semantics.preparation_route_work_units) ||
-        !work_within_query_count(semantics.regeneration_route_queries,
-                                 semantics.regeneration_route_work_units))) ||
-      (semantics.terminal_reason == Phase4NormalizedTerminalReason::kFeasible &&
-       (semantics.outcome.selected_net_count != semantics.workload_net_count ||
-        semantics.outcome.no_candidate_net_count != 0 ||
-        semantics.outcome.total_overuse_units != 0))) {
-    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation,
-                 "P4PAIR-FINALIZE-SEMANTICS-001",
-                 "the arm counters, outcome roster, source, or terminal claim is inconsistent",
-                 semantics.arm);
-  }
   if (observation.schema_version != kPhase4ExternalAuthoritySchemaVersion ||
       !ValidAuthorityKind(observation.authority_kind) || observation.authority_run_identity == 0 ||
       observation.controller_identity == 0 || observation.process_instance_identity == 0 ||

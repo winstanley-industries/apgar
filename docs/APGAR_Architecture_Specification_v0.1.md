@@ -1189,8 +1189,12 @@ acceleration.
   Successful in-process per-net yield, pool diversity, and selected-candidate
   fields are versioned by
   `schemas/benchmark/phase4_per_net_arm_telemetry_v1.md`; the diagnostic seam
-  remains separate from Raw Evidence v1 until a reviewed report serializer and
-  independent validator bind it.
+  remains separate from Raw Evidence v1. Canonical diagnostic serialization,
+  the independently frozen complete-EntityRef representative roster, and the
+  rebuilding C++ validator are versioned by
+  `schemas/benchmark/phase4_per_net_report_artifact_v1.md`. The report is
+  explicitly not decision-eligible; a separate process runner and independent
+  Raw/report file join must bind it before publication.
   Every optimization claim MUST bind the versioned corpus, configuration,
   hardware, toolchains, exact clean commit, and comparison baseline.
 

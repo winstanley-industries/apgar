@@ -107,5 +107,7 @@ not contain, convert to, or expose a `Phase4TrialArmExecution`; diagnostic work
 therefore cannot be passed to `FinalizePhase4TrialArmV1` or represented as raw
 decision timing. The existing `ExecutePhase4TrialArmV1` takes the non-capturing
 path: its type, semantic checksum, timing scope, raw wire representation, and
-isolated controller behavior remain unchanged. JSON serialization and an
-independent report validator are deferred to the next Phase 4 slice.
+isolated controller behavior remain unchanged. Canonical diagnostic
+serialization and representative-case rebuilding validation are defined by
+`phase4_per_net_report_artifact_v1.md`; diagnostic-process execution and the
+independent Raw/report file join remain separate.

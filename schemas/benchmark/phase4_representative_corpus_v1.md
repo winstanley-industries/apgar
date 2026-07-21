@@ -13,6 +13,8 @@ algorithm-configuration budget checksum used by the raw evidence validator.
 Each successful entry also freezes the exact compiled-node, logical-host-byte,
 active-region, Board-entity, and workload-net requirements that its caller
 limits must independently cover.
+`phase4_workload_net_roster_manifest_v1.json` separately pins every complete
+EntityRef in the 38 successful workloads for diagnostic-report association.
 Stress entries `3001` and `3002` instead pin their
 deterministic compiled-work-bound totals and carry zero built-object identities;
 they cannot be accepted as successful raw cells.

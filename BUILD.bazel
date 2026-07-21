@@ -644,6 +644,22 @@ cc_library(
 )
 
 cc_library(
+    name = "phase4_per_net_report_artifact",
+    srcs = ["src/benchmark/phase4_per_net_report_artifact.cc"],
+    hdrs = ["include/apgar/benchmark/phase4_per_net_report_artifact.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":negotiated_prices",
+        ":phase4_paired_trial",
+        ":phase4_representative_corpus",
+        ":phase4_trial_harness",
+    ],
+)
+
+cc_library(
     name = "phase4_trial_harness_fault_test_variant",
     testonly = True,
     srcs = [
@@ -890,6 +906,34 @@ py_test(
     data = ["schemas/benchmark/phase4_representative_manifest_v1.json"],
     legacy_create_init = 0,
     main = "tests/tools/validate_phase4_raw_evidence_test.py",
+    python_version = "3.13",
+)
+
+py_binary(
+    name = "phase4_workload_net_roster_manifest_validator",
+    srcs = ["tools/validate_phase4_workload_net_roster_manifest.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_workload_net_roster_manifest.py",
+    python_version = "3.13",
+)
+
+py_test(
+    name = "phase4_workload_net_roster_manifest_validator_test",
+    size = "small",
+    srcs = [
+        "tests/tools/validate_phase4_workload_net_roster_manifest_test.py",
+        "tools/validate_phase4_workload_net_roster_manifest.py",
+    ],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_workload_net_roster_manifest_test.py",
     python_version = "3.13",
 )
 
@@ -1867,6 +1911,28 @@ cc_test(
         ":cpu_candidate_allocation_session",
         ":cpu_candidate_pool_preparation",
         ":phase4_paired_trial",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_per_net_report_artifact_test",
+    size = "medium",
+    srcs = [
+        "src/benchmark/phase4_paired_trial_internal.h",
+        "tests/benchmark/phase4_per_net_report_artifact_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    data = [
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
+    ],
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase4_paired_trial",
+        ":phase4_per_net_report_artifact",
+        ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
 )
