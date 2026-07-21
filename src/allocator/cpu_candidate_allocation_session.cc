@@ -244,6 +244,7 @@ void AddSessionConfig(board_ir::StableHashBuilder& hash,
   hash.AddU64(config.regeneration_plan_config.maximum_total_resource_actions);
   hash.AddU64(config.regeneration_plan_config.maximum_expanded_resource_visits);
   const TargetedRegenerationExecutionConfig& execution = config.regeneration_execution_config;
+  hash.AddU64(execution.deterministic_seed);
   hash.AddU64(execution.maximum_route_queries);
   hash.AddU64(execution.route_limits.maximum_work_units);
   hash.AddU64(execution.route_limits.maximum_record_count);
@@ -414,7 +415,7 @@ std::uint64_t internal::ComputeCpuCandidateAllocationRejectionManifestChecksumV1
   return hash.Finish();
 }
 
-std::uint64_t internal::ComputeCpuCandidateAllocationSessionChecksumV1(
+std::uint64_t internal::ComputeCpuCandidateAllocationSessionChecksumV2(
     const CpuCandidateAllocationSessionConfig& config, std::uint64_t board_content_hash,
     std::uint64_t workload_checksum, std::uint64_t capacity_model_checksum,
     std::uint64_t preparation_checksum, CpuCandidateAllocationTerminalReason terminal_reason,
@@ -424,7 +425,7 @@ std::uint64_t internal::ComputeCpuCandidateAllocationSessionChecksumV1(
     std::uint64_t final_price_state_checksum, std::uint64_t final_single_world_checksum,
     std::uint64_t final_multi_world_checksum) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-CPU-CANDIDATE-ALLOCATION-SESSION-V1");
+  hash.AddString("APGAR-CPU-CANDIDATE-ALLOCATION-SESSION-V2");
   AddSessionConfig(hash, config);
   hash.AddU64(board_content_hash);
   hash.AddU64(workload_checksum);
@@ -540,7 +541,7 @@ struct SessionSourceCounts {
   if (schema_version != kCpuCandidateAllocationSessionSchemaVersion ||
       config.schema_version != kCpuCandidateAllocationSessionSchemaVersion) {
     return Error(CpuCandidateAllocationSessionErrorCode::kUnsupportedSchema,
-                 "allocator.cpu_candidate_session.schema.v1",
+                 "allocator.cpu_candidate_session.schema.v2",
                  "CPU candidate-allocation session schema is unsupported");
   }
   if (config.intrinsic_cost_weight == 0 || config.maximum_regeneration_epochs == 0 ||
@@ -551,7 +552,7 @@ struct SessionSourceCounts {
       !internal::NegotiatedPriceConfigIsValidV1(config.price_config) ||
       !internal::OneWorldAllocatorLimitsAreValidV1(config.allocator_limits) ||
       !internal::TargetedRegenerationConfigIsValidV1(config.regeneration_plan_config) ||
-      !internal::TargetedRegenerationExecutionConfigIsValidV2(
+      !internal::TargetedRegenerationExecutionConfigIsValidV3(
           config.regeneration_execution_config) ||
       !internal::MultiWorldExecutionConfigIsValidV1(config.multi_world_config) ||
       config.schedules.empty() ||
@@ -560,7 +561,7 @@ struct SessionSourceCounts {
       config.regeneration_execution_config.known_unmapped_exact_conflict_count != 0 ||
       config.multi_world_config.known_unmapped_exact_conflict_count != 0) {
     return Error(CpuCandidateAllocationSessionErrorCode::kInvalidConfiguration,
-                 "allocator.cpu_candidate_session.configuration.v1",
+                 "allocator.cpu_candidate_session.configuration.v2",
                  "CPU candidate-allocation session configuration is inconsistent or unbounded");
   }
 
@@ -1244,7 +1245,7 @@ CpuCandidateAllocationSessionResult ExecuteCpuCandidateAllocationSession(
         prepared.candidate_store().Rejections();
     const std::uint64_t rejection_manifest =
         internal::ComputeCpuCandidateAllocationRejectionManifestChecksumV1(final_rejections);
-    const std::uint64_t session_checksum = internal::ComputeCpuCandidateAllocationSessionChecksumV1(
+    const std::uint64_t session_checksum = internal::ComputeCpuCandidateAllocationSessionChecksumV2(
         config, board.content_hash(), workload.workload_checksum(),
         current_state.capacity_model_checksum(), prepared.preparation_checksum(), terminal_reason,
         counters, epochs, final_pool_manifest, rejection_manifest, current_state.state_checksum(),

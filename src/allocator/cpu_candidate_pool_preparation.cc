@@ -56,12 +56,13 @@ void MaybeInjectThreadCreationFault(std::size_t index) {
     return;
   }
   const internal::CpuCandidatePoolPreparationFaultForTesting fault =
-      g_fault_test_state.fault.exchange(
-          internal::CpuCandidatePoolPreparationFaultForTesting::kNone);
+      g_fault_test_state.fault.load();
   if (fault == internal::CpuCandidatePoolPreparationFaultForTesting::kThreadCreationBadAlloc) {
+    g_fault_test_state.fault.store(internal::CpuCandidatePoolPreparationFaultForTesting::kNone);
     throw std::bad_alloc();
   }
   if (fault == internal::CpuCandidatePoolPreparationFaultForTesting::kThreadCreationSystemError) {
+    g_fault_test_state.fault.store(internal::CpuCandidatePoolPreparationFaultForTesting::kNone);
     throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
   }
 }
@@ -71,16 +72,19 @@ void MaybeInjectWorkerFault(std::size_t index) {
     return;
   }
   const internal::CpuCandidatePoolPreparationFaultForTesting fault =
-      g_fault_test_state.fault.exchange(
-          internal::CpuCandidatePoolPreparationFaultForTesting::kNone);
+      g_fault_test_state.fault.load();
   switch (fault) {
     case internal::CpuCandidatePoolPreparationFaultForTesting::kWorkerBadAlloc:
+      g_fault_test_state.fault.store(internal::CpuCandidatePoolPreparationFaultForTesting::kNone);
       throw std::bad_alloc();
     case internal::CpuCandidatePoolPreparationFaultForTesting::kWorkerLengthError:
+      g_fault_test_state.fault.store(internal::CpuCandidatePoolPreparationFaultForTesting::kNone);
       throw std::length_error("injected worker container exhaustion");
     case internal::CpuCandidatePoolPreparationFaultForTesting::kWorkerUnexpectedException:
+      g_fault_test_state.fault.store(internal::CpuCandidatePoolPreparationFaultForTesting::kNone);
       throw std::runtime_error("injected unexpected worker exception");
     case internal::CpuCandidatePoolPreparationFaultForTesting::kBlockWorker: {
+      g_fault_test_state.fault.store(internal::CpuCandidatePoolPreparationFaultForTesting::kNone);
       std::unique_lock lock(g_fault_test_state.mutex);
       g_fault_test_state.worker_blocked = true;
       g_fault_test_state.condition.notify_all();
@@ -90,8 +94,27 @@ void MaybeInjectWorkerFault(std::size_t index) {
     case internal::CpuCandidatePoolPreparationFaultForTesting::kNone:
     case internal::CpuCandidatePoolPreparationFaultForTesting::kThreadCreationBadAlloc:
     case internal::CpuCandidatePoolPreparationFaultForTesting::kThreadCreationSystemError:
+    case internal::CpuCandidatePoolPreparationFaultForTesting::kPostBaseWaveBadAlloc:
+    case internal::CpuCandidatePoolPreparationFaultForTesting::kPostPublicationBadAlloc:
+    case internal::CpuCandidatePoolPreparationFaultForTesting::kPostBaseWaveUnexpectedException:
+    case internal::CpuCandidatePoolPreparationFaultForTesting::kPostPublicationUnexpectedException:
       return;
   }
+}
+
+void MaybeInjectPreparationStageFault(
+    internal::CpuCandidatePoolPreparationFaultForTesting expected) {
+  if (g_fault_test_state.fault.load() != expected) {
+    return;
+  }
+  g_fault_test_state.fault.store(internal::CpuCandidatePoolPreparationFaultForTesting::kNone);
+  if (expected ==
+          internal::CpuCandidatePoolPreparationFaultForTesting::kPostBaseWaveUnexpectedException ||
+      expected == internal::CpuCandidatePoolPreparationFaultForTesting::
+                      kPostPublicationUnexpectedException) {
+    throw std::runtime_error("injected unexpected preparation-stage exception");
+  }
+  throw std::bad_alloc();
 }
 #endif
 
@@ -106,6 +129,7 @@ void MaybeInjectWorkerFault(std::size_t index) {
       .net = net,
       .required = required,
       .configured = configured,
+      .failed_preparation = std::nullopt,
   };
 }
 
@@ -211,7 +235,7 @@ void AddPreparationConfig(board_ir::StableHashBuilder& hash,
 [[nodiscard]] std::uint64_t BatchIdentity(
     const board_ir::BoardSnapshot& board, const MultiNetWorkload& workload,
     const CpuCandidatePoolPreparationConfig& config) noexcept {
-  return internal::ComputeCpuCandidatePoolBatchIdentityV1(board.content_hash(),
+  return internal::ComputeCpuCandidatePoolBatchIdentityV2(board.content_hash(),
                                                           workload.workload_checksum(), config);
 }
 
@@ -323,7 +347,7 @@ ResourcesForAuthenticatedRoute(const routing::CpuRoute& route,
     auto decoded = decode_segment(segment);
     if (auto* failure = std::get_if<CpuCandidatePoolPreparationError>(&decoded);
         failure != nullptr) {
-      return *failure;
+      return std::move(*failure);
     }
     total_steps += std::get<DecodedSegment>(decoded).steps;
     if (total_steps > maximum_edges) {
@@ -351,7 +375,7 @@ ResourcesForAuthenticatedRoute(const routing::CpuRoute& route,
     auto decoded_result = decode_segment(segment);
     if (auto* failure = std::get_if<CpuCandidatePoolPreparationError>(&decoded_result);
         failure != nullptr) {
-      return *failure;
+      return std::move(*failure);
     }
     const DecodedSegment& decoded = std::get<DecodedSegment>(decoded_result);
     const geometry_compiler::DirectionDelta unit = geometry_compiler::DeltaFor(decoded.direction);
@@ -392,16 +416,97 @@ struct WorkColumn {
   std::optional<candidates::CandidateRejection> rejection;
   std::optional<CpuCandidatePoolPreparationError> fatal_error;
   bool executed = false;
+  bool query_started = false;
 };
 
-[[nodiscard]] std::optional<CpuCandidatePoolPreparationError> FirstFatal(
-    std::span<const WorkColumn> work) noexcept {
-  for (const WorkColumn& column : work) {
-    if (column.fatal_error.has_value()) {
-      return column.fatal_error;
+[[nodiscard]] std::uint64_t ComputeFailedPreparationChecksumEncoding(
+    std::uint64_t board_content_hash, std::uint64_t workload_checksum,
+    const CpuCandidatePoolPreparationConfig& config, std::uint64_t batch_identity,
+    CpuCandidatePoolPreparationErrorCode error_code, bool candidate_store_publication_committed,
+    const CpuCandidatePoolFailedPreparationCounters& counters,
+    std::span<const CpuCandidatePoolAttemptedColumnRecord> attempted_columns) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-CPU-CANDIDATE-POOL-FAILED-PREPARATION-V2");
+  hash.AddU32(kCpuCandidatePoolPreparationSchemaVersion);
+  hash.AddU64(board_content_hash);
+  hash.AddU64(workload_checksum);
+  AddPreparationConfig(hash, config);
+  hash.AddU64(batch_identity);
+  hash.AddByte(static_cast<std::uint8_t>(error_code));
+  hash.AddBool(candidate_store_publication_committed);
+  hash.AddU64(counters.requested_columns);
+  hash.AddU64(counters.route_queries);
+  hash.AddU64(counters.route_work_units);
+  hash.AddU64(attempted_columns.size());
+  for (const CpuCandidatePoolAttemptedColumnRecord& column : attempted_columns) {
+    hash.AddU64(column.net.id);
+    hash.AddU32(column.net.generation);
+    hash.AddU32(column.candidate_ordinal);
+    hash.AddU64(column.policy_identity);
+    hash.AddU64(column.batch_identity);
+    hash.AddU64(column.query_identity);
+    hash.AddU64(column.route_work_units);
+    hash.AddByte(static_cast<std::uint8_t>(column.state));
+    hash.AddBool(column.route_failure_code.has_value());
+    if (column.route_failure_code.has_value()) {
+      hash.AddByte(static_cast<std::uint8_t>(*column.route_failure_code));
     }
   }
-  return std::nullopt;
+  return hash.Finish();
+}
+
+[[nodiscard]] CpuCandidatePoolPreparationError* FirstFatal(std::span<WorkColumn> work) noexcept {
+  for (WorkColumn& column : work) {
+    if (column.fatal_error.has_value()) {
+      return &*column.fatal_error;
+    }
+  }
+  return nullptr;
+}
+
+[[nodiscard]] CpuCandidatePoolPreparationError WithFailedPreparationObservation(
+    CpuCandidatePoolPreparationError error, const board_ir::BoardSnapshot& board,
+    const MultiNetWorkload& workload, const CpuCandidatePoolPreparationConfig& config,
+    std::uint64_t batch_identity, std::span<const WorkColumn> work,
+    std::vector<CpuCandidatePoolAttemptedColumnRecord> attempted_columns,
+    bool candidate_store_publication_committed = false,
+    std::unique_ptr<candidates::CandidateStore> authoritative_candidate_store = nullptr) {
+  std::size_t write_index = 0;
+  UWide route_work = 0;
+  for (std::size_t index = 0; index < work.size(); ++index) {
+    if (!work[index].query_started) {
+      continue;
+    }
+    attempted_columns[write_index++] = attempted_columns[index];
+    route_work += attempted_columns[index].route_work_units;
+  }
+  if (write_index == 0) {
+    return error;
+  }
+  attempted_columns.resize(write_index);
+  CpuCandidatePoolFailedPreparationObservation observation{
+      .schema_version = kCpuCandidatePoolPreparationSchemaVersion,
+      .board_content_hash = board.content_hash(),
+      .workload_checksum = workload.workload_checksum(),
+      .config = config,
+      .batch_identity = batch_identity,
+      .counters =
+          CpuCandidatePoolFailedPreparationCounters{
+              .requested_columns = work.size(),
+              .route_queries = write_index,
+              .route_work_units = NarrowWitness(route_work),
+          },
+      .attempted_columns = std::move(attempted_columns),
+      .candidate_store_publication_committed = candidate_store_publication_committed,
+      .authoritative_candidate_store = std::move(authoritative_candidate_store),
+      .observation_checksum = 0,
+  };
+  observation.observation_checksum = internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+      observation.board_content_hash, observation.workload_checksum, observation.config,
+      observation.batch_identity, error.code, observation.candidate_store_publication_committed,
+      observation.counters, observation.attempted_columns);
+  error.failed_preparation = std::move(observation);
+  return error;
 }
 
 [[nodiscard]] std::uint64_t ComputePreparationChecksumEncoding(
@@ -410,11 +515,12 @@ struct WorkColumn {
     std::span<const CpuCandidatePoolColumnRecord> columns,
     std::span<const internal::CpuCandidatePoolChecksumPoolV1> pools) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-CPU-CANDIDATE-POOL-PREPARATION-V1");
+  hash.AddString("APGAR-CPU-CANDIDATE-POOL-PREPARATION-V2");
   AddPreparationConfig(hash, config);
   hash.AddU64(batch_identity);
   hash.AddU64(counters.requested_columns);
   hash.AddU64(counters.executed_route_queries);
+  hash.AddU64(counters.route_work_units);
   hash.AddU64(counters.successful_routes);
   hash.AddU64(counters.disconnected_proofs);
   hash.AddU64(counters.unsupported_proofs);
@@ -432,6 +538,7 @@ struct WorkColumn {
     hash.AddU64(column.policy_identity);
     hash.AddU64(column.batch_identity);
     hash.AddU64(column.query_identity);
+    hash.AddU64(column.route_work_units);
     hash.AddByte(static_cast<std::uint8_t>(column.outcome));
     hash.AddBool(column.candidate_id.has_value());
     if (column.candidate_id.has_value()) {
@@ -486,17 +593,17 @@ struct WorkColumn {
         .candidates = candidate_records[index],
     });
   }
-  return internal::ComputeCpuCandidatePoolPreparationChecksumV1(config, batch_identity, counters,
+  return internal::ComputeCpuCandidatePoolPreparationChecksumV2(config, batch_identity, counters,
                                                                 columns, pool_records);
 }
 
 }  // namespace
 
-std::uint64_t internal::ComputeCpuCandidatePoolBatchIdentityV1(
+std::uint64_t internal::ComputeCpuCandidatePoolBatchIdentityV2(
     std::uint64_t board_content_hash, std::uint64_t workload_checksum,
     const CpuCandidatePoolPreparationConfig& config) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-CPU-CANDIDATE-POOL-BATCH-V1");
+  hash.AddString("APGAR-CPU-CANDIDATE-POOL-BATCH-V2");
   hash.AddU64(board_content_hash);
   hash.AddU64(workload_checksum);
   AddPreparationConfig(hash, config);
@@ -510,12 +617,23 @@ std::uint64_t internal::ComputeCpuCandidatePoolNetSeedV1(std::uint64_t configure
   return NetSeedEncoding(configured_seed, workload_checksum, net);
 }
 
-std::uint64_t internal::ComputeCpuCandidatePoolPreparationChecksumV1(
+std::uint64_t internal::ComputeCpuCandidatePoolPreparationChecksumV2(
     const CpuCandidatePoolPreparationConfig& config, std::uint64_t batch_identity,
     const CpuCandidatePoolPreparationCounters& counters,
     std::span<const CpuCandidatePoolColumnRecord> columns,
     std::span<const CpuCandidatePoolChecksumPoolV1> pools) noexcept {
   return ComputePreparationChecksumEncoding(config, batch_identity, counters, columns, pools);
+}
+
+std::uint64_t internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+    std::uint64_t board_content_hash, std::uint64_t workload_checksum,
+    const CpuCandidatePoolPreparationConfig& config, std::uint64_t batch_identity,
+    CpuCandidatePoolPreparationErrorCode error_code, bool candidate_store_publication_committed,
+    const CpuCandidatePoolFailedPreparationCounters& counters,
+    std::span<const CpuCandidatePoolAttemptedColumnRecord> attempted_columns) noexcept {
+  return ComputeFailedPreparationChecksumEncoding(
+      board_content_hash, workload_checksum, config, batch_identity, error_code,
+      candidate_store_publication_committed, counters, attempted_columns);
 }
 
 internal::CpuCandidatePoolAlternativeResourceResultV1
@@ -726,7 +844,7 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
     if (config.schema_version != kCpuCandidatePoolPreparationSchemaVersion ||
         workload.schema_version() != kMultiNetWorkloadSchemaVersion) {
       return Error(CpuCandidatePoolPreparationErrorCode::kUnsupportedSchema,
-                   "allocator.cpu_candidate_pool.schema.v1",
+                   "allocator.cpu_candidate_pool.schema.v2",
                    "Preparation or workload schema is unsupported");
     }
     if (!IsSupportedPoolSize(config.requested_candidates_per_net) ||
@@ -745,8 +863,8 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
         config.limits.maximum_candidate_draft_bytes == 0 ||
         config.limits.maximum_generated_candidate_bytes == 0) {
       return Error(CpuCandidatePoolPreparationErrorCode::kInvalidConfiguration,
-                   "allocator.cpu_candidate_pool.configuration.v1",
-                   "CPU candidate preparation configuration is outside version-1 bounds");
+                   "allocator.cpu_candidate_pool.configuration.v2",
+                   "CPU candidate preparation configuration is outside version-2 bounds");
     }
     const std::size_t net_count = workload.nets().size();
     if (net_count == 0) {
@@ -887,6 +1005,7 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
     const std::size_t column_count = static_cast<std::size_t>(requested_columns);
     std::vector<WorkColumn> work(column_count);
     std::vector<CpuCandidatePoolColumnRecord> columns(column_count);
+    std::vector<CpuCandidatePoolAttemptedColumnRecord> attempted_columns(column_count);
     for (std::size_t net_index = 0; net_index < net_count; ++net_index) {
       const PreparedNetRoutingContext& context = workload.nets()[net_index];
       for (std::uint32_t ordinal = 0; ordinal < config.requested_candidates_per_net; ++ordinal) {
@@ -898,10 +1017,21 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
             .policy_identity = 0,
             .batch_identity = batch_identity,
             .query_identity = flat + 1U,
+            .route_work_units = 0,
             .outcome = CpuCandidatePoolColumnOutcome::kAdmissionRejected,
             .candidate_id = std::nullopt,
             .candidate_payload_checksum = std::nullopt,
             .rejection_code = std::nullopt,
+        };
+        attempted_columns[flat] = CpuCandidatePoolAttemptedColumnRecord{
+            .net = context.request.net,
+            .candidate_ordinal = ordinal,
+            .policy_identity = 0,
+            .batch_identity = batch_identity,
+            .query_identity = flat + 1U,
+            .route_work_units = 0,
+            .state = CpuCandidatePoolAttemptState::kQueryInFlight,
+            .route_failure_code = std::nullopt,
         };
       }
       routing::CandidateGenerationPolicy base = context.request.candidate_policy;
@@ -929,10 +1059,17 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
 #endif
         column.executed = true;
         columns[flat].policy_identity = column.policy->identity;
+        attempted_columns[flat].policy_identity = column.policy->identity;
         column.request = RequestWithPolicy(column.context->request, column.policy->policy);
+        column.query_started = true;
         routing::CpuRouteResult route_result = routing::RouteWithCpuAStar(
             board, column.context->compiled_board, *column.request, config.route_limits);
         if (auto* failure = std::get_if<routing::RouteFailure>(&route_result); failure != nullptr) {
+          columns[flat].route_work_units =
+              failure->telemetry.has_value() ? failure->telemetry->work_units : 0;
+          attempted_columns[flat].route_work_units = columns[flat].route_work_units;
+          attempted_columns[flat].state = CpuCandidatePoolAttemptState::kRouteFailed;
+          attempted_columns[flat].route_failure_code = failure->code;
           if (failure->code == routing::RouteFailureCode::kDisconnected ||
               failure->code == routing::RouteFailureCode::kUnsupportedLayerTransition ||
               failure->code == routing::RouteFailureCode::kUnsupportedPolicy) {
@@ -959,12 +1096,15 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
           return;
         }
         routing::CpuRoute route = std::get<routing::CpuRoute>(std::move(route_result));
+        columns[flat].route_work_units = route.telemetry.work_units;
+        attempted_columns[flat].route_work_units = route.telemetry.work_units;
+        attempted_columns[flat].state = CpuCandidatePoolAttemptState::kRouteSucceeded;
         auto resources_result = internal::ExtractCpuCandidatePoolAlternativeResourcesV1(
             route, column.context->compiled_board, *column.request, column.policy->identity,
             config.route_limits.maximum_reconstruction_states);
-        if (const auto* failure = std::get_if<CpuCandidatePoolPreparationError>(&resources_result);
+        if (auto* failure = std::get_if<CpuCandidatePoolPreparationError>(&resources_result);
             failure != nullptr) {
-          column.fatal_error = *failure;
+          column.fatal_error = std::move(*failure);
           return;
         }
         column.base_resources =
@@ -1014,288 +1154,358 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
                   "A base CPU worker raised an unexpected exception", column.context->request.net);
       }
     });
-    if (const auto fatal = FirstFatal(work); fatal.has_value()) {
-      return *fatal;
+    if (CpuCandidatePoolPreparationError* fatal = FirstFatal(work); fatal != nullptr) {
+      return WithFailedPreparationObservation(std::move(*fatal), board, workload, config,
+                                              batch_identity, work, std::move(attempted_columns));
     }
 
-    std::vector<std::size_t> alternative_columns;
-    alternative_columns.reserve(column_count - net_count);
-    for (std::size_t net_index = 0; net_index < net_count; ++net_index) {
-      const std::size_t base_flat = net_index * config.requested_candidates_per_net;
-      WorkColumn& base = work[base_flat];
-      if (!base.base_resources.has_value()) {
-        const bool disconnected =
-            columns[base_flat].outcome == CpuCandidatePoolColumnOutcome::kRouteDisconnected;
+    bool candidate_store_publication_committed = false;
+    const auto fail_after_queries = [&](CpuCandidatePoolPreparationError error) {
+      return WithFailedPreparationObservation(
+          std::move(error), board, workload, config, batch_identity, work,
+          std::move(attempted_columns), candidate_store_publication_committed,
+          candidate_store_publication_committed ? std::move(candidate_store) : nullptr);
+    };
+    try {
+#ifdef APGAR_CPU_CANDIDATE_POOL_PREPARATION_FAULT_TEST_VARIANT
+      MaybeInjectPreparationStageFault(
+          internal::CpuCandidatePoolPreparationFaultForTesting::kPostBaseWaveBadAlloc);
+      MaybeInjectPreparationStageFault(
+          internal::CpuCandidatePoolPreparationFaultForTesting::kPostBaseWaveUnexpectedException);
+#endif
+      std::vector<std::size_t> alternative_columns;
+      alternative_columns.reserve(column_count - net_count);
+      for (std::size_t net_index = 0; net_index < net_count; ++net_index) {
+        const std::size_t base_flat = net_index * config.requested_candidates_per_net;
+        WorkColumn& base = work[base_flat];
+        if (!base.base_resources.has_value()) {
+          const bool disconnected =
+              columns[base_flat].outcome == CpuCandidatePoolColumnOutcome::kRouteDisconnected;
+          for (std::uint32_t ordinal = 1; ordinal < config.requested_candidates_per_net;
+               ++ordinal) {
+            const std::size_t flat = base_flat + ordinal;
+            columns[flat].query_identity = 0;
+            columns[flat].outcome =
+                disconnected ? CpuCandidatePoolColumnOutcome::kSkippedAfterDisconnectedProof
+                             : CpuCandidatePoolColumnOutcome::kSkippedAfterUnsupportedProof;
+          }
+          continue;
+        }
+        routing::DeterministicAlternativePolicySchedule schedule{
+            .candidate_count = config.requested_candidates_per_net,
+            .step_surcharge_increment = config.step_surcharge_increment,
+            .bend_surcharge_increment = config.bend_surcharge_increment,
+            .resource_penalty_increment = config.resource_penalty_increment,
+            .alternative_resources = std::move(*base.base_resources),
+        };
+        routing::CandidatePolicyBatchResult policies_result =
+            routing::BuildDeterministicAlternativePolicies(
+                base.context->compiled_board, base.policy->policy, std::move(schedule));
+        if (const auto* failure = std::get_if<routing::CandidatePolicyError>(&policies_result);
+            failure != nullptr) {
+          return fail_after_queries(
+              Error(CpuCandidatePoolPreparationErrorCode::kPolicySynthesis,
+                    "allocator.cpu_candidate_pool.alternative_policy.v1",
+                    "A reached base route cannot synthesize its alternative policy schedule",
+                    base.context->request.net));
+        }
+        std::vector<routing::NormalizedCandidateGenerationPolicy> policies =
+            std::get<std::vector<routing::NormalizedCandidateGenerationPolicy>>(
+                std::move(policies_result));
+        if (policies.size() != config.requested_candidates_per_net || policies[0] != *base.policy) {
+          return fail_after_queries(
+              Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
+                    "allocator.cpu_candidate_pool.policy_replay.v1",
+                    "Alternative policy synthesis did not replay the exact base policy",
+                    base.context->request.net));
+        }
         for (std::uint32_t ordinal = 1; ordinal < config.requested_candidates_per_net; ++ordinal) {
           const std::size_t flat = base_flat + ordinal;
-          columns[flat].query_identity = 0;
-          columns[flat].outcome =
-              disconnected ? CpuCandidatePoolColumnOutcome::kSkippedAfterDisconnectedProof
-                           : CpuCandidatePoolColumnOutcome::kSkippedAfterUnsupportedProof;
+          work[flat].policy = std::move(policies[ordinal]);
+          columns[flat].policy_identity = work[flat].policy->identity;
+          attempted_columns[flat].policy_identity = work[flat].policy->identity;
+          alternative_columns.push_back(flat);
         }
-        continue;
       }
-      routing::DeterministicAlternativePolicySchedule schedule{
-          .candidate_count = config.requested_candidates_per_net,
-          .step_surcharge_increment = config.step_surcharge_increment,
-          .bend_surcharge_increment = config.bend_surcharge_increment,
-          .resource_penalty_increment = config.resource_penalty_increment,
-          .alternative_resources = std::move(*base.base_resources),
-      };
-      routing::CandidatePolicyBatchResult policies_result =
-          routing::BuildDeterministicAlternativePolicies(base.context->compiled_board,
-                                                         base.policy->policy, std::move(schedule));
-      if (const auto* failure = std::get_if<routing::CandidatePolicyError>(&policies_result);
-          failure != nullptr) {
-        return Error(CpuCandidatePoolPreparationErrorCode::kPolicySynthesis,
-                     "allocator.cpu_candidate_pool.alternative_policy.v1",
-                     "A reached base route cannot synthesize its alternative policy schedule",
-                     base.context->request.net);
-      }
-      std::vector<routing::NormalizedCandidateGenerationPolicy> policies =
-          std::get<std::vector<routing::NormalizedCandidateGenerationPolicy>>(
-              std::move(policies_result));
-      if (policies.size() != config.requested_candidates_per_net || policies[0] != *base.policy) {
-        return Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
-                     "allocator.cpu_candidate_pool.policy_replay.v1",
-                     "Alternative policy synthesis did not replay the exact base policy",
-                     base.context->request.net);
-      }
-      for (std::uint32_t ordinal = 1; ordinal < config.requested_candidates_per_net; ++ordinal) {
-        const std::size_t flat = base_flat + ordinal;
-        work[flat].policy = std::move(policies[ordinal]);
-        columns[flat].policy_identity = work[flat].policy->identity;
-        alternative_columns.push_back(flat);
-      }
-    }
 
-    preparer.impl_->Run(alternative_columns.size(), [&](std::size_t job_index) {
-      const std::size_t flat = alternative_columns[job_index];
-      WorkColumn& column = work[flat];
-      try {
+      preparer.impl_->Run(alternative_columns.size(), [&](std::size_t job_index) {
+        const std::size_t flat = alternative_columns[job_index];
+        WorkColumn& column = work[flat];
+        try {
 #ifdef APGAR_CPU_CANDIDATE_POOL_PREPARATION_FAULT_TEST_VARIANT
-        MaybeInjectWorkerFault(job_index);
+          MaybeInjectWorkerFault(job_index);
 #endif
-        column.executed = true;
-        column.request = RequestWithPolicy(column.context->request, column.policy->policy);
-        routing::CpuRouteResult route_result = routing::RouteWithCpuAStar(
-            board, column.context->compiled_board, *column.request, config.route_limits);
-        if (auto* failure = std::get_if<routing::RouteFailure>(&route_result); failure != nullptr) {
-          if (failure->code == routing::RouteFailureCode::kDisconnected ||
-              failure->code == routing::RouteFailureCode::kUnsupportedLayerTransition ||
-              failure->code == routing::RouteFailureCode::kUnsupportedPolicy) {
-            columns[flat].outcome = failure->code == routing::RouteFailureCode::kDisconnected
-                                        ? CpuCandidatePoolColumnOutcome::kRouteDisconnected
-                                        : CpuCandidatePoolColumnOutcome::kRouteUnsupported;
-            column.rejection = RouteFailureRejection(
-                candidates::AssociationsFor(board, column.context->compiled_board), *failure,
-                column.context->request.net, *column.policy,
-                candidates::CandidateSchedulingIdentity{.batch_identity = batch_identity,
-                                                        .query_identity = flat + 1U});
-            columns[flat].rejection_code = column.rejection->code;
-            return;
-          }
-          column.fatal_error =
-              Error(failure->code == routing::RouteFailureCode::kWorkBoundExceeded
-                        ? CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded
-                    : failure->code == routing::RouteFailureCode::kResourceExhausted
-                        ? CpuCandidatePoolPreparationErrorCode::kResourceExhausted
-                        : CpuCandidatePoolPreparationErrorCode::kCandidateGeneration,
-                    "allocator.cpu_candidate_pool.alternative_route.v1",
-                    "Bounded CPU A* failed while generating an alternative candidate",
-                    column.context->request.net);
-          return;
-        }
-        routing::CpuRoute route = std::get<routing::CpuRoute>(std::move(route_result));
-        candidates::CandidateDraftBuildResult draft =
-            candidates::BuildGeneratedCandidateFromCpuRoute(
-                board, column.context->compiled_board, *column.request, *column.policy, route,
-                candidates::CandidateSchedulingIdentity{.batch_identity = batch_identity,
-                                                        .query_identity = flat + 1U});
-        if (auto* rejection = std::get_if<candidates::CandidateRejection>(&draft);
-            rejection != nullptr) {
-          columns[flat].outcome = CpuCandidatePoolColumnOutcome::kBuildRejected;
-          columns[flat].candidate_id = rejection->candidate_id;
-          columns[flat].candidate_payload_checksum = rejection->candidate_payload_checksum;
-          columns[flat].rejection_code = rejection->code;
-          column.rejection = std::move(*rejection);
-        } else {
-          candidates::GeneratedRouteCandidate generated =
-              std::get<candidates::GeneratedRouteCandidate>(std::move(draft));
-          if (generated.logical_bytes > config.limits.maximum_candidate_draft_bytes) {
+          column.executed = true;
+          column.request = RequestWithPolicy(column.context->request, column.policy->policy);
+          column.query_started = true;
+          routing::CpuRouteResult route_result = routing::RouteWithCpuAStar(
+              board, column.context->compiled_board, *column.request, config.route_limits);
+          if (auto* failure = std::get_if<routing::RouteFailure>(&route_result);
+              failure != nullptr) {
+            columns[flat].route_work_units =
+                failure->telemetry.has_value() ? failure->telemetry->work_units : 0;
+            attempted_columns[flat].route_work_units = columns[flat].route_work_units;
+            attempted_columns[flat].state = CpuCandidatePoolAttemptState::kRouteFailed;
+            attempted_columns[flat].route_failure_code = failure->code;
+            if (failure->code == routing::RouteFailureCode::kDisconnected ||
+                failure->code == routing::RouteFailureCode::kUnsupportedLayerTransition ||
+                failure->code == routing::RouteFailureCode::kUnsupportedPolicy) {
+              columns[flat].outcome = failure->code == routing::RouteFailureCode::kDisconnected
+                                          ? CpuCandidatePoolColumnOutcome::kRouteDisconnected
+                                          : CpuCandidatePoolColumnOutcome::kRouteUnsupported;
+              column.rejection = RouteFailureRejection(
+                  candidates::AssociationsFor(board, column.context->compiled_board), *failure,
+                  column.context->request.net, *column.policy,
+                  candidates::CandidateSchedulingIdentity{.batch_identity = batch_identity,
+                                                          .query_identity = flat + 1U});
+              columns[flat].rejection_code = column.rejection->code;
+              return;
+            }
             column.fatal_error =
-                Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
-                      "allocator.cpu_candidate_pool.draft_byte_replay.v1",
-                      "An alternative draft exceeded its conservative pre-generation byte bound",
-                      column.context->request.net, generated.logical_bytes,
-                      config.limits.maximum_candidate_draft_bytes);
+                Error(failure->code == routing::RouteFailureCode::kWorkBoundExceeded
+                          ? CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded
+                      : failure->code == routing::RouteFailureCode::kResourceExhausted
+                          ? CpuCandidatePoolPreparationErrorCode::kResourceExhausted
+                          : CpuCandidatePoolPreparationErrorCode::kCandidateGeneration,
+                      "allocator.cpu_candidate_pool.alternative_route.v1",
+                      "Bounded CPU A* failed while generating an alternative candidate",
+                      column.context->request.net);
             return;
           }
-          column.draft = std::move(generated);
-          columns[flat].candidate_id = column.draft->id;
-          columns[flat].candidate_payload_checksum = column.draft->payload_checksum;
+          routing::CpuRoute route = std::get<routing::CpuRoute>(std::move(route_result));
+          columns[flat].route_work_units = route.telemetry.work_units;
+          attempted_columns[flat].route_work_units = route.telemetry.work_units;
+          attempted_columns[flat].state = CpuCandidatePoolAttemptState::kRouteSucceeded;
+          candidates::CandidateDraftBuildResult draft =
+              candidates::BuildGeneratedCandidateFromCpuRoute(
+                  board, column.context->compiled_board, *column.request, *column.policy, route,
+                  candidates::CandidateSchedulingIdentity{.batch_identity = batch_identity,
+                                                          .query_identity = flat + 1U});
+          if (auto* rejection = std::get_if<candidates::CandidateRejection>(&draft);
+              rejection != nullptr) {
+            columns[flat].outcome = CpuCandidatePoolColumnOutcome::kBuildRejected;
+            columns[flat].candidate_id = rejection->candidate_id;
+            columns[flat].candidate_payload_checksum = rejection->candidate_payload_checksum;
+            columns[flat].rejection_code = rejection->code;
+            column.rejection = std::move(*rejection);
+          } else {
+            candidates::GeneratedRouteCandidate generated =
+                std::get<candidates::GeneratedRouteCandidate>(std::move(draft));
+            if (generated.logical_bytes > config.limits.maximum_candidate_draft_bytes) {
+              column.fatal_error =
+                  Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
+                        "allocator.cpu_candidate_pool.draft_byte_replay.v1",
+                        "An alternative draft exceeded its conservative pre-generation byte bound",
+                        column.context->request.net, generated.logical_bytes,
+                        config.limits.maximum_candidate_draft_bytes);
+              return;
+            }
+            column.draft = std::move(generated);
+            columns[flat].candidate_id = column.draft->id;
+            columns[flat].candidate_payload_checksum = column.draft->payload_checksum;
+          }
+        } catch (const std::bad_alloc&) {
+          column.fatal_error = Error(CpuCandidatePoolPreparationErrorCode::kResourceExhausted,
+                                     "allocator.cpu_candidate_pool.worker_memory.v1",
+                                     "An alternative CPU worker exhausted bounded host memory",
+                                     column.context->request.net);
+        } catch (const std::length_error&) {
+          column.fatal_error = Error(CpuCandidatePoolPreparationErrorCode::kResourceExhausted,
+                                     "allocator.cpu_candidate_pool.worker_container.v1",
+                                     "An alternative CPU worker exhausted host container limits",
+                                     column.context->request.net);
+        } catch (...) {
+          column.fatal_error = Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
+                                     "allocator.cpu_candidate_pool.worker_exception.v1",
+                                     "An alternative CPU worker raised an unexpected exception",
+                                     column.context->request.net);
         }
-      } catch (const std::bad_alloc&) {
-        column.fatal_error = Error(CpuCandidatePoolPreparationErrorCode::kResourceExhausted,
-                                   "allocator.cpu_candidate_pool.worker_memory.v1",
-                                   "An alternative CPU worker exhausted bounded host memory",
-                                   column.context->request.net);
-      } catch (const std::length_error&) {
-        column.fatal_error = Error(CpuCandidatePoolPreparationErrorCode::kResourceExhausted,
-                                   "allocator.cpu_candidate_pool.worker_container.v1",
-                                   "An alternative CPU worker exhausted host container limits",
-                                   column.context->request.net);
-      } catch (...) {
-        column.fatal_error = Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
-                                   "allocator.cpu_candidate_pool.worker_exception.v1",
-                                   "An alternative CPU worker raised an unexpected exception",
-                                   column.context->request.net);
-      }
-    });
-    if (const auto fatal = FirstFatal(work); fatal.has_value()) {
-      return *fatal;
-    }
-
-    std::vector<candidates::CandidateStoreExpectedPool> expected_pools;
-    expected_pools.reserve(net_count);
-    for (const PreparedNetRoutingContext& context : workload.nets()) {
-      expected_pools.push_back(candidates::CandidateStoreExpectedPool{
-          .net = context.request.net,
-          .associations = candidates::AssociationsFor(board, context.compiled_board),
-          .candidates = {},
       });
-    }
-    std::vector<candidates::CandidateInvocationItem> invocation_items;
-    invocation_items.reserve(column_count);
-    for (WorkColumn& column : work) {
-      if (!column.executed) {
-        continue;
+      if (CpuCandidatePoolPreparationError* fatal = FirstFatal(work); fatal != nullptr) {
+        return WithFailedPreparationObservation(std::move(*fatal), board, workload, config,
+                                                batch_identity, work, std::move(attempted_columns));
       }
-      if (column.draft.has_value()) {
-        invocation_items.emplace_back(candidates::CandidateInvocationGeneratedItem{
-            .compiled_board = std::cref(column.context->compiled_board),
-            .request = std::move(*column.request),
-            .generated = std::move(*column.draft),
-        });
-      } else if (column.rejection.has_value()) {
-        invocation_items.emplace_back(std::move(*column.rejection));
-      } else {
-        return Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
-                     "allocator.cpu_candidate_pool.worker_result.v1",
-                     "An executed CPU column produced no publication item",
-                     column.context->request.net);
-      }
-    }
-    candidates::CandidateStoreInvocationAdmissionResult publication_result =
-        candidate_store->AdmitInvocationIfSourcePoolsMatch(board, std::move(expected_pools),
-                                                           std::move(invocation_items));
-    if (const auto* failure = std::get_if<candidates::CandidateStoreError>(&publication_result);
-        failure != nullptr) {
-      return Error(failure->code == candidates::CandidateStoreErrorCode::kResourceExhausted
-                       ? CpuCandidatePoolPreparationErrorCode::kResourceExhausted
-                       : CpuCandidatePoolPreparationErrorCode::kCandidateStore,
-                   "allocator.cpu_candidate_pool.store_publication.v1",
-                   "Fresh CandidateStore rejected the atomic CPU preparation invocation");
-    }
-    std::vector<candidates::CandidateStoreAdmissionResult> publication =
-        std::get<std::vector<candidates::CandidateStoreAdmissionResult>>(
-            std::move(publication_result));
-    for (const candidates::CandidateStoreAdmissionResult& result : publication) {
-      std::uint64_t query_identity = 0;
-      if (const auto* stored = std::get_if<candidates::StoredCandidate>(&result);
-          stored != nullptr) {
-        query_identity = (*stored)->data().provenance.query_identity;
-      } else {
-        query_identity = std::get<candidates::CandidateRejection>(result).provenance.query_identity;
-      }
-      if (query_identity == 0 || query_identity > columns.size() ||
-          !work[query_identity - 1U].executed) {
-        return Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
-                     "allocator.cpu_candidate_pool.publication_correlation.v1",
-                     "CandidateStore returned an outcome without its canonical CPU column");
-      }
-      CpuCandidatePoolColumnRecord& column = columns[query_identity - 1U];
-      if (const auto* stored = std::get_if<candidates::StoredCandidate>(&result);
-          stored != nullptr) {
-        column.outcome = CpuCandidatePoolColumnOutcome::kAdmitted;
-        column.candidate_id = (*stored)->id();
-        column.candidate_payload_checksum = (*stored)->data().payload_checksum;
-        column.rejection_code.reset();
-      } else {
-        const candidates::CandidateRejection& rejection =
-            std::get<candidates::CandidateRejection>(result);
-        column.candidate_id = rejection.candidate_id;
-        column.candidate_payload_checksum = rejection.candidate_payload_checksum;
-        column.rejection_code = rejection.code;
-        if (IsDuplicateCode(rejection.code)) {
-          column.outcome = CpuCandidatePoolColumnOutcome::kDuplicate;
-        } else if (column.outcome != CpuCandidatePoolColumnOutcome::kRouteDisconnected &&
-                   column.outcome != CpuCandidatePoolColumnOutcome::kRouteUnsupported &&
-                   column.outcome != CpuCandidatePoolColumnOutcome::kBuildRejected) {
-          column.outcome = CpuCandidatePoolColumnOutcome::kAdmissionRejected;
+
+      UWide actual_route_work = 0;
+      for (const CpuCandidatePoolColumnRecord& column : columns) {
+        actual_route_work += column.route_work_units;
+        if (actual_route_work > config.limits.maximum_total_route_work_units) {
+          return fail_after_queries(Error(
+              CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
+              "allocator.cpu_candidate_pool.route_work_replay.v2",
+              "Actual CPU route work exceeded its accepted aggregate preflight bound", column.net,
+              NarrowWitness(actual_route_work), config.limits.maximum_total_route_work_units));
         }
       }
-    }
+      const std::uint64_t actual_route_work_units = static_cast<std::uint64_t>(actual_route_work);
 
-    CpuCandidatePoolPreparationCounters counters;
-    counters.requested_columns = column_count;
-    std::vector<CandidatePool> pools;
-    pools.reserve(net_count);
-    for (const PreparedNetRoutingContext& context : workload.nets()) {
-      std::vector<candidates::StoredCandidate> retained =
-          candidate_store->Enumerate(context.request.net);
-      counters.retained_candidates += retained.size();
-      pools.push_back(CandidatePool{.net = context.request.net, .candidates = std::move(retained)});
-    }
-    std::ranges::sort(pools, [](const CandidatePool& left, const CandidatePool& right) {
-      return NetBefore(left.net, right.net);
-    });
-    for (const WorkColumn& column : work) {
-      if (column.executed) {
-        ++counters.executed_route_queries;
+      std::vector<candidates::CandidateStoreExpectedPool> expected_pools;
+      expected_pools.reserve(net_count);
+      for (const PreparedNetRoutingContext& context : workload.nets()) {
+        expected_pools.push_back(candidates::CandidateStoreExpectedPool{
+            .net = context.request.net,
+            .associations = candidates::AssociationsFor(board, context.compiled_board),
+            .candidates = {},
+        });
       }
-    }
-    for (const CpuCandidatePoolColumnRecord& column : columns) {
-      switch (column.outcome) {
-        case CpuCandidatePoolColumnOutcome::kAdmitted:
-          ++counters.successful_routes;
-          ++counters.built_candidates;
-          ++counters.admitted_candidates;
-          break;
-        case CpuCandidatePoolColumnOutcome::kDuplicate:
-          ++counters.successful_routes;
-          ++counters.built_candidates;
-          ++counters.duplicate_candidates;
-          ++counters.rejected_columns;
-          break;
-        case CpuCandidatePoolColumnOutcome::kRouteDisconnected:
-          ++counters.disconnected_proofs;
-          ++counters.rejected_columns;
-          break;
-        case CpuCandidatePoolColumnOutcome::kRouteUnsupported:
-          ++counters.unsupported_proofs;
-          ++counters.rejected_columns;
-          break;
-        case CpuCandidatePoolColumnOutcome::kSkippedAfterDisconnectedProof:
-        case CpuCandidatePoolColumnOutcome::kSkippedAfterUnsupportedProof:
-          ++counters.skipped_columns;
-          ++counters.rejected_columns;
-          break;
-        case CpuCandidatePoolColumnOutcome::kBuildRejected:
-          ++counters.successful_routes;
-          ++counters.rejected_columns;
-          break;
-        case CpuCandidatePoolColumnOutcome::kAdmissionRejected:
-          ++counters.successful_routes;
-          ++counters.built_candidates;
-          ++counters.rejected_columns;
-          break;
+      std::vector<candidates::CandidateInvocationItem> invocation_items;
+      invocation_items.reserve(column_count);
+      for (WorkColumn& column : work) {
+        if (!column.executed) {
+          continue;
+        }
+        if (column.draft.has_value()) {
+          invocation_items.emplace_back(candidates::CandidateInvocationGeneratedItem{
+              .compiled_board = std::cref(column.context->compiled_board),
+              .request = std::move(*column.request),
+              .generated = std::move(*column.draft),
+          });
+        } else if (column.rejection.has_value()) {
+          invocation_items.emplace_back(std::move(*column.rejection));
+        } else {
+          return fail_after_queries(Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
+                                          "allocator.cpu_candidate_pool.worker_result.v1",
+                                          "An executed CPU column produced no publication item",
+                                          column.context->request.net));
+        }
       }
+      candidates::CandidateStoreInvocationAdmissionResult publication_result =
+          candidate_store->AdmitInvocationIfSourcePoolsMatch(board, std::move(expected_pools),
+                                                             std::move(invocation_items));
+      if (const auto* failure = std::get_if<candidates::CandidateStoreError>(&publication_result);
+          failure != nullptr) {
+        return fail_after_queries(
+            Error(failure->code == candidates::CandidateStoreErrorCode::kResourceExhausted
+                      ? CpuCandidatePoolPreparationErrorCode::kResourceExhausted
+                      : CpuCandidatePoolPreparationErrorCode::kCandidateStore,
+                  "allocator.cpu_candidate_pool.store_publication.v1",
+                  "Fresh CandidateStore rejected the atomic CPU preparation invocation"));
+      }
+      candidate_store_publication_committed = true;
+#ifdef APGAR_CPU_CANDIDATE_POOL_PREPARATION_FAULT_TEST_VARIANT
+      MaybeInjectPreparationStageFault(
+          internal::CpuCandidatePoolPreparationFaultForTesting::kPostPublicationBadAlloc);
+      MaybeInjectPreparationStageFault(internal::CpuCandidatePoolPreparationFaultForTesting::
+                                           kPostPublicationUnexpectedException);
+#endif
+      std::vector<candidates::CandidateStoreAdmissionResult> publication =
+          std::get<std::vector<candidates::CandidateStoreAdmissionResult>>(
+              std::move(publication_result));
+      for (const candidates::CandidateStoreAdmissionResult& result : publication) {
+        std::uint64_t query_identity = 0;
+        if (const auto* stored = std::get_if<candidates::StoredCandidate>(&result);
+            stored != nullptr) {
+          query_identity = (*stored)->data().provenance.query_identity;
+        } else {
+          query_identity =
+              std::get<candidates::CandidateRejection>(result).provenance.query_identity;
+        }
+        if (query_identity == 0 || query_identity > columns.size() ||
+            !work[query_identity - 1U].executed) {
+          return fail_after_queries(
+              Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
+                    "allocator.cpu_candidate_pool.publication_correlation.v1",
+                    "CandidateStore returned an outcome without its canonical CPU column"));
+        }
+        CpuCandidatePoolColumnRecord& column = columns[query_identity - 1U];
+        if (const auto* stored = std::get_if<candidates::StoredCandidate>(&result);
+            stored != nullptr) {
+          column.outcome = CpuCandidatePoolColumnOutcome::kAdmitted;
+          column.candidate_id = (*stored)->id();
+          column.candidate_payload_checksum = (*stored)->data().payload_checksum;
+          column.rejection_code.reset();
+        } else {
+          const candidates::CandidateRejection& rejection =
+              std::get<candidates::CandidateRejection>(result);
+          column.candidate_id = rejection.candidate_id;
+          column.candidate_payload_checksum = rejection.candidate_payload_checksum;
+          column.rejection_code = rejection.code;
+          if (IsDuplicateCode(rejection.code)) {
+            column.outcome = CpuCandidatePoolColumnOutcome::kDuplicate;
+          } else if (column.outcome != CpuCandidatePoolColumnOutcome::kRouteDisconnected &&
+                     column.outcome != CpuCandidatePoolColumnOutcome::kRouteUnsupported &&
+                     column.outcome != CpuCandidatePoolColumnOutcome::kBuildRejected) {
+            column.outcome = CpuCandidatePoolColumnOutcome::kAdmissionRejected;
+          }
+        }
+      }
+
+      CpuCandidatePoolPreparationCounters counters;
+      counters.requested_columns = column_count;
+      counters.route_work_units = actual_route_work_units;
+      std::vector<CandidatePool> pools;
+      pools.reserve(net_count);
+      for (const PreparedNetRoutingContext& context : workload.nets()) {
+        std::vector<candidates::StoredCandidate> retained =
+            candidate_store->Enumerate(context.request.net);
+        counters.retained_candidates += retained.size();
+        pools.push_back(
+            CandidatePool{.net = context.request.net, .candidates = std::move(retained)});
+      }
+      std::ranges::sort(pools, [](const CandidatePool& left, const CandidatePool& right) {
+        return NetBefore(left.net, right.net);
+      });
+      for (const WorkColumn& column : work) {
+        if (column.executed) {
+          ++counters.executed_route_queries;
+        }
+      }
+      for (const CpuCandidatePoolColumnRecord& column : columns) {
+        switch (column.outcome) {
+          case CpuCandidatePoolColumnOutcome::kAdmitted:
+            ++counters.successful_routes;
+            ++counters.built_candidates;
+            ++counters.admitted_candidates;
+            break;
+          case CpuCandidatePoolColumnOutcome::kDuplicate:
+            ++counters.successful_routes;
+            ++counters.built_candidates;
+            ++counters.duplicate_candidates;
+            ++counters.rejected_columns;
+            break;
+          case CpuCandidatePoolColumnOutcome::kRouteDisconnected:
+            ++counters.disconnected_proofs;
+            ++counters.rejected_columns;
+            break;
+          case CpuCandidatePoolColumnOutcome::kRouteUnsupported:
+            ++counters.unsupported_proofs;
+            ++counters.rejected_columns;
+            break;
+          case CpuCandidatePoolColumnOutcome::kSkippedAfterDisconnectedProof:
+          case CpuCandidatePoolColumnOutcome::kSkippedAfterUnsupportedProof:
+            ++counters.skipped_columns;
+            ++counters.rejected_columns;
+            break;
+          case CpuCandidatePoolColumnOutcome::kBuildRejected:
+            ++counters.successful_routes;
+            ++counters.rejected_columns;
+            break;
+          case CpuCandidatePoolColumnOutcome::kAdmissionRejected:
+            ++counters.successful_routes;
+            ++counters.built_candidates;
+            ++counters.rejected_columns;
+            break;
+        }
+      }
+      const std::uint64_t checksum =
+          PreparationChecksum(config, batch_identity, counters, columns, pools);
+      return PreparedCpuCandidatePools(config, batch_identity, counters, std::move(columns),
+                                       std::move(pools), std::move(candidate_store), checksum);
+    } catch (const std::bad_alloc&) {
+      return fail_after_queries(Error(CpuCandidatePoolPreparationErrorCode::kResourceExhausted,
+                                      "allocator.cpu_candidate_pool.post_query_memory.v2",
+                                      "Host allocation failed after CPU routing work began"));
+    } catch (const std::length_error&) {
+      return fail_after_queries(
+          Error(CpuCandidatePoolPreparationErrorCode::kResourceExhausted,
+                "allocator.cpu_candidate_pool.post_query_container.v2",
+                "Host container limits were exhausted after CPU routing work began"));
+    } catch (...) {
+      return fail_after_queries(
+          Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
+                "allocator.cpu_candidate_pool.post_query_unexpected_exception.v2",
+                "An unexpected exception escaped after CPU routing work began"));
     }
-    const std::uint64_t checksum =
-        PreparationChecksum(config, batch_identity, counters, columns, pools);
-    return PreparedCpuCandidatePools(config, batch_identity, counters, std::move(columns),
-                                     std::move(pools), std::move(candidate_store), checksum);
   } catch (const std::bad_alloc&) {
     return Error(CpuCandidatePoolPreparationErrorCode::kResourceExhausted,
                  "allocator.cpu_candidate_pool.host_memory.v1",
@@ -1304,6 +1514,10 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
     return Error(CpuCandidatePoolPreparationErrorCode::kResourceExhausted,
                  "allocator.cpu_candidate_pool.host_container.v1",
                  "Host container limits were exhausted within CPU preparation bounds");
+  } catch (...) {
+    return Error(CpuCandidatePoolPreparationErrorCode::kInternalInvariant,
+                 "allocator.cpu_candidate_pool.host_unexpected_exception.v2",
+                 "An unexpected exception escaped before CPU routing work began");
   }
 }
 

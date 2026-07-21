@@ -1,6 +1,7 @@
 # ADR-025: Reusable CPU Candidate-Allocation Session
 
-**Status:** Accepted for the eleventh Phase 4 vertical slice
+**Status:** Accepted for the eleventh Phase 4 vertical slice; amended before
+canonical evidence by ADR-026
 **Date:** July 20, 2026
 **Applies to:** The composed reusable-candidate CPU contender used by Phase 4
 equal-budget evidence
@@ -17,13 +18,14 @@ repeats regeneration deterministically, freezes a final pool, and exposes the
 board-level contender outcome required by the evidence runner.
 
 The composed owner must also close a transactional failure gap. Targeted
-Regeneration Execution v2 can report a failure after its atomic CandidateStore
+Regeneration Execution v3 can report a failure after its atomic CandidateStore
 publication committed. A factory that consumes and destroys the sole store on
 that error would erase authoritative state while claiming only an observation.
 
 ## Decision
 
-- Adopt `schemas/allocator/cpu_candidate_allocation_session_v1.md`.
+- Preserve `schemas/allocator/cpu_candidate_allocation_session_v1.md` and adopt
+  `schemas/allocator/cpu_candidate_allocation_session_v2.md` for production.
 - Accept the Board, workload, capacities, and prepared pools by rvalue
   reference, but move them into the session only after every composed step
   succeeds. On error they remain caller-owned. A post-publication failed
@@ -35,7 +37,7 @@ that error would erase authoritative state while claiming only an observation.
   before store destruction.
 - Build one initial negotiated-price state and One-World allocation from the
   authentic prepared pools. If infeasible, repeat bounded Targeted
-  Regeneration Execution v2 epochs on one common One-World lineage. Replace
+  Regeneration Execution v3 epochs on one common One-World lineage. Replace
   the full pools, state, request, and world only after one successful atomic
   epoch, and retain compact immutable evidence rather than lease-bearing prior
   executions.
@@ -73,6 +75,9 @@ that error would erase authoritative state while claiming only an observation.
   price/One-World/Multi-World identities into one stable session checksum.
   Worker count, address, lease identity, wall time, and completion order remain
   operational only.
+- Include the nested execution's caller-rooted deterministic seed in the
+  session configuration and checksum, so every targeted epoch remains rooted
+  in the same paired-trial seed without relying on an incidental batch label.
 - Canonicalize a private configuration copy by schedule key before execution,
   storage, and hashing. Final result assembly performs only nonthrowing moves
   from caller inputs. Move assignment is intentionally deleted so replacement

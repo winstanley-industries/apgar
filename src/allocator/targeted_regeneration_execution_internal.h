@@ -9,14 +9,14 @@
 
 namespace apgar::allocator::internal {
 
-[[nodiscard]] bool TargetedRegenerationExecutionConfigIsValidV2(
+[[nodiscard]] bool TargetedRegenerationExecutionConfigIsValidV3(
     const TargetedRegenerationExecutionConfig& config) noexcept;
 
 [[nodiscard]] routing::PlanarRouteRequest BuildTargetedRegenerationRouteRequestV1(
     const routing::PlanarRouteRequest& source,
     const routing::CandidateGenerationPolicy& candidate_policy);
 
-struct TargetedRegenerationExecutionChecksumHeaderV2 {
+struct TargetedRegenerationExecutionChecksumHeaderV3 {
   std::uint32_t schema_version = 0;
   std::uint64_t plan_checksum = 0;
   TargetedRegenerationExecutionConfig config;
@@ -32,8 +32,8 @@ struct TargetedRegenerationExecutionChecksumHeaderV2 {
   TargetedRegenerationExecutionCounters counters;
 };
 
-[[nodiscard]] std::uint64_t ComputeTargetedRegenerationExecutionChecksumV2(
-    const TargetedRegenerationExecutionChecksumHeaderV2& header,
+[[nodiscard]] std::uint64_t ComputeTargetedRegenerationExecutionChecksumV3(
+    const TargetedRegenerationExecutionChecksumHeaderV3& header,
     std::span<const TargetedRegenerationColumnRecord> columns) noexcept;
 
 [[nodiscard]] std::optional<std::uint64_t> ComputeTargetedRegenerationMaximumDraftBytesV2(
@@ -64,7 +64,7 @@ struct TargetedRegenerationExecutionChecksumHeaderV2 {
 [[nodiscard]] std::optional<std::uint64_t> ComputeTargetedRegenerationColumnLogicalBytesV2(
     const TargetedRegenerationColumnRecord& column) noexcept;
 
-[[nodiscard]] std::uint64_t ComputeTargetedRegenerationFailedObservationChecksumV2(
+[[nodiscard]] std::uint64_t ComputeTargetedRegenerationFailedObservationChecksumV3(
     std::uint64_t plan_checksum, const TargetedRegenerationExecutionConfig& config,
     const candidates::CandidateStoreConfig& store_config,
     bool candidate_store_publication_committed, TargetedRegenerationExecutionErrorCode error_code,
@@ -74,6 +74,7 @@ struct TargetedRegenerationExecutionChecksumHeaderV2 {
 enum class TargetedRegenerationHostFailureForTesting : std::uint8_t {
   kBadAlloc = 0,
   kLengthError = 1,
+  kUnexpectedException = 2,
 };
 
 enum class TargetedRegenerationRejectionEvidenceBoundaryForTesting : std::uint8_t {

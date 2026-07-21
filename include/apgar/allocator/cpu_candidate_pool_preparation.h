@@ -15,7 +15,8 @@
 namespace apgar::allocator {
 
 inline constexpr std::uint32_t kPersistentCpuCandidatePoolPreparerSchemaVersion = 1;
-inline constexpr std::uint32_t kCpuCandidatePoolPreparationSchemaVersion = 1;
+inline constexpr std::uint32_t kCpuCandidatePoolPreparationSchemaVersionV1 = 1;
+inline constexpr std::uint32_t kCpuCandidatePoolPreparationSchemaVersion = 2;
 inline constexpr std::uint32_t kMaximumPersistentCpuCandidateWorkersV1 = 64;
 inline constexpr std::uint64_t kMaximumCpuCandidatePoolQueriesV1 = 1'000'000;
 inline constexpr std::uint64_t kMaximumCpuCandidatePoolRouteWorkUnitsV1 = 1'000'000'000'000'000ULL;
@@ -81,6 +82,7 @@ struct CpuCandidatePoolColumnRecord {
   std::uint64_t policy_identity = 0;
   std::uint64_t batch_identity = 0;
   std::uint64_t query_identity = 0;
+  std::uint64_t route_work_units = 0;
   CpuCandidatePoolColumnOutcome outcome =
       CpuCandidatePoolColumnOutcome::kSkippedAfterDisconnectedProof;
   std::optional<candidates::CandidateId> candidate_id;
@@ -94,6 +96,7 @@ struct CpuCandidatePoolColumnRecord {
 struct CpuCandidatePoolPreparationCounters {
   std::uint64_t requested_columns = 0;
   std::uint64_t executed_route_queries = 0;
+  std::uint64_t route_work_units = 0;
   std::uint64_t successful_routes = 0;
   std::uint64_t disconnected_proofs = 0;
   std::uint64_t unsupported_proofs = 0;
@@ -132,6 +135,62 @@ enum class CpuCandidatePoolPreparationErrorCode : std::uint8_t {
   kInternalInvariant = 10,
 };
 
+enum class CpuCandidatePoolAttemptState : std::uint8_t {
+  kQueryInFlight = 0,
+  kRouteSucceeded = 1,
+  kRouteFailed = 2,
+};
+
+struct CpuCandidatePoolAttemptedColumnRecord {
+  board_ir::EntityRef net{};
+  std::uint32_t candidate_ordinal = 0;
+  std::uint64_t policy_identity = 0;
+  std::uint64_t batch_identity = 0;
+  std::uint64_t query_identity = 0;
+  std::uint64_t route_work_units = 0;
+  CpuCandidatePoolAttemptState state = CpuCandidatePoolAttemptState::kQueryInFlight;
+  std::optional<routing::RouteFailureCode> route_failure_code;
+
+  friend bool operator==(const CpuCandidatePoolAttemptedColumnRecord&,
+                         const CpuCandidatePoolAttemptedColumnRecord&) = default;
+};
+
+struct CpuCandidatePoolFailedPreparationCounters {
+  std::uint64_t requested_columns = 0;
+  std::uint64_t route_queries = 0;
+  std::uint64_t route_work_units = 0;
+
+  friend bool operator==(const CpuCandidatePoolFailedPreparationCounters&,
+                         const CpuCandidatePoolFailedPreparationCounters&) = default;
+};
+
+struct CpuCandidatePoolFailedPreparationObservation {
+  std::uint32_t schema_version = kCpuCandidatePoolPreparationSchemaVersion;
+  std::uint64_t board_content_hash = 0;
+  std::uint64_t workload_checksum = 0;
+  CpuCandidatePoolPreparationConfig config;
+  std::uint64_t batch_identity = 0;
+  CpuCandidatePoolFailedPreparationCounters counters;
+  std::vector<CpuCandidatePoolAttemptedColumnRecord> attempted_columns;
+  bool candidate_store_publication_committed = false;
+  std::unique_ptr<candidates::CandidateStore> authoritative_candidate_store;
+  std::uint64_t observation_checksum = 0;
+
+  friend bool operator==(const CpuCandidatePoolFailedPreparationObservation& left,
+                         const CpuCandidatePoolFailedPreparationObservation& right) {
+    return left.schema_version == right.schema_version &&
+           left.board_content_hash == right.board_content_hash &&
+           left.workload_checksum == right.workload_checksum && left.config == right.config &&
+           left.batch_identity == right.batch_identity && left.counters == right.counters &&
+           left.attempted_columns == right.attempted_columns &&
+           left.candidate_store_publication_committed ==
+               right.candidate_store_publication_committed &&
+           static_cast<bool>(left.authoritative_candidate_store) ==
+               static_cast<bool>(right.authoritative_candidate_store) &&
+           left.observation_checksum == right.observation_checksum;
+  }
+};
+
 struct CpuCandidatePoolPreparationError {
   CpuCandidatePoolPreparationErrorCode code =
       CpuCandidatePoolPreparationErrorCode::kInvalidConfiguration;
@@ -140,6 +199,7 @@ struct CpuCandidatePoolPreparationError {
   std::optional<board_ir::EntityRef> net;
   std::uint64_t required = 0;
   std::uint64_t configured = 0;
+  std::optional<CpuCandidatePoolFailedPreparationObservation> failed_preparation;
 
   friend bool operator==(const CpuCandidatePoolPreparationError&,
                          const CpuCandidatePoolPreparationError&) = default;

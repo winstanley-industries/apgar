@@ -1,6 +1,7 @@
 # ADR-023: Persistent CPU Candidate-Pool Preparation
 
-**Status:** Accepted for the ninth Phase 4 vertical slice
+**Status:** Accepted for the ninth Phase 4 vertical slice; amended before
+canonical evidence by ADR-026
 **Date:** July 20, 2026
 **Applies to:** Initial authentic `4/8/16` per-net candidate pools used by
 Phase 4 allocation sessions
@@ -21,7 +22,8 @@ overload without changing legacy results.
 
 ## Decision
 
-- Adopt `schemas/allocator/cpu_candidate_pool_preparation_v1.md`.
+- Preserve `schemas/allocator/cpu_candidate_pool_preparation_v1.md` and adopt
+  `schemas/allocator/cpu_candidate_pool_preparation_v2.md` for production.
 - Add per-query CPU A* bounds for work units, records, queue entries, and
   reconstruction states. A work unit is one queue pop, attempted legal-edge
   relaxation, or reconstructed state. Equality is accepted; a one-under bound
@@ -57,6 +59,18 @@ overload without changing legacy results.
   for every workload net, complete ordered column records, counters, semantic
   batch identity, and replay checksum. It retains no borrowed Board or workload
   reference.
+- Retain exact CPU A* work units on every executed canonical column and their
+  widened aggregate sum. Ordinary failures use available failure telemetry;
+  skipped alternatives retain zero. Both column and aggregate work are replay
+  fields, independent of the conservative opportunity preflight.
+- A fatal error after query start retains a checksum-covered, canonical roster
+  of every attempted query in the completed worker wave, its available route
+  work and route result stage. Every later host, synthesis, staging,
+  publication, correlation, and assembly error carries the same bounded
+  observation. It hashes an authoritative publication-committed bit; a
+  post-commit error transfers ownership of the committed CandidateStore into
+  the observation, while a pre-commit error owns no store. Preflight and
+  pre-query failures remain plain errors.
 
 ## Consequences
 

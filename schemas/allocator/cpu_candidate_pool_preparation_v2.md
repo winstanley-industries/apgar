@@ -1,17 +1,13 @@
-# CPU Candidate-Pool Preparation v1
+# CPU Candidate-Pool Preparation v2
 
-> Superseded for production preparation by CPU Candidate-Pool Preparation v2.
-> This frozen document preserves the version-1 replay encoding. Current
-> production callers reject version `1` and must use schema version `2`.
-
-CPU Candidate-Pool Preparation v1 defines the initial authentic candidate
+CPU Candidate-Pool Preparation v2 defines the initial authentic candidate
 pools consumed by Phase 4 allocation sessions.
 
 ## Inputs and ownership
 
 One synchronous invocation receives:
 
-- schema version `1`;
+- schema version `2`; version `1` is rejected before worker dispatch;
 - an exact Board Snapshot and authentic canonical `MultiNetWorkload` for that
   Board;
 - one persistent preparer configured with an explicit worker count in
@@ -76,6 +72,11 @@ before atomic publication.
 Canonical net order comes from the workload. Column order is net-major then
 zero-based candidate ordinal. Executed queries use the one-based canonical
 column index. Skipped columns use query identity `0` and policy identity `0`.
+Every executed column records the exact CPU A* `work_units` returned by its
+route or ordinary route-failure telemetry. An ordinary failure without route
+telemetry records zero. Skipped columns always record zero. The aggregate
+counter is the exact widened sum of ordered column work and must remain within
+the accepted conservative aggregate preflight bound.
 
 The base policy copies the workload request policy, replaces its candidate
 ordinal with zero, and derives a per-net seed from the configured seed,
@@ -123,7 +124,8 @@ that distinction, fails atomically, and leaves its persistent workers reusable.
 ## Column records and counters
 
 Every requested column records net, ordinal, policy, batch/query identity,
-outcome, and optional candidate ID, payload checksum, and rejection code.
+actual route work, outcome, and optional candidate ID, payload checksum, and
+rejection code.
 Outcomes are:
 
 1. admitted;
@@ -135,7 +137,7 @@ Outcomes are:
 7. candidate build rejected; or
 8. exact/store admission rejected.
 
-Counters record requested columns, executed queries, successful routes,
+Counters record requested columns, executed queries, actual route work, successful routes,
 disconnected and unsupported proofs, skipped columns, built candidates,
 admitted candidates, duplicates, rejected columns, and retained candidates.
 Explicit empty pools are returned for nets with no admitted candidate.
@@ -162,17 +164,17 @@ The complete semantic configuration encoding is, in order:
    ten `u64`.
 
 The nonzero batch identity hashes the domain
-`APGAR-CPU-CANDIDATE-POOL-BATCH-V1`, Board hash, workload checksum, and the
+`APGAR-CPU-CANDIDATE-POOL-BATCH-V2`, Board hash, workload checksum, and the
 complete semantic preparation configuration, including CandidateStore limits.
 The domain uses the string encoding above. Board and workload hashes are two
 `u64` before the configuration. A zero final hash is remapped to `1`. The
 representation fixture uses Board/workload `(127, 131)` and the prime-valued
 configuration in the compatibility test; its batch identity is
-`5572961570777735953`. Persistent worker count and operational telemetry are
+`9699625364364086907`. Persistent worker count and operational telemetry are
 excluded.
 
 The replay checksum hashes the domain
-`APGAR-CPU-CANDIDATE-POOL-PREPARATION-V1`, the same configuration, batch
+`APGAR-CPU-CANDIDATE-POOL-PREPARATION-V2`, the same configuration, batch
 identity, all counters, every ordered column field with presence tags, and each
 ordered retained pool's candidate IDs and payload checksums. Worker count,
 completion order, elapsed time, pointer identity, and runtime thread identity
@@ -181,9 +183,10 @@ are excluded.
 After the domain and configuration, encode:
 
 1. batch identity as `u64`;
-2. the eleven counters in declaration order as `u64`;
+2. the twelve counters in declaration order as `u64`;
 3. column count as `u64`, then each column as net ID `u64`, generation `u32`,
-   ordinal `u32`, policy/batch/query identities as three `u64`, outcome `u8`,
+   ordinal `u32`, policy/batch/query identities and actual route work as four
+   `u64`, outcome `u8`,
    candidate-ID presence `u8` and optional high/low `u64`, payload presence
    `u8` and optional `u64`, rejection presence `u8` and optional code `u8`;
 4. pool count as `u64`, then each pool as net ID `u64`, generation `u32`,
@@ -193,7 +196,37 @@ After the domain and configuration, encode:
 Outcome tags `0..7` follow the listed outcome order above. Candidate rejection
 tags are defined by `schemas/candidate/rejection_v1.md`. The two-column/two-pool prime-valued
 representation fixture in the compatibility test has checksum
-`15531823249808920296` when its batch identity is the golden above.
+`3669270561708826273` when its batch identity is the golden above.
+
+## Failed preparation observation
+
+A fatal error after at least one CPU query starts returns a bounded diagnostic
+observation on the preparation error. It contains Board and workload identity,
+the complete configuration and batch identity, requested columns, attempted
+queries, available actual route work, and every actually attempted column in
+canonical order. An attempt records net, ordinal, scheduling identities, work,
+whether the route call is in flight, succeeded, or failed, and the optional
+route-failure code. A returned route failure uses its telemetry; absent
+telemetry records zero. Every dispatched wave joins before the observation is
+assembled, and a fatal base wave never dispatches alternatives.
+
+Domain `APGAR-CPU-CANDIDATE-POOL-FAILED-PREPARATION-V2` hashes schema, Board and
+workload identities, complete configuration, batch identity, parent error code,
+the CandidateStore-publication-committed boolean, the three counters, and every
+attempted-column field with a presence tag for the route-failure code. The
+prime-valued representation fixture with an uncommitted store hashes to
+`3718100591794585442`.
+
+Every host, policy, worker, staging, publication, correlation, or assembly
+failure after the first query starts carries this observation. Before atomic
+publication, the commit bit is false and the observation owns no store. Once
+the atomic publication succeeds, the commit bit becomes true; any later error
+transfers the authoritative committed CandidateStore into the move-only
+observation rather than destroying it or implying rollback. Store pointer
+identity and contents are not duplicated into the checksum: the checked commit
+bit declares whether the owned store is required, while CandidateStore's own
+typed associations and candidate evidence remain authoritative. A preflight or
+pre-query error has no failed observation.
 
 ## Deliberate boundary
 

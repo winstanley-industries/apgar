@@ -78,6 +78,14 @@ TEST(CpuCandidatePoolPreparationCorpusTest,
     EXPECT_EQ(prepared.counters().requested_columns, net_count * 4U);
     EXPECT_EQ(prepared.counters().executed_route_queries,
               corpus.descriptor.declared_reachable_net_count * 4U + unreachable);
+    std::uint64_t route_work = 0;
+    for (const CpuCandidatePoolColumnRecord& column : prepared.columns()) {
+      route_work += column.route_work_units;
+      if (column.query_identity == 0) {
+        EXPECT_EQ(column.route_work_units, 0U);
+      }
+    }
+    EXPECT_EQ(prepared.counters().route_work_units, route_work);
     EXPECT_EQ(prepared.counters().disconnected_proofs + prepared.counters().unsupported_proofs,
               unreachable);
     EXPECT_EQ(prepared.counters().skipped_columns, unreachable * 3U);

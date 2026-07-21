@@ -1,7 +1,7 @@
 # ADR-019: Phase 4 CPU Targeted-Regeneration Execution
 
 **Status:** Accepted for the fifth Phase 4 vertical slice; amended by bounded
-execution v2 for the composed-session prerequisite
+execution v2 and by ADR-026 before canonical evidence
 **Date:** July 20, 2026
 **Applies to:** Authentic CPU column generation, conditional store publication,
 and deterministic progress or stall classification
@@ -22,8 +22,10 @@ resource vocabulary cannot represent.
 ## Decision
 
 - Preserve `schemas/allocator/targeted_regeneration_execution_v1.md` for its
-  original replay boundary and adopt
-  `schemas/allocator/targeted_regeneration_execution_v2.md` for production.
+  original replay boundary and
+  `schemas/allocator/targeted_regeneration_execution_v2.md` for the bounded
+  seedless boundary. Adopt
+  `schemas/allocator/targeted_regeneration_execution_v3.md` for production.
 - Execute a plan only while its CandidateStore-issued source lease is active
   and belongs to the exact store supplied to execution.
 - Reproduce the complete source manifest, next negotiated-price snapshot, and
@@ -79,8 +81,11 @@ resource vocabulary cannot represent.
   fit a hypothetical single draft. It retains presence-tagged available
   per-column CPU telemetry, aggregate and peak routing counters, exact draft
   bytes, and the complete CandidateStore configuration as replay evidence.
-- Version 2 batch identity binds the complete execution and CandidateStore
-  configurations. A per-query A* work or container bound is a typed work-bound
+- Version 3 batch identity binds the complete execution and CandidateStore
+  configurations. The execution configuration begins with a caller-rooted
+  deterministic seed; each per-target derived batch identity mixes that root
+  with the plan, net, target ordinal, execution limits, and store limits and is
+  then used as the normalized policy seed. A per-query A* work or container bound is a typed work-bound
   failure distinct from route-cost resource exhaustion; unpublished prior
   columns never enter CandidateStore state.
 - Retain every complete canonical rejection in its ordered column and checksum

@@ -1,5 +1,6 @@
 #include "apgar/allocator/cpu_candidate_pool_preparation.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -87,6 +88,19 @@ struct Fixture {
   return Fixture{.board = std::move(board), .workload = std::move(workload)};
 }
 
+[[nodiscard]] Fixture MakeUnsupportedLayerTransitionFixture() {
+  board_ir::BoardSnapshot board = Snapshot(test_support::ValidM1BoardData());
+  const std::array specs = {MultiNetRoutingSpec{
+      .routing_profile = board.data().routing_profile,
+      .start_layer = 0,
+      .goal_layer = 31,
+  }};
+  MultiNetWorkload workload = RequireWorkload(
+      BuildMultiNetWorkload(kMultiNetWorkloadSchemaVersion, board,
+                            test_support::DefaultCompilerProfile({0, 31}), specs, specs.size()));
+  return Fixture{.board = std::move(board), .workload = std::move(workload)};
+}
+
 [[nodiscard]] Fixture MakeDirectionalFixture(board_ir::Point64 goal) {
   board_ir::BoardData data = test_support::ValidM1BoardData();
   data.obstacles.clear();
@@ -101,6 +115,27 @@ struct Fixture {
   MultiNetWorkload workload = RequireWorkload(
       BuildMultiNetWorkload(kMultiNetWorkloadSchemaVersion, board,
                             test_support::DefaultCompilerProfile({0}), specs, specs.size()));
+  return Fixture{.board = std::move(board), .workload = std::move(workload)};
+}
+
+[[nodiscard]] Fixture MakeUniqueHorizontalCorridorFixture() {
+  board_ir::BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  board_ir::BoardSnapshot board = Snapshot(std::move(data));
+  geometry_compiler::CompilerProfile profile = test_support::DefaultCompilerProfile({0});
+  profile.heading_mask = static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal);
+  profile.compilation_roi = {
+      .min = {.x = 0, .y = 0},
+      .max = {.x = 100, .y = 0},
+  };
+  profile.active_regions = {{.layer = 0, .bounds = profile.compilation_roi}};
+  const std::array specs = {MultiNetRoutingSpec{
+      .routing_profile = board.data().routing_profile,
+      .start_layer = 0,
+      .goal_layer = 0,
+  }};
+  MultiNetWorkload workload = RequireWorkload(
+      BuildMultiNetWorkload(kMultiNetWorkloadSchemaVersion, board, profile, specs, specs.size()));
   return Fixture{.board = std::move(board), .workload = std::move(workload)};
 }
 
@@ -157,6 +192,14 @@ struct Fixture {
   return std::get<PreparedCpuCandidatePools>(std::move(result));
 }
 
+[[nodiscard]] std::uint64_t ColumnRouteWork(const PreparedCpuCandidatePools& prepared) noexcept {
+  std::uint64_t work = 0;
+  for (const CpuCandidatePoolColumnRecord& column : prepared.columns()) {
+    work += column.route_work_units;
+  }
+  return work;
+}
+
 void ExpectPoolSemanticsEqual(const PreparedCpuCandidatePools& left,
                               const PreparedCpuCandidatePools& right) {
   EXPECT_EQ(left.config(), right.config());
@@ -193,6 +236,8 @@ TEST(CpuCandidatePoolPreparationTest, WorkerCountDoesNotChangeSemanticOutput) {
   EXPECT_EQ(parallel->telemetry().workers_started, 4U);
   EXPECT_EQ(serial_result.counters().requested_columns, 8U);
   EXPECT_EQ(serial_result.counters().executed_route_queries, 8U);
+  EXPECT_GT(serial_result.counters().route_work_units, 0U);
+  EXPECT_EQ(serial_result.counters().route_work_units, ColumnRouteWork(serial_result));
   EXPECT_EQ(serial_result.pools().size(), 2U);
   EXPECT_EQ(
       serial_result.counters().retained_candidates,
@@ -231,8 +276,37 @@ TEST(CpuCandidatePoolPreparationTest, WorkBoundFailureLeavesPersistentWorkersReu
   const PreparedCpuCandidatePoolsResult failed =
       PrepareInitialCpuCandidatePools(*preparer, fixture.board, fixture.workload, bounded);
   ASSERT_TRUE(std::holds_alternative<CpuCandidatePoolPreparationError>(failed));
-  EXPECT_EQ(std::get<CpuCandidatePoolPreparationError>(failed).code,
-            CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded);
+  const CpuCandidatePoolPreparationError& failure =
+      std::get<CpuCandidatePoolPreparationError>(failed);
+  EXPECT_EQ(failure.code, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded);
+  ASSERT_TRUE(failure.failed_preparation.has_value());
+  const CpuCandidatePoolFailedPreparationObservation& observation = *failure.failed_preparation;
+  ASSERT_FALSE(observation.attempted_columns.empty());
+  EXPECT_EQ(observation.schema_version, kCpuCandidatePoolPreparationSchemaVersion);
+  EXPECT_EQ(observation.counters.requested_columns, 8U);
+  EXPECT_EQ(observation.counters.route_queries, observation.attempted_columns.size());
+  std::uint64_t observed_work = 0;
+  for (const CpuCandidatePoolAttemptedColumnRecord& column : observation.attempted_columns) {
+    EXPECT_EQ(column.state, CpuCandidatePoolAttemptState::kRouteFailed);
+    EXPECT_EQ(column.route_failure_code, routing::RouteFailureCode::kWorkBoundExceeded);
+    EXPECT_GT(column.route_work_units, 0U);
+    observed_work += column.route_work_units;
+  }
+  EXPECT_EQ(observation.counters.route_work_units, observed_work);
+  EXPECT_EQ(observation.observation_checksum,
+            internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                observation.board_content_hash, observation.workload_checksum, observation.config,
+                observation.batch_identity, failure.code,
+                observation.candidate_store_publication_committed, observation.counters,
+                observation.attempted_columns));
+  std::unique_ptr<PersistentCpuCandidatePoolPreparer> serial = Preparer(1);
+  const PreparedCpuCandidatePoolsResult serial_failed =
+      PrepareInitialCpuCandidatePools(*serial, fixture.board, fixture.workload, bounded);
+  ASSERT_TRUE(std::holds_alternative<CpuCandidatePoolPreparationError>(serial_failed));
+  const CpuCandidatePoolPreparationError& serial_failure =
+      std::get<CpuCandidatePoolPreparationError>(serial_failed);
+  ASSERT_TRUE(serial_failure.failed_preparation.has_value());
+  EXPECT_EQ(*serial_failure.failed_preparation, observation);
   const PersistentCpuCandidatePoolTelemetry after_failure = preparer->telemetry();
   EXPECT_EQ(after_failure.workers_started, 2U);
   EXPECT_EQ(after_failure.invocations_started, 1U);
@@ -256,22 +330,108 @@ TEST(CpuCandidatePoolPreparationTest, RecordsOneDisconnectedProofAndSkipsAlterna
   const PreparedCpuCandidatePools result =
       Prepared(PrepareInitialCpuCandidatePools(*preparer, fixture.board, fixture.workload, config));
 
+  const PreparedNetRoutingContext& context = fixture.workload.nets().front();
+  routing::PlanarRouteRequest oracle_request = context.request;
+  oracle_request.candidate_policy.deterministic_seed = internal::ComputeCpuCandidatePoolNetSeedV1(
+      config.deterministic_seed, fixture.workload.workload_checksum(), context.request.net);
+  oracle_request.candidate_policy.candidate_ordinal = 0;
+  routing::CpuRouteResult oracle = routing::RouteWithCpuAStar(fixture.board, context.compiled_board,
+                                                              oracle_request, config.route_limits);
+  ASSERT_TRUE(std::holds_alternative<routing::RouteFailure>(oracle));
+  const routing::RouteFailure& oracle_failure = std::get<routing::RouteFailure>(oracle);
+  EXPECT_EQ(oracle_failure.code, routing::RouteFailureCode::kDisconnected);
+  ASSERT_TRUE(oracle_failure.telemetry.has_value());
+  EXPECT_GT(oracle_failure.telemetry->work_units, 0U);
+
   ASSERT_EQ(result.columns().size(), 4U);
   EXPECT_EQ(result.columns()[0].outcome, CpuCandidatePoolColumnOutcome::kRouteDisconnected);
   EXPECT_NE(result.columns()[0].query_identity, 0U);
+  EXPECT_EQ(result.columns()[0].route_work_units, oracle_failure.telemetry->work_units);
   for (std::size_t index = 1; index < result.columns().size(); ++index) {
     EXPECT_EQ(result.columns()[index].outcome,
               CpuCandidatePoolColumnOutcome::kSkippedAfterDisconnectedProof);
     EXPECT_EQ(result.columns()[index].query_identity, 0U);
     EXPECT_EQ(result.columns()[index].policy_identity, 0U);
+    EXPECT_EQ(result.columns()[index].route_work_units, 0U);
   }
   EXPECT_EQ(result.counters().executed_route_queries, 1U);
+  EXPECT_EQ(result.counters().route_work_units, result.columns()[0].route_work_units);
   EXPECT_EQ(result.counters().disconnected_proofs, 1U);
   EXPECT_EQ(result.counters().skipped_columns, 3U);
   EXPECT_EQ(result.counters().retained_candidates, 0U);
   ASSERT_EQ(result.pools().size(), 1U);
   EXPECT_TRUE(result.pools()[0].candidates.empty());
   ASSERT_EQ(result.candidate_store().Rejections().size(), 1U);
+}
+
+TEST(CpuCandidatePoolPreparationTest, RecordsUnsupportedProofAndSkipsAlternatives) {
+  const Fixture fixture = MakeUnsupportedLayerTransitionFixture();
+  const CpuCandidatePoolPreparationConfig config = Config(1);
+  std::unique_ptr<PersistentCpuCandidatePoolPreparer> preparer = Preparer(1);
+
+  const PreparedCpuCandidatePools result =
+      Prepared(PrepareInitialCpuCandidatePools(*preparer, fixture.board, fixture.workload, config));
+
+  ASSERT_EQ(result.columns().size(), 4U);
+  EXPECT_EQ(result.columns()[0].outcome, CpuCandidatePoolColumnOutcome::kRouteUnsupported);
+  EXPECT_NE(result.columns()[0].query_identity, 0U);
+  EXPECT_NE(result.columns()[0].policy_identity, 0U);
+  EXPECT_EQ(result.columns()[0].route_work_units, 0U);
+  for (std::size_t index = 1; index < result.columns().size(); ++index) {
+    EXPECT_EQ(result.columns()[index].outcome,
+              CpuCandidatePoolColumnOutcome::kSkippedAfterUnsupportedProof);
+    EXPECT_EQ(result.columns()[index].query_identity, 0U);
+    EXPECT_EQ(result.columns()[index].policy_identity, 0U);
+    EXPECT_EQ(result.columns()[index].route_work_units, 0U);
+  }
+  EXPECT_EQ(result.counters().executed_route_queries, 1U);
+  EXPECT_EQ(result.counters().route_work_units, 0U);
+  EXPECT_EQ(result.counters().unsupported_proofs, 1U);
+  EXPECT_EQ(result.counters().skipped_columns, 3U);
+  ASSERT_EQ(result.candidate_store().Rejections().size(), 1U);
+  EXPECT_EQ(result.candidate_store().Rejections().front().code,
+            candidates::CandidateRejectionCode::kUnsupported);
+}
+
+TEST(CpuCandidatePoolPreparationTest, RetainsOrdinaryAlternativeFailureWork) {
+  const Fixture fixture = MakeUniqueHorizontalCorridorFixture();
+  const CpuCandidatePoolPreparationConfig config = Config(1, 8);
+  std::unique_ptr<PersistentCpuCandidatePoolPreparer> preparer = Preparer(1);
+
+  const PreparedCpuCandidatePools result =
+      Prepared(PrepareInitialCpuCandidatePools(*preparer, fixture.board, fixture.workload, config));
+
+  ASSERT_EQ(result.columns().size(), 8U);
+  const auto disconnected =
+      std::ranges::find(result.columns(), CpuCandidatePoolColumnOutcome::kRouteDisconnected,
+                        &CpuCandidatePoolColumnRecord::outcome);
+  ASSERT_NE(disconnected, result.columns().end());
+  EXPECT_GT(disconnected->candidate_ordinal, 0U);
+  EXPECT_NE(disconnected->query_identity, 0U);
+  EXPECT_GT(disconnected->route_work_units, 0U);
+  EXPECT_EQ(result.counters().route_work_units, ColumnRouteWork(result));
+  EXPECT_EQ(result.counters().executed_route_queries, result.columns().size());
+}
+
+TEST(CpuCandidatePoolPreparationTest, RejectsLegacyAndFutureSchemasBeforeDispatch) {
+  const Fixture fixture = MakeTwoNetFixture();
+  std::unique_ptr<PersistentCpuCandidatePoolPreparer> preparer = Preparer(1);
+  for (const std::uint32_t rejected_schema : {
+           kCpuCandidatePoolPreparationSchemaVersionV1,
+           kCpuCandidatePoolPreparationSchemaVersion + 1U,
+       }) {
+    CpuCandidatePoolPreparationConfig config = Config(fixture.workload.nets().size());
+    config.schema_version = rejected_schema;
+    const PersistentCpuCandidatePoolTelemetry before = preparer->telemetry();
+    const PreparedCpuCandidatePoolsResult result =
+        PrepareInitialCpuCandidatePools(*preparer, fixture.board, fixture.workload, config);
+    ASSERT_TRUE(std::holds_alternative<CpuCandidatePoolPreparationError>(result));
+    const CpuCandidatePoolPreparationError& error =
+        std::get<CpuCandidatePoolPreparationError>(result);
+    EXPECT_EQ(error.code, CpuCandidatePoolPreparationErrorCode::kUnsupportedSchema);
+    EXPECT_FALSE(error.failed_preparation.has_value());
+    EXPECT_EQ(preparer->telemetry().jobs_dispatched, before.jobs_dispatched);
+  }
 }
 
 TEST(CpuCandidatePoolPreparationTest, PreflightsAggregateAndStoreBoundsBeforeDispatch) {
@@ -472,9 +632,9 @@ TEST(CpuCandidatePoolPreparationTest, EnforcesPersistentWorkerCountBoundaries) {
   }
 }
 
-TEST(CpuCandidatePoolPreparationTest, ReplayEncodingHasVersionOneGoldens) {
+TEST(CpuCandidatePoolPreparationTest, ReplayEncodingHasVersionTwoGoldens) {
   const CpuCandidatePoolPreparationConfig config{
-      .schema_version = 1,
+      .schema_version = kCpuCandidatePoolPreparationSchemaVersion,
       .requested_candidates_per_net = 4,
       .deterministic_seed = 5,
       .step_surcharge_increment = 7,
@@ -514,38 +674,41 @@ TEST(CpuCandidatePoolPreparationTest, ReplayEncodingHasVersionOneGoldens) {
               .maximum_expected_candidates_per_invocation = 113,
           },
   };
-  const std::uint64_t batch = internal::ComputeCpuCandidatePoolBatchIdentityV1(127, 131, config);
+  const std::uint64_t batch = internal::ComputeCpuCandidatePoolBatchIdentityV2(127, 131, config);
   const CpuCandidatePoolPreparationCounters counters{
       .requested_columns = 137,
       .executed_route_queries = 139,
-      .successful_routes = 149,
-      .disconnected_proofs = 151,
-      .unsupported_proofs = 157,
-      .skipped_columns = 163,
-      .built_candidates = 167,
-      .admitted_candidates = 173,
-      .duplicate_candidates = 179,
-      .rejected_columns = 181,
-      .retained_candidates = 191,
+      .route_work_units = 149,
+      .successful_routes = 151,
+      .disconnected_proofs = 157,
+      .unsupported_proofs = 163,
+      .skipped_columns = 167,
+      .built_candidates = 173,
+      .admitted_candidates = 179,
+      .duplicate_candidates = 181,
+      .rejected_columns = 191,
+      .retained_candidates = 193,
   };
-  const std::array columns = {
+  std::array columns = {
       CpuCandidatePoolColumnRecord{
-          .net = {.id = 193, .generation = 197},
-          .candidate_ordinal = 199,
-          .policy_identity = 211,
-          .batch_identity = 223,
-          .query_identity = 227,
+          .net = {.id = 197, .generation = 199},
+          .candidate_ordinal = 211,
+          .policy_identity = 223,
+          .batch_identity = 227,
+          .query_identity = 229,
+          .route_work_units = 233,
           .outcome = CpuCandidatePoolColumnOutcome::kAdmitted,
-          .candidate_id = candidates::CandidateId{.high = 229, .low = 233},
-          .candidate_payload_checksum = 239,
+          .candidate_id = candidates::CandidateId{.high = 239, .low = 241},
+          .candidate_payload_checksum = 251,
           .rejection_code = std::nullopt,
       },
       CpuCandidatePoolColumnRecord{
-          .net = {.id = 241, .generation = 251},
-          .candidate_ordinal = 257,
-          .policy_identity = 263,
-          .batch_identity = 269,
-          .query_identity = 271,
+          .net = {.id = 257, .generation = 263},
+          .candidate_ordinal = 269,
+          .policy_identity = 271,
+          .batch_identity = 277,
+          .query_identity = 281,
+          .route_work_units = 283,
           .outcome = CpuCandidatePoolColumnOutcome::kRouteDisconnected,
           .candidate_id = std::nullopt,
           .candidate_payload_checksum = std::nullopt,
@@ -578,14 +741,119 @@ TEST(CpuCandidatePoolPreparationTest, ReplayEncodingHasVersionOneGoldens) {
           .candidates = second_candidates,
       },
   };
-  const std::uint64_t checksum = internal::ComputeCpuCandidatePoolPreparationChecksumV1(
+  const std::uint64_t checksum = internal::ComputeCpuCandidatePoolPreparationChecksumV2(
       config, batch, counters, columns, pools);
   const std::uint64_t net_seed = internal::ComputeCpuCandidatePoolNetSeedV1(
       373, 379, board_ir::EntityRef{.id = 383, .generation = 389});
 
-  EXPECT_EQ(batch, 5'572'961'570'777'735'953ULL);
-  EXPECT_EQ(checksum, 15'531'823'249'808'920'296ULL);
+  EXPECT_EQ(batch, 9'699'625'364'364'086'907ULL);
+  EXPECT_EQ(checksum, 3'669'270'561'708'826'273ULL);
   EXPECT_EQ(net_seed, 4'652'715'695'970'407'240ULL);
+
+  columns.front().route_work_units++;
+  EXPECT_NE(internal::ComputeCpuCandidatePoolPreparationChecksumV2(config, batch, counters, columns,
+                                                                   pools),
+            checksum);
+  columns.front().route_work_units--;
+  CpuCandidatePoolPreparationCounters changed_counters = counters;
+  changed_counters.route_work_units++;
+  EXPECT_NE(internal::ComputeCpuCandidatePoolPreparationChecksumV2(config, batch, changed_counters,
+                                                                   columns, pools),
+            checksum);
+}
+
+TEST(CpuCandidatePoolPreparationTest, FailedPreparationEncodingIsGoldenAndFieldSensitive) {
+  CpuCandidatePoolPreparationConfig config;
+  config.deterministic_seed = 3;
+  const CpuCandidatePoolFailedPreparationCounters counters{
+      .requested_columns = 5,
+      .route_queries = 7,
+      .route_work_units = 11,
+  };
+  std::array attempts = {
+      CpuCandidatePoolAttemptedColumnRecord{
+          .net = {.id = 13, .generation = 17},
+          .candidate_ordinal = 19,
+          .policy_identity = 23,
+          .batch_identity = 29,
+          .query_identity = 31,
+          .route_work_units = 37,
+          .state = CpuCandidatePoolAttemptState::kRouteSucceeded,
+          .route_failure_code = std::nullopt,
+      },
+      CpuCandidatePoolAttemptedColumnRecord{
+          .net = {.id = 41, .generation = 43},
+          .candidate_ordinal = 47,
+          .policy_identity = 53,
+          .batch_identity = 59,
+          .query_identity = 61,
+          .route_work_units = 67,
+          .state = CpuCandidatePoolAttemptState::kRouteFailed,
+          .route_failure_code = routing::RouteFailureCode::kWorkBoundExceeded,
+      },
+  };
+  const std::uint64_t golden = internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+      71, 73, config, 79, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded, false, counters,
+      attempts);
+  EXPECT_EQ(golden, 3718100591794585442ULL);
+
+  ++attempts.front().route_work_units;
+  EXPECT_NE(internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                71, 73, config, 79, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded, false,
+                counters, attempts),
+            golden);
+  --attempts.front().route_work_units;
+  attempts.front().state = CpuCandidatePoolAttemptState::kQueryInFlight;
+  EXPECT_NE(internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                71, 73, config, 79, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded, false,
+                counters, attempts),
+            golden);
+  attempts.front().state = CpuCandidatePoolAttemptState::kRouteSucceeded;
+  std::ranges::reverse(attempts);
+  EXPECT_NE(internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                71, 73, config, 79, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded, false,
+                counters, attempts),
+            golden);
+  std::ranges::reverse(attempts);
+  CpuCandidatePoolFailedPreparationCounters changed_counters = counters;
+  changed_counters.route_work_units++;
+  EXPECT_NE(internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                71, 73, config, 79, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded, false,
+                changed_counters, attempts),
+            golden);
+  EXPECT_NE(internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                71, 73, config, 79, CpuCandidatePoolPreparationErrorCode::kResourceExhausted, false,
+                counters, attempts),
+            golden);
+  attempts.back().route_failure_code.reset();
+  EXPECT_NE(internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                71, 73, config, 79, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded, false,
+                counters, attempts),
+            golden);
+  attempts.back().route_failure_code = routing::RouteFailureCode::kWorkBoundExceeded;
+  CpuCandidatePoolPreparationConfig changed_config = config;
+  changed_config.deterministic_seed++;
+  EXPECT_NE(
+      internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+          71, 73, changed_config, 79, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded,
+          false, counters, attempts),
+      golden);
+  EXPECT_NE(internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                72, 73, config, 79, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded, false,
+                counters, attempts),
+            golden);
+  EXPECT_NE(internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                71, 74, config, 79, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded, false,
+                counters, attempts),
+            golden);
+  EXPECT_NE(internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                71, 73, config, 80, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded, false,
+                counters, attempts),
+            golden);
+  EXPECT_NE(internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+                71, 73, config, 79, CpuCandidatePoolPreparationErrorCode::kWorkBoundExceeded, true,
+                counters, attempts),
+            golden);
 }
 
 TEST(CpuCandidatePoolPreparationTest, TinyStoreByteCapProducesExplicitAtomicRejections) {
@@ -614,6 +882,7 @@ TEST(CpuCandidatePoolPreparationTest, SupportsAllFrozenPhaseFourPoolSizes) {
         PrepareInitialCpuCandidatePools(*preparer, fixture.board, fixture.workload, config));
     EXPECT_EQ(result.columns().size(), fixture.workload.nets().size() * pool_size);
     EXPECT_EQ(result.counters().executed_route_queries, result.columns().size());
+    EXPECT_EQ(result.counters().route_work_units, ColumnRouteWork(result));
     EXPECT_EQ(result.pools().size(), fixture.workload.nets().size());
   }
 }

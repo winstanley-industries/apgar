@@ -58,7 +58,7 @@ ProjectCpuCandidateAllocationSessionEnvelopeV1(
 [[nodiscard]] std::uint64_t ComputeCpuCandidateAllocationRejectionManifestChecksumV1(
     std::span<const candidates::CandidateRejection> rejections) noexcept;
 
-[[nodiscard]] std::uint64_t ComputeCpuCandidateAllocationSessionChecksumV1(
+[[nodiscard]] std::uint64_t ComputeCpuCandidateAllocationSessionChecksumV2(
     const CpuCandidateAllocationSessionConfig& config, std::uint64_t board_content_hash,
     std::uint64_t workload_checksum, std::uint64_t capacity_model_checksum,
     std::uint64_t preparation_checksum, CpuCandidateAllocationTerminalReason terminal_reason,

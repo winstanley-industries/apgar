@@ -33,15 +33,22 @@ ExtractCpuCandidatePoolAlternativeResourcesV1(const routing::CpuRoute& route,
                                                              std::uint64_t workload_checksum,
                                                              board_ir::EntityRef net) noexcept;
 
-[[nodiscard]] std::uint64_t ComputeCpuCandidatePoolBatchIdentityV1(
+[[nodiscard]] std::uint64_t ComputeCpuCandidatePoolBatchIdentityV2(
     std::uint64_t board_content_hash, std::uint64_t workload_checksum,
     const CpuCandidatePoolPreparationConfig& config) noexcept;
 
-[[nodiscard]] std::uint64_t ComputeCpuCandidatePoolPreparationChecksumV1(
+[[nodiscard]] std::uint64_t ComputeCpuCandidatePoolPreparationChecksumV2(
     const CpuCandidatePoolPreparationConfig& config, std::uint64_t batch_identity,
     const CpuCandidatePoolPreparationCounters& counters,
     std::span<const CpuCandidatePoolColumnRecord> columns,
     std::span<const CpuCandidatePoolChecksumPoolV1> pools) noexcept;
+
+[[nodiscard]] std::uint64_t ComputeCpuCandidatePoolFailedPreparationChecksumV2(
+    std::uint64_t board_content_hash, std::uint64_t workload_checksum,
+    const CpuCandidatePoolPreparationConfig& config, std::uint64_t batch_identity,
+    CpuCandidatePoolPreparationErrorCode error_code, bool candidate_store_publication_committed,
+    const CpuCandidatePoolFailedPreparationCounters& counters,
+    std::span<const CpuCandidatePoolAttemptedColumnRecord> attempted_columns) noexcept;
 
 enum class CpuCandidatePoolPreparationFaultForTesting : std::uint8_t {
   kNone = 0,
@@ -51,6 +58,10 @@ enum class CpuCandidatePoolPreparationFaultForTesting : std::uint8_t {
   kWorkerLengthError = 4,
   kWorkerUnexpectedException = 5,
   kBlockWorker = 6,
+  kPostBaseWaveBadAlloc = 7,
+  kPostPublicationBadAlloc = 8,
+  kPostBaseWaveUnexpectedException = 9,
+  kPostPublicationUnexpectedException = 10,
 };
 
 // Defined only by the fault-test variant.

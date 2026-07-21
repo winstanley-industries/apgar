@@ -52,6 +52,9 @@ thread_local bool g_successor_lease_failure_for_testing = false;
   if (failure == internal::TargetedRegenerationHostFailureForTesting::kLengthError) {
     throw std::length_error(std::string(detail));
   }
+  if (failure == internal::TargetedRegenerationHostFailureForTesting::kUnexpectedException) {
+    throw std::runtime_error(std::string(detail));
+  }
   throw std::bad_alloc();
 }
 
@@ -77,11 +80,8 @@ void MaybeFailAfterQueryStartForTesting() {
     return;
   }
   g_post_query_host_failure_countdown.reset();
-  if (g_post_query_host_failure ==
-      internal::TargetedRegenerationHostFailureForTesting::kLengthError) {
-    throw std::length_error("Injected targeted-regeneration post-query container failure");
-  }
-  throw std::bad_alloc();
+  ThrowHostFailureForTesting(g_post_query_host_failure,
+                             "Injected targeted-regeneration post-query failure");
 }
 
 void MaybeFailRejectionEvidenceForTesting(
@@ -100,10 +100,7 @@ void MaybeFailAfterPublicationForTesting() {
   }
   const internal::TargetedRegenerationHostFailureForTesting failure =
       *std::exchange(g_post_publication_host_failure, std::nullopt);
-  if (failure == internal::TargetedRegenerationHostFailureForTesting::kLengthError) {
-    throw std::length_error("Injected targeted-regeneration post-publication container failure");
-  }
-  throw std::bad_alloc();
+  ThrowHostFailureForTesting(failure, "Injected targeted-regeneration post-publication failure");
 }
 
 [[nodiscard]] TargetedRegenerationExecutionError Error(TargetedRegenerationExecutionErrorCode code,
@@ -142,6 +139,7 @@ void MaybeFailAfterPublicationForTesting() {
 
 void AddExecutionConfig(board_ir::StableHashBuilder& hash,
                         const TargetedRegenerationExecutionConfig& config) noexcept {
+  hash.AddU64(config.deterministic_seed);
   hash.AddU64(config.maximum_route_queries);
   hash.AddU64(config.route_limits.maximum_work_units);
   hash.AddU64(config.route_limits.maximum_record_count);
@@ -176,7 +174,7 @@ void AddStoreConfig(board_ir::StableHashBuilder& hash,
     const TargetedRegenerationExecutionConfig& config,
     const candidates::CandidateStoreConfig& store_config) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-TARGETED-REGENERATION-CPU-BATCH-V2");
+  hash.AddString("APGAR-TARGETED-REGENERATION-CPU-BATCH-V3");
   hash.AddU64(plan_checksum);
   hash.AddU64(net.id);
   hash.AddU32(net.generation);
@@ -428,7 +426,7 @@ void AddColumns(board_ir::StableHashBuilder& hash,
       .columns = std::move(columns),
   };
   observation.observation_checksum =
-      internal::ComputeTargetedRegenerationFailedObservationChecksumV2(
+      internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
           plan_checksum, config, store_config, candidate_store_publication_committed, code,
           counters, observation.columns);
   return TargetedRegenerationExecutionError{
@@ -484,12 +482,24 @@ struct FailedExecutionState {
     return Error(TargetedRegenerationExecutionErrorCode::kResourceExhausted,
                  "allocator.targeted_regeneration_execution.host_container.v1",
                  "Host container limits were exhausted within execution bounds");
+  } catch (...) {
+    if (failure_state.query_started) {
+      return ErrorWithFailedExecution(
+          TargetedRegenerationExecutionErrorCode::kInternalInvariant,
+          "allocator.targeted_regeneration_execution.unexpected_exception.v3",
+          "An unexpected exception escaped after targeted-regeneration query execution began",
+          plan_checksum, config, store_config, failure_state.candidate_store_publication_committed,
+          failure_state.counters, std::move(failure_state.columns));
+    }
+    return Error(TargetedRegenerationExecutionErrorCode::kInternalInvariant,
+                 "allocator.targeted_regeneration_execution.unexpected_exception.v3",
+                 "An unexpected exception escaped before targeted-regeneration query execution");
   }
 }
 
 }  // namespace
 
-bool internal::TargetedRegenerationExecutionConfigIsValidV2(
+bool internal::TargetedRegenerationExecutionConfigIsValidV3(
     const TargetedRegenerationExecutionConfig& config) noexcept {
   return ConfigIsValid(config);
 }
@@ -628,11 +638,11 @@ void internal::SetTargetedRegenerationSuccessorLeaseFailureForTesting(bool enabl
   g_successor_lease_failure_for_testing = enabled;
 }
 
-std::uint64_t internal::ComputeTargetedRegenerationExecutionChecksumV2(
-    const TargetedRegenerationExecutionChecksumHeaderV2& header,
+std::uint64_t internal::ComputeTargetedRegenerationExecutionChecksumV3(
+    const TargetedRegenerationExecutionChecksumHeaderV3& header,
     std::span<const TargetedRegenerationColumnRecord> columns) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-TARGETED-REGENERATION-EXECUTION-V2");
+  hash.AddString("APGAR-TARGETED-REGENERATION-EXECUTION-V3");
   hash.AddU32(header.schema_version);
   hash.AddU64(header.plan_checksum);
   AddExecutionConfig(hash, header.config);
@@ -648,14 +658,14 @@ std::uint64_t internal::ComputeTargetedRegenerationExecutionChecksumV2(
   return hash.Finish();
 }
 
-std::uint64_t internal::ComputeTargetedRegenerationFailedObservationChecksumV2(
+std::uint64_t internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
     std::uint64_t plan_checksum, const TargetedRegenerationExecutionConfig& config,
     const candidates::CandidateStoreConfig& store_config,
     bool candidate_store_publication_committed, TargetedRegenerationExecutionErrorCode error_code,
     const TargetedRegenerationExecutionCounters& counters,
     std::span<const TargetedRegenerationColumnRecord> columns) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-TARGETED-REGENERATION-FAILED-EXECUTION-V2");
+  hash.AddString("APGAR-TARGETED-REGENERATION-FAILED-EXECUTION-V3");
   hash.AddU32(kTargetedRegenerationExecutionSchemaVersion);
   hash.AddU64(plan_checksum);
   AddExecutionConfig(hash, config);
@@ -689,13 +699,13 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
   g_source_resource_span_visits = 0;
   if (schema_version != kTargetedRegenerationExecutionSchemaVersion) {
     return Error(TargetedRegenerationExecutionErrorCode::kUnsupportedSchema,
-                 "allocator.targeted_regeneration_execution.schema.v2",
+                 "allocator.targeted_regeneration_execution.schema.v3",
                  "Targeted-regeneration execution schema is unsupported");
   }
   if (!ConfigIsValid(config)) {
     return Error(TargetedRegenerationExecutionErrorCode::kInvalidConfiguration,
-                 "allocator.targeted_regeneration_execution.configuration.v2",
-                 "Targeted-regeneration execution configuration is outside schema-v2 bounds");
+                 "allocator.targeted_regeneration_execution.configuration.v3",
+                 "Targeted-regeneration execution configuration is outside schema-v3 bounds");
   }
   if (!plan.has_active_pin_lease()) {
     return Error(TargetedRegenerationExecutionErrorCode::kInactivePlanLease,
@@ -1617,7 +1627,7 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
           }
         }
 
-        const internal::TargetedRegenerationExecutionChecksumHeaderV2 checksum_header{
+        const internal::TargetedRegenerationExecutionChecksumHeaderV3 checksum_header{
             .schema_version = schema_version,
             .plan_checksum = plan.plan_checksum(),
             .config = config,
@@ -1632,7 +1642,7 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
             .counters = counters,
         };
         const std::uint64_t checksum =
-            internal::ComputeTargetedRegenerationExecutionChecksumV2(checksum_header, columns);
+            internal::ComputeTargetedRegenerationExecutionChecksumV3(checksum_header, columns);
         return TargetedRegenerationExecution(
             schema_version, std::move(plan), config, candidate_store.config(), disposition,
             terminal_reason, counters, std::move(columns), std::move(refreshed_pools),

@@ -1,17 +1,14 @@
-# CPU Candidate-Allocation Session v1
+# CPU Candidate-Allocation Session v2
 
-> Superseded for production allocation by CPU Candidate-Allocation Session v2.
-> This frozen document preserves the version-1 replay encoding. Current
-> production callers reject version `1` and must use schema version `2`.
-
-CPU Candidate-Allocation Session v1 composes persistent CPU candidate-pool
+CPU Candidate-Allocation Session v2 composes persistent CPU candidate-pool
 preparation, the One-World and negotiated-price CPU references, bounded
 targeted regeneration, and one terminal fixed-pool Multi-World search into a
 self-contained Phase 4 contender result.
 
 ## Version, inputs, and ownership
 
-The historical contract accepts schema version `1`. One synchronous invocation receives
+Production accepts schema version `2`; version `1` is rejected before any input
+is consumed. One synchronous invocation receives
 rvalue references to one exact Board Snapshot, its authentic
 `MultiNetWorkload`, an associated `ResourceCapacityModel`, one
 `PreparedCpuCandidatePools` result with the sole mutable CandidateStore, and a
@@ -44,7 +41,7 @@ The complete semantic configuration contains, in declaration order:
 2. Negotiated Price State v1 configuration;
 3. One-World allocator limits;
 4. Targeted Regeneration Plan v1 configuration;
-5. Targeted Regeneration Execution v2 configuration;
+5. Targeted Regeneration Execution v3 configuration;
 6. one or more terminal Multi-World schedules and Multi-World Execution v1
    configuration;
 7. positive cumulative session limits for retained epoch records, planning
@@ -56,6 +53,9 @@ The nested targeted and Multi-World conflict counts must be zero. The session
 copies its authoritative value into each child call. Regeneration epochs are
 capped at `1,000,000`; scalar cumulative work is capped at
 `1,000,000,000,000,000`.
+The nested execution configuration begins with the caller-rooted deterministic
+seed. It is checksum-covered by the session and mixed into every child target
+batch and normalized policy identity.
 
 Terminal schedules require distinct nonzero keys, positive search weights and
 round counts, and no duplicate exact weight/round pair. One schedule must be
@@ -106,12 +106,12 @@ maximum retained rejection records = existing rejection records
 ```
 
 The one-epoch policy-entry projection feeds the same Targeted Regeneration
-Execution v2 formulas for CandidateStore admission input bytes and exact
+Execution v3 formulas for CandidateStore admission input bytes and exact
 validation work, using the Board obstacle and terminal counts. Every value must
 fit the corresponding session, One-World, CandidateStore snapshot/pin,
 transaction item, input-byte, exact-work, and retained-rejection bound.
 Equality is accepted; overflow and one-under fail before CPU routing or store
-mutation. Targeted Regeneration Execution v2 independently rechecks its exact
+mutation. Targeted Regeneration Execution v3 independently rechecks its exact
 plan at every epoch.
 For a known resource-refinement session, `E` is zero because no regeneration
 plan or query is permitted; hypothetical column, route, or draft work is not
@@ -168,7 +168,7 @@ Otherwise, for each bounded epoch:
 1. Build one Targeted Regeneration Plan v1 from the current complete pools,
    current One-World allocation, and current negotiated-price state.
 2. Prove the exact cumulative plan envelope fits before query one.
-3. Execute Targeted Regeneration Execution v2 once. It runs bounded production
+3. Execute Targeted Regeneration Execution v3 once. It runs bounded production
    CPU A*, publishes all of that plan's columns through one conditional CAN-004
    transaction, refreshes the complete pools and One-World selection at the
    plan's successor price snapshot, and hands off the successor lease before
@@ -180,7 +180,7 @@ Otherwise, for each bounded epoch:
 5. Replace the current price state, pools, world, and request before evaluating
    the next epoch.
 
-V1 intentionally uses one common One-World regeneration lineage. It does not
+V2 intentionally uses one common One-World regeneration lineage. It does not
 publish columns between independent Multi-World branches. After regeneration
 terminates, the final complete pools are frozen and passed once to fixed-pool
 Multi-World Execution v1. That execution branches every schedule from the
@@ -229,15 +229,15 @@ The rejection manifest domain
 Candidate Rejection v1 field in CandidateStore order.
 
 The session checksum domain
-`APGAR-CPU-CANDIDATE-ALLOCATION-SESSION-V1` encodes the complete semantic
+`APGAR-CPU-CANDIDATE-ALLOCATION-SESSION-V2` encodes the complete semantic
 configuration; Board, workload, capacity, and preparation identities; terminal
 reason and all cumulative counters; every compact epoch and complete column;
 final pool and rejection manifests; final price and One-World checksums; and
 terminal Multi-World execution checksum. Addresses, lease IDs, worker count,
 timing, and completion order are absent.
 The two-net, four-candidate-per-net feasible representation fixture has session
-checksum `10365567761333396631`. The prime-valued nonempty epoch/column fixture
-has checksum `12912908603899075077`, and its complete optional-field rejection
+checksum `5432622937668692708`. The prime-valued nonempty epoch/column fixture
+has checksum `10336450428425954731`, and its complete optional-field rejection
 manifest has checksum `15185300074143548732`.
 
 ## Deliberate boundary

@@ -1,33 +1,29 @@
-# Targeted Regeneration Execution v2
+# Targeted Regeneration Execution v3
 
-> Superseded for production execution by Targeted Regeneration Execution v3.
-> This frozen document preserves the version-2 seedless replay encoding.
-> Current production callers reject versions `1` and `2` and must use schema
-> version `3`.
-
-Targeted Regeneration Execution v2 preserves the immutable-plan, conditional
+Targeted Regeneration Execution v3 preserves the immutable-plan, conditional
 CAN-004 publication, refreshed-world, lease, and terminal semantics of version
 1 while making every CPU query and all unpublished candidate work suitable for
 a composed allocation session.
 
 ## Version and inputs
 
-The historical contract accepts schema version `2`; version `1` is rejected.
-One synchronous invocation receives the exact version-1 plan, Board Snapshot, complete source
+Production accepts schema version `3`; versions `1` and `2` are rejected. One synchronous
+invocation receives the exact version-1 plan, Board Snapshot, complete source
 One-World request, CandidateStore named by the plan lease, and this semantic
 configuration in declaration order:
 
-1. maximum route queries;
-2. per-query CPU A* work units, record count, queue size, and reconstruction
+1. caller-rooted deterministic seed;
+2. maximum route queries;
+3. per-query CPU A* work units, record count, queue size, and reconstruction
    states;
-3. maximum aggregate CPU A* work units;
-4. maximum policy-projection roster visits;
-5. maximum aggregate policy resource entries;
-6. maximum logical bytes for one generated candidate draft;
-7. maximum aggregate logical bytes for unpublished generated drafts;
-8. maximum aggregate logical bytes retained in canonical rejection records;
-9. maximum transient result bytes for columns and rejection copies; and
-10. known unmapped exact-conflict count.
+4. maximum aggregate CPU A* work units;
+5. maximum policy-projection roster visits;
+6. maximum aggregate policy resource entries;
+7. maximum logical bytes for one generated candidate draft;
+8. maximum aggregate logical bytes for unpublished generated drafts;
+9. maximum aggregate logical bytes retained in canonical rejection records;
+10. maximum transient result bytes for columns and rejection copies; and
+11. known unmapped exact-conflict count.
 
 Every limit is positive except the conflict count. Queries are capped at
 `1,000,000`, aggregate and per-query route work at
@@ -136,7 +132,7 @@ built/admitted/duplicate/rejected candidates, novel retained candidates,
 changed selections, and successor pins.
 
 The six successful-execution outcomes and the original three observation
-stages retain ordinals zero through eight. Version 2 appends
+stages retain ordinals zero through eight. Version 3 retains the version-2
 `rejection_evidence_in_flight` at ordinal nine and
 `publication_committed_outcome_correlation_pending` at ordinal ten. A complete
 route-request copy is prepared before its column is appended as
@@ -180,11 +176,12 @@ Any fatal result after a query begins retains a bounded failed-execution
 observation containing schema version, plan checksum, complete execution and
 store configurations, a CandidateStore-publication-committed bit, the counters
 reached so far, and the ordered attempted column prefix. Pre-query host or
-container exceptions remain plain errors because no query prefix exists. Domain
-`APGAR-TARGETED-REGENERATION-FAILED-EXECUTION-V2` hashes those fields, the
+container exceptions and other unexpected exceptions remain plain typed errors
+because no query prefix exists. Domain
+`APGAR-TARGETED-REGENERATION-FAILED-EXECUTION-V3` hashes those fields, the
 execution error code, and every complete column and rejection into the
 observation checksum. The failed-observation representation fixture with the
-commit bit clear hashes to `14174562675389583303`; toggling the bit changes the
+commit bit clear hashes to `11490479365299976412`; toggling the bit changes the
 checksum.
 
 The attempted prefix records its truthful last reached stage. In particular,
@@ -198,7 +195,7 @@ atomic publication completed before a later host, refreshed-world invariant,
 or successor-lease failure; published candidates and diagnostics remain in the
 store and must be retained or explicitly reconciled by the caller. The
 refreshed One-World preflight eliminates deterministic allocator-bound failure
-from that post-publication region, but it cannot preclude host allocation
+from that post-publication region, but it cannot preclude host or unexpected
 failure after commit. The successor-pin counter advances only after the complete
 successor lease is acquired; a successor-lease failure therefore leaves all
 published candidates retained but reports zero successor pins.
@@ -206,13 +203,15 @@ published candidates retained but reports zero successor pins.
 ## Semantic identities
 
 The per-target batch domain is
-`APGAR-TARGETED-REGENERATION-CPU-BATCH-V2`. It encodes plan checksum, target net,
-target ordinal, complete execution configuration, and complete CandidateStore
-configuration. A zero result is remapped to one.
+`APGAR-TARGETED-REGENERATION-CPU-BATCH-V3`. It encodes plan checksum, target net,
+target ordinal, complete execution configuration beginning with the caller
+root seed, and complete CandidateStore configuration. The derived nonzero
+batch identity is then the deterministic seed supplied to that target's
+normalized policy schedule. A zero result is remapped to one.
 
-Execution domain `APGAR-TARGETED-REGENERATION-EXECUTION-V2` encodes:
+Execution domain `APGAR-TARGETED-REGENERATION-EXECUTION-V3` encodes:
 
-1. schema, plan checksum, the thirteen execution scalars, and ten store scalars;
+1. schema, plan checksum, the fourteen execution scalars, and ten store scalars;
 2. refreshed request/pool manifests and baseline/refreshed world checksums;
 3. disposition, terminal reason, and seventeen counters; and
 4. every ordered column: net and scheduling identities, telemetry presence and
@@ -220,13 +219,13 @@ Execution domain `APGAR-TARGETED-REGENERATION-EXECUTION-V2` encodes:
    candidate ID, payload checksum, rejection code, and complete canonical
    rejection.
 
-The representation fixture hashes to `13666812750934195884`. Any field, order,
+The representation fixture hashes to `10370796152289992323`. Any field, order,
 width, or decision change requires a new version. Addresses, lease IDs, timing,
 and interleaving are excluded.
 
 ## Deliberate boundary
 
-Version 2 closes the bounded-execution prerequisite for a composed candidate-
+Version 3 closes the bounded-execution prerequisite for a composed candidate-
 allocation session. It does not repeat regeneration epochs, interleave
 publication with multi-world execution, run a GPU generator, validate combined
 route geometry, legalize, invoke host CAD, or establish the Phase 4 gate.

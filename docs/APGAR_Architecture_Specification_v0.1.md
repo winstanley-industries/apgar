@@ -1000,10 +1000,17 @@ acceleration.
   and 16 requested alternatives. Larger pools MAY characterize scaling but
   MUST NOT be the only regime used to claim Phase 4 success.
 - Initial CPU pools are prepared through the persistent, bounded, atomic
-  contract in `schemas/allocator/cpu_candidate_pool_preparation_v1.md`.
+  contract in `schemas/allocator/cpu_candidate_pool_preparation_v2.md`.
   Worker count and completion order are operational only: identical semantic
   inputs MUST produce identical ordered columns, retained pools, and replay
-  checksum. A disconnected or unsupported base MUST remain an explicit proof;
+  checksum. Ordered columns and aggregate counters MUST retain actual CPU A*
+  route-work units so an evidence runner can distinguish accepted opportunity
+  budgets from consumed work. A fatal post-query preparation MUST retain a
+  bounded, checksum-covered roster of every attempted query and available work
+  after the worker wave joins. The observation MUST hash an authoritative
+  CandidateStore-publication-committed bit; before commit it owns no store, and
+  after commit it MUST transfer the authoritative store rather than destroy it
+  or imply rollback. A disconnected or unsupported base MUST remain an explicit proof;
   later equivalent alternatives MAY be recorded as skipped columns rather than
   fabricated or repeatedly searched.
 - Controlled families MUST vary route length, occupancy, run fragmentation,
@@ -1054,7 +1061,7 @@ acceleration.
   retention. Known exact conflicts absent from the current resource vocabulary
   MUST produce resource-refinement-required rather than convergence or stall.
 - Production targeted regeneration is versioned by
-  `schemas/allocator/targeted_regeneration_execution_v2.md`. It MUST use bounded
+  `schemas/allocator/targeted_regeneration_execution_v3.md`. It MUST use bounded
   CPU A*, preflight aggregate route work, all complete price-roster projection
   passes, candidate-draft/rejection/transient bytes, and CandidateStore
   input/exact work before the first query. The same preflight MUST prove the
@@ -1075,8 +1082,11 @@ acceleration.
   successor lease is acquired. Source pool/candidate count drift MUST fail
   before footprint traversal, and refreshed expanded-use preflight MUST stop at
   its configured envelope without scanning a rejected suffix.
+  Every execution MUST accept a caller-rooted deterministic seed and mix it
+  into each derived target batch and policy identity; the root seed is part of
+  execution and composed-session replay identity.
 - The reusable CPU contender is versioned by
-  `schemas/allocator/cpu_candidate_allocation_session_v1.md`. It MUST own the
+  `schemas/allocator/cpu_candidate_allocation_session_v2.md`. It MUST own the
   prepared CandidateStore and every lease-bearing terminal result on success,
   retain caller ownership of all inputs on failure, and preserve that
   authoritative store when a failed targeted observation says publication
@@ -1100,6 +1110,13 @@ acceleration.
   and stopping budgets equal. CPU comparisons MUST use a persistent production
   worker pool rather than per-invocation thread creation when the allocator
   implementation uses persistent workers.
+- A paired trial MUST use one declared deterministic root seed for baseline,
+  initial-pool preparation, and targeted regeneration. Derived per-net or
+  per-target seeds MAY differ by domain, but they MUST remain rooted in that
+  paired value and checksum-covered. Reports MUST publish both conservative
+  query/work opportunities and actual consumed CPU route work; unequal actual
+  work alone does not invalidate a trial whose predeclared opportunity caps,
+  stopping depth, and external wall/memory limits are equal.
 - The canonical sequential reference is
   `schemas/allocator/sequential_negotiated_baseline_v1.md`. Its one-current-route
   search state MUST NOT be relabeled candidate allocation: it routes and commits

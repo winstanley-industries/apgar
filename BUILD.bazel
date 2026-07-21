@@ -1343,6 +1343,7 @@ cc_test(
     copts = APGAR_COPTS,
     deps = [
         ":board_ir",
+        ":candidate_store",
         ":cpu_candidate_pool_preparation_fault_test_variant",
         ":geometry_compiler",
         ":multi_net_workload",

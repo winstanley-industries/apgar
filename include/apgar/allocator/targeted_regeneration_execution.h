@@ -14,7 +14,8 @@
 namespace apgar::allocator {
 
 inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersionV1 = 1;
-inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersion = 2;
+inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersionV2 = 2;
+inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersion = 3;
 inline constexpr std::uint64_t kMaximumTargetedRegenerationRouteQueriesV2 = 1'000'000;
 inline constexpr std::uint64_t kMaximumTargetedRegenerationRouteWorkUnitsV2 =
     1'000'000'000'000'000ULL;
@@ -25,6 +26,8 @@ inline constexpr std::uint64_t kMaximumTargetedRegenerationRejectionLogicalBytes
 inline constexpr std::uint64_t kTargetedRegenerationColumnBaseLogicalBytesV2 = 256;
 
 struct TargetedRegenerationExecutionConfig {
+  // Caller-rooted seed mixed into every derived batch and policy identity.
+  std::uint64_t deterministic_seed = 0;
   std::uint64_t maximum_route_queries = 1'000'000;
   routing::CpuRouteWorkLimits route_limits{
       .maximum_work_units = 20'000'000,
