@@ -1,11 +1,14 @@
 #include "apgar/adapters/kicad_fixture.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry/exact.h"
@@ -19,9 +22,23 @@ namespace {
   return tooling::ReadRunfile("tests/fixtures/m1_exactness.kicad_pcb").value_or(std::string{});
 }
 
+[[nodiscard]] std::string ReadPhase4Fixture() {
+  return tooling::ReadRunfile("tests/fixtures/phase4_supported_multinet_v1.kicad_pcb")
+      .value_or(std::string{});
+}
+
 [[nodiscard]] KicadFixtureImportConfig Config() {
   return KicadFixtureImportConfig{
       .target_net_name = "TARGET",
+      .nominal_width = 500'000,
+      .clearance = 500'000,
+  };
+}
+
+[[nodiscard]] KicadMultiNetFixtureImportConfig MultiNetConfig() {
+  return KicadMultiNetFixtureImportConfig{
+      .routable_net_names = {"ROUTE_A", "ROUTE_B"},
+      .default_routing_net_name = "ROUTE_A",
       .nominal_width = 500'000,
       .clearance = 500'000,
   };
@@ -64,6 +81,26 @@ namespace {
 [[nodiscard]] std::string ReorderTargetFootprints(const std::string& contents) {
   const std::string first_marker = "(footprint \"APGAR:terminal-a\"";
   const std::string second_marker = "(footprint \"APGAR:terminal-b\"";
+  const std::size_t first_start = contents.find(first_marker);
+  const std::size_t second_start = contents.find(second_marker);
+  if (first_start == std::string::npos || second_start == std::string::npos ||
+      first_start >= second_start) {
+    return {};
+  }
+  const std::optional<std::size_t> first_end = ExpressionEnd(contents, first_start);
+  const std::optional<std::size_t> second_end = ExpressionEnd(contents, second_start);
+  if (!first_end.has_value() || !second_end.has_value()) {
+    return {};
+  }
+  return contents.substr(0, first_start) +
+         contents.substr(second_start, *second_end - second_start) +
+         contents.substr(*first_end, second_start - *first_end) +
+         contents.substr(first_start, *first_end - first_start) + contents.substr(*second_end);
+}
+
+[[nodiscard]] std::string SwapFixtureExpressions(const std::string& contents,
+                                                 std::string_view first_marker,
+                                                 std::string_view second_marker) {
   const std::size_t first_start = contents.find(first_marker);
   const std::size_t second_start = contents.find(second_marker);
   if (first_start == std::string::npos || second_start == std::string::npos ||
@@ -137,6 +174,170 @@ TEST(KicadFixtureAdapterTest, ImportsAndNormalizesTheM1Microboard) {
   EXPECT_EQ(terminal_a->center, (board_ir::Point64{.x = 2'000'000, .y = 10'000'000}));
 }
 
+TEST(KicadFixtureAdapterTest, ImportsAuthenticMultiNetPadsAsTerminalsAndOwnedObstacles) {
+  const std::string contents = ReadPhase4Fixture();
+  ASSERT_FALSE(contents.empty());
+
+  KicadFixtureImportResult result = ImportKicadMultiNetFixture(contents, MultiNetConfig());
+
+  ASSERT_TRUE(std::holds_alternative<board_ir::BoardSnapshot>(result));
+  const board_ir::BoardSnapshot& board = std::get<board_ir::BoardSnapshot>(result);
+  EXPECT_EQ(board.data().layers.size(), 2U);
+  EXPECT_EQ(board.data().nets.size(), 3U);
+  EXPECT_EQ(board.data().terminals.size(), 4U);
+  ASSERT_EQ(board.data().obstacles.size(), 9U);
+  const auto route_a = std::ranges::find(board.data().nets, "ROUTE_A", &board_ir::Net::name);
+  const auto route_b = std::ranges::find(board.data().nets, "ROUTE_B", &board_ir::Net::name);
+  const auto blocker = std::ranges::find(board.data().nets, "BLOCKER", &board_ir::Net::name);
+  ASSERT_NE(route_a, board.data().nets.end());
+  ASSERT_NE(route_b, board.data().nets.end());
+  ASSERT_NE(blocker, board.data().nets.end());
+  EXPECT_EQ(route_a->terminals.size(), 2U);
+  EXPECT_EQ(route_b->terminals.size(), 2U);
+  EXPECT_TRUE(blocker->terminals.empty());
+  EXPECT_EQ(board.data().routing_profile.net, route_a->ref);
+
+  std::size_t route_a_obstacles = 0;
+  std::size_t route_b_obstacles = 0;
+  std::size_t blocker_obstacles = 0;
+  for (const board_ir::Obstacle& obstacle : board.data().obstacles) {
+    ASSERT_TRUE(obstacle.owner_net.has_value());
+    route_a_obstacles += *obstacle.owner_net == route_a->ref ? 1U : 0U;
+    route_b_obstacles += *obstacle.owner_net == route_b->ref ? 1U : 0U;
+    blocker_obstacles += *obstacle.owner_net == blocker->ref ? 1U : 0U;
+  }
+  EXPECT_EQ(route_a_obstacles, 4U);
+  EXPECT_EQ(route_b_obstacles, 4U);
+  EXPECT_EQ(blocker_obstacles, 1U);
+}
+
+TEST(KicadFixtureAdapterTest, MultiNetRosterAndFootprintOrderAreNonSemantic) {
+  const std::string contents = ReadPhase4Fixture();
+  const std::string reordered = SwapFixtureExpressions(
+      contents, "(footprint \"APGAR:route-a-start\"", "(footprint \"APGAR:route-b-goal\"");
+  ASSERT_FALSE(contents.empty());
+  ASSERT_FALSE(reordered.empty());
+  KicadMultiNetFixtureImportConfig reversed_config = MultiNetConfig();
+  std::ranges::reverse(reversed_config.routable_net_names);
+
+  KicadFixtureImportResult original = ImportKicadMultiNetFixture(contents, MultiNetConfig());
+  KicadFixtureImportResult permuted = ImportKicadMultiNetFixture(reordered, reversed_config);
+
+  ASSERT_TRUE(std::holds_alternative<board_ir::BoardSnapshot>(original));
+  ASSERT_TRUE(std::holds_alternative<board_ir::BoardSnapshot>(permuted));
+  const board_ir::BoardSnapshot& original_board = std::get<board_ir::BoardSnapshot>(original);
+  const board_ir::BoardSnapshot& permuted_board = std::get<board_ir::BoardSnapshot>(permuted);
+  EXPECT_EQ(original_board.data(), permuted_board.data());
+  EXPECT_EQ(original_board.content_hash(), permuted_board.content_hash());
+}
+
+TEST(KicadFixtureAdapterTest, OwnedTerminalPadsRemainForeignCopper) {
+  const std::string contents = ReadPhase4Fixture();
+  ASSERT_FALSE(contents.empty());
+  KicadFixtureImportResult imported = ImportKicadMultiNetFixture(contents, MultiNetConfig());
+  ASSERT_TRUE(std::holds_alternative<board_ir::BoardSnapshot>(imported));
+  const board_ir::BoardSnapshot& board = std::get<board_ir::BoardSnapshot>(imported);
+
+  const geometry::MovementValidationResult own_pad =
+      geometry::ValidateMovement(board, 0,
+                                 board_ir::Segment64{.start = {.x = 4'000'000, .y = 12'000'000},
+                                                     .end = {.x = 6'000'000, .y = 12'000'000}});
+  const geometry::MovementValidationResult foreign_pad =
+      geometry::ValidateMovement(board, 0,
+                                 board_ir::Segment64{.start = {.x = 4'000'000, .y = 28'000'000},
+                                                     .end = {.x = 6'000'000, .y = 28'000'000}});
+
+  EXPECT_TRUE(own_pad.legal()) << own_pad.detail;
+  EXPECT_EQ(foreign_pad.code, geometry::MovementViolationCode::kStaticObstacleConflict);
+  EXPECT_NE(foreign_pad.detail.find("route-b-start"), std::string::npos);
+}
+
+TEST(KicadFixtureAdapterTest, RejectsInvalidMultiNetRostersBeforePublication) {
+  const std::string contents = ReadPhase4Fixture();
+  ASSERT_FALSE(contents.empty());
+
+  KicadMultiNetFixtureImportConfig duplicate = MultiNetConfig();
+  duplicate.routable_net_names.push_back("ROUTE_A");
+  KicadMultiNetFixtureImportConfig missing_default = MultiNetConfig();
+  missing_default.routable_net_names = {"ROUTE_B"};
+  KicadMultiNetFixtureImportConfig unknown = MultiNetConfig();
+  unknown.routable_net_names.push_back("UNKNOWN");
+  KicadMultiNetFixtureImportConfig non_two_terminal = MultiNetConfig();
+  non_two_terminal.routable_net_names.push_back("BLOCKER");
+  KicadMultiNetFixtureImportConfig malformed = MultiNetConfig();
+  malformed.routable_net_names[1] = std::string("bad\xff", 4);
+
+  for (const KicadMultiNetFixtureImportConfig* config :
+       {&duplicate, &missing_default, &unknown, &non_two_terminal, &malformed}) {
+    KicadFixtureImportResult result = ImportKicadMultiNetFixture(contents, *config);
+    ASSERT_TRUE(std::holds_alternative<KicadFixtureError>(result));
+    EXPECT_EQ(std::get<KicadFixtureError>(result).code, KicadFixtureErrorCode::kInvalidSemantics);
+  }
+}
+
+TEST(KicadFixtureAdapterTest, EnforcesMultiNetRosterWorkBoundsBeforeParsing) {
+  KicadMultiNetFixtureImportConfig too_many = MultiNetConfig();
+  too_many.routable_net_names.assign(kKicadFixtureMaximumRoutableNets + 1U, "ROUTE_A");
+  KicadMultiNetFixtureImportConfig overlong = MultiNetConfig();
+  overlong.routable_net_names[1] = std::string(kKicadFixtureMaximumTokenBytes + 1U, 'x');
+  KicadMultiNetFixtureImportConfig aggregate = MultiNetConfig();
+  aggregate.routable_net_names.resize(
+      kKicadFixtureMaximumRoutableNetNameBytes / kKicadFixtureMaximumTokenBytes + 2U,
+      std::string(kKicadFixtureMaximumTokenBytes, 'x'));
+  aggregate.routable_net_names.front() = "ROUTE_A";
+
+  for (const KicadMultiNetFixtureImportConfig* config : {&too_many, &overlong, &aggregate}) {
+    KicadFixtureImportResult result = ImportKicadMultiNetFixture("not KiCad", *config);
+    ASSERT_TRUE(std::holds_alternative<KicadFixtureError>(result));
+    EXPECT_EQ(std::get<KicadFixtureError>(result).code, KicadFixtureErrorCode::kResourceLimit);
+    EXPECT_EQ(std::get<KicadFixtureError>(result).offset, 0U);
+  }
+}
+
+TEST(KicadFixtureAdapterTest, MultiNetInvalidRosterPrecedenceIsOrderIndependent) {
+  KicadMultiNetFixtureImportConfig first = MultiNetConfig();
+  first.routable_net_names = {"ROUTE_A", "", std::string(kKicadFixtureMaximumTokenBytes + 1U, 'x')};
+  KicadMultiNetFixtureImportConfig second = first;
+  std::ranges::reverse(second.routable_net_names);
+
+  KicadFixtureImportResult first_result = ImportKicadMultiNetFixture("not KiCad", first);
+  KicadFixtureImportResult second_result = ImportKicadMultiNetFixture("not KiCad", second);
+
+  ASSERT_TRUE(std::holds_alternative<KicadFixtureError>(first_result));
+  ASSERT_TRUE(std::holds_alternative<KicadFixtureError>(second_result));
+  EXPECT_EQ(std::get<KicadFixtureError>(first_result).code, KicadFixtureErrorCode::kResourceLimit);
+  EXPECT_EQ(std::get<KicadFixtureError>(first_result).code,
+            std::get<KicadFixtureError>(second_result).code);
+  EXPECT_EQ(std::get<KicadFixtureError>(first_result).message,
+            std::get<KicadFixtureError>(second_result).message);
+}
+
+TEST(KicadFixtureAdapterTest, BoundsDefaultNetNameBeforeUtf8Validation) {
+  KicadMultiNetFixtureImportConfig config = MultiNetConfig();
+  config.default_routing_net_name = std::string(kKicadFixtureMaximumTokenBytes + 1U, 'x');
+
+  KicadFixtureImportResult result = ImportKicadMultiNetFixture("not KiCad", config);
+
+  ASSERT_TRUE(std::holds_alternative<KicadFixtureError>(result));
+  EXPECT_EQ(std::get<KicadFixtureError>(result).code, KicadFixtureErrorCode::kResourceLimit);
+  EXPECT_EQ(std::get<KicadFixtureError>(result).offset, 0U);
+}
+
+TEST(KicadFixtureAdapterTest, MultiNetCoordinateMutationChangesNormalizedIdentity) {
+  const std::string contents = ReadPhase4Fixture();
+  ASSERT_FALSE(contents.empty());
+  std::string changed = contents;
+  ASSERT_TRUE(ReplaceOnce(changed, "(at 2 6)", "(at 2.5 6)"));
+
+  KicadFixtureImportResult original = ImportKicadMultiNetFixture(contents, MultiNetConfig());
+  KicadFixtureImportResult mutated = ImportKicadMultiNetFixture(changed, MultiNetConfig());
+
+  ASSERT_TRUE(std::holds_alternative<board_ir::BoardSnapshot>(original));
+  ASSERT_TRUE(std::holds_alternative<board_ir::BoardSnapshot>(mutated));
+  EXPECT_NE(std::get<board_ir::BoardSnapshot>(original).content_hash(),
+            std::get<board_ir::BoardSnapshot>(mutated).content_hash());
+}
+
 TEST(KicadFixtureAdapterTest, ProducesAStableNormalizedFingerprint) {
   const std::string contents = ReadFixture();
   ASSERT_FALSE(contents.empty());
@@ -146,8 +347,13 @@ TEST(KicadFixtureAdapterTest, ProducesAStableNormalizedFingerprint) {
 
   ASSERT_TRUE(std::holds_alternative<board_ir::BoardSnapshot>(first));
   ASSERT_TRUE(std::holds_alternative<board_ir::BoardSnapshot>(second));
-  EXPECT_EQ(std::get<board_ir::BoardSnapshot>(first).content_hash(),
-            std::get<board_ir::BoardSnapshot>(second).content_hash());
+  const board_ir::BoardSnapshot& first_board = std::get<board_ir::BoardSnapshot>(first);
+  const board_ir::BoardSnapshot& second_board = std::get<board_ir::BoardSnapshot>(second);
+  EXPECT_EQ(first_board.content_hash(), second_board.content_hash());
+  EXPECT_EQ(first_board.content_hash(), 1'860'510'029'311'497'781ULL);
+  EXPECT_EQ(TerminalIds(first_board).at("APGAR:terminal-a"), 4'607'527'650'265'967'773ULL);
+  EXPECT_EQ(TerminalIds(first_board).at("APGAR:terminal-b"), 4'607'525'451'242'711'351ULL);
+  EXPECT_EQ(ObstacleIds(first_board).at("APGAR:blocker/pad-1"), 5'619'830'021'783'550'985ULL);
 }
 
 TEST(KicadFixtureAdapterTest, PreservesEntityIdsAndFingerprintWhenFootprintsAreReordered) {

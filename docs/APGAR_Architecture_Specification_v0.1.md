@@ -974,6 +974,11 @@ acceleration.
   stress tier targeting thousands; a lower memory-bounded maximum is a
   scalability result and MUST NOT be hidden by replacing nets with same-net
   alternatives.
+- The supported-rule imported seed is versioned by
+  `schemas/benchmark/phase4_imported_multi_net_corpus_v1.md`. Its two-net exact
+  fixture establishes authentic import, ownership, workload association, and
+  replay identity only; it does not satisfy the representative-scale,
+  candidate-pool, equal-budget, or improvement requirements below.
 - Candidate pools MUST include realistic small per-net schedules such as 4, 8,
   and 16 requested alternatives. Larger pools MAY characterize scaling but
   MUST NOT be the only regime used to claim Phase 4 success.

@@ -6,8 +6,10 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <new>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -15,6 +17,7 @@
 
 #include "apgar/board_ir/stable_hash.h"
 #include "apgar/text/utf8.h"
+#include "src/adapters/kicad_fixture_internal.h"
 
 namespace apgar::adapters {
 namespace {
@@ -40,6 +43,22 @@ static_assert(kKicadFixtureDbuPerMillimeter % kMillimeterFractionUnits == 0);
 constexpr DbCoord kDbuPerFractionUnit = kKicadFixtureDbuPerMillimeter / kMillimeterFractionUnits;
 static_assert(kDbuPerFractionUnit % 2 == 0,
               "The fixture unit scale must represent half-size pad boundaries exactly");
+
+#if defined(APGAR_KICAD_FIXTURE_FAULT_TEST_VARIANT)
+thread_local internal::KicadFixtureFaultPoint g_kicad_fixture_fault_point =
+    internal::KicadFixtureFaultPoint::kNone;
+#endif
+
+void MaybeThrowKicadFixtureFaultForTesting(internal::KicadFixtureFaultPoint point) {
+#if defined(APGAR_KICAD_FIXTURE_FAULT_TEST_VARIANT)
+  if (g_kicad_fixture_fault_point == point) {
+    g_kicad_fixture_fault_point = internal::KicadFixtureFaultPoint::kNone;
+    throw std::bad_alloc();
+  }
+#else
+  static_cast<void>(point);
+#endif
+}
 
 enum class TokenKind : std::uint8_t {
   kLeftParen,
@@ -408,17 +427,24 @@ class Parser {
 
 class FixtureImporter {
  public:
-  FixtureImporter(const SExpression& root, const KicadFixtureImportConfig& config)
-      : root_(root), config_(config) {
+  FixtureImporter(const SExpression& root, std::string_view default_routing_net_name,
+                  DbCoord nominal_width, DbCoord clearance,
+                  const std::vector<std::string_view>* routable_net_names,
+                  bool emit_routable_pad_obstacles)
+      : root_(root),
+        default_routing_net_name_(default_routing_net_name),
+        nominal_width_(nominal_width),
+        clearance_(clearance),
+        routable_net_names_(routable_net_names),
+        emit_routable_pad_obstacles_(emit_routable_pad_obstacles) {
     data_.adapter_name = "kicad-fixture";
     data_.dbu_per_millimeter = kKicadFixtureDbuPerMillimeter;
   }
 
   [[nodiscard]] KicadFixtureImportResult Import() {
-    if (config_.target_net_name.empty() || config_.nominal_width <= 0 ||
-        config_.nominal_width > board_ir::kMaxAbsDbCoord || config_.clearance < 0 ||
-        config_.clearance > board_ir::kMaxAbsDbCoord ||
-        !text::IsValidUtf8(config_.target_net_name)) {
+    if (default_routing_net_name_.empty() || nominal_width_ <= 0 ||
+        nominal_width_ > board_ir::kMaxAbsDbCoord || clearance_ < 0 ||
+        clearance_ > board_ir::kMaxAbsDbCoord || !text::IsValidUtf8(default_routing_net_name_)) {
       return Error(KicadFixtureErrorCode::kInvalidSemantics, 0,
                    "Import configuration has an invalid target net, width, or "
                    "clearance");
@@ -429,19 +455,20 @@ class FixtureImporter {
                    "Root expression must be kicad_pcb");
     }
     if (!ValidateRootConstructs() || !ParseVersion() || !ParseMetadata() || !ParseLayers() ||
-        !ParseNets() || !ParseFootprints()) {
+        !ParseNets() || !ResolveRoutableNets() || !ParseFootprints() ||
+        !ValidateRoutableTerminalCounts()) {
       return std::move(*error_);
     }
 
-    const auto target = net_by_name_.find(config_.target_net_name);
+    const auto target = net_by_name_.find(default_routing_net_name_);
     if (target == net_by_name_.end()) {
       return Error(KicadFixtureErrorCode::kInvalidSemantics, root_.offset,
                    "Target net is not declared by the fixture");
     }
     data_.routing_profile = board_ir::RoutingProfile{
         .net = target->second,
-        .nominal_width = config_.nominal_width,
-        .clearance = config_.clearance,
+        .nominal_width = nominal_width_,
+        .clearance = clearance_,
         .allowed_layers = {},
         .allowed_headings = board_ir::kM1HeadingMask,
     };
@@ -708,6 +735,49 @@ class FixtureImporter {
     return true;
   }
 
+  [[nodiscard]] bool ResolveRoutableNets() {
+    if (routable_net_names_ == nullptr) {
+      const auto target = net_by_name_.find(default_routing_net_name_);
+      if (target == net_by_name_.end()) {
+        return Fail(KicadFixtureErrorCode::kInvalidSemantics, root_.offset,
+                    "Target net is not declared by the fixture");
+      }
+      routable_net_refs_.push_back(target->second);
+      return true;
+    }
+
+    routable_net_refs_.reserve(routable_net_names_->size());
+    for (std::string_view name : *routable_net_names_) {
+      const auto net = net_by_name_.find(name);
+      if (net == net_by_name_.end()) {
+        return Fail(KicadFixtureErrorCode::kInvalidSemantics, root_.offset,
+                    "Routable net roster names an undeclared fixture net: " + std::string(name));
+      }
+      routable_net_refs_.push_back(net->second);
+    }
+    std::ranges::sort(routable_net_refs_, [](EntityRef left, EntityRef right) {
+      return std::tie(left.id, left.generation) < std::tie(right.id, right.generation);
+    });
+    return true;
+  }
+
+  [[nodiscard]] bool IsRoutableNet(EntityRef net) const {
+    return std::ranges::binary_search(routable_net_refs_, net, [](EntityRef left, EntityRef right) {
+      return std::tie(left.id, left.generation) < std::tie(right.id, right.generation);
+    });
+  }
+
+  [[nodiscard]] bool ValidateRoutableTerminalCounts() {
+    for (EntityRef net_ref : routable_net_refs_) {
+      const auto net = std::ranges::find(data_.nets, net_ref, &board_ir::Net::ref);
+      if (net == data_.nets.end() || net->terminals.size() != 2) {
+        return Fail(KicadFixtureErrorCode::kInvalidSemantics, root_.offset,
+                    "Every routable fixture net must contain exactly two terminal pads");
+      }
+    }
+    return true;
+  }
+
   [[nodiscard]] bool ParseFootprint(const SExpression& footprint) {
     const std::string* component = StringAt(footprint, 1);
     if (component == nullptr || component->empty()) {
@@ -878,7 +948,8 @@ class FixtureImporter {
       return false;
     }
 
-    if (owner_net.has_value() && *net_name == config_.target_net_name) {
+    const bool routable_pad = owner_net.has_value() && IsRoutableNet(*owner_net);
+    if (routable_pad) {
       const std::optional<EntityRef> terminal_ref =
           StableEntityRef(kTerminalEntityDomain, *uuid, pad.offset);
       if (!terminal_ref.has_value()) {
@@ -894,7 +965,9 @@ class FixtureImporter {
           .layers = *pad_layers,
       });
       data_.nets[*owner_net_index].terminals.push_back(*terminal_ref);
-      return true;
+      if (!emit_routable_pad_obstacles_) {
+        return true;
+      }
     }
 
     for (LayerId layer : *pad_layers) {
@@ -1033,11 +1106,16 @@ class FixtureImporter {
   }
 
   const SExpression& root_;
-  const KicadFixtureImportConfig& config_;
+  std::string_view default_routing_net_name_;
+  DbCoord nominal_width_;
+  DbCoord clearance_;
+  const std::vector<std::string_view>* routable_net_names_;
+  bool emit_routable_pad_obstacles_;
   BoardData data_;
   std::map<std::string, LayerId, std::less<>> layer_by_name_;
   std::map<std::uint32_t, std::size_t> net_index_by_number_;
   std::map<std::string, EntityRef, std::less<>> net_by_name_;
+  std::vector<EntityRef> routable_net_refs_;
   std::map<EntityId, std::string> assigned_entity_keys_;
   std::set<std::string, std::less<>> object_uuids_;
   std::optional<KicadFixtureError> error_;
@@ -1045,21 +1123,167 @@ class FixtureImporter {
 
 }  // namespace
 
-KicadFixtureImportResult ImportKicadFixture(std::string_view contents,
-                                            const KicadFixtureImportConfig& config) {
-  if (contents.size() > kKicadFixtureMaximumInputBytes) {
+namespace {
+
+using MultiNetConfigPreflightResult =
+    std::variant<std::vector<std::string_view>, KicadFixtureError>;
+
+[[nodiscard]] MultiNetConfigPreflightResult PreflightMultiNetConfig(
+    const KicadMultiNetFixtureImportConfig& config) {
+  if (config.routable_net_names.empty()) {
+    return KicadFixtureError{.code = KicadFixtureErrorCode::kInvalidSemantics,
+                             .offset = 0,
+                             .message = "Multi-net fixture roster must not be empty"};
+  }
+  if (config.routable_net_names.size() > kKicadFixtureMaximumRoutableNets) {
+    return KicadFixtureError{.code = KicadFixtureErrorCode::kResourceLimit,
+                             .offset = 0,
+                             .message = "Multi-net fixture roster exceeds the net-count limit"};
+  }
+  if (config.default_routing_net_name.size() > kKicadFixtureMaximumTokenBytes) {
     return KicadFixtureError{
         .code = KicadFixtureErrorCode::kResourceLimit,
-        .offset = kKicadFixtureMaximumInputBytes,
-        .message = "KiCad fixture exceeds the input-size limit",
-    };
+        .offset = 0,
+        .message = "Multi-net fixture default routing net exceeds the name-size limit"};
+  }
+  if (config.default_routing_net_name.empty() || config.nominal_width <= 0 ||
+      config.nominal_width > board_ir::kMaxAbsDbCoord || config.clearance < 0 ||
+      config.clearance > board_ir::kMaxAbsDbCoord ||
+      !text::IsValidUtf8(config.default_routing_net_name)) {
+    return KicadFixtureError{
+        .code = KicadFixtureErrorCode::kInvalidSemantics,
+        .offset = 0,
+        .message =
+            "Multi-net import configuration has an invalid default net, width, or clearance"};
+  }
+
+  try {
+    std::size_t aggregate_name_bytes = 0;
+    for (const std::string& name : config.routable_net_names) {
+      if (name.size() > kKicadFixtureMaximumTokenBytes ||
+          aggregate_name_bytes > kKicadFixtureMaximumRoutableNetNameBytes - name.size()) {
+        return KicadFixtureError{.code = KicadFixtureErrorCode::kResourceLimit,
+                                 .offset = 0,
+                                 .message = "Multi-net fixture roster exceeds a name-size limit"};
+      }
+      aggregate_name_bytes += name.size();
+    }
+
+    std::vector<std::string_view> names;
+    names.reserve(config.routable_net_names.size());
+    for (const std::string& name : config.routable_net_names) {
+      names.push_back(name);
+    }
+    std::ranges::sort(names);
+    bool contains_default = false;
+    for (std::string_view name : names) {
+      if (name.empty() || !text::IsValidUtf8(name)) {
+        return KicadFixtureError{
+            .code = KicadFixtureErrorCode::kInvalidSemantics,
+            .offset = 0,
+            .message = "Multi-net fixture roster names must be nonempty valid UTF-8"};
+      }
+      contains_default = contains_default || name == config.default_routing_net_name;
+    }
+    if (std::ranges::adjacent_find(names) != names.end()) {
+      return KicadFixtureError{.code = KicadFixtureErrorCode::kInvalidSemantics,
+                               .offset = 0,
+                               .message = "Multi-net fixture roster contains a duplicate net"};
+    }
+    if (!contains_default) {
+      return KicadFixtureError{
+          .code = KicadFixtureErrorCode::kInvalidSemantics,
+          .offset = 0,
+          .message = "Multi-net fixture roster must contain the default routing net"};
+    }
+    return names;
+  } catch (const std::bad_alloc&) {
+    return KicadFixtureError{.code = KicadFixtureErrorCode::kResourceLimit,
+                             .offset = 0,
+                             .message = {},
+                             .invariant_id = "adapter.kicad.roster.host_memory.v1"};
+  } catch (const std::length_error&) {
+    return KicadFixtureError{.code = KicadFixtureErrorCode::kResourceLimit,
+                             .offset = 0,
+                             .message = {},
+                             .invariant_id = "adapter.kicad.roster.host_container.v1"};
+  }
+}
+
+[[nodiscard]] std::optional<KicadFixtureError> ValidateInputSize(std::string_view contents) {
+  if (contents.size() <= kKicadFixtureMaximumInputBytes) {
+    return std::nullopt;
+  }
+  return KicadFixtureError{
+      .code = KicadFixtureErrorCode::kResourceLimit,
+      .offset = kKicadFixtureMaximumInputBytes,
+      .message = "KiCad fixture exceeds the input-size limit",
+  };
+}
+
+}  // namespace
+
+KicadFixtureImportResult ImportKicadFixture(std::string_view contents,
+                                            const KicadFixtureImportConfig& config) {
+  if (std::optional<KicadFixtureError> error = ValidateInputSize(contents); error.has_value()) {
+    return std::move(*error);
   }
   ParseResult parsed = Parser(contents).Parse();
   if (const auto* error = std::get_if<KicadFixtureError>(&parsed)) {
     return *error;
   }
   const SExpression& root = std::get<SExpression>(parsed);
-  return FixtureImporter(root, config).Import();
+  return FixtureImporter(root, config.target_net_name, config.nominal_width, config.clearance,
+                         nullptr, false)
+      .Import();
 }
+
+KicadFixtureImportResult ImportKicadMultiNetFixture(
+    std::string_view contents, const KicadMultiNetFixtureImportConfig& config) {
+  try {
+    if (std::optional<KicadFixtureError> error = ValidateInputSize(contents); error.has_value()) {
+      return std::move(*error);
+    }
+    MaybeThrowKicadFixtureFaultForTesting(internal::KicadFixtureFaultPoint::kMultiNetPreflight);
+    MultiNetConfigPreflightResult preflight = PreflightMultiNetConfig(config);
+    if (const auto* error = std::get_if<KicadFixtureError>(&preflight); error != nullptr) {
+      return *error;
+    }
+    const std::vector<std::string_view>& routable_net_names =
+        std::get<std::vector<std::string_view>>(preflight);
+    MaybeThrowKicadFixtureFaultForTesting(internal::KicadFixtureFaultPoint::kMultiNetParse);
+    ParseResult parsed = Parser(contents).Parse();
+    if (const auto* error = std::get_if<KicadFixtureError>(&parsed)) {
+      return *error;
+    }
+    const SExpression& root = std::get<SExpression>(parsed);
+    MaybeThrowKicadFixtureFaultForTesting(internal::KicadFixtureFaultPoint::kMultiNetImport);
+    return FixtureImporter(root, config.default_routing_net_name, config.nominal_width,
+                           config.clearance, &routable_net_names, true)
+        .Import();
+  } catch (const std::bad_alloc&) {
+    return KicadFixtureError{.code = KicadFixtureErrorCode::kResourceLimit,
+                             .offset = 0,
+                             .message = {},
+                             .invariant_id = "adapter.kicad.import.host_memory.v1"};
+  } catch (const std::length_error&) {
+    return KicadFixtureError{.code = KicadFixtureErrorCode::kResourceLimit,
+                             .offset = 0,
+                             .message = {},
+                             .invariant_id = "adapter.kicad.import.host_container.v1"};
+  }
+}
+
+namespace internal {
+
+void SetKicadFixtureFaultPointForTesting(KicadFixtureFaultPoint point) noexcept {
+#if defined(APGAR_KICAD_FIXTURE_FAULT_TEST_VARIANT)
+  g_kicad_fixture_fault_point = point;
+#else
+  static_cast<void>(point);
+#endif
+}
+
+}  // namespace internal
 
 }  // namespace apgar::adapters

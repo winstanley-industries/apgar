@@ -403,6 +403,43 @@ cc_library(
 )
 
 cc_library(
+    name = "phase4_imported_multi_net_corpus",
+    srcs = [
+        "src/benchmark/phase4_corpus.cc",
+        "src/benchmark/phase4_corpus_internal.h",
+    ],
+    hdrs = ["include/apgar/benchmark/phase4_corpus.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":geometry_compiler",
+        ":kicad_fixture_adapter",
+        ":multi_net_workload",
+    ],
+)
+
+cc_library(
+    name = "phase4_imported_multi_net_corpus_fault_test_variant",
+    testonly = True,
+    srcs = [
+        "src/benchmark/phase4_corpus.cc",
+        "src/benchmark/phase4_corpus_internal.h",
+    ],
+    hdrs = ["include/apgar/benchmark/phase4_corpus.h"],
+    copts = APGAR_COPTS,
+    defines = ["APGAR_PHASE4_CORPUS_FAULT_TEST_VARIANT"],
+    strip_include_prefix = "include",
+    deps = [
+        ":board_ir",
+        ":geometry_compiler",
+        ":kicad_fixture_adapter_fault_test_variant",
+        ":multi_net_workload",
+    ],
+)
+
+cc_library(
     name = "phase3_commit",
     hdrs = ["include/apgar/benchmark/phase3_commit.h"],
     strip_include_prefix = "include",
@@ -454,11 +491,31 @@ cc_library(
 
 cc_library(
     name = "kicad_fixture_adapter",
-    srcs = ["src/adapters/kicad_fixture.cc"],
+    srcs = [
+        "src/adapters/kicad_fixture.cc",
+        "src/adapters/kicad_fixture_internal.h",
+    ],
     hdrs = ["include/apgar/adapters/kicad_fixture.h"],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",
     visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":utf8",
+    ],
+)
+
+cc_library(
+    name = "kicad_fixture_adapter_fault_test_variant",
+    testonly = True,
+    srcs = [
+        "src/adapters/kicad_fixture.cc",
+        "src/adapters/kicad_fixture_internal.h",
+    ],
+    hdrs = ["include/apgar/adapters/kicad_fixture.h"],
+    copts = APGAR_COPTS,
+    defines = ["APGAR_KICAD_FIXTURE_FAULT_TEST_VARIANT"],
+    strip_include_prefix = "include",
     deps = [
         ":board_ir",
         ":utf8",
@@ -1264,7 +1321,10 @@ cc_test(
         "tests/support/google_test.h",
     ],
     copts = APGAR_COPTS,
-    data = ["tests/fixtures/m1_exactness.kicad_pcb"],
+    data = [
+        "tests/fixtures/m1_exactness.kicad_pcb",
+        "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
+    ],
     deps = [
         ":board_ir",
         ":exact_geometry",
@@ -1272,6 +1332,69 @@ cc_test(
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
+)
+
+cc_test(
+    name = "phase4_imported_multi_net_corpus_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_corpus_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    deps = [
+        ":board_ir",
+        ":cpu_astar",
+        ":kicad_fixture_adapter",
+        ":phase4_imported_multi_net_corpus",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "kicad_fixture_fault_test",
+    size = "small",
+    srcs = [
+        "tests/adapters/kicad_fixture_fault_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    deps = [
+        ":kicad_fixture_adapter_fault_test_variant",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_imported_multi_net_corpus_fault_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_corpus_fault_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    deps = [
+        ":kicad_fixture_adapter_fault_test_variant",
+        ":multi_net_workload",
+        ":phase4_imported_multi_net_corpus_fault_test_variant",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+py_test(
+    name = "phase4_imported_multi_net_fixture_sha256_test",
+    size = "small",
+    srcs = ["tests/benchmark/phase4_fixture_sha256_test.py"],
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    legacy_create_init = 0,
+    main = "tests/benchmark/phase4_fixture_sha256_test.py",
+    python_version = "3.13",
 )
 
 cc_test(
