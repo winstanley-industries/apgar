@@ -986,6 +986,13 @@ acceleration.
 - Candidate pools MUST include realistic small per-net schedules such as 4, 8,
   and 16 requested alternatives. Larger pools MAY characterize scaling but
   MUST NOT be the only regime used to claim Phase 4 success.
+- Initial CPU pools are prepared through the persistent, bounded, atomic
+  contract in `schemas/allocator/cpu_candidate_pool_preparation_v1.md`.
+  Worker count and completion order are operational only: identical semantic
+  inputs MUST produce identical ordered columns, retained pools, and replay
+  checksum. A disconnected or unsupported base MUST remain an explicit proof;
+  later equivalent alternatives MAY be recorded as skipped columns rather than
+  fabricated or repeatedly searched.
 - Controlled families MUST vary route length, occupancy, run fragmentation,
   turn complexity, reachability, rule bucket, and region-of-interest size.
   Reports MUST state how these features affect compatible batch fill,

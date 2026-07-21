@@ -2,6 +2,7 @@
 #define APGAR_ROUTING_CPU_ASTAR_H_
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -32,6 +33,7 @@ struct CpuRouteTelemetry {
   std::uint64_t accepted_relaxations = 0;
   std::uint64_t peak_record_count = 0;
   std::uint64_t peak_queue_size = 0;
+  std::uint64_t work_units = 0;
 
   friend bool operator==(const CpuRouteTelemetry&, const CpuRouteTelemetry&) = default;
 };
@@ -93,6 +95,20 @@ struct CpuRoute {
 
 using CpuRouteResult = std::variant<CpuRoute, RouteFailure>;
 
+// Per-query deterministic CPU search bounds. One work unit is one queue pop,
+// one attempted legal-edge relaxation, or one reconstructed state. Record and
+// queue caps bound the two search containers independently. The ordinary
+// three-argument oracle remains unbounded for compatibility; production
+// sessions that execute many queries use the bounded overload below.
+struct CpuRouteWorkLimits {
+  std::uint64_t maximum_work_units = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximum_record_count = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximum_queue_size = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximum_reconstruction_states = std::numeric_limits<std::uint64_t>::max();
+
+  friend bool operator==(const CpuRouteWorkLimits&, const CpuRouteWorkLimits&) = default;
+};
+
 // Fully defined, non-extensible access class. Only the concrete out-of-line A*
 // producer can seal evidence; consumers cannot complete a friend type or reach
 // the private evidence storage.
@@ -106,6 +122,9 @@ class CpuRouteEvidenceAccess final {
   friend CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot&,
                                           const geometry_compiler::CompiledBoard&,
                                           const CpuRouteRequest&);
+  friend CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot&,
+                                          const geometry_compiler::CompiledBoard&,
+                                          const CpuRouteRequest&, const CpuRouteWorkLimits&);
   friend bool CpuRouteHasAuthenticatedAStarEvidence(const CpuRoute&) noexcept;
 };
 
@@ -116,6 +135,10 @@ class CpuRouteEvidenceAccess final {
 [[nodiscard]] CpuRouteResult RouteWithCpuAStar(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     const CpuRouteRequest& request);
+
+[[nodiscard]] CpuRouteResult RouteWithCpuAStar(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    const CpuRouteRequest& request, const CpuRouteWorkLimits& limits);
 
 // True only when the exact Board/compiler/routing/rule associations, request,
 // policy identity, scalar cost, and candidate-authoritative segment sequence

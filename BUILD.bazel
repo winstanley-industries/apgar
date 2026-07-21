@@ -230,6 +230,55 @@ cc_library(
 )
 
 cc_library(
+    name = "cpu_candidate_pool_preparation",
+    srcs = [
+        "src/allocator/cpu_candidate_pool_preparation.cc",
+        "src/allocator/cpu_candidate_pool_preparation_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/cpu_candidate_pool_preparation.h"],
+    copts = APGAR_COPTS,
+    linkopts = ["-pthread"],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":one_world_allocator",
+        ":planar_route",
+    ],
+)
+
+cc_library(
+    name = "cpu_candidate_pool_preparation_fault_test_variant",
+    testonly = True,
+    srcs = [
+        "src/allocator/cpu_candidate_pool_preparation.cc",
+        "src/allocator/cpu_candidate_pool_preparation_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/cpu_candidate_pool_preparation.h"],
+    copts = APGAR_COPTS,
+    defines = ["APGAR_CPU_CANDIDATE_POOL_PREPARATION_FAULT_TEST_VARIANT"],
+    linkopts = ["-pthread"],
+    strip_include_prefix = "include",
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":one_world_allocator",
+        ":planar_route",
+    ],
+)
+
+cc_library(
     name = "negotiated_prices",
     srcs = [
         "src/allocator/negotiated_prices.cc",
@@ -1184,6 +1233,62 @@ cc_test(
         ":one_world_allocator",
         ":planar_route",
         ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cpu_candidate_pool_preparation_test",
+    size = "small",
+    srcs = [
+        "src/allocator/cpu_candidate_pool_preparation_internal.h",
+        "tests/allocator/cpu_candidate_pool_preparation_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":cpu_candidate_pool_preparation",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cpu_candidate_pool_preparation_fault_test",
+    size = "small",
+    srcs = [
+        "src/allocator/cpu_candidate_pool_preparation_internal.h",
+        "tests/allocator/cpu_candidate_pool_preparation_fault_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":cpu_candidate_pool_preparation_fault_test_variant",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cpu_candidate_pool_preparation_corpus_test",
+    size = "medium",
+    srcs = [
+        "tests/allocator/cpu_candidate_pool_preparation_corpus_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":candidate_contract",
+        ":cpu_candidate_pool_preparation",
+        ":phase4_representative_corpus",
         "@googletest//:gtest_main",
     ],
 )

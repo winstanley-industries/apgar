@@ -165,6 +165,25 @@ struct QueueGreater {
                  "Candidate-policy normalization returned an unknown error");
 }
 
+[[nodiscard]] bool WorkLimitsAreValid(const CpuRouteWorkLimits& limits) noexcept {
+  return limits.maximum_work_units != 0 && limits.maximum_record_count != 0 &&
+         limits.maximum_queue_size != 0 && limits.maximum_reconstruction_states != 0;
+}
+
+[[nodiscard]] bool ConsumeWorkUnit(const CpuRouteWorkLimits& limits,
+                                   CpuRouteTelemetry* telemetry) noexcept {
+  if (telemetry->work_units >= limits.maximum_work_units) {
+    return false;
+  }
+  ++telemetry->work_units;
+  return true;
+}
+
+[[nodiscard]] RouteFailure WorkBoundFailure(std::string detail,
+                                            const CpuRouteTelemetry& telemetry) {
+  return Failure(RouteFailureCode::kResourceExhausted, std::move(detail), std::nullopt, telemetry);
+}
+
 [[nodiscard]] std::uint64_t AbsoluteDifference(std::int64_t left, std::int64_t right) noexcept {
   const Wide difference = static_cast<Wide>(left) - right;
   return static_cast<std::uint64_t>(difference < 0 ? -difference : difference);
@@ -398,7 +417,11 @@ namespace {
 
 CpuRouteResult RouteWithCpuAStarUsingTileViewImpl(
     const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
-    const CpuRouteRequest& request, std::span<const geometry_compiler::SparseTile> compiled_tiles) {
+    const CpuRouteRequest& request, std::span<const geometry_compiler::SparseTile> compiled_tiles,
+    const CpuRouteWorkLimits& limits) {
+  if (!WorkLimitsAreValid(limits)) {
+    return Failure(RouteFailureCode::kInvalidRequest, "CPU route work limits must all be positive");
+  }
   if (std::optional<CompiledBoardAssociationIssue> association =
           ValidateCompiledBoardAssociation(board, compiled_board);
       association.has_value()) {
@@ -443,8 +466,8 @@ CpuRouteResult RouteWithCpuAStarUsingTileViewImpl(
       .incoming_direction = kNoIncomingDirection,
   };
   std::unordered_map<SearchState, SearchRecord, SearchStateHash> records;
-  records.reserve(static_cast<std::size_t>(
-      std::min<std::uint64_t>(compiled_board.telemetry().represented_nodes * 2, 1'000'000)));
+  records.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(
+      {compiled_board.telemetry().represented_nodes * 2, 1'000'000, limits.maximum_record_count})));
   records.emplace(start_state, SearchRecord{.cost = 0, .predecessor = std::nullopt});
   std::priority_queue<QueueItem, std::vector<QueueItem>, QueueGreater> queue;
   const std::uint64_t start_heuristic = Heuristic(profile, policy, start, goal);
@@ -461,6 +484,9 @@ CpuRouteResult RouteWithCpuAStarUsingTileViewImpl(
 
   std::optional<SearchState> goal_state;
   while (!queue.empty()) {
+    if (!ConsumeWorkUnit(limits, &telemetry)) {
+      return WorkBoundFailure("CPU A* exceeded its deterministic work-unit bound", telemetry);
+    }
     const QueueItem current = queue.top();
     queue.pop();
     ++telemetry.queue_pops;
@@ -495,6 +521,9 @@ CpuRouteResult RouteWithCpuAStarUsingTileViewImpl(
       }
       if (!mask_is_legal) {
         continue;
+      }
+      if (!ConsumeWorkUnit(limits, &telemetry)) {
+        return WorkBoundFailure("CPU A* exceeded its deterministic work-unit bound", telemetry);
       }
       ++telemetry.attempted_relaxations;
       const std::optional<EdgeResourceKey> resource = CanonicalPhysicalEdgeResource(
@@ -547,6 +576,12 @@ CpuRouteResult RouteWithCpuAStarUsingTileViewImpl(
       if (existing != records.end() && existing->second.cost <= *next_cost) {
         continue;
       }
+      if (existing == records.end() && records.size() >= limits.maximum_record_count) {
+        return WorkBoundFailure("CPU A* exceeded its deterministic record-count bound", telemetry);
+      }
+      if (queue.size() >= limits.maximum_queue_size) {
+        return WorkBoundFailure("CPU A* exceeded its deterministic queue-size bound", telemetry);
+      }
       records.insert_or_assign(neighbor,
                                SearchRecord{.cost = *next_cost, .predecessor = current.state});
       ++telemetry.accepted_relaxations;
@@ -576,6 +611,13 @@ CpuRouteResult RouteWithCpuAStarUsingTileViewImpl(
   const std::uint64_t maximum_reconstruction_states =
       compiled_board.telemetry().represented_nodes * kStableDirectionOrder.size() + 1;
   while (true) {
+    if (!ConsumeWorkUnit(limits, &telemetry)) {
+      return WorkBoundFailure("CPU A* exceeded its deterministic work-unit bound", telemetry);
+    }
+    if (reversed_states.size() >= limits.maximum_reconstruction_states) {
+      return WorkBoundFailure("CPU A* exceeded its deterministic reconstruction-state bound",
+                              telemetry);
+    }
     reversed_states.push_back(cursor);
     if (cursor == start_state) {
       break;
@@ -688,11 +730,18 @@ CpuRouteResult RouteWithCpuAStarUsingTileViewImpl(
 CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                                  const CompiledBoard& compiled_board,
                                  const CpuRouteRequest& request) {
+  return RouteWithCpuAStar(board, compiled_board, request, CpuRouteWorkLimits{});
+}
+
+CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
+                                 const CompiledBoard& compiled_board,
+                                 const CpuRouteRequest& request, const CpuRouteWorkLimits& limits) {
   const std::span<const geometry_compiler::SparseTile> tiles =
       g_restricted_cpu_astar_tile_view_for_testing == nullptr
           ? compiled_board.tiles()
           : *g_restricted_cpu_astar_tile_view_for_testing;
-  CpuRouteResult result = RouteWithCpuAStarUsingTileViewImpl(board, compiled_board, request, tiles);
+  CpuRouteResult result =
+      RouteWithCpuAStarUsingTileViewImpl(board, compiled_board, request, tiles, limits);
   if (auto* route = std::get_if<CpuRoute>(&result); route != nullptr) {
     CpuRouteEvidenceAccess::Seal(*route);
   }
@@ -702,7 +751,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
 CpuRouteResult internal::RouteWithCpuAStarUsingTileView(
     const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
     const CpuRouteRequest& request, std::span<const geometry_compiler::SparseTile> tiles) {
-  return RouteWithCpuAStarUsingTileViewImpl(board, compiled_board, request, tiles);
+  return RouteWithCpuAStarUsingTileViewImpl(board, compiled_board, request, tiles,
+                                            CpuRouteWorkLimits{});
 }
 
 CpuRouteResult internal::RouteWithCpuAStarUsingRestrictedTileViewForTesting(

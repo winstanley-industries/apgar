@@ -163,6 +163,74 @@ TEST(CpuAStarTest, RepeatedCompilationAndRoutingAreExternallyIdentical) {
             std::get<NormalizedCandidateGenerationPolicy>(normalized_default).identity);
 }
 
+TEST(CpuAStarTest, DeterministicWorkLimitsAcceptEqualityAndRejectOneUnder) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile());
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  const CpuRouteResult unbounded = RouteWithCpuAStar(board, compiled, request);
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(unbounded));
+  const CpuRoute& witness = std::get<CpuRoute>(unbounded);
+  ASSERT_GT(witness.telemetry.work_units, 1U);
+  ASSERT_GT(witness.telemetry.peak_record_count, 1U);
+  ASSERT_GT(witness.telemetry.peak_queue_size, 1U);
+  ASSERT_GT(witness.lattice_path.size(), 1U);
+
+  const CpuRouteWorkLimits equality{
+      .maximum_work_units = witness.telemetry.work_units,
+      .maximum_record_count = witness.telemetry.peak_record_count,
+      .maximum_queue_size = witness.telemetry.peak_queue_size,
+      .maximum_reconstruction_states = witness.lattice_path.size(),
+  };
+  const CpuRouteResult exact = RouteWithCpuAStar(board, compiled, request, equality);
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(exact));
+  EXPECT_EQ(std::get<CpuRoute>(exact), witness);
+
+  const auto expect_bound_failure = [&](CpuRouteWorkLimits limits) {
+    const CpuRouteResult result = RouteWithCpuAStar(board, compiled, request, limits);
+    ASSERT_TRUE(std::holds_alternative<RouteFailure>(result));
+    const RouteFailure& failure = std::get<RouteFailure>(result);
+    EXPECT_EQ(failure.code, RouteFailureCode::kResourceExhausted);
+    ASSERT_TRUE(failure.telemetry.has_value());
+    EXPECT_LE(failure.telemetry->work_units, limits.maximum_work_units);
+    EXPECT_LE(failure.telemetry->peak_record_count, limits.maximum_record_count);
+    EXPECT_LE(failure.telemetry->peak_queue_size, limits.maximum_queue_size);
+  };
+
+  CpuRouteWorkLimits one_under = equality;
+  --one_under.maximum_work_units;
+  expect_bound_failure(one_under);
+  one_under = equality;
+  --one_under.maximum_record_count;
+  expect_bound_failure(one_under);
+  one_under = equality;
+  --one_under.maximum_queue_size;
+  expect_bound_failure(one_under);
+  one_under = equality;
+  --one_under.maximum_reconstruction_states;
+  expect_bound_failure(one_under);
+}
+
+TEST(CpuAStarTest, RejectsZeroWorkLimitsBeforeSearch) {
+  const BoardSnapshot board = Snapshot(test_support::ValidM1BoardData());
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile());
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  for (const auto member : std::array{
+           &CpuRouteWorkLimits::maximum_work_units,
+           &CpuRouteWorkLimits::maximum_record_count,
+           &CpuRouteWorkLimits::maximum_queue_size,
+           &CpuRouteWorkLimits::maximum_reconstruction_states,
+       }) {
+    CpuRouteWorkLimits limits;
+    limits.*member = 0;
+    const CpuRouteResult result = RouteWithCpuAStar(board, compiled, request, limits);
+    ASSERT_TRUE(std::holds_alternative<RouteFailure>(result));
+    EXPECT_EQ(std::get<RouteFailure>(result).code, RouteFailureCode::kInvalidRequest);
+    EXPECT_FALSE(std::get<RouteFailure>(result).telemetry.has_value());
+  }
+}
+
 TEST(CpuAStarTest, CheapDiagonalHeuristicRemainsAdmissible) {
   BoardData data = test_support::ValidM1BoardData();
   data.obstacles.clear();
