@@ -603,6 +603,25 @@ cc_library(
 )
 
 cc_library(
+    name = "phase4_paired_trial",
+    srcs = [
+        "src/benchmark/phase4_paired_trial.cc",
+        "src/benchmark/phase4_paired_trial_internal.h",
+    ],
+    hdrs = ["include/apgar/benchmark/phase4_paired_trial.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":cpu_candidate_allocation_session",
+        ":cpu_candidate_pool_preparation",
+        ":phase4_representative_corpus",
+        ":sequential_negotiated_baseline",
+    ],
+)
+
+cc_library(
     name = "phase3_commit",
     hdrs = ["include/apgar/benchmark/phase3_commit.h"],
     strip_include_prefix = "include",
@@ -1722,6 +1741,24 @@ cc_test(
         ":multi_net_workload",
         ":phase4_representative_corpus_fault_test_variant",
         ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_paired_trial_test",
+    size = "medium",
+    srcs = [
+        "src/allocator/cpu_candidate_allocation_session_internal.h",
+        "src/benchmark/phase4_paired_trial_internal.h",
+        "tests/benchmark/phase4_paired_trial_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":cpu_candidate_allocation_session",
+        ":cpu_candidate_pool_preparation",
+        ":phase4_paired_trial",
         "@googletest//:gtest_main",
     ],
 )

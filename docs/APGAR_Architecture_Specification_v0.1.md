@@ -1117,6 +1117,23 @@ acceleration.
   query/work opportunities and actual consumed CPU route work; unequal actual
   work alone does not invalidate a trial whose predeclared opportunity caps,
   stopping depth, and external wall/memory limits are equal.
+- Decision-eligible successful arms and pairs are versioned by
+  `schemas/benchmark/phase4_paired_trial_v1.md`. Each contender MUST build an
+  independent case in an isolated process. Before execution, the runner MUST
+  prove `N*S == N*K + E*C`, identical per-query A* limits, exact aggregate
+  route caps, structurally reachable `C` under every planner shape/headroom
+  bound, and normalized stopping depth `S == E + R - 1`. The candidate
+  outcome is its preferred retained Multi-World when present and its common-
+  lineage One-World otherwise. Semantic identity excludes order, worker count,
+  timing, and measured resources; a separately checksum-bound external
+  authority MUST name distinct arm process instances, exact enforced wall and
+  peak-host-memory limits, successful exit, and persistent-preparer lifecycle
+  evidence before pairing. The measured arm MUST capture preparer telemetry
+  around its contender call, the external observation MUST match it exactly,
+  and assembly MUST revalidate both copies and the supported worker range. A
+  failed paired arm MUST retain its typed child failure and any caller-owned
+  or post-publication authoritative CandidateStore until explicit
+  reconciliation.
 - The canonical sequential reference is
   `schemas/allocator/sequential_negotiated_baseline_v1.md`. Its one-current-route
   search state MUST NOT be relabeled candidate allocation: it routes and commits
