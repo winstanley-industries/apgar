@@ -297,6 +297,55 @@ cc_library(
 )
 
 cc_library(
+    name = "sequential_negotiated_baseline",
+    srcs = [
+        "src/allocator/sequential_negotiated_baseline.cc",
+        "src/allocator/sequential_negotiated_baseline_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/sequential_negotiated_baseline.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":negotiated_prices",
+        ":one_world_allocator",
+        ":planar_route",
+    ],
+)
+
+cc_library(
+    name = "sequential_negotiated_baseline_fault_test_variant",
+    testonly = True,
+    srcs = [
+        "src/allocator/sequential_negotiated_baseline.cc",
+        "src/allocator/sequential_negotiated_baseline_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/sequential_negotiated_baseline.h"],
+    copts = APGAR_COPTS,
+    defines = ["APGAR_SEQUENTIAL_NEGOTIATED_BASELINE_FAULT_TEST_VARIANT"],
+    strip_include_prefix = "include",
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":negotiated_prices",
+        ":one_world_allocator",
+        ":planar_route",
+    ],
+)
+
+cc_library(
     name = "targeted_regeneration",
     srcs = [
         "src/allocator/targeted_regeneration.cc",
@@ -1316,6 +1365,63 @@ cc_test(
         ":one_world_fault_test_support",
         ":planar_route",
         ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "sequential_negotiated_baseline_test",
+    size = "small",
+    srcs = [
+        "src/allocator/sequential_negotiated_baseline_internal.h",
+        "tests/allocator/sequential_negotiated_baseline_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":one_world_allocator",
+        ":sequential_negotiated_baseline",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "sequential_negotiated_baseline_corpus_test",
+    size = "medium",
+    srcs = [
+        "tests/allocator/sequential_negotiated_baseline_corpus_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":phase4_representative_corpus",
+        ":sequential_negotiated_baseline",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "sequential_negotiated_baseline_fault_test",
+    size = "small",
+    srcs = [
+        "src/allocator/sequential_negotiated_baseline_internal.h",
+        "tests/allocator/sequential_negotiated_baseline_fault_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":one_world_allocator",
+        ":sequential_negotiated_baseline_fault_test_variant",
         "@googletest//:gtest_main",
     ],
 )

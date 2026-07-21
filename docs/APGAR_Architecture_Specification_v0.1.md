@@ -596,6 +596,14 @@ score(net, candidate, world) =
 1. Request targeted new candidates under the current price snapshot.
 1. Prune dominated candidates and continue until feasible, stalled, or budget exhausted.
 
+The named Phase 4 traditional baseline is independently versioned by
+`schemas/allocator/sequential_negotiated_baseline_v1.md`. It processes
+canonical nets sequentially, rips up only the current net's prior route,
+freezes a prospective congestion policy, runs bounded production CPU A*,
+exact-admits at most one replacement, and commits it before the next net. It
+retains no reusable alternatives. One-World accounting and negotiated-price
+updates run only at complete sweep boundaries as independent oracles.
+
 ### 14.3 Multi-world execution
 
 Multiple worlds share the immutable candidate pool and base resource model but maintain independent selections, price states, objective weights, perturbations, and update schedules. This allows APGAR to spend additional GPU capacity on board-level search rather than storing full independent pathfinding state for every world.
@@ -1048,6 +1056,13 @@ acceleration.
   and stopping budgets equal. CPU comparisons MUST use a persistent production
   worker pool rather than per-invocation thread creation when the allocator
   implementation uses persistent workers.
+- The canonical sequential reference is
+  `schemas/allocator/sequential_negotiated_baseline_v1.md`. Its one-current-route
+  search state MUST NOT be relabeled candidate allocation: it routes and commits
+  one net at a time, restores a prior exact route after a rejected reroute, and
+  uses the One-World reference only as an end-of-sweep occupancy oracle. Known
+  unmapped exact conflicts require resource refinement, and fixed-point stall
+  requires both unchanged route semantics and unchanged complete price values.
 - Prepared-session timing MUST include scheduling, compatible-batch formation,
   candidate generation, compact readback, exact validation and admission,
   per-net store publication, selection, resource accumulation, price updates,
