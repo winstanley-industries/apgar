@@ -72,6 +72,9 @@ using TwoTerminalRequestResult = std::variant<PlanarRouteRequest, TwoTerminalReq
 [[nodiscard]] TwoTerminalRequestResult BuildTwoTerminalRouteRequest(
     const board_ir::BoardSnapshot& board, board_ir::LayerId start_layer,
     board_ir::LayerId goal_layer) noexcept;
+[[nodiscard]] TwoTerminalRequestResult BuildTwoTerminalRouteRequest(
+    const board_ir::BoardSnapshot& board, const board_ir::RoutingProfile& routing_profile,
+    board_ir::LayerId start_layer, board_ir::LayerId goal_layer) noexcept;
 
 enum class PlanarEndpointIssue : std::uint8_t {
   kNotOnCompilerLattice,

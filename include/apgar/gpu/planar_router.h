@@ -598,7 +598,13 @@ struct PlanarGpuRoute {
   std::uint64_t source_board_content_hash = 0;
   std::uint64_t compiler_profile_fingerprint = 0;
   std::uint32_t compiler_version = 0;
+  std::uint64_t routing_profile_fingerprint = 0;
   std::uint64_t rule_bucket_identity = 0;
+  board_ir::EntityRef net;
+  board_ir::Point64 requested_start;
+  board_ir::Point64 requested_goal;
+  board_ir::LayerId requested_start_layer = 0;
+  board_ir::LayerId requested_goal_layer = 0;
   std::uint64_t device_view_fingerprint = 0;
   PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
   std::uint64_t policy_identity = 0;
@@ -712,9 +718,11 @@ struct PlanarCandidateBatchItemEvidence;
 // A public item can be inspected and copied. Construction/mutation helpers can
 // create only unsealed diagnostic state. Once a reached item is sealed, every
 // accessor reads a separately allocated truly-const evidence snapshot; public
-// mutation helpers cannot alter it. The snapshot records whether execution came
-// through the concrete checksum-pinned CUDA producer boundary. Candidate
-// provenance adapters require both host validation and producer authentication.
+// mutation helpers cannot alter it. The sealed route snapshot retains the
+// exact net, endpoints/layers, and routing-profile fingerprint and records
+// whether execution came through the concrete checksum-pinned CUDA producer
+// boundary. Candidate provenance adapters require both host validation and
+// producer authentication.
 class PlanarCandidateBatchItem {
  public:
   PlanarCandidateBatchItem(const PlanarCandidateBatchItem&) = default;

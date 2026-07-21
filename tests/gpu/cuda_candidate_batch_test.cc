@@ -768,6 +768,84 @@ TEST(CudaCandidateBatchTest, SealedBatchItemAuthenticatesCudaCandidateProvenance
   EXPECT_FALSE(oversized_rejection.candidate_payload_checksum.has_value());
 }
 
+TEST(CudaCandidateBatchTest, SealedItemCannotMoveBetweenCoincidentAuthenticNets) {
+  board_ir::BoardData data = test_support::ValidM1TwoNetBoardData();
+  data.obstacles.clear();
+  data.terminals[2].center = data.terminals[0].center;
+  data.terminals[2].connection_region = data.terminals[0].connection_region;
+  data.terminals[3].center = data.terminals[1].center;
+  data.terminals[3].connection_region = data.terminals[1].connection_region;
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const geometry_compiler::CompilerProfile compiler_profile =
+      test_support::DefaultCompilerProfile({0});
+  const CompiledBoard first_compiled = Compile(board, compiler_profile);
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = board.data().nets[1].ref;
+  geometry_compiler::CompileResult second_compile_result =
+      geometry_compiler::CompileBoard(board, compiler_profile, second_profile);
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(second_compile_result));
+  const CompiledBoard second_compiled = std::get<CompiledBoard>(std::move(second_compile_result));
+  routing::TwoTerminalRequestResult first_request_result =
+      routing::BuildTwoTerminalRouteRequest(board, board.data().routing_profile, 0, 0);
+  routing::TwoTerminalRequestResult second_request_result =
+      routing::BuildTwoTerminalRouteRequest(board, second_profile, 0, 0);
+  ASSERT_TRUE(std::holds_alternative<CpuRouteRequest>(first_request_result));
+  ASSERT_TRUE(std::holds_alternative<CpuRouteRequest>(second_request_result));
+  const CpuRouteRequest first_request = std::get<CpuRouteRequest>(first_request_result);
+  const CpuRouteRequest second_request = std::get<CpuRouteRequest>(second_request_result);
+  const routing::CandidatePolicyResult first_policy_result =
+      routing::NormalizeCandidateGenerationPolicy(first_compiled, first_request.candidate_policy);
+  const routing::CandidatePolicyResult second_policy_result =
+      routing::NormalizeCandidateGenerationPolicy(second_compiled, second_request.candidate_policy);
+  ASSERT_TRUE(
+      std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(first_policy_result));
+  ASSERT_TRUE(
+      std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(second_policy_result));
+
+  std::unique_ptr<IPlanarRouteBackend> backend = CreateCudaPlanarRouteBackend();
+  ASSERT_NE(backend, nullptr);
+  PreparedPlanarCompiledViewResult prepared_result =
+      PrepareCudaPlanarCompiledView(board, first_compiled, *backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+  ASSERT_NE(prepared, nullptr);
+  const PlanarCandidateBatchQuery first_query{
+      .query_id = 0x81810001,
+      .input_ordinal = 7,
+      .request = first_request,
+  };
+  const PlanarCandidateBatchResult result = RouteCandidateBatchWithPreparedPlanarGpuBackend(
+      board, first_compiled, std::span(&first_query, 1),
+      PlanarCandidateBatchPolicy{
+          .batch_id = 0x81810002,
+          .generator = PlanarGenerator::kHeadingAwareSweep,
+      },
+      *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarCandidateBatch>(result));
+  const PlanarCandidateBatch& batch = std::get<PlanarCandidateBatch>(result);
+  ASSERT_EQ(batch.items.size(), 1U);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuRoute>(batch.items.front().result()));
+  ASSERT_TRUE(batch.items.front().has_authenticated_cuda_producer_evidence());
+
+  const PlanarCandidateBatchQuery second_query{
+      .query_id = first_query.query_id,
+      .input_ordinal = first_query.input_ordinal,
+      .request = second_request,
+  };
+  const candidates::CandidateDraftBuildResult moved =
+      candidates::BuildGeneratedCandidateFromGpuBatchItem(
+          board, second_compiled, second_query,
+          std::get<routing::NormalizedCandidateGenerationPolicy>(second_policy_result), batch,
+          batch.items.front());
+
+  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(moved));
+  EXPECT_EQ(std::get<candidates::CandidateRejection>(moved).invariant_id,
+            "candidate.builder.gpu_result_envelope.v1");
+  EXPECT_EQ(std::get<routing::NormalizedCandidateGenerationPolicy>(first_policy_result).identity,
+            std::get<routing::NormalizedCandidateGenerationPolicy>(second_policy_result).identity);
+}
+
 TEST(CudaCandidateBatchTest, GenericCudaLookingWrapperCannotMintCudaCandidateProvenance) {
   const BoardSnapshot board = Snapshot();
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));

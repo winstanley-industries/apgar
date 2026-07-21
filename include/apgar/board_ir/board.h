@@ -183,8 +183,16 @@ class BoardSnapshot {
 };
 
 using BoardCreationResult = std::variant<BoardSnapshot, BoardValidationError>;
+using RoutingProfilePreparationResult = std::variant<RoutingProfile, BoardValidationError>;
 
 [[nodiscard]] BoardCreationResult CreateBoardSnapshot(BoardData data);
+
+// Canonicalizes and validates a per-net M1 routing profile against one
+// immutable BoardSnapshot. Board IR v1 retains one default profile for source
+// compatibility; Phase 4 workloads use this boundary for every additional
+// authentic two-terminal net in the same snapshot.
+[[nodiscard]] RoutingProfilePreparationResult PrepareRoutingProfile(const BoardSnapshot& board,
+                                                                    RoutingProfile profile);
 
 }  // namespace apgar::board_ir
 

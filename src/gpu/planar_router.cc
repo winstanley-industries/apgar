@@ -920,7 +920,14 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
       .source_board_content_hash = untrusted.source_board_content_hash,
       .compiler_profile_fingerprint = untrusted.compiler_profile_fingerprint,
       .compiler_version = untrusted.compiler_version,
+      .routing_profile_fingerprint =
+          routing::FingerprintRoutingProfile(compiled_board.routing_profile()),
       .rule_bucket_identity = untrusted.rule_bucket_identity,
+      .net = request.net,
+      .requested_start = request.start,
+      .requested_goal = request.goal,
+      .requested_start_layer = request.start_layer,
+      .requested_goal_layer = request.goal_layer,
       .device_view_fingerprint = untrusted.device_view_fingerprint,
       .generator = generator,
       .policy_identity = candidate_policy == nullptr ? 0 : candidate_policy->identity,
@@ -1083,7 +1090,14 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
       .source_board_content_hash = header.source_board_content_hash,
       .compiler_profile_fingerprint = header.compiler_profile_fingerprint,
       .compiler_version = header.compiler_version,
+      .routing_profile_fingerprint =
+          routing::FingerprintRoutingProfile(compiled_board.routing_profile()),
       .rule_bucket_identity = header.rule_bucket_identity,
+      .net = request.net,
+      .requested_start = request.start,
+      .requested_goal = request.goal,
+      .requested_start_layer = request.start_layer,
+      .requested_goal_layer = request.goal_layer,
       .device_view_fingerprint = header.device_view_fingerprint,
       .generator = header.generator,
       .policy_identity = candidate_policy.identity,
@@ -2005,7 +2019,7 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
   backend_request.queries.reserve(preflight.admitted.size());
   backend_request.policy_edges.reserve(static_cast<std::size_t>(preflight.aggregate_policy_edges));
   const std::uint64_t routing_profile_fingerprint =
-      routing::FingerprintRoutingProfile(board.data().routing_profile);
+      routing::FingerprintRoutingProfile(compiled_board.routing_profile());
 
   for (HostAdmittedCandidateBatchQuery& host_admitted : preflight.admitted) {
     const std::size_t item_index = host_admitted.item_index;

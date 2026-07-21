@@ -39,8 +39,18 @@ using test_support::NormalizePolicy;
 using test_support::Snapshot;
 using test_support::TwoTerminalRequest;
 
+template <typename Access>
+concept ExposesPrivateMake = requires { &Access::Make; };
+
+template <typename Access>
+concept ExposesPrivateSeal = requires { &Access::Seal; };
+
 static_assert(std::is_const_v<
               std::remove_reference_t<decltype(std::declval<const RouteCandidate&>().data())>>);
+static_assert(!std::is_default_constructible_v<RouteCandidateAdmissionFactory>);
+static_assert(!std::is_default_constructible_v<GeneratedRouteCandidateProducerFactory>);
+static_assert(!ExposesPrivateMake<RouteCandidateAdmissionFactory>);
+static_assert(!ExposesPrivateSeal<GeneratedRouteCandidateProducerFactory>);
 
 [[nodiscard]] const CandidateRejection& Rejection(const CandidateAdmissionResult& result) {
   EXPECT_TRUE(std::holds_alternative<CandidateRejection>(result));
@@ -52,42 +62,21 @@ static_assert(std::is_const_v<
 
 [[nodiscard]] GeneratedRouteCandidate DraftFromSegments(const BoardSnapshot& board,
                                                         const CompiledBoard& compiled,
-                                                        const CpuRouteRequest& request,
+                                                        CpuRouteRequest& request,
                                                         std::span<const LayerSegment> segments,
                                                         std::uint64_t reported_cost,
                                                         std::uint64_t query_identity = 1) {
-  const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
-  const CandidateAssociations associations = AssociationsFor(board, compiled);
-  routing::CpuRoute route{
-      .source_board_content_hash = associations.board_content_hash,
-      .compiler_profile_fingerprint = associations.compiler_profile_fingerprint,
-      .compiler_version = associations.geometry_compiler_version,
-      .rule_bucket_identity = associations.rule_bucket_identity,
-      .candidate_policy_identity = policy.identity,
-      .total_cost = reported_cost,
-      .lattice_path = {},
-      .segments = std::vector<LayerSegment>(segments.begin(), segments.end()),
-      .telemetry = {},
-      .producer_evidence = {},
-  };
-  test_support::CpuRouteFaultDecorator::Reseal(route);
-  const CandidateDraftBuildResult result = BuildGeneratedCandidateFromCpuRoute(
-      board, compiled, request, policy, route,
+  GeneratedRouteCandidate result = test_support::CandidateDraftAlongSegments(
+      board, compiled, request, segments,
       CandidateSchedulingIdentity{.batch_identity = 17, .query_identity = query_identity});
-  EXPECT_TRUE(std::holds_alternative<GeneratedRouteCandidate>(result))
-      << (std::holds_alternative<CandidateRejection>(result)
-              ? std::get<CandidateRejection>(result).detail
-              : std::string{});
-  if (!std::holds_alternative<GeneratedRouteCandidate>(result)) {
-    std::abort();
-  }
-  return std::get<GeneratedRouteCandidate>(result);
+  EXPECT_EQ(result.metrics.scalar_policy_cost, reported_cost);
+  return result;
 }
 
 TEST(RouteCandidateTest, CpuDraftIsCanonicalStableAndExactlyAdmitted) {
   const BoardSnapshot board = Snapshot();
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   const GeneratedRouteCandidate first = CandidateDraft(board, compiled, request);
   const GeneratedRouteCandidate second = CandidateDraft(board, compiled, request);
 
@@ -213,7 +202,7 @@ TEST(RouteCandidateTest, CanonicalV1IdentitySignaturesChecksumAndBytesHaveGolden
 TEST(RouteCandidateTest, IncompatibleCandidateAndSignatureVersionsFailClosed) {
   const BoardSnapshot board = Snapshot();
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   const CandidateAdmissionContext context{
       .board = board, .compiled_board = compiled, .request = request};
 
@@ -264,7 +253,7 @@ TEST(RouteCandidateTest, AdmissionMergesCollinearSegmentsWithoutTrustingGenerato
   data.obstacles.clear();
   const BoardSnapshot board = Snapshot(std::move(data));
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   GeneratedRouteCandidate draft = CandidateDraft(board, compiled, request);
   ASSERT_EQ(draft.geometry.size(), 1U);
   const ExactLinePrimitive original = std::get<ExactLinePrimitive>(draft.geometry.front());
@@ -293,7 +282,7 @@ TEST(RouteCandidateTest, EntityRefZeroIsAcceptedAndRetainedInRejections) {
   data.routing_profile.net = kZeroNet;
   const BoardSnapshot board = Snapshot(std::move(data));
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   GeneratedRouteCandidate draft = CandidateDraft(board, compiled, request);
 
   EXPECT_TRUE(std::holds_alternative<RouteCandidate>(AdmitRouteCandidate(
@@ -322,7 +311,7 @@ TEST(RouteCandidateTest, NorthWestResourcesCoalesceInAscendingCanonicalKeyOrder)
       AxisAlignedBox64{.min = data.terminals[1].center, .max = data.terminals[1].center};
   const BoardSnapshot board = Snapshot(std::move(data));
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   const std::array segments = {
       LayerSegment{
           .layer = 0,
@@ -343,7 +332,7 @@ TEST(RouteCandidateTest, NorthWestResourcesCoalesceInAscendingCanonicalKeyOrder)
 TEST(RouteCandidateTest, BoundaryEqualityPassesAndOneDbuClearanceViolationFails) {
   const BoardSnapshot board = Snapshot();
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   const std::array equality_segments = {
       LayerSegment{.layer = 0, .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 20, .y = 0}}},
       LayerSegment{.layer = 0,
@@ -400,7 +389,7 @@ TEST(RouteCandidateTest, UnintendedTerminalSweptEqualityAndOneDbuPerturbationAre
   });
   const BoardSnapshot board = Snapshot(std::move(data));
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   const std::array equality_segments = {
       LayerSegment{.layer = 0, .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 0, .y = 20}}},
       LayerSegment{.layer = 0,
@@ -443,7 +432,7 @@ TEST(RouteCandidateTest, RejectionDiagnosticTruncationPreservesUtf8Boundaries) {
   }
   const BoardSnapshot board = Snapshot(std::move(data));
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   GeneratedRouteCandidate draft = CandidateDraft(board, compiled, request);
   draft.geometry = {
       ExactLinePrimitive{.layer = 0,
@@ -464,7 +453,7 @@ TEST(RouteCandidateTest, ThroughViaDisconnectedAndInvalidHeadingAreRejectedBefor
   data.obstacles.clear();
   const BoardSnapshot board = Snapshot(std::move(data));
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   const CandidateAdmissionContext context{
       .board = board, .compiled_board = compiled, .request = request};
 
@@ -678,7 +667,7 @@ TEST(RouteCandidateTest, SelfClearanceEqualityIsLegalAndOneDbuInsideIsRejected) 
   data.obstacles.clear();
   const BoardSnapshot board = Snapshot(std::move(data));
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   const CandidateAdmissionContext context{
       .board = board, .compiled_board = compiled, .request = request};
   const std::array equality_segments = {
@@ -762,16 +751,15 @@ TEST(RouteCandidateTest, CpuBuilderDerivesCpuOnlyProvenanceFromTypedEvidence) {
   EXPECT_EQ(std::get<CandidateRejection>(unauthenticated).invariant_id,
             "candidate.builder.cpu_producer_authentication.v1");
 
-  routing::CpuRoute stale_route = route;
-  ++stale_route.source_board_content_hash;
-  test_support::CpuRouteFaultDecorator::Reseal(stale_route);
-  const CandidateDraftBuildResult stale = BuildGeneratedCandidateFromCpuRoute(
-      board, compiled, request, policy, stale_route,
-      CandidateSchedulingIdentity{.batch_identity = 91, .query_identity = 93});
+  CandidateAssociations stale_associations = AssociationsFor(board, compiled);
+  ++stale_associations.board_content_hash;
+  const CandidateDraftBuildResult stale = test_support::BuildUnsealedCandidateFromSegments(
+      board, compiled, request, policy, route.segments, route.total_cost,
+      CandidateSchedulingIdentity{.batch_identity = 91, .query_identity = 93}, stale_associations);
   ASSERT_TRUE(std::holds_alternative<CandidateRejection>(stale));
   const CandidateRejection& stale_rejection = std::get<CandidateRejection>(stale);
   EXPECT_EQ(stale_rejection.invariant_id, "candidate.builder.planar_route_association.v1");
-  EXPECT_EQ(stale_rejection.associations.board_content_hash, stale_route.source_board_content_hash);
+  EXPECT_EQ(stale_rejection.associations.board_content_hash, stale_associations.board_content_hash);
   EXPECT_TRUE(stale_rejection.candidate_id.has_value());
   EXPECT_TRUE(stale_rejection.candidate_payload_checksum.has_value());
 }
@@ -957,22 +945,9 @@ TEST(RouteCandidateTest, BuilderFailuresRetainVersionedExactAndResourceDiagnosti
                         std::uint64_t total_cost) -> CandidateDraftBuildResult {
     const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
     const CandidateAssociations associations = AssociationsFor(board, compiled);
-    routing::CpuRoute route{
-        .source_board_content_hash = associations.board_content_hash,
-        .compiler_profile_fingerprint = associations.compiler_profile_fingerprint,
-        .compiler_version = associations.geometry_compiler_version,
-        .rule_bucket_identity = associations.rule_bucket_identity,
-        .candidate_policy_identity = policy.identity,
-        .total_cost = total_cost,
-        .lattice_path = {},
-        .segments = std::move(segments),
-        .telemetry = {},
-        .producer_evidence = {},
-    };
-    test_support::CpuRouteFaultDecorator::Reseal(route);
-    return BuildGeneratedCandidateFromCpuRoute(
-        board, compiled, request, policy, route,
-        CandidateSchedulingIdentity{.batch_identity = 107, .query_identity = 109});
+    return test_support::BuildUnsealedCandidateFromSegments(
+        board, compiled, request, policy, segments, total_cost,
+        CandidateSchedulingIdentity{.batch_identity = 107, .query_identity = 109}, associations);
   };
 
   const BoardSnapshot blocked_board = Snapshot();
@@ -1048,25 +1023,12 @@ TEST(RouteCandidateTest, BuilderChecksPrimitiveBoundBeforeDraftAllocation) {
   const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
   const CandidateAssociations associations = AssociationsFor(board, compiled);
   const auto build_count = [&](std::size_t count) {
-    routing::CpuRoute route{
-        .source_board_content_hash = associations.board_content_hash,
-        .compiler_profile_fingerprint = associations.compiler_profile_fingerprint,
-        .compiler_version = associations.geometry_compiler_version,
-        .rule_bucket_identity = associations.rule_bucket_identity,
-        .candidate_policy_identity = policy.identity,
-        .total_cost = 0,
-        .lattice_path = {},
-        .segments = std::vector<LayerSegment>(
-            count,
-            LayerSegment{.layer = 0,
-                         .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 10, .y = 0}}}),
-        .telemetry = {},
-        .producer_evidence = {},
-    };
-    test_support::CpuRouteFaultDecorator::Reseal(route);
-    return BuildGeneratedCandidateFromCpuRoute(
-        board, compiled, request, policy, route,
-        CandidateSchedulingIdentity{.batch_identity = 113, .query_identity = 127});
+    const std::vector<LayerSegment> segments(
+        count, LayerSegment{.layer = 0,
+                            .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 10, .y = 0}}});
+    return test_support::BuildUnsealedCandidateFromSegments(
+        board, compiled, request, policy, segments, 0,
+        CandidateSchedulingIdentity{.batch_identity = 113, .query_identity = 127}, associations);
   };
 
   const CandidateDraftBuildResult at_max = build_count(kMaximumCandidatePrimitives);

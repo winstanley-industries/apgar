@@ -4,22 +4,28 @@ The Phase 3 candidate store owns immutable accepted RouteCandidate v1 objects
 and immutable CandidateRejection v1 records. It never mutates Board IR,
 CompiledBoard, congestion, prices, or allocator state.
 
-A store instance binds to the complete Board/compiler/routing/rule association
-set when its first exact-admitted RouteCandidate enters publication. The
-binding persists even if duplicate selection, retained-pool budgets, or a
-pinned-pool rollback subsequently reject every candidate in that publication.
-Later candidates with another association set are rejected; candidates from
-stale snapshots are never mixed into the same per-net pool or returned by
-`Enumerate(net)`.
+A store instance binds globally to the Board content hash, compiler-profile
+fingerprint, and geometry-compiler version when its first exact-admitted
+RouteCandidate enters publication. Independently, each exact net binds to its
+routing-profile fingerprint and rule-bucket identity on that net's first exact
+admission. Both bindings persist even if duplicate selection, retained-pool
+budgets, or a multi-pool pinned rollback subsequently reject every candidate
+in that publication. Later candidates with another global session or another
+context for the same net are rejected. Distinct authentic nets may carry
+distinct routing profiles and rule buckets, but stale snapshots or drifting
+contexts are never mixed into a per-net pool or returned by `Enumerate(net)`.
 
 ## Budgets and admission order
 
 Configuration supplies positive per-net accepted-candidate and accepted-byte
 caps, a bounded rejection-record cap, a separate rejection-ingestion item cap,
 and three independent admission-transaction caps: item count, aggregate input
-logical bytes, and deterministic work units. The default rejection-ingestion
-cap is 1,024 records per call. The default admission-transaction caps are 1,024
-items, 64 MiB, and 100,000,000 work units. Checked logical candidate bytes
+logical bytes, and deterministic work units. A separate positive pin-lease item
+cap bounds the identities examined by one atomic group acquisition. The default
+rejection-ingestion and pin-lease caps are each 1,024 records per call; the
+pin-lease cap cannot exceed the v1 hard maximum of 1,000,000 identities. The
+default admission-transaction caps are 1,024 items, 64 MiB, and 100,000,000
+work units. Checked logical candidate bytes
 recomputed from the actual candidate fields are the byte-budget authority; a
 generator's reported `logical_bytes` is not trusted. Pinned candidates consume
 the same retained-pool budgets.
@@ -210,5 +216,28 @@ sequence of shifting single-record insertions.
 Retention pins are store metadata separate from immutable candidates. A
 nonzero owner ID may pin one stored candidate idempotently. Unpinning names the
 same owner/candidate pair. Pin acquisition that would violate configured
-budgets fails. Phase 3 does not define allocator worlds, prices, selection, or
-column generation.
+budgets fails. This original single-candidate seam remains source-compatible,
+but a caller must not use one owner/candidate pair as multiple independent
+lifetimes.
+
+The collision-safe group seam accepts one nonempty bounded set of immutable
+candidate handles plus their diagnostic `(net, candidate ID, payload checksum)`
+identities. It canonicalizes the set, rejects duplicate candidate IDs, and
+under one store lock validates that every ID is currently present, matches all
+three diagnostic fields, and is exactly equal to the supplied immutable
+candidate. Missing, detached, stale-net, stale-payload, and semantically
+mismatched inputs (including an ID/checksum collision) fail the complete
+acquisition; no prefix is pinned. Only after all validation and allocation
+succeeds does the store issue a fresh internal lease identity and increment
+each candidate's pin reference count. Every acquisition receives an independent
+identity even when its candidate group is identical to another live lease.
+
+The returned move-only scoped lease owns exactly one acquisition. Destruction
+or explicit `Release` decrements its complete group at most once; repeated
+release is a no-op. Releasing either of two overlapping leases cannot remove the
+other's retention. A lease reports active only while its store is alive. It may
+safely outlive store destruction, after which it reports inactive and release
+is a no-op because the store and its candidate pools no longer exist.
+The store-issued lease identity is runtime metadata, not replay identity and not
+caller-controlled allocator state. Phase 3 does not define allocator worlds,
+prices, selection, or column generation.

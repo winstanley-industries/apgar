@@ -23,7 +23,7 @@ enum class CandidateProducerAuthority : std::uint8_t {
     const routing::NormalizedCandidateGenerationPolicy& normalized_policy,
     const CandidateAssociations& route_associations, std::uint64_t route_policy_identity,
     std::uint64_t reported_scalar_cost, std::span<const routing::LayerSegment> segments,
-    CandidateProvenance provenance, CandidateProducerAuthority producer_authority);
+    CandidateProvenance provenance);
 
 [[nodiscard]] CandidateDraftBuildResult RejectGeneratedCandidateDraft(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,

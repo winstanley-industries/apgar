@@ -45,11 +45,16 @@ now.
 - Provenance crosses typed producer boundaries. The CPU builder derives the
   CPU A*/CPU/device-class fields, accepts only explicit batch/query scheduling
   identities, and requires exact route evidence sealed by the CPU A* result
-  path. Its deliberately malformed-route reseal seam exists only in a
-  source-private Bazel `testonly` support library; production targets and the
-  installed public API cannot depend on it. Source code intentionally depending
-  on APGAR-private implementation headers is trusted implementation code, not a
-  hostile runtime caller. The GPU builder requires the validated batch, query,
+  path. No test or production dependency exposes a reseal operation. Exact
+  diagnostic probes call the source-private unsealed validation builder, while
+  fixture candidates restrict a copied compiled view and still pass through
+  the real CPU A* entry point and exact validation before evidence is created.
+  CPU/candidate evidence pointees are private nested types. Their access classes are fully defined and
+  non-extensible in the installed header, with private sealing and
+  `RouteCandidate`-construction operations, so consumers cannot complete a
+  forward-declared friend factory to acquire private access. Source code
+  intentionally depending on APGAR-private implementation headers is trusted
+  implementation code, not a hostile runtime caller. The GPU builder requires the validated batch, query,
   item, route, backend, and immutable-device-view envelope to agree before it
   derives CUDA provenance. Public construction and mutation helpers produce
   only unsealed diagnostic items. Successful GPU items become opaque
@@ -110,12 +115,18 @@ now.
 - The store enforces positive per-net candidate-count and logical-byte budgets,
   deterministic ranking/enumeration/pruning, resource and geometry diversity,
   and metric dominance. Immutable candidates are separate from mutable store
-  metadata. A store instance binds to one complete Board/compiler/routing/rule
-  association set when its first exact-admitted RouteCandidate enters
-  publication. That session binding persists even if later duplicate, budget,
-  or pinned-rollback processing retains no candidate. Association drift is
-  rejected rather than mixing stale and current candidates under the same net
-  identity.
+  metadata. A store instance binds globally to one Board/compiler association
+  when its first exact-admitted RouteCandidate enters publication. Each net
+  pool independently binds its routing-profile/rule-bucket association, so
+  authentic Phase 4 nets may coexist without allowing one net identity to
+  drift between rule contexts. The session binding persists even if later
+  duplicate, budget, or pinned-rollback processing retains no candidate.
+  Association drift is rejected rather than mixing stale and current
+  candidates under the same net identity.
+- Publication preallocates replacement pool and global-ID map nodes before
+  mutating either authoritative index, then commits with no-allocation node
+  transfers under the store mutex. Host allocation failure therefore leaves
+  both indexes at the pre-publication snapshot.
 - Retained-pool caps do not bound hostile admission work. Store v1 therefore
   also enforces positive per-transaction item-count, recomputed aggregate-input-
   byte, and conservative deterministic-work caps before exact admission. Input
@@ -180,9 +191,18 @@ now.
   diagnostics across the whole transaction, then performs one canonical
   sort/merge/truncate under the publication mutex rather than repeated vector
   insertion and shifting.
-- CAN-002 is represented by owner-scoped retention pins. A pinned candidate is
-  never pruned; Phase 3 does not define worlds, selection, congestion, or
-  prices.
+- CAN-002 is represented by retention pins. The original nonzero owner plus
+  single-candidate seam remains compatible and idempotent for one logical
+  lifetime. Phase 4 handoff uses a store-issued move-only group lease instead:
+  one bounded transaction validates every diagnostic net/ID/payload identity
+  and the complete immutable candidate value under the store lock, acquires all
+  pins or none, and gives each overlapping acquisition an independent internal
+  identity. Thus even an ID/checksum collision cannot lease the wrong value.
+  Scoped or explicit release is idempotent and removes only that acquisition,
+  so one plan cannot prematurely unpin another plan's shared selection. A lease
+  reports inactive after store destruction and its late release is harmless. A
+  pinned candidate is never pruned; Phase 3 does not define worlds, selection,
+  congestion, or prices.
 - Concurrent generation publishes through one explicit batch, which is sorted
   and serialized using stable total keys. Batch results do not depend on worker
   completion order, pointer identity, or unordered-container iteration.
@@ -204,6 +224,14 @@ now.
   Phase 3 benchmarks must report that cost separately from GPU execution.
 - Candidate IDs, signatures, and checksums have distinct roles. None may be
   used alone as collision-proof equality or legality evidence.
+- Store adversarial tests do not mutate or reconstruct a sealed
+  `RouteCandidate`. Signature-collision tests invoke the complete source-private
+  bucket classifier used by production with two authentic candidates while
+  treating the bucket-key match as the injected fault; checked rank and
+  byte-total boundary tests likewise exercise production pure arithmetic
+  helpers. An authentic same-ID pair with a larger stable winner covers the
+  winner-before-byte-eligibility rule. Impossible post-admission payload
+  corruption is not a supported store input state.
 - Admission transactions now have an explicit, reproducible denial-of-service
   boundary. Over-cap batches return one transaction-level diagnostic rather
   than allocating one result per rejected input.

@@ -88,6 +88,34 @@ namespace apgar::test_support {
   };
 }
 
+[[nodiscard]] inline board_ir::BoardData ValidM1TwoNetBoardData() {
+  board_ir::BoardData data = ValidM1BoardData();
+  constexpr board_ir::EntityRef kSecondNet{.id = 11, .generation = 0};
+  constexpr board_ir::EntityRef kThirdTerminal{.id = 22, .generation = 0};
+  constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
+  data.nets[1].name = "SECOND";
+  data.nets[1].terminals = {kThirdTerminal, kFourthTerminal};
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kThirdTerminal,
+      .net = kSecondNet,
+      .component = "U3",
+      .pin = "1",
+      .center = {.x = 0, .y = 20},
+      .connection_region = {.min = {.x = 0, .y = 20}, .max = {.x = 0, .y = 20}},
+      .layers = {0, 31},
+  });
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kFourthTerminal,
+      .net = kSecondNet,
+      .component = "U4",
+      .pin = "1",
+      .center = {.x = 100, .y = 20},
+      .connection_region = {.min = {.x = 100, .y = 20}, .max = {.x = 100, .y = 20}},
+      .layers = {0, 31},
+  });
+  return data;
+}
+
 }  // namespace apgar::test_support
 
 #endif  // APGAR_TESTS_SUPPORT_BOARD_BUILDER_H_

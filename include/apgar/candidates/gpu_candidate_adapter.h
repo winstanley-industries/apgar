@@ -33,21 +33,6 @@ namespace apgar::candidates {
     const routing::NormalizedCandidateGenerationPolicy& normalized_policy,
     const gpu::PlanarCandidateBatch& batch, const gpu::PlanarCandidateBatchItem& item);
 
-struct GpuCandidateBatchBuildRequest {
-  std::reference_wrapper<const gpu::PlanarCandidateBatchQuery> query;
-  std::reference_wrapper<const routing::NormalizedCandidateGenerationPolicy> normalized_policy;
-  std::reference_wrapper<const gpu::PlanarCandidateBatchItem> item;
-};
-
-struct GpuCandidateBatchBuildFailure {
-  CandidateRejectionCode code = CandidateRejectionCode::kInternalInvariant;
-  std::string invariant_id;
-  std::string detail;
-};
-
-using GpuCandidateBatchBuildResult =
-    std::variant<std::vector<CandidateDraftBuildResult>, GpuCandidateBatchBuildFailure>;
-
 // Bounded batch form. It proves item membership once through a sorted query-ID
 // index, then retains every per-item seal, association, and producer check used
 // by the single-item adapter. Results preserve request order.

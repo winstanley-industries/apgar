@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "apgar/board_ir/board.h"
@@ -23,6 +24,8 @@ inline constexpr std::uint64_t kDefaultMaximumAdmissionItemsPerTransaction = 1'0
 inline constexpr std::uint64_t kDefaultMaximumAdmissionInputBytesPerTransaction =
     64U * 1024U * 1024U;
 inline constexpr std::uint64_t kDefaultMaximumAdmissionWorkUnitsPerTransaction = 100'000'000;
+inline constexpr std::uint64_t kDefaultMaximumPinLeaseItemsPerTransaction = 1'024;
+inline constexpr std::uint64_t kMaximumPinLeaseItemsPerTransaction = 1'000'000;
 
 struct CandidateStoreConfig {
   std::uint64_t maximum_candidates_per_net = 0;
@@ -41,6 +44,10 @@ struct CandidateStoreConfig {
       kDefaultMaximumAdmissionInputBytesPerTransaction;
   std::uint64_t maximum_admission_work_units_per_transaction =
       kDefaultMaximumAdmissionWorkUnitsPerTransaction;
+  // Bounds one atomic selected-candidate pin-lease acquisition independently
+  // of retained-pool and candidate-admission limits.
+  std::uint64_t maximum_pin_lease_items_per_transaction =
+      kDefaultMaximumPinLeaseItemsPerTransaction;
 
   friend bool operator==(const CandidateStoreConfig&, const CandidateStoreConfig&) = default;
 };
@@ -49,6 +56,13 @@ enum class CandidateStoreErrorCode : std::uint8_t {
   kInvalidConfiguration = 0,
   kMissingCandidate = 1,
   kInvalidPinOwner = 2,
+  kPinLeaseInputBoundExceeded = 3,
+  kInvalidPinLeaseRequest = 4,
+  kCandidateNetMismatch = 5,
+  kCandidatePayloadMismatch = 6,
+  kPinLeaseIdentityExhausted = 7,
+  kResourceExhausted = 8,
+  kCandidateSemanticMismatch = 9,
 };
 
 struct CandidateStoreError {
@@ -61,9 +75,60 @@ struct CandidateStoreError {
 using StoredCandidate = std::shared_ptr<const RouteCandidate>;
 using CandidateStoreAdmissionResult = std::variant<StoredCandidate, CandidateRejection>;
 
+struct CandidatePinRequest {
+  board_ir::EntityRef net{};
+  CandidateId candidate_id;
+  std::uint64_t candidate_payload_checksum = 0;
+  // Exact immutable value expected by the caller. ID and checksum remain
+  // indexed diagnostics; complete typed equality closes their collision gap.
+  StoredCandidate expected_candidate;
+
+  friend bool operator==(const CandidatePinRequest&, const CandidatePinRequest&) = default;
+};
+
+class CandidateStore;
+
+// One independent, store-issued retention lease over an atomic candidate
+// group. Moving transfers the lease; destruction and repeated Release calls
+// are safe and release the group at most once. The control block also makes a
+// lease that accidentally outlives its store harmless.
+class CandidateStorePinLease {
+ public:
+  CandidateStorePinLease(const CandidateStorePinLease&) = delete;
+  CandidateStorePinLease& operator=(const CandidateStorePinLease&) = delete;
+  CandidateStorePinLease(CandidateStorePinLease&& other) noexcept;
+  CandidateStorePinLease& operator=(CandidateStorePinLease&& other) noexcept;
+  ~CandidateStorePinLease();
+
+  void Release() noexcept;
+  [[nodiscard]] bool active() const noexcept;
+
+ private:
+  struct Control;
+
+  CandidateStorePinLease(std::shared_ptr<Control> control, std::uint64_t lease_id) noexcept
+      : control_(std::move(control)), lease_id_(lease_id) {}
+
+  std::shared_ptr<Control> control_;
+  std::uint64_t lease_id_ = 0;
+
+  friend class CandidateStore;
+};
+
+using CandidateStorePinLeaseResult = std::variant<CandidateStorePinLease, CandidateStoreError>;
+
 struct CandidateAdmissionItem {
   routing::PlanarRouteRequest request;
   GeneratedRouteCandidate generated;
+};
+
+struct CandidateStoreTelemetry {
+  std::uint64_t last_publication_candidate_inspections = 0;
+  std::uint64_t last_duplicate_equality_checks = 0;
+  std::uint64_t rejection_batch_merges = 0;
+  std::uint64_t shared_request_policy_normalizations = 0;
+
+  friend bool operator==(const CandidateStoreTelemetry&, const CandidateStoreTelemetry&) = default;
 };
 
 // A total, versioned rank. Lower values are preferred. No comparison depends
@@ -79,11 +144,13 @@ struct CandidateAdmissionItem {
 class CandidateStore {
  public:
   explicit CandidateStore(CandidateStoreConfig config);
+  ~CandidateStore();
   CandidateStore(const CandidateStore&) = delete;
   CandidateStore& operator=(const CandidateStore&) = delete;
 
   [[nodiscard]] const CandidateStoreConfig& config() const noexcept { return config_; }
   [[nodiscard]] bool valid() const noexcept;
+  [[nodiscard]] CandidateStoreTelemetry telemetry() const;
 
   // Admission consumes explicit caller-owned rvalues. Binding these seams does
   // not copy any policy/geometry/resource bulk; transaction preflight runs on
@@ -119,6 +186,10 @@ class CandidateStore {
                                                        CandidateId candidate_id);
   [[nodiscard]] std::optional<CandidateStoreError> Unpin(std::uint64_t owner_id,
                                                          CandidateId candidate_id);
+  // Validates the complete identity group and acquires all pins under one store
+  // lock. Failure leaves every candidate's pin state unchanged.
+  [[nodiscard]] CandidateStorePinLeaseResult AcquirePinLease(
+      std::span<const CandidatePinRequest> requests);
   [[nodiscard]] bool IsPinned(CandidateId candidate_id) const;
 
   // Reapplies the deterministic retention order. Pins are always preserved;
@@ -126,8 +197,6 @@ class CandidateStore {
   [[nodiscard]] std::optional<CandidateRejection> Prune(board_ir::EntityRef net);
 
  private:
-  friend class CandidateStoreTestPeer;
-
   using PinKey = std::pair<std::uint64_t, CandidateId>;
   struct NetLess {
     [[nodiscard]] bool operator()(board_ir::EntityRef left,
@@ -138,6 +207,7 @@ class CandidateStore {
   using CandidatePool = std::vector<StoredCandidate>;
 
   [[nodiscard]] bool IsPinnedLocked(CandidateId candidate_id) const;
+  void ReleasePinLease(std::uint64_t lease_id) noexcept;
   void RetainRejectionLocked(const CandidateRejection& rejection);
   void RetainCanonicalRejectionsLocked(std::vector<CandidateRejection> canonical_rejections);
   [[nodiscard]] std::vector<CandidateRejection> BuildMergedRejectionsLocked(
@@ -158,7 +228,16 @@ class CandidateStore {
   std::vector<CandidateRejection> rejections_;
   std::set<PinKey> pins_;
   std::map<CandidateId, std::uint64_t> pin_counts_;
+  std::map<std::uint64_t, std::vector<CandidateId>> pin_leases_;
+  std::uint64_t next_pin_lease_id_ = 1;
+  std::shared_ptr<CandidateStorePinLease::Control> pin_lease_control_;
+  // The first three fields bind the common Board IR/compiler session. Routing
+  // profile and rule-bucket fields are bound independently by each net pool.
   std::optional<CandidateAssociations> bound_associations_;
+  // Exact admission binds a net even when retention later rejects every
+  // candidate or a multi-pool transaction rolls back. This authority is
+  // independent of retained pool contents.
+  std::map<board_ir::EntityRef, CandidateAssociations, NetLess> net_associations_;
   // Deterministic test instrumentation: candidate-level publication work for
   // the most recent transaction. Unrelated pools must not affect this value.
   std::uint64_t last_publication_candidate_inspections_ = 0;
@@ -174,6 +253,8 @@ class CandidateStore {
   // shared-request admission transaction increments this exactly once after
   // preflight, regardless of candidate count or outcome.
   std::uint64_t shared_request_policy_normalizations_ = 0;
+
+  friend class CandidateStorePinLease;
 };
 
 }  // namespace apgar::candidates

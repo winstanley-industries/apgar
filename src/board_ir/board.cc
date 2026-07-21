@@ -369,4 +369,52 @@ BoardCreationResult CreateBoardSnapshot(BoardData data) {
   return BoardSnapshot(std::move(data), content_hash);
 }
 
+RoutingProfilePreparationResult PrepareRoutingProfile(const BoardSnapshot& board,
+                                                      RoutingProfile profile) {
+  std::ranges::sort(profile.allowed_layers);
+  const Net* target_net = board.FindNet(profile.net);
+  if (target_net == nullptr) {
+    return Error(BoardValidationCode::kInvalidRoutingProfile,
+                 "Routing profile refers to an unknown or stale net");
+  }
+  if (target_net->terminals.size() != 2) {
+    return Error(BoardValidationCode::kNotM1Board,
+                 "M1 routing profiles require exactly two terminals");
+  }
+  if (profile.nominal_width <= 0 || profile.nominal_width > kMaxAbsDbCoord ||
+      profile.clearance < 0 || profile.clearance > kMaxAbsDbCoord ||
+      profile.allowed_layers.empty() || profile.allowed_headings == 0 ||
+      (profile.allowed_headings & static_cast<HeadingMask>(~kM1HeadingMask)) != 0) {
+    return Error(BoardValidationCode::kInvalidRoutingProfile,
+                 "Routing profile dimensions, layers, or headings are invalid");
+  }
+  if (std::ranges::adjacent_find(profile.allowed_layers) != profile.allowed_layers.end()) {
+    return Error(BoardValidationCode::kInvalidRoutingProfile,
+                 "Routing profile layers contain duplicates");
+  }
+  for (LayerId layer_id : profile.allowed_layers) {
+    const Layer* layer = board.FindLayer(layer_id);
+    if (layer == nullptr || !layer->routable || layer->type != LayerType::kSignal) {
+      return Error(BoardValidationCode::kInvalidRoutingProfile,
+                   "Routing profile contains an unavailable signal layer");
+    }
+  }
+  for (EntityRef terminal_ref : target_net->terminals) {
+    const Terminal* terminal = board.FindTerminal(terminal_ref);
+    if (terminal == nullptr) {
+      return Error(BoardValidationCode::kInvalidReference,
+                   "Routing profile terminal reference is stale");
+    }
+    const bool has_routable_connection =
+        std::ranges::any_of(terminal->layers, [&](LayerId terminal_layer) {
+          return std::ranges::binary_search(profile.allowed_layers, terminal_layer);
+        });
+    if (!has_routable_connection) {
+      return Error(BoardValidationCode::kInvalidRoutingProfile,
+                   "Every routed-net terminal must intersect an allowed routing layer");
+    }
+  }
+  return profile;
+}
+
 }  // namespace apgar::board_ir

@@ -45,12 +45,13 @@ struct RouteFailure {
   friend bool operator==(const RouteFailure&, const RouteFailure&) = default;
 };
 
-struct CpuRouteProducerEvidence;
 struct CpuRoute;
+class CpuRouteEvidenceAccess;
 
 // Opaque, copyable evidence created only by the CPU A* implementation. It is
 // not serialized and equality deliberately ignores handle identity.
-struct CpuRouteProducerEvidenceHandle {
+class CpuRouteProducerEvidenceHandle {
+ public:
   CpuRouteProducerEvidenceHandle() = default;
   CpuRouteProducerEvidenceHandle(const CpuRouteProducerEvidenceHandle&) = default;
   CpuRouteProducerEvidenceHandle(CpuRouteProducerEvidenceHandle&&) noexcept = default;
@@ -61,17 +62,25 @@ struct CpuRouteProducerEvidenceHandle {
                          const CpuRouteProducerEvidenceHandle&) noexcept {
     return true;
   }
-  // The pointee is deliberately incomplete in the installed public API.
-  // Callers can copy or clear evidence but cannot mint it without depending on
-  // APGAR's source-private test decorator contract.
-  std::shared_ptr<const CpuRouteProducerEvidence> evidence;
+
+ private:
+  struct Evidence;
+  std::shared_ptr<const Evidence> evidence_;
+
+  friend class CpuRouteEvidenceAccess;
 };
 
 struct CpuRoute {
   std::uint64_t source_board_content_hash;
   std::uint64_t compiler_profile_fingerprint;
   std::uint32_t compiler_version;
+  std::uint64_t routing_profile_fingerprint;
   std::uint64_t rule_bucket_identity;
+  board_ir::EntityRef net;
+  board_ir::Point64 requested_start;
+  board_ir::Point64 requested_goal;
+  board_ir::LayerId requested_start_layer;
+  board_ir::LayerId requested_goal_layer;
   std::uint64_t candidate_policy_identity;
   std::uint64_t total_cost;
   std::vector<board_ir::Point64> lattice_path;
@@ -84,6 +93,22 @@ struct CpuRoute {
 
 using CpuRouteResult = std::variant<CpuRoute, RouteFailure>;
 
+// Fully defined, non-extensible access class. Only the concrete out-of-line A*
+// producer can seal evidence; consumers cannot complete a friend type or reach
+// the private evidence storage.
+class CpuRouteEvidenceAccess final {
+ private:
+  CpuRouteEvidenceAccess() = delete;
+
+  static void Seal(CpuRoute& route);
+  [[nodiscard]] static bool Authenticates(const CpuRoute& route) noexcept;
+
+  friend CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot&,
+                                          const geometry_compiler::CompiledBoard&,
+                                          const CpuRouteRequest&);
+  friend bool CpuRouteHasAuthenticatedAStarEvidence(const CpuRoute&) noexcept;
+};
+
 // M1 routes one exact planar layer. start_layer != goal_layer is retained in
 // the request contract so a future exact through-via transition provider can
 // extend adjacency without changing terminal semantics; today it returns a
@@ -92,12 +117,13 @@ using CpuRouteResult = std::variant<CpuRoute, RouteFailure>;
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     const CpuRouteRequest& request);
 
-// True only when the exact associations, policy identity, scalar cost, and
-// candidate-authoritative segment sequence still match evidence sealed by
-// RouteWithCpuAStar. `lattice_path` is a redundant reconstruction trace and
-// `telemetry` is diagnostic; neither is producer-authenticated or consumed by
-// candidate construction. Publicly fabricated aggregates or aggregates whose
-// authenticated fields were subsequently relabeled return false.
+// True only when the exact Board/compiler/routing/rule associations, request,
+// policy identity, scalar cost, and candidate-authoritative segment sequence
+// still match evidence sealed by RouteWithCpuAStar. `lattice_path` is a
+// redundant reconstruction trace and `telemetry` is diagnostic; neither is
+// producer-authenticated or consumed by candidate construction. Publicly
+// fabricated aggregates or aggregates whose authenticated fields were
+// subsequently relabeled return false.
 [[nodiscard]] bool CpuRouteHasAuthenticatedAStarEvidence(const CpuRoute& route) noexcept;
 
 // Public for differential and corruption tests. Every returned route passes

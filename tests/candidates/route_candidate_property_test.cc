@@ -319,22 +319,9 @@ TEST(RouteCandidatePropertyTest,
       LayerSegment{.layer = 0, .centerline = {.start = {80, 20}, .end = {80, 0}}},
       LayerSegment{.layer = 0, .centerline = {.start = {80, 0}, .end = {100, 0}}},
   };
-  CpuRoute route{
-      .source_board_content_hash = associations.board_content_hash,
-      .compiler_profile_fingerprint = associations.compiler_profile_fingerprint,
-      .compiler_version = associations.geometry_compiler_version,
-      .rule_bucket_identity = associations.rule_bucket_identity,
-      .candidate_policy_identity = policy.identity,
-      .total_cost = 152,
-      .lattice_path = {},
-      .segments = std::vector<LayerSegment>(segments.begin(), segments.end()),
-      .telemetry = {},
-      .producer_evidence = {},
-  };
-  test_support::CpuRouteFaultDecorator::Reseal(route);
-  return BuildGeneratedCandidateFromCpuRoute(
-      board, compiled, request, policy, route,
-      CandidateSchedulingIdentity{.batch_identity = 23, .query_identity = 29});
+  return test_support::BuildUnsealedCandidateFromSegments(
+      board, compiled, request, policy, segments, 152,
+      CandidateSchedulingIdentity{.batch_identity = 23, .query_identity = 29}, associations);
 }
 
 TEST(RouteCandidatePropertyTest, ExactClearanceBoundaryAndBothOneDbuPerturbationsAreDistinct) {

@@ -138,5 +138,39 @@ TEST(BoardSnapshotTest, RejectsInvalidUtf8InSchemaStrings) {
   EXPECT_EQ(std::get<BoardValidationError>(result).code, BoardValidationCode::kInvalidEncoding);
 }
 
+TEST(BoardSnapshotTest, PreparesAnAdditionalAuthenticNetProfileCanonically) {
+  BoardCreationResult result = CreateBoardSnapshot(test_support::ValidM1TwoNetBoardData());
+  ASSERT_TRUE(std::holds_alternative<BoardSnapshot>(result));
+  const BoardSnapshot& board = std::get<BoardSnapshot>(result);
+  RoutingProfile second = board.data().routing_profile;
+  second.net = board.data().nets[1].ref;
+  std::ranges::reverse(second.allowed_layers);
+
+  RoutingProfilePreparationResult prepared = PrepareRoutingProfile(board, std::move(second));
+
+  ASSERT_TRUE(std::holds_alternative<RoutingProfile>(prepared));
+  const RoutingProfile& profile = std::get<RoutingProfile>(prepared);
+  EXPECT_EQ(profile.net, board.data().nets[1].ref);
+  EXPECT_TRUE(std::ranges::is_sorted(profile.allowed_layers));
+}
+
+TEST(BoardSnapshotTest, RejectsAnAdditionalProfileWithoutTerminalLayerAccess) {
+  BoardData data = test_support::ValidM1TwoNetBoardData();
+  data.terminals[2].layers = {31};
+  data.terminals[3].layers = {31};
+  BoardCreationResult result = CreateBoardSnapshot(std::move(data));
+  ASSERT_TRUE(std::holds_alternative<BoardSnapshot>(result));
+  const BoardSnapshot& board = std::get<BoardSnapshot>(result);
+  RoutingProfile second = board.data().routing_profile;
+  second.net = board.data().nets[1].ref;
+  second.allowed_layers = {0};
+
+  RoutingProfilePreparationResult prepared = PrepareRoutingProfile(board, std::move(second));
+
+  ASSERT_TRUE(std::holds_alternative<BoardValidationError>(prepared));
+  EXPECT_EQ(std::get<BoardValidationError>(prepared).code,
+            BoardValidationCode::kInvalidRoutingProfile);
+}
+
 }  // namespace
 }  // namespace apgar::board_ir

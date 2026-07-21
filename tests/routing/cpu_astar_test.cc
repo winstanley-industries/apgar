@@ -4,47 +4,20 @@
 #include <array>
 #include <limits>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "apgar/adapters/kicad_fixture.h"
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "src/routing/cpu_astar_internal.h"
+#include "src/routing/planar_route_internal.h"
 #include "tests/support/board_builder.h"
 #include "tests/support/compiler_builder.h"
 #include "tests/support/google_test.h"
 #include "tests/support/routing_builder.h"
-
-namespace apgar::geometry_compiler {
-
-class CompiledBoardTestPeer {
- public:
-  static bool AddLegalEdge(CompiledBoard& board, board_ir::LayerId layer, std::int64_t lattice_x,
-                           std::int64_t lattice_y, Direction direction) {
-    for (SparseTile& tile : board.tiles_) {
-      if (tile.key.layer != layer) {
-        continue;
-      }
-      for (CompiledNode& node : tile.nodes) {
-        const LatticeIndex index = GlobalLatticeIndex(board.profile_, tile.key, node.local_index);
-        if (index.x == lattice_x && index.y == lattice_y) {
-          node.legal_edges |= MaskFor(direction);
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  static void CorruptProfileFingerprint(CompiledBoard& board) {
-    ++board.compiler_profile_fingerprint_;
-  }
-
-  static void CorruptRuleBucketIdentity(CompiledBoard& board) { ++board.rule_bucket_.identity; }
-};
-
-}  // namespace apgar::geometry_compiler
 
 namespace apgar::routing {
 namespace {
@@ -60,6 +33,36 @@ using test_support::Compile;
 using test_support::ReadFixture;
 using test_support::Snapshot;
 using test_support::TwoTerminalRequest;
+
+template <typename Access>
+concept ExposesPrivateCpuRouteSeal = requires { &Access::Seal; };
+
+static_assert(!std::is_default_constructible_v<CpuRouteEvidenceAccess>);
+static_assert(!ExposesPrivateCpuRouteSeal<CpuRouteEvidenceAccess>);
+
+[[nodiscard]] std::vector<geometry_compiler::SparseTile> CopyTiles(const CompiledBoard& board) {
+  return {board.tiles().begin(), board.tiles().end()};
+}
+
+[[nodiscard]] bool AddLegalEdgeToTileCopy(std::vector<geometry_compiler::SparseTile>& tiles,
+                                          const CompilerProfile& profile, board_ir::LayerId layer,
+                                          std::int64_t lattice_x, std::int64_t lattice_y,
+                                          geometry_compiler::Direction direction) {
+  for (geometry_compiler::SparseTile& tile : tiles) {
+    if (tile.key.layer != layer) {
+      continue;
+    }
+    for (geometry_compiler::CompiledNode& node : tile.nodes) {
+      const geometry_compiler::LatticeIndex index =
+          geometry_compiler::GlobalLatticeIndex(profile, tile.key, node.local_index);
+      if (index.x == lattice_x && index.y == lattice_y) {
+        node.legal_edges |= geometry_compiler::MaskFor(direction);
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 TEST(RouteCostArithmeticTest, ReservesUint64MaxAsUnreachableSentinel) {
   constexpr std::uint64_t kMaximum = std::numeric_limits<std::uint64_t>::max();
@@ -306,10 +309,12 @@ TEST(CpuAStarTest, ExactValidatorRejectsAPathEnabledByACorruptedMask) {
   profile.active_regions = {ActiveRegion{.layer = 0, .bounds = profile.compilation_roi}};
   CompiledBoard compiled = Compile(board, profile);
   ASSERT_FALSE(compiled.EdgeIsLegal(0, 0, 0, geometry_compiler::Direction::kEast));
-  ASSERT_TRUE(geometry_compiler::CompiledBoardTestPeer::AddLegalEdge(
-      compiled, 0, 0, 0, geometry_compiler::Direction::kEast));
+  std::vector<geometry_compiler::SparseTile> corrupted_tiles = CopyTiles(compiled);
+  ASSERT_TRUE(AddLegalEdgeToTileCopy(corrupted_tiles, compiled.profile(), 0, 0, 0,
+                                     geometry_compiler::Direction::kEast));
 
-  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, TwoTerminalRequest(board, 0, 0));
+  const CpuRouteResult result = internal::RouteWithCpuAStarUsingTileView(
+      board, compiled, TwoTerminalRequest(board, 0, 0), corrupted_tiles);
 
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(result));
   const RouteFailure& failure = std::get<RouteFailure>(result);
@@ -326,10 +331,12 @@ TEST(CpuAStarTest, RejectsCorruptedMaskDirectionsExcludedByCompilerProfile) {
   CompilerProfile profile = test_support::DefaultCompilerProfile({0});
   profile.heading_mask = static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal);
   CompiledBoard compiled = Compile(board, profile);
-  ASSERT_TRUE(geometry_compiler::CompiledBoardTestPeer::AddLegalEdge(
-      compiled, 0, 0, 0, geometry_compiler::Direction::kNorthEast));
+  std::vector<geometry_compiler::SparseTile> corrupted_tiles = CopyTiles(compiled);
+  ASSERT_TRUE(AddLegalEdgeToTileCopy(corrupted_tiles, compiled.profile(), 0, 0, 0,
+                                     geometry_compiler::Direction::kNorthEast));
 
-  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, TwoTerminalRequest(board, 0, 0));
+  const CpuRouteResult result = internal::RouteWithCpuAStarUsingTileView(
+      board, compiled, TwoTerminalRequest(board, 0, 0), corrupted_tiles);
 
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(result));
   const RouteFailure& failure = std::get<RouteFailure>(result);
@@ -338,7 +345,7 @@ TEST(CpuAStarTest, RejectsCorruptedMaskDirectionsExcludedByCompilerProfile) {
   EXPECT_GT(failure.telemetry->expanded_states, 0U);
 }
 
-TEST(CpuAStarTest, RejectsStaleBoardAndProfileAssociationsBeforeSearch) {
+TEST(CpuAStarTest, AssociationValidatorRejectsStaleBoardProfileAndRuleBucket) {
   const BoardSnapshot board = Snapshot(test_support::ValidM1BoardData());
   CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile());
 
@@ -350,18 +357,31 @@ TEST(CpuAStarTest, RejectsStaleBoardAndProfileAssociationsBeforeSearch) {
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(stale_board));
   EXPECT_EQ(std::get<RouteFailure>(stale_board).code, RouteFailureCode::kValidationFailed);
 
-  geometry_compiler::CompiledBoardTestPeer::CorruptProfileFingerprint(compiled);
-  const CpuRouteResult stale_profile =
-      RouteWithCpuAStar(board, compiled, TwoTerminalRequest(board, 0, 0));
-  ASSERT_TRUE(std::holds_alternative<RouteFailure>(stale_profile));
-  EXPECT_EQ(std::get<RouteFailure>(stale_profile).code, RouteFailureCode::kValidationFailed);
+  const CompilerProfile& valid_profile = compiled.profile();
+  const geometry_compiler::RuleBucketV1& valid_bucket = compiled.rule_bucket();
+  const internal::CompiledBoardAssociationView stale_profile{
+      .source_board_content_hash = compiled.source_board_content_hash(),
+      .compiler_profile_fingerprint = compiled.compiler_profile_fingerprint() ^ 1U,
+      .compiler_version = compiled.compiler_version(),
+      .rule_bucket = valid_bucket,
+      .routing_profile = compiled.routing_profile(),
+      .profile = valid_profile,
+  };
+  EXPECT_EQ(internal::ValidateCompiledBoardAssociationView(board, stale_profile),
+            CompiledBoardAssociationIssue::kProfileFingerprintMismatch);
 
-  CompiledBoard stale_bucket = Compile(board, test_support::DefaultCompilerProfile());
-  geometry_compiler::CompiledBoardTestPeer::CorruptRuleBucketIdentity(stale_bucket);
-  const CpuRouteResult invalid_bucket =
-      RouteWithCpuAStar(board, stale_bucket, TwoTerminalRequest(board, 0, 0));
-  ASSERT_TRUE(std::holds_alternative<RouteFailure>(invalid_bucket));
-  EXPECT_EQ(std::get<RouteFailure>(invalid_bucket).code, RouteFailureCode::kValidationFailed);
+  geometry_compiler::RuleBucketV1 stale_bucket = valid_bucket;
+  stale_bucket.identity ^= 1U;
+  const internal::CompiledBoardAssociationView invalid_bucket{
+      .source_board_content_hash = compiled.source_board_content_hash(),
+      .compiler_profile_fingerprint = compiled.compiler_profile_fingerprint(),
+      .compiler_version = compiled.compiler_version(),
+      .rule_bucket = stale_bucket,
+      .routing_profile = compiled.routing_profile(),
+      .profile = valid_profile,
+  };
+  EXPECT_EQ(internal::ValidateCompiledBoardAssociationView(board, invalid_bucket),
+            CompiledBoardAssociationIssue::kRuleBucketMismatch);
 }
 
 TEST(CpuAStarIntegrationTest, RoutesKiCadFixtureAroundFrontBlockerAndDirectlyOnBack) {
@@ -512,8 +532,9 @@ TEST(CpuAStarPolicyTest, PolicyBanCannotMaskADanglingCompiledEdge) {
   const geometry_compiler::LatticeIndex start = std::get<ResolvedPlanarEndpoints>(endpoints).start;
   const geometry_compiler::Direction outward =
       start.x == 0 ? geometry_compiler::Direction::kWest : geometry_compiler::Direction::kEast;
-  ASSERT_TRUE(geometry_compiler::CompiledBoardTestPeer::AddLegalEdge(
-      test_case.compiled, test_case.request.start_layer, start.x, start.y, outward));
+  std::vector<geometry_compiler::SparseTile> corrupted_tiles = CopyTiles(test_case.compiled);
+  ASSERT_TRUE(AddLegalEdgeToTileCopy(corrupted_tiles, test_case.compiled.profile(),
+                                     test_case.request.start_layer, start.x, start.y, outward));
   const std::optional<EdgeResourceKey> dangling =
       CanonicalPhysicalEdgeResource(test_case.request.start_layer, start, outward);
   ASSERT_TRUE(dangling.has_value());
@@ -532,8 +553,8 @@ TEST(CpuAStarPolicyTest, PolicyBanCannotMaskADanglingCompiledEdge) {
   // destination-containment invariant on the corrupted legal edge.
   CpuRouteRequest unrelated_ban = test_case.request;
   unrelated_ban.candidate_policy.banned_resources = {test_case.middle_resource};
-  const CpuRouteResult corrupted =
-      RouteWithCpuAStar(test_case.board, test_case.compiled, unrelated_ban);
+  const CpuRouteResult corrupted = internal::RouteWithCpuAStarUsingTileView(
+      test_case.board, test_case.compiled, unrelated_ban, corrupted_tiles);
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(corrupted));
   EXPECT_EQ(std::get<RouteFailure>(corrupted).code, RouteFailureCode::kInternalInvariant);
 }

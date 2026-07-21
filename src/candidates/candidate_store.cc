@@ -1,4 +1,8 @@
+#if defined(APGAR_CANDIDATE_STORE_PINNED_ROLLBACK_TEST_VARIANT)
+#include "tests/support/candidate_store_test_overlay.h"
+#else
 #include "apgar/candidates/candidate_store.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -8,6 +12,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <new>
 #include <optional>
 #include <ranges>
 #include <set>
@@ -20,14 +25,72 @@
 #include <variant>
 #include <vector>
 
+#include "src/candidates/candidate_store_internal.h"
 #include "src/candidates/route_candidate_internal.h"
 
 namespace apgar::candidates {
+
+struct CandidateStorePinLease::Control {
+  std::mutex mutex;
+  CandidateStore* store = nullptr;
+};
+
+CandidateStorePinLease::CandidateStorePinLease(CandidateStorePinLease&& other) noexcept
+    : control_(std::move(other.control_)), lease_id_(std::exchange(other.lease_id_, 0)) {}
+
+CandidateStorePinLease& CandidateStorePinLease::operator=(CandidateStorePinLease&& other) noexcept {
+  if (this != &other) {
+    Release();
+    control_ = std::move(other.control_);
+    lease_id_ = std::exchange(other.lease_id_, 0);
+  }
+  return *this;
+}
+
+CandidateStorePinLease::~CandidateStorePinLease() { Release(); }
+
+bool CandidateStorePinLease::active() const noexcept {
+  const std::shared_ptr<Control> control = control_;
+  if (control == nullptr || lease_id_ == 0) {
+    return false;
+  }
+  std::scoped_lock lock(control->mutex);
+  return control->store != nullptr;
+}
+
+void CandidateStorePinLease::Release() noexcept {
+  std::shared_ptr<Control> control = std::move(control_);
+  const std::uint64_t lease_id = std::exchange(lease_id_, 0);
+  if (control == nullptr) {
+    return;
+  }
+  std::scoped_lock lock(control->mutex);
+  if (control->store != nullptr) {
+    control->store->ReleasePinLease(lease_id);
+  }
+}
+
 namespace {
 
 using routing::EdgeResourceKey;
 using Wide = __int128_t;
 using UWide = __uint128_t;
+
+thread_local std::optional<std::uint64_t> g_publication_preparation_failure_countdown;
+#if defined(APGAR_CANDIDATE_STORE_PINNED_ROLLBACK_TEST_VARIANT)
+thread_local std::optional<board_ir::EntityRef> g_forced_pinned_rollback_net;
+#endif
+
+void MaybeFailPublicationPreparationForTesting() {
+  if (!g_publication_preparation_failure_countdown.has_value()) {
+    return;
+  }
+  if (*g_publication_preparation_failure_countdown == 0) {
+    g_publication_preparation_failure_countdown.reset();
+    throw std::bad_alloc();
+  }
+  --*g_publication_preparation_failure_countdown;
+}
 
 [[nodiscard]] auto NetKey(board_ir::EntityRef net) noexcept {
   return std::tuple{net.id, net.generation};
@@ -36,6 +99,13 @@ using UWide = __uint128_t;
 [[nodiscard]] bool SameCandidateContext(const RouteCandidate& left,
                                         const RouteCandidate& right) noexcept {
   return left.net() == right.net() && left.data().associations == right.data().associations;
+}
+
+[[nodiscard]] bool SameStoreSession(const CandidateAssociations& left,
+                                    const CandidateAssociations& right) noexcept {
+  return left.board_content_hash == right.board_content_hash &&
+         left.compiler_profile_fingerprint == right.compiler_profile_fingerprint &&
+         left.geometry_compiler_version == right.geometry_compiler_version;
 }
 
 [[nodiscard]] bool RejectionBefore(const CandidateRejection& left,
@@ -453,7 +523,7 @@ struct ProjectedInterval {
   return shared;
 }
 
-struct RetentionSelection {
+struct RetentionSelectionImpl {
   std::vector<StoredCandidate> retained;
   std::vector<StoredCandidate> pruned;
   bool pinned_budget_failure = false;
@@ -471,12 +541,11 @@ struct RetentionSelection {
 
 [[nodiscard]] bool ResourceEquivalent(const RouteCandidate& left,
                                       const RouteCandidate& right) noexcept {
-  return SameCandidateContext(left, right) &&
-         left.data().resource_signature == right.data().resource_signature &&
-         CanonicalResourcesEqual(left, right);
+  return left.data().resource_signature == right.data().resource_signature &&
+         internal::ResourcesEqualWithinSignatureBucket(left, right);
 }
 
-[[nodiscard]] RetentionSelection SelectRetention(
+[[nodiscard]] RetentionSelectionImpl SelectRetention(
     std::vector<StoredCandidate> pool, const CandidateStoreConfig& config,
     const std::map<CandidateId, std::uint64_t>& pin_counts,
     std::uint64_t* candidate_inspections = nullptr) {
@@ -487,7 +556,7 @@ struct RetentionSelection {
     }
   };
   std::ranges::sort(pool, CandidatePointerRanksBefore);
-  RetentionSelection selection;
+  RetentionSelectionImpl selection;
   std::uint64_t retained_bytes = 0;
   const auto is_pinned = [&pin_counts](CandidateId id) { return pin_counts.contains(id); };
   const auto try_add = [&](const StoredCandidate& candidate) {
@@ -595,7 +664,9 @@ struct RetentionSelection {
          config.maximum_rejection_items_per_transaction > 0 &&
          config.maximum_admission_items_per_transaction > 0 &&
          config.maximum_admission_input_bytes_per_transaction > 0 &&
-         config.maximum_admission_work_units_per_transaction > 0;
+         config.maximum_admission_work_units_per_transaction > 0 &&
+         config.maximum_pin_lease_items_per_transaction > 0 &&
+         config.maximum_pin_lease_items_per_transaction <= kMaximumPinLeaseItemsPerTransaction;
 }
 
 [[nodiscard]] CandidateRejection TransactionRejection(
@@ -1011,25 +1082,76 @@ template <typename RequestAt, typename CandidateAt>
 
 }  // namespace
 
+bool internal::GeometryEqualWithinSignatureBucket(const RouteCandidate& left,
+                                                  const RouteCandidate& right) noexcept {
+  return SameCandidateContext(left, right) && CanonicalGeometryEqual(left, right);
+}
+
+bool internal::ResourcesEqualWithinSignatureBucket(const RouteCandidate& left,
+                                                   const RouteCandidate& right) noexcept {
+  return SameCandidateContext(left, right) && CanonicalResourcesEqual(left, right);
+}
+
+internal::SignatureBucketDuplicate internal::ClassifySignatureBucketDuplicate(
+    const RouteCandidate& left, const RouteCandidate& right, bool geometry_bucket_matched,
+    bool resource_bucket_matched) noexcept {
+  if (geometry_bucket_matched && GeometryEqualWithinSignatureBucket(left, right)) {
+    return SignatureBucketDuplicate::kGeometry;
+  }
+  if (resource_bucket_matched && ResourcesEqualWithinSignatureBucket(left, right)) {
+    return SignatureBucketDuplicate::kResources;
+  }
+  return SignatureBucketDuplicate::kNone;
+}
+
+std::strong_ordering internal::CompareTotalStepCount(const CandidateMetrics& left,
+                                                     const CandidateMetrics& right) noexcept {
+  const UWide left_total =
+      static_cast<UWide>(left.orthogonal_step_count) + left.diagonal_step_count;
+  const UWide right_total =
+      static_cast<UWide>(right.orthogonal_step_count) + right.diagonal_step_count;
+  if (left_total < right_total) {
+    return std::strong_ordering::less;
+  }
+  if (left_total > right_total) {
+    return std::strong_ordering::greater;
+  }
+  return std::strong_ordering::equal;
+}
+
+std::optional<std::uint64_t> internal::CheckedLogicalByteSum(std::uint64_t accumulated,
+                                                             std::uint64_t next) noexcept {
+  if (next > std::numeric_limits<std::uint64_t>::max() - accumulated) {
+    return std::nullopt;
+  }
+  return accumulated + next;
+}
+
 bool CandidateRanksBefore(const RouteCandidate& left, const RouteCandidate& right) noexcept {
   const CandidateMetrics& left_metrics = left.data().metrics;
   const CandidateMetrics& right_metrics = right.data().metrics;
-  const UWide left_steps =
-      static_cast<UWide>(left_metrics.orthogonal_step_count) + left_metrics.diagonal_step_count;
-  const UWide right_steps =
-      static_cast<UWide>(right_metrics.orthogonal_step_count) + right_metrics.diagonal_step_count;
-  const auto left_rank = std::tie(
-      left_metrics.intrinsic_base_cost, left_metrics.via_count, left_metrics.bend_count, left_steps,
-      left_metrics.axis_aligned_length_dbu, left_metrics.diagonal_projection_dbu,
-      left.data().resource_signature, left.data().geometry_signature, left.data().policy_identity,
-      left_metrics.scalar_policy_cost, left.id());
-  const auto right_rank = std::tie(
-      right_metrics.intrinsic_base_cost, right_metrics.via_count, right_metrics.bend_count,
-      right_steps, right_metrics.axis_aligned_length_dbu, right_metrics.diagonal_projection_dbu,
-      right.data().resource_signature, right.data().geometry_signature,
-      right.data().policy_identity, right_metrics.scalar_policy_cost, right.id());
-  if (left_rank != right_rank) {
-    return left_rank < right_rank;
+  const auto left_prefix =
+      std::tie(left_metrics.intrinsic_base_cost, left_metrics.via_count, left_metrics.bend_count);
+  const auto right_prefix = std::tie(right_metrics.intrinsic_base_cost, right_metrics.via_count,
+                                     right_metrics.bend_count);
+  if (left_prefix != right_prefix) {
+    return left_prefix < right_prefix;
+  }
+  const std::strong_ordering step_order =
+      internal::CompareTotalStepCount(left_metrics, right_metrics);
+  if (step_order != std::strong_ordering::equal) {
+    return step_order == std::strong_ordering::less;
+  }
+  const auto left_suffix =
+      std::tie(left_metrics.axis_aligned_length_dbu, left_metrics.diagonal_projection_dbu,
+               left.data().resource_signature, left.data().geometry_signature,
+               left.data().policy_identity, left_metrics.scalar_policy_cost, left.id());
+  const auto right_suffix =
+      std::tie(right_metrics.axis_aligned_length_dbu, right_metrics.diagonal_projection_dbu,
+               right.data().resource_signature, right.data().geometry_signature,
+               right.data().policy_identity, right_metrics.scalar_policy_cost, right.id());
+  if (left_suffix != right_suffix) {
+    return left_suffix < right_suffix;
   }
   if (left.data().payload_checksum != right.data().payload_checksum) {
     return left.data().payload_checksum < right.data().payload_checksum;
@@ -1081,9 +1203,60 @@ double GeometricOverlapRatio(const RouteCandidate& left, const RouteCandidate& r
   return static_cast<double>(shared) / static_cast<double>(denominator);
 }
 
-CandidateStore::CandidateStore(CandidateStoreConfig config) : config_(config) {}
+CandidateStore::CandidateStore(CandidateStoreConfig config)
+    : config_(config), pin_lease_control_(std::make_shared<CandidateStorePinLease::Control>()) {
+  pin_lease_control_->store = this;
+}
+
+CandidateStore::~CandidateStore() {
+  std::scoped_lock lock(pin_lease_control_->mutex);
+  pin_lease_control_->store = nullptr;
+}
 
 bool CandidateStore::valid() const noexcept { return StoreConfigurationIsValid(config_); }
+
+CandidateStoreTelemetry CandidateStore::telemetry() const {
+  std::scoped_lock lock(mutex_);
+  return CandidateStoreTelemetry{
+      .last_publication_candidate_inspections = last_publication_candidate_inspections_,
+      .last_duplicate_equality_checks = last_duplicate_equality_checks_,
+      .rejection_batch_merges = rejection_batch_merges_,
+      .shared_request_policy_normalizations = shared_request_policy_normalizations_,
+  };
+}
+
+internal::RetentionSelection internal::SelectRetentionForPool(
+    std::vector<StoredCandidate> pool, const CandidateStoreConfig& config,
+    const std::map<CandidateId, std::uint64_t>& pin_counts) {
+  RetentionSelectionImpl selected = SelectRetention(std::move(pool), config, pin_counts);
+  return internal::RetentionSelection{
+      .retained = std::move(selected.retained),
+      .pruned = std::move(selected.pruned),
+      .pinned_budget_failure = selected.pinned_budget_failure,
+  };
+}
+
+void internal::SetPublicationPreparationFailureCountdownForTesting(
+    std::optional<std::uint64_t> countdown) noexcept {
+  g_publication_preparation_failure_countdown = countdown;
+}
+
+#if defined(APGAR_CANDIDATE_STORE_PINNED_ROLLBACK_TEST_VARIANT)
+std::vector<CandidateStoreAdmissionResult> internal::PublishWithPinnedRollbackForTesting(
+    CandidateStore& store, std::vector<RouteCandidate> candidates, board_ir::EntityRef pinned_net) {
+  g_forced_pinned_rollback_net = pinned_net;
+  try {
+    std::scoped_lock lock(store.mutex_);
+    std::vector<CandidateStoreAdmissionResult> results =
+        store.PublishAcceptedBatchLocked(std::move(candidates), {});
+    g_forced_pinned_rollback_net.reset();
+    return results;
+  } catch (...) {
+    g_forced_pinned_rollback_net.reset();
+    throw;
+  }
+}
+#endif
 
 CandidateStoreAdmissionResult CandidateStore::Admit(const CandidateAdmissionContext& context,
                                                     GeneratedRouteCandidate&& generated) {
@@ -1226,10 +1399,12 @@ std::optional<std::uint64_t> CandidateStore::CandidateBytes(board_ir::EntityRef 
   }
   std::uint64_t bytes = 0;
   for (const StoredCandidate& candidate : pool->second) {
-    if (candidate->logical_bytes() > std::numeric_limits<std::uint64_t>::max() - bytes) {
+    const std::optional<std::uint64_t> next =
+        internal::CheckedLogicalByteSum(bytes, candidate->logical_bytes());
+    if (!next.has_value()) {
       return std::nullopt;
     }
-    bytes += candidate->logical_bytes();
+    bytes = *next;
   }
   return bytes;
 }
@@ -1340,6 +1515,149 @@ std::optional<CandidateStoreError> CandidateStore::Unpin(std::uint64_t owner_id,
   return std::nullopt;
 }
 
+CandidateStorePinLeaseResult CandidateStore::AcquirePinLease(
+    std::span<const CandidatePinRequest> requests) {
+  if (!valid()) {
+    return CandidateStoreError{.code = CandidateStoreErrorCode::kInvalidConfiguration,
+                               .detail = "Cannot acquire a lease from an invalid candidate store"};
+  }
+  if (requests.empty()) {
+    return CandidateStoreError{.code = CandidateStoreErrorCode::kInvalidPinLeaseRequest,
+                               .detail = "A candidate pin lease must name at least one candidate"};
+  }
+  if (requests.size() > config_.maximum_pin_lease_items_per_transaction) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kPinLeaseInputBoundExceeded,
+        .detail = "Candidate pin lease exceeds the configured transaction item bound"};
+  }
+
+  std::vector<CandidatePinRequest> canonical_requests;
+  std::vector<CandidateId> candidate_ids;
+  std::vector<CandidateId> inserted_count_records;
+  try {
+    canonical_requests.assign(requests.begin(), requests.end());
+    std::ranges::sort(canonical_requests,
+                      [](const CandidatePinRequest& left, const CandidatePinRequest& right) {
+                        return std::tie(left.candidate_id, left.net.id, left.net.generation,
+                                        left.candidate_payload_checksum) <
+                               std::tie(right.candidate_id, right.net.id, right.net.generation,
+                                        right.candidate_payload_checksum);
+                      });
+    const auto duplicate =
+        std::ranges::adjacent_find(canonical_requests, {}, &CandidatePinRequest::candidate_id);
+    if (duplicate != canonical_requests.end()) {
+      return CandidateStoreError{
+          .code = CandidateStoreErrorCode::kInvalidPinLeaseRequest,
+          .detail = "A candidate pin lease contains a duplicate candidate identity"};
+    }
+    candidate_ids.reserve(canonical_requests.size());
+    inserted_count_records.reserve(canonical_requests.size());
+    for (const CandidatePinRequest& request : canonical_requests) {
+      candidate_ids.push_back(request.candidate_id);
+    }
+  } catch (const std::bad_alloc&) {
+    return CandidateStoreError{.code = CandidateStoreErrorCode::kResourceExhausted,
+                               .detail = "Host allocation failed while preparing a pin lease"};
+  } catch (const std::length_error&) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kResourceExhausted,
+        .detail = "Host container limits were exhausted while preparing a pin lease"};
+  }
+
+  std::scoped_lock lock(mutex_);
+  for (const CandidatePinRequest& request : canonical_requests) {
+    if (request.expected_candidate == nullptr) {
+      return CandidateStoreError{
+          .code = CandidateStoreErrorCode::kInvalidPinLeaseRequest,
+          .detail = "Candidate pin lease omitted its exact immutable candidate"};
+    }
+    const auto stored = candidate_id_index_.find(request.candidate_id);
+    if (stored == candidate_id_index_.end()) {
+      return CandidateStoreError{.code = CandidateStoreErrorCode::kMissingCandidate,
+                                 .detail = "Candidate pin lease names an absent candidate"};
+    }
+    if (stored->second->net() != request.net) {
+      return CandidateStoreError{
+          .code = CandidateStoreErrorCode::kCandidateNetMismatch,
+          .detail = "Candidate pin lease net does not match the stored candidate"};
+    }
+    if (stored->second->data().payload_checksum != request.candidate_payload_checksum) {
+      return CandidateStoreError{
+          .code = CandidateStoreErrorCode::kCandidatePayloadMismatch,
+          .detail = "Candidate pin lease payload checksum does not match the stored candidate"};
+    }
+    if (stored->second->net() != request.expected_candidate->net() ||
+        stored->second->data() != request.expected_candidate->data()) {
+      return CandidateStoreError{
+          .code = CandidateStoreErrorCode::kCandidateSemanticMismatch,
+          .detail = "Candidate pin lease immutable value differs from the stored candidate"};
+    }
+    const auto count = pin_counts_.find(request.candidate_id);
+    if (count != pin_counts_.end() && count->second == std::numeric_limits<std::uint64_t>::max()) {
+      return CandidateStoreError{.code = CandidateStoreErrorCode::kPinLeaseIdentityExhausted,
+                                 .detail = "Candidate pin reference count is exhausted"};
+    }
+  }
+  if (next_pin_lease_id_ == 0) {
+    return CandidateStoreError{.code = CandidateStoreErrorCode::kPinLeaseIdentityExhausted,
+                               .detail = "Candidate pin lease identity space is exhausted"};
+  }
+
+  const std::uint64_t lease_id = next_pin_lease_id_;
+  try {
+    for (const CandidateId candidate_id : candidate_ids) {
+      const auto [unused, inserted] = pin_counts_.try_emplace(candidate_id, 0);
+      static_cast<void>(unused);
+      if (inserted) {
+        inserted_count_records.push_back(candidate_id);
+      }
+    }
+    const auto [unused, inserted] = pin_leases_.emplace(lease_id, std::move(candidate_ids));
+    static_cast<void>(unused);
+    if (!inserted) {
+      for (const CandidateId candidate_id : inserted_count_records) {
+        pin_counts_.erase(candidate_id);
+      }
+      return CandidateStoreError{.code = CandidateStoreErrorCode::kPinLeaseIdentityExhausted,
+                                 .detail = "Candidate pin lease identity was already active"};
+    }
+  } catch (const std::bad_alloc&) {
+    for (const CandidateId candidate_id : inserted_count_records) {
+      pin_counts_.erase(candidate_id);
+    }
+    return CandidateStoreError{.code = CandidateStoreErrorCode::kResourceExhausted,
+                               .detail = "Host allocation failed while acquiring a pin lease"};
+  } catch (const std::length_error&) {
+    for (const CandidateId candidate_id : inserted_count_records) {
+      pin_counts_.erase(candidate_id);
+    }
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kResourceExhausted,
+        .detail = "Host container limits were exhausted while acquiring a pin lease"};
+  }
+
+  for (const CandidatePinRequest& request : canonical_requests) {
+    ++pin_counts_.find(request.candidate_id)->second;
+  }
+  next_pin_lease_id_ = lease_id == std::numeric_limits<std::uint64_t>::max() ? 0 : lease_id + 1;
+  return CandidateStorePinLease(pin_lease_control_, lease_id);
+}
+
+void CandidateStore::ReleasePinLease(std::uint64_t lease_id) noexcept {
+  std::scoped_lock lock(mutex_);
+  const auto lease = pin_leases_.find(lease_id);
+  if (lease == pin_leases_.end()) {
+    return;
+  }
+  for (const CandidateId candidate_id : lease->second) {
+    const auto count = pin_counts_.find(candidate_id);
+    if (count != pin_counts_.end() && count->second > 0 && --count->second == 0) {
+      pin_counts_.erase(count);
+    }
+  }
+  pin_leases_.erase(lease);
+}
+
 bool CandidateStore::IsPinned(CandidateId candidate_id) const {
   std::scoped_lock lock(mutex_);
   return IsPinnedLocked(candidate_id);
@@ -1376,6 +1694,8 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
 
   std::vector<StoredCandidate> eligible;
   eligible.reserve(candidates.size());
+  std::optional<CandidateAssociations> pending_session = bound_associations_;
+  std::map<board_ir::EntityRef, CandidateAssociations, NetLess> pending_net_bindings;
   for (RouteCandidate& candidate : candidates) {
     ++last_publication_candidate_inspections_;
     std::optional<CandidateRejection> rejection;
@@ -1385,13 +1705,35 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
           "Candidate store configuration requires positive bounded pool, rejection, and "
           "admission-transaction capacities");
       rejection->stage = CandidateLifecycleStage::kStored;
-    } else if (bound_associations_.has_value() &&
-               *bound_associations_ != candidate.data().associations) {
+    } else if (pending_session.has_value() &&
+               !SameStoreSession(*pending_session, candidate.data().associations)) {
       rejection = StoreRejection(
           candidate, CandidateRejectionCode::kAssociationMismatch,
           "candidate.store.association_drift.v1",
-          "Candidate associations differ from this store's immutable session binding");
+          "Candidate board/compiler associations differ from this store's immutable session "
+          "binding");
       rejection->stage = CandidateLifecycleStage::kStored;
+    } else {
+      if (!pending_session.has_value()) {
+        pending_session = candidate.data().associations;
+      }
+      const auto persistent = net_associations_.find(candidate.net());
+      const CandidateAssociations* expected_context =
+          persistent == net_associations_.end() ? nullptr : &persistent->second;
+      if (expected_context == nullptr) {
+        const auto [pending, inserted] =
+            pending_net_bindings.try_emplace(candidate.net(), candidate.data().associations);
+        static_cast<void>(inserted);
+        expected_context = &pending->second;
+      }
+      if (*expected_context != candidate.data().associations) {
+        rejection = StoreRejection(
+            candidate, CandidateRejectionCode::kAssociationMismatch,
+            "candidate.store.net_context_drift.v1",
+            "Candidate routing-profile or rule-bucket association differs from this net's "
+            "immutable pool binding");
+        rejection->stage = CandidateLifecycleStage::kStored;
+      }
     }
     if (rejection.has_value()) {
       canonical_rejections.push_back(*rejection);
@@ -1404,9 +1746,10 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
   // Exact admission establishes the immutable store session even when every
   // eligible candidate is later rejected by duplicate, budget, or rollback
   // policy. Retained-pool contents are not the association authority.
-  if (!bound_associations_.has_value() && !eligible.empty()) {
-    bound_associations_ = eligible.front()->data().associations;
+  if (!bound_associations_.has_value() && pending_session.has_value()) {
+    bound_associations_ = *pending_session;
   }
+  net_associations_.merge(pending_net_bindings);
 
   // Candidate identity is global even though geometry/resource deduplication
   // and retention are per-net. Stable sort selects one incoming identity
@@ -1526,9 +1869,9 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
           for (const std::size_t winner_index : geometry->second) {
             ++last_publication_candidate_inspections_;
             ++last_duplicate_equality_checks_;
-            if (SameCandidateContext(*entries[index].candidate, *entries[winner_index].candidate) &&
-                CanonicalGeometryEqual(*entries[index].candidate,
-                                       *entries[winner_index].candidate)) {
+            if (internal::ClassifySignatureBucketDuplicate(
+                    *entries[index].candidate, *entries[winner_index].candidate, true, false) ==
+                internal::SignatureBucketDuplicate::kGeometry) {
               consider(winner_index,
                        DuplicateRelation{.code = CandidateRejectionCode::kDuplicateGeometry,
                                          .invariant = "candidate.store.duplicate_geometry.v1"});
@@ -1544,9 +1887,9 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
           for (const std::size_t winner_index : resource->second) {
             ++last_publication_candidate_inspections_;
             ++last_duplicate_equality_checks_;
-            if (SameCandidateContext(*entries[index].candidate, *entries[winner_index].candidate) &&
-                CanonicalResourcesEqual(*entries[index].candidate,
-                                        *entries[winner_index].candidate)) {
+            if (internal::ClassifySignatureBucketDuplicate(
+                    *entries[index].candidate, *entries[winner_index].candidate, false, true) ==
+                internal::SignatureBucketDuplicate::kResources) {
               consider(winner_index,
                        DuplicateRelation{.code = CandidateRejectionCode::kDuplicateResources,
                                          .invariant = "candidate.store.duplicate_resources.v1"});
@@ -1571,8 +1914,17 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
     for (const std::size_t index : duplicate_winners) {
       winner_pool.push_back(entries[index].candidate);
     }
-    RetentionSelection selection = SelectRetention(std::move(winner_pool), config_, pin_counts_,
-                                                   &last_publication_candidate_inspections_);
+    RetentionSelectionImpl selection = SelectRetention(std::move(winner_pool), config_, pin_counts_,
+                                                       &last_publication_candidate_inspections_);
+#if defined(APGAR_CANDIDATE_STORE_PINNED_ROLLBACK_TEST_VARIANT)
+    if (g_forced_pinned_rollback_net == net &&
+        std::ranges::any_of(entries, [this](const BatchEntry& entry) {
+          return !entry.incoming && IsPinnedLocked(entry.candidate->id());
+        })) {
+      selection.pinned_budget_failure = true;
+      g_forced_pinned_rollback_net.reset();
+    }
+#endif
     if (selection.pinned_budget_failure) {
       pinned_budget_failure = true;
       break;
@@ -1668,6 +2020,34 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
   }
   std::ranges::sort(results, StoreResultBefore);
 
+  // Allocate and populate every replacement map node before the store state
+  // changes. Node-handle transfer below uses the same allocators and cannot
+  // allocate, so a host allocation failure leaves both authoritative maps at
+  // the pre-publication snapshot.
+  std::map<board_ir::EntityRef, CandidatePool, NetLess> prepared_pools;
+  std::map<CandidateId, StoredCandidate> prepared_candidate_ids;
+  for (auto& [net, change] : staged) {
+    if (change.retained.empty()) {
+      continue;
+    }
+    std::ranges::sort(change.retained, CandidatePointerRanksBefore);
+    MaybeFailPublicationPreparationForTesting();
+    auto [prepared, inserted] = prepared_pools.emplace(net, std::move(change.retained));
+    if (!inserted) {
+      throw std::logic_error("Candidate publication staged a duplicate net replacement");
+    }
+    for (const StoredCandidate& candidate : prepared->second) {
+      MaybeFailPublicationPreparationForTesting();
+      if (!prepared_candidate_ids.emplace(candidate->id(), candidate).second) {
+        throw std::logic_error("Candidate publication staged a duplicate global identity");
+      }
+      const auto incumbent = candidate_id_index_.find(candidate->id());
+      if (incumbent != candidate_id_index_.end() && !staged.contains(incumbent->second->net())) {
+        throw std::logic_error("Candidate publication conflicts with an untouched global ID");
+      }
+    }
+  }
+
   // Commit every touched pool and the global ID index as one mutex-protected
   // publication. Untouched pools are neither copied nor recomputed.
   for (const auto& [net, change] : staged) {
@@ -1679,17 +2059,21 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
       }
     }
   }
-  for (auto& [net, change] : staged) {
-    if (change.retained.empty()) {
+  for (const auto& [net, change] : staged) {
+    static_cast<void>(change);
+    auto prepared = prepared_pools.extract(net);
+    if (prepared.empty()) {
       pools_.erase(net);
     } else {
-      std::ranges::sort(change.retained, CandidatePointerRanksBefore);
-      pools_[net] = std::move(change.retained);
-      for (const StoredCandidate& candidate : pools_[net]) {
-        candidate_id_index_.emplace(candidate->id(), candidate);
+      const auto incumbent = pools_.find(net);
+      if (incumbent == pools_.end()) {
+        static_cast<void>(pools_.insert(std::move(prepared)));
+      } else {
+        incumbent->second = std::move(prepared.mapped());
       }
     }
   }
+  candidate_id_index_.merge(prepared_candidate_ids);
   if (merged_rejections.has_value()) {
     rejections_ = std::move(*merged_rejections);
   }
@@ -1718,7 +2102,7 @@ std::optional<CandidateRejection> CandidateStore::PruneLocked(board_ir::EntityRe
     RetainRejectionLocked(rejection);
     return rejection;
   }
-  const RetentionSelection selection =
+  const RetentionSelectionImpl selection =
       SelectRetention(pool, config_, pin_counts_, &last_publication_candidate_inspections_);
   if (selection.pinned_budget_failure) {
     CandidateRejection rejection =

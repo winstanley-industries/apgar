@@ -13,7 +13,7 @@
 #include <utility>
 
 #include "apgar/board_ir/stable_hash.h"
-#include "apgar/geometry/exact.h"
+#include "src/geometry/exact_internal.h"
 
 namespace apgar::geometry_compiler {
 namespace {
@@ -112,8 +112,8 @@ void Normalize(CompilerProfile& profile) {
                                profile.active_regions.end());
 }
 
-[[nodiscard]] std::optional<CompileError> ValidateProfile(const board_ir::BoardSnapshot& board,
-                                                          const CompilerProfile& profile) {
+[[nodiscard]] std::optional<CompileError> ValidateProfile(const CompilerProfile& profile,
+                                                          const board_ir::RoutingProfile& routing) {
   if (profile.schema_version != kCompilerProfileSchemaVersion) {
     return Error(CompileErrorCode::kInvalidProfile,
                  "Compiler profile schema version is not supported");
@@ -146,7 +146,6 @@ void Normalize(CompilerProfile& profile) {
     return Error(CompileErrorCode::kUnsupported,
                  "Compiler profile heading mask contains headings outside the M1 H/V/45 set");
   }
-  const board_ir::RoutingProfile& routing = board.data().routing_profile;
   if ((profile.heading_mask & static_cast<board_ir::HeadingMask>(~routing.allowed_headings)) != 0) {
     return Error(CompileErrorCode::kInvalidProfile,
                  "Compiler headings are not allowed by the Board IR routing profile");
@@ -185,6 +184,8 @@ void Normalize(CompilerProfile& profile) {
   bytes += static_cast<UWide>(board.profile().active_regions.size()) * sizeof(ActiveRegion);
   bytes +=
       static_cast<UWide>(board.rule_bucket().allowed_layers.size()) * sizeof(board_ir::LayerId);
+  bytes +=
+      static_cast<UWide>(board.routing_profile().allowed_layers.size()) * sizeof(board_ir::LayerId);
   bytes += static_cast<UWide>(board.tiles().size()) * sizeof(SparseTile);
   for (const SparseTile& tile : board.tiles()) {
     bytes += static_cast<UWide>(tile.nodes.size()) * sizeof(CompiledNode);
@@ -348,8 +349,23 @@ bool CompiledBoard::EdgeIsLegal(board_ir::LayerId layer, std::int64_t lattice_x,
 }
 
 CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile profile) {
+  return CompileBoard(board, std::move(profile), board.data().routing_profile);
+}
+
+CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile profile,
+                           board_ir::RoutingProfile routing_profile) {
   Normalize(profile);
-  if (std::optional<CompileError> error = ValidateProfile(board, profile); error.has_value()) {
+  board_ir::RoutingProfilePreparationResult prepared =
+      board_ir::PrepareRoutingProfile(board, std::move(routing_profile));
+  if (const auto* error = std::get_if<board_ir::BoardValidationError>(&prepared);
+      error != nullptr) {
+    return Error(
+        CompileErrorCode::kInvalidProfile,
+        "Routing profile is invalid for the supplied Board IR snapshot: " + error->message);
+  }
+  routing_profile = std::get<board_ir::RoutingProfile>(std::move(prepared));
+  if (std::optional<CompileError> error = ValidateProfile(profile, routing_profile);
+      error.has_value()) {
     return std::move(*error);
   }
 
@@ -434,8 +450,10 @@ CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile
           return Error(CompileErrorCode::kInternalInvariant,
                        "Represented edge endpoint escaped the validated coordinate envelope");
         }
-        const geometry::MovementValidationResult exact = geometry::ValidateMovement(
-            board, key.layer, board_ir::Segment64{.start = *start, .end = *end});
+        const geometry::MovementValidationResult exact =
+            geometry::internal::ValidateMovementForPreparedProfile(
+                board, routing_profile, key.layer,
+                board_ir::Segment64{.start = *start, .end = *end});
         if (exact.legal()) {
           source_mask |= MaskFor(direction);
           *neighbor_mask |= MaskFor(Opposite(direction));
@@ -486,9 +504,10 @@ CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile
   }
 
   const std::uint64_t profile_fingerprint = FingerprintCompilerProfile(profile);
-  CompiledBoard compiled(board.content_hash(), profile_fingerprint,
-                         DeriveM1RuleBucket(board.data().routing_profile), std::move(profile),
-                         std::move(tiles), telemetry);
+  RuleBucketV1 rule_bucket = DeriveM1RuleBucket(routing_profile);
+  CompiledBoard compiled(board.content_hash(), profile_fingerprint, std::move(rule_bucket),
+                         std::move(routing_profile), std::move(profile), std::move(tiles),
+                         telemetry);
   compiled.telemetry_.estimated_host_bytes = EstimateHostBytes(compiled);
   return compiled;
 }

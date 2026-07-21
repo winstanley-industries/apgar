@@ -6,6 +6,7 @@
 #include <variant>
 
 #include "apgar/board_ir/board.h"
+#include "src/geometry/exact_internal.h"
 #include "tests/support/board_builder.h"
 #include "tests/support/google_test.h"
 
@@ -261,6 +262,30 @@ TEST(MovementValidationTest, RejectsHeadingsOutsideTheM1Contract) {
       board, 0, Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 10, .y = 5}});
 
   EXPECT_EQ(result.code, MovementViolationCode::kUnsupportedHeading);
+}
+
+TEST(MovementValidationTest, AppliesObstacleOwnershipForThePreparedNetOnly) {
+  BoardCreationResult board_result =
+      board_ir::CreateBoardSnapshot(test_support::ValidM1TwoNetBoardData());
+  ASSERT_TRUE(std::holds_alternative<BoardSnapshot>(board_result));
+  const BoardSnapshot& board = std::get<BoardSnapshot>(board_result);
+  board_ir::RoutingProfile second = board.data().routing_profile;
+  second.net = board.data().nets[1].ref;
+  board_ir::RoutingProfilePreparationResult prepared =
+      board_ir::PrepareRoutingProfile(board, std::move(second));
+  ASSERT_TRUE(std::holds_alternative<board_ir::RoutingProfile>(prepared));
+
+  const Segment64 through_owned_obstacle{
+      .start = Point64{.x = 0, .y = 0},
+      .end = Point64{.x = 100, .y = 0},
+  };
+  const MovementValidationResult first_net = internal::ValidateMovementForPreparedProfile(
+      board, board.data().routing_profile, 0, through_owned_obstacle);
+  const MovementValidationResult second_net = internal::ValidateMovementForPreparedProfile(
+      board, std::get<board_ir::RoutingProfile>(prepared), 0, through_owned_obstacle);
+
+  EXPECT_EQ(first_net.code, MovementViolationCode::kStaticObstacleConflict);
+  EXPECT_TRUE(second_net.legal()) << second_net.detail;
 }
 
 }  // namespace

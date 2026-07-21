@@ -59,7 +59,10 @@ cc_library(
 
 cc_library(
     name = "exact_geometry",
-    srcs = ["src/geometry/exact.cc"],
+    srcs = [
+        "src/geometry/exact.cc",
+        "src/geometry/exact_internal.h",
+    ],
     hdrs = ["include/apgar/geometry/exact.h"],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",
@@ -95,7 +98,10 @@ cc_library(
 
 cc_library(
     name = "planar_route",
-    srcs = ["src/routing/planar_route.cc"],
+    srcs = [
+        "src/routing/planar_route.cc",
+        "src/routing/planar_route_internal.h",
+    ],
     hdrs = ["include/apgar/routing/planar_route.h"],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",
@@ -127,15 +133,6 @@ cc_library(
 )
 
 cc_library(
-    name = "cpu_route_evidence_test_support",
-    testonly = True,
-    srcs = ["tests/support/cpu_route_evidence_test_access.cc"],
-    hdrs = ["tests/support/cpu_route_evidence_test_access.h"],
-    copts = APGAR_COPTS,
-    deps = [":cpu_astar"],
-)
-
-cc_library(
     name = "candidate_contract",
     srcs = [
         "src/candidates/route_candidate.cc",
@@ -158,7 +155,10 @@ cc_library(
 
 cc_library(
     name = "candidate_store",
-    srcs = ["src/candidates/candidate_store.cc"],
+    srcs = [
+        "src/candidates/candidate_store.cc",
+        "src/candidates/candidate_store_internal.h",
+    ],
     hdrs = ["include/apgar/candidates/candidate_store.h"],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",
@@ -169,6 +169,111 @@ cc_library(
         ":candidate_policy",
         ":geometry_compiler",
     ],
+)
+
+cc_library(
+    name = "candidate_store_pinned_rollback_test_variant",
+    testonly = True,
+    srcs = [
+        "src/candidates/candidate_store.cc",
+        "src/candidates/candidate_store_internal.h",
+        "tests/support/candidate_store_test_overlay.h",
+    ],
+    hdrs = ["include/apgar/candidates/candidate_store.h"],
+    copts = APGAR_COPTS,
+    defines = ["APGAR_CANDIDATE_STORE_PINNED_ROLLBACK_TEST_VARIANT"],
+    strip_include_prefix = "include",
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":geometry_compiler",
+    ],
+)
+
+cc_library(
+    name = "multi_net_workload",
+    srcs = [
+        "src/allocator/multi_net_workload.cc",
+        "src/allocator/multi_net_workload_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/multi_net_workload.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":geometry_compiler",
+        ":planar_route",
+    ],
+)
+
+cc_library(
+    name = "one_world_allocator",
+    srcs = [
+        "src/allocator/one_world.cc",
+        "src/allocator/one_world_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/one_world.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":geometry_compiler",
+        ":multi_net_workload",
+    ],
+)
+
+cc_library(
+    name = "negotiated_prices",
+    srcs = [
+        "src/allocator/negotiated_prices.cc",
+        "src/allocator/negotiated_prices_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/negotiated_prices.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":multi_net_workload",
+        ":one_world_allocator",
+    ],
+)
+
+cc_library(
+    name = "targeted_regeneration",
+    srcs = [
+        "src/allocator/targeted_regeneration.cc",
+        "src/allocator/targeted_regeneration_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/targeted_regeneration.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":negotiated_prices",
+        ":one_world_allocator",
+    ],
+)
+
+cc_library(
+    name = "one_world_fault_test_support",
+    testonly = True,
+    srcs = ["tests/support/one_world_fault_test_support.cc"],
+    hdrs = ["tests/support/one_world_fault_test_support.h"],
+    copts = APGAR_COPTS,
+    deps = [":one_world_allocator"],
 )
 
 cc_library(
@@ -416,6 +521,7 @@ cc_binary(
         ":board_ir",
         ":candidate_contract",
         ":candidate_policy",
+        ":candidate_store",
         ":cpu_astar",
         ":planar_benchmark_corpus",
         ":replay_parser",
@@ -511,6 +617,7 @@ cc_test(
         ":board_ir",
         ":candidate_contract",
         ":candidate_policy",
+        ":candidate_store",
         ":cpu_astar",
         ":planar_benchmark_corpus",
         ":replay_parser",
@@ -854,7 +961,6 @@ cc_test(
         ":candidate_contract",
         ":candidate_policy",
         ":cpu_astar",
-        ":cpu_route_evidence_test_support",
         ":geometry_compiler",
         ":gpu_planar_router",
         ":planar_route",
@@ -881,7 +987,6 @@ cc_test(
         ":candidate_contract",
         ":candidate_policy",
         ":cpu_astar",
-        ":cpu_route_evidence_test_support",
         ":geometry_compiler",
         ":planar_route",
         ":tool_runfiles",
@@ -896,6 +1001,32 @@ cc_test(
         "tests/candidates/candidate_store_test.cc",
         "tests/support/board_builder.h",
         "tests/support/candidate_builder.h",
+        "tests/support/candidate_store_test_overlay.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store_pinned_rollback_test_variant",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":planar_route",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "multi_net_workload_test",
+    size = "small",
+    srcs = [
+        "tests/allocator/multi_net_workload_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
         "tests/support/compiler_builder.h",
         "tests/support/google_test.h",
         "tests/support/routing_builder.h",
@@ -907,9 +1038,93 @@ cc_test(
         ":candidate_policy",
         ":candidate_store",
         ":cpu_astar",
-        ":cpu_route_evidence_test_support",
         ":geometry_compiler",
+        ":multi_net_workload",
+        ":one_world_allocator",
         ":planar_route",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "one_world_allocator_test",
+    size = "small",
+    srcs = [
+        "tests/allocator/one_world_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":one_world_allocator",
+        ":one_world_fault_test_support",
+        ":planar_route",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "negotiated_prices_test",
+    size = "small",
+    srcs = [
+        "tests/allocator/negotiated_prices_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":negotiated_prices",
+        ":one_world_allocator",
+        ":planar_route",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "targeted_regeneration_test",
+    size = "small",
+    srcs = [
+        "tests/allocator/targeted_regeneration_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":negotiated_prices",
+        ":one_world_allocator",
+        ":planar_route",
+        ":targeted_regeneration",
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
@@ -933,6 +1148,7 @@ cc_test(
         ":cpu_astar",
         ":geometry_compiler",
         ":kicad_fixture_adapter",
+        ":planar_route",
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],

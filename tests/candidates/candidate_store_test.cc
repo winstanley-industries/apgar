@@ -1,4 +1,8 @@
+#if defined(APGAR_CANDIDATE_STORE_PINNED_ROLLBACK_TEST_VARIANT)
+#include "tests/support/candidate_store_test_overlay.h"
+#else
 #include "apgar/candidates/candidate_store.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -6,6 +10,8 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <new>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -19,6 +25,7 @@
 #include "apgar/candidates/route_candidate.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "apgar/routing/candidate_policy.h"
+#include "src/candidates/candidate_store_internal.h"
 #include "tests/support/board_builder.h"
 #include "tests/support/candidate_builder.h"
 #include "tests/support/compiler_builder.h"
@@ -26,104 +33,6 @@
 #include "tests/support/routing_builder.h"
 
 namespace apgar::candidates {
-
-class CandidateStoreTestPeer {
- public:
-  [[nodiscard]] static RouteCandidate ForceSignatures(const RouteCandidate& candidate,
-                                                      CandidateSignature geometry_signature,
-                                                      CandidateSignature resource_signature) {
-    GeneratedRouteCandidate data = candidate.data_;
-    data.geometry_signature = geometry_signature;
-    data.resource_signature = resource_signature;
-    return RouteCandidate(std::move(data));
-  }
-
-  [[nodiscard]] static RouteCandidate ForceResources(const RouteCandidate& candidate,
-                                                     const RouteCandidate& resource_source) {
-    GeneratedRouteCandidate data = candidate.data_;
-    data.resources = resource_source.data_.resources;
-    data.resource_signature = resource_source.data_.resource_signature;
-    return RouteCandidate(std::move(data));
-  }
-
-  [[nodiscard]] static RouteCandidate ForceLogicalBytes(const RouteCandidate& candidate,
-                                                        std::uint64_t logical_bytes) {
-    GeneratedRouteCandidate data = candidate.data_;
-    data.logical_bytes = logical_bytes;
-    return RouteCandidate(std::move(data));
-  }
-
-  [[nodiscard]] static RouteCandidate ForceMetrics(const RouteCandidate& candidate,
-                                                   CandidateMetrics metrics) {
-    GeneratedRouteCandidate data = candidate.data_;
-    data.metrics = metrics;
-    return RouteCandidate(std::move(data));
-  }
-
-  [[nodiscard]] static CandidateStoreAdmissionResult Publish(CandidateStore& store,
-                                                             RouteCandidate candidate) {
-    std::scoped_lock lock(store.mutex_);
-    return store.PublishAcceptedLocked(std::move(candidate));
-  }
-
-  [[nodiscard]] static std::vector<CandidateStoreAdmissionResult> PublishBatch(
-      CandidateStore& store, std::vector<RouteCandidate> candidates) {
-    std::scoped_lock lock(store.mutex_);
-    return store.PublishAcceptedBatchLocked(std::move(candidates));
-  }
-
-  [[nodiscard]] static RouteCandidate ForceNetAndId(const RouteCandidate& candidate,
-                                                    board_ir::EntityRef net, CandidateId id) {
-    GeneratedRouteCandidate data = candidate.data_;
-    data.net = net;
-    data.id = id;
-    return RouteCandidate(std::move(data));
-  }
-
-  static void ForcePool(CandidateStore& store, std::vector<RouteCandidate> candidates) {
-    std::scoped_lock lock(store.mutex_);
-    store.pools_.clear();
-    store.candidate_id_index_.clear();
-    for (RouteCandidate& candidate : candidates) {
-      StoredCandidate stored = std::make_shared<const RouteCandidate>(std::move(candidate));
-      store.pools_[stored->net()].push_back(stored);
-      store.candidate_id_index_.emplace(stored->id(), stored);
-    }
-    for (auto& [net, pool] : store.pools_) {
-      static_cast<void>(net);
-      std::ranges::sort(pool, [](const StoredCandidate& left, const StoredCandidate& right) {
-        return CandidateRanksBefore(*left, *right);
-      });
-    }
-  }
-
-  static void RetainRejection(CandidateStore& store, CandidateRejection rejection) {
-    std::scoped_lock lock(store.mutex_);
-    store.RetainRejectionLocked(std::move(rejection));
-  }
-
-  [[nodiscard]] static std::uint64_t LastPublicationCandidateInspections(
-      const CandidateStore& store) {
-    std::scoped_lock lock(store.mutex_);
-    return store.last_publication_candidate_inspections_;
-  }
-
-  [[nodiscard]] static std::uint64_t LastDuplicateEqualityChecks(const CandidateStore& store) {
-    std::scoped_lock lock(store.mutex_);
-    return store.last_duplicate_equality_checks_;
-  }
-
-  [[nodiscard]] static std::uint64_t RejectionBatchMerges(const CandidateStore& store) {
-    std::scoped_lock lock(store.mutex_);
-    return store.rejection_batch_merges_;
-  }
-
-  [[nodiscard]] static std::uint64_t SharedRequestPolicyNormalizations(
-      const CandidateStore& store) {
-    std::scoped_lock lock(store.mutex_);
-    return store.shared_request_policy_normalizations_;
-  }
-};
 
 namespace {
 
@@ -140,6 +49,9 @@ static_assert(CandidateStoreConfig{}.maximum_admission_input_bytes_per_transacti
               kDefaultMaximumAdmissionInputBytesPerTransaction);
 static_assert(CandidateStoreConfig{}.maximum_admission_work_units_per_transaction ==
               kDefaultMaximumAdmissionWorkUnitsPerTransaction);
+static_assert(CandidateStoreConfig{}.maximum_pin_lease_items_per_transaction ==
+              kDefaultMaximumPinLeaseItemsPerTransaction);
+static_assert(kDefaultMaximumPinLeaseItemsPerTransaction <= kMaximumPinLeaseItemsPerTransaction);
 
 using board_ir::BoardData;
 using board_ir::BoardSnapshot;
@@ -167,34 +79,13 @@ struct CandidateCase {
   CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
   request.candidate_policy.deterministic_seed = 0x1234U;
   request.candidate_policy.candidate_ordinal = ordinal;
-  const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
-  const CandidateAssociations associations = AssociationsFor(board, compiled);
-  routing::CpuRoute route{
-      .source_board_content_hash = associations.board_content_hash,
-      .compiler_profile_fingerprint = associations.compiler_profile_fingerprint,
-      .compiler_version = associations.geometry_compiler_version,
-      .rule_bucket_identity = associations.rule_bucket_identity,
-      .candidate_policy_identity = policy.identity,
-      .total_cost = reported_cost,
-      .lattice_path = {},
-      .segments = std::vector<LayerSegment>(segments.begin(), segments.end()),
-      .telemetry = {},
-      .producer_evidence = {},
-  };
-  test_support::CpuRouteFaultDecorator::Reseal(route);
-  CandidateDraftBuildResult result = BuildGeneratedCandidateFromCpuRoute(
-      board, compiled, request, policy, route,
+  GeneratedRouteCandidate generated = test_support::CandidateDraftAlongSegments(
+      board, compiled, request, segments,
       CandidateSchedulingIdentity{.batch_identity = 99, .query_identity = query_identity});
-  EXPECT_TRUE(std::holds_alternative<GeneratedRouteCandidate>(result))
-      << (std::holds_alternative<CandidateRejection>(result)
-              ? std::get<CandidateRejection>(result).detail
-              : std::string{});
-  if (!std::holds_alternative<GeneratedRouteCandidate>(result)) {
-    std::abort();
-  }
+  EXPECT_EQ(generated.metrics.scalar_policy_cost, reported_cost);
   return CandidateCase{
       .request = std::move(request),
-      .generated = std::get<GeneratedRouteCandidate>(std::move(result)),
+      .generated = std::move(generated),
   };
 }
 
@@ -237,8 +128,7 @@ struct CandidateCase {
                                                              const CompiledBoard& compiled,
                                                              const CandidateCase& candidate_case,
                                                              std::uint64_t query_identity) {
-  const routing::NormalizedCandidateGenerationPolicy policy =
-      NormalizePolicy(compiled, candidate_case.request);
+  CpuRouteRequest request = candidate_case.request;
   std::vector<LayerSegment> segments;
   segments.reserve(candidate_case.generated.geometry.size());
   for (const CandidatePrimitive& primitive : candidate_case.generated.geometry) {
@@ -249,28 +139,9 @@ struct CandidateCase {
     }
     segments.push_back(LayerSegment{.layer = line->layer, .centerline = line->centerline});
   }
-  const CandidateAssociations associations = AssociationsFor(board, compiled);
-  routing::CpuRoute route{
-      .source_board_content_hash = associations.board_content_hash,
-      .compiler_profile_fingerprint = associations.compiler_profile_fingerprint,
-      .compiler_version = associations.geometry_compiler_version,
-      .rule_bucket_identity = associations.rule_bucket_identity,
-      .candidate_policy_identity = policy.identity,
-      .total_cost = candidate_case.generated.metrics.scalar_policy_cost,
-      .lattice_path = {},
-      .segments = std::move(segments),
-      .telemetry = {},
-      .producer_evidence = {},
-  };
-  test_support::CpuRouteFaultDecorator::Reseal(route);
-  CandidateDraftBuildResult result = BuildGeneratedCandidateFromCpuRoute(
-      board, compiled, candidate_case.request, policy, route,
+  return test_support::CandidateDraftAlongSegments(
+      board, compiled, request, segments,
       CandidateSchedulingIdentity{.batch_identity = 99, .query_identity = query_identity});
-  EXPECT_TRUE(std::holds_alternative<GeneratedRouteCandidate>(result));
-  if (!std::holds_alternative<GeneratedRouteCandidate>(result)) {
-    std::abort();
-  }
-  return std::get<GeneratedRouteCandidate>(std::move(result));
 }
 
 [[nodiscard]] std::vector<CandidateId> Ids(std::span<const StoredCandidate> candidates) {
@@ -287,6 +158,38 @@ struct CandidateCase {
   return CandidateStoreConfig{.maximum_candidates_per_net = count,
                               .maximum_candidate_bytes_per_net = bytes,
                               .maximum_rejection_records = 128};
+}
+
+struct AuthenticNetCase {
+  CompiledBoard compiled;
+  CpuRouteRequest request;
+};
+
+[[nodiscard]] AuthenticNetCase PrepareAuthenticNetCase(
+    const BoardSnapshot& board, const geometry_compiler::CompilerProfile& compiler_profile,
+    board_ir::RoutingProfile routing_profile) {
+  board_ir::RoutingProfilePreparationResult prepared =
+      board_ir::PrepareRoutingProfile(board, std::move(routing_profile));
+  EXPECT_TRUE(std::holds_alternative<board_ir::RoutingProfile>(prepared));
+  if (!std::holds_alternative<board_ir::RoutingProfile>(prepared)) {
+    std::abort();
+  }
+  board_ir::RoutingProfile normalized = std::get<board_ir::RoutingProfile>(std::move(prepared));
+  geometry_compiler::CompileResult compiled_result =
+      geometry_compiler::CompileBoard(board, compiler_profile, normalized);
+  EXPECT_TRUE(std::holds_alternative<CompiledBoard>(compiled_result));
+  if (!std::holds_alternative<CompiledBoard>(compiled_result)) {
+    std::abort();
+  }
+  CompiledBoard compiled = std::get<CompiledBoard>(std::move(compiled_result));
+  routing::TwoTerminalRequestResult request_result =
+      routing::BuildTwoTerminalRouteRequest(board, normalized, 0, 0);
+  EXPECT_TRUE(std::holds_alternative<CpuRouteRequest>(request_result));
+  if (!std::holds_alternative<CpuRouteRequest>(request_result)) {
+    std::abort();
+  }
+  CpuRouteRequest request = std::get<CpuRouteRequest>(std::move(request_result));
+  return AuthenticNetCase{.compiled = std::move(compiled), .request = std::move(request)};
 }
 
 TEST(CandidateStoreTest, BatchPermutationsAreStableAndCommutativeSinglesAreRaceSafe) {
@@ -367,7 +270,7 @@ TEST(CandidateStoreTest, SharedRequestPolicyIsNormalizedOncePerNonemptyTransacti
       store.AdmitBatch(context, std::move(generated));
 
   ASSERT_EQ(results.size(), 2U);
-  EXPECT_EQ(CandidateStoreTestPeer::SharedRequestPolicyNormalizations(store), 1U);
+  EXPECT_EQ(store.telemetry().shared_request_policy_normalizations, 1U);
   EXPECT_EQ(store.Enumerate(candidate.request.net).size(), 1U);
   EXPECT_TRUE(std::ranges::any_of(results, [](const CandidateStoreAdmissionResult& result) {
     return std::holds_alternative<CandidateRejection>(result) &&
@@ -383,7 +286,7 @@ TEST(CandidateStoreTest, SharedRequestPolicyIsNormalizedOncePerNonemptyTransacti
   ASSERT_TRUE(std::holds_alternative<CandidateRejection>(mismatch.front()));
   EXPECT_EQ(std::get<CandidateRejection>(mismatch.front()).invariant_id,
             "candidate.policy.request_association.v1");
-  EXPECT_EQ(CandidateStoreTestPeer::SharedRequestPolicyNormalizations(mismatch_store), 1U);
+  EXPECT_EQ(mismatch_store.telemetry().shared_request_policy_normalizations, 1U);
 }
 
 TEST(CandidateStoreTest, BatchResultsReflectFinalRetentionAfterLaterEviction) {
@@ -444,7 +347,7 @@ TEST(CandidateStoreTest, RejectionHeavyAdmissionSortsAndMergesHistoryExactlyOnce
       seed_history[index].detail = "preexisting deterministic rejection history";
     }
     EXPECT_FALSE(store.RetainRejections(seed_history).has_value());
-    const std::uint64_t merges_before = CandidateStoreTestPeer::RejectionBatchMerges(store);
+    const std::uint64_t merges_before = store.telemetry().rejection_batch_merges;
 
     std::vector<GeneratedRouteCandidate> generated;
     generated.reserve(64);
@@ -473,7 +376,7 @@ TEST(CandidateStoreTest, RejectionHeavyAdmissionSortsAndMergesHistoryExactlyOnce
     }
     snapshot.history = store.Rejections();
     snapshot.retained = Ids(store.Enumerate(candidate.request.net));
-    snapshot.merge_count = CandidateStoreTestPeer::RejectionBatchMerges(store) - merges_before;
+    snapshot.merge_count = store.telemetry().rejection_batch_merges - merges_before;
     return snapshot;
   };
 
@@ -529,6 +432,37 @@ TEST(CandidateStoreTest, ExactAdmissionBindsSessionBeforeBudgetRetention) {
   EXPECT_EQ(std::get<CandidateRejection>(drift).invariant_id,
             "candidate.store.association_drift.v1");
   EXPECT_TRUE(store.Enumerate(smaller.request.net).empty());
+}
+
+TEST(CandidateStoreTest, PublicationPreparationFailureLeavesPoolAndGlobalIdsUnchanged) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  const CandidateAdmissionContext context{
+      .board = board, .compiled_board = compiled, .request = cases[0].request};
+
+  for (const std::uint64_t failure_point : {0U, 1U}) {
+    CandidateStore store(StoreConfig());
+    const std::vector<StoredCandidate> before = store.Enumerate(cases[0].request.net);
+    ASSERT_TRUE(before.empty());
+
+    internal::SetPublicationPreparationFailureCountdownForTesting(failure_point);
+    EXPECT_THROW(static_cast<void>(store.Admit(context, CandidateCopy(cases[0].generated))),
+                 std::bad_alloc);
+    internal::SetPublicationPreparationFailureCountdownForTesting(std::nullopt);
+
+    const std::vector<StoredCandidate> after = store.Enumerate(cases[0].request.net);
+    ASSERT_EQ(after.size(), before.size());
+    ASSERT_TRUE(std::holds_alternative<StoredCandidate>(
+        store.Admit(context, CandidateCopy(cases[0].generated))));
+    const CandidateStoreAdmissionResult duplicate =
+        store.Admit(context, CandidateCopy(cases[0].generated));
+    ASSERT_TRUE(std::holds_alternative<CandidateRejection>(duplicate));
+    EXPECT_EQ(std::get<CandidateRejection>(duplicate).code,
+              CandidateRejectionCode::kDuplicateIdentity);
+  }
 }
 
 TEST(CandidateStoreTest, BatchRetentionUsesTheCompletePoolNotPrefixHistory) {
@@ -764,7 +698,209 @@ TEST(CandidateStoreTest, PinsFailClosedThenUnpinnedBetterCandidateEvicts) {
   EXPECT_EQ(*store.CandidateBytes(cases[0].request.net), cases[0].generated.logical_bytes);
 }
 
-TEST(CandidateStoreTest, DuplicateIdsGeometryAndResourcesRetainStableRepresentatives) {
+TEST(CandidateStoreTest, PinLeaseValidatesCompleteIdentityAndFailsAtomically) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  CandidateStore store(StoreConfig(3));
+  std::vector<StoredCandidate> stored;
+  for (std::size_t index = 0; index < 2; ++index) {
+    const CandidateAdmissionContext context{
+        .board = board, .compiled_board = compiled, .request = cases[index].request};
+    CandidateStoreAdmissionResult result =
+        store.Admit(context, CandidateCopy(cases[index].generated));
+    ASSERT_TRUE(std::holds_alternative<StoredCandidate>(result));
+    stored.push_back(std::get<StoredCandidate>(std::move(result)));
+  }
+  const auto pin_request = [](const StoredCandidate& candidate) {
+    return CandidatePinRequest{.net = candidate->net(),
+                               .candidate_id = candidate->id(),
+                               .candidate_payload_checksum = candidate->data().payload_checksum,
+                               .expected_candidate = candidate};
+  };
+  const CandidatePinRequest first = pin_request(stored[0]);
+  const CandidatePinRequest second = pin_request(stored[1]);
+  const CandidateAdmissionContext detached_context{
+      .board = board, .compiled_board = compiled, .request = cases[2].request};
+  const StoredCandidate detached_candidate = std::make_shared<const RouteCandidate>(
+      test_support::AcceptedCandidate(detached_context, CandidateCopy(cases[2].generated)));
+  const CandidatePinRequest detached = pin_request(detached_candidate);
+
+  const std::array partial_group = {first, second, detached};
+  CandidateStorePinLeaseResult partial = store.AcquirePinLease(partial_group);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(partial));
+  EXPECT_EQ(std::get<CandidateStoreError>(partial).code,
+            CandidateStoreErrorCode::kMissingCandidate);
+  EXPECT_FALSE(store.IsPinned(first.candidate_id));
+  EXPECT_FALSE(store.IsPinned(second.candidate_id));
+
+  CandidatePinRequest wrong_net = first;
+  ++wrong_net.net.generation;
+  CandidateStorePinLeaseResult net_mismatch = store.AcquirePinLease(std::span(&wrong_net, 1));
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(net_mismatch));
+  EXPECT_EQ(std::get<CandidateStoreError>(net_mismatch).code,
+            CandidateStoreErrorCode::kCandidateNetMismatch);
+  EXPECT_FALSE(store.IsPinned(first.candidate_id));
+
+  CandidatePinRequest wrong_payload = first;
+  ++wrong_payload.candidate_payload_checksum;
+  CandidateStorePinLeaseResult payload_mismatch =
+      store.AcquirePinLease(std::span(&wrong_payload, 1));
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(payload_mismatch));
+  EXPECT_EQ(std::get<CandidateStoreError>(payload_mismatch).code,
+            CandidateStoreErrorCode::kCandidatePayloadMismatch);
+  EXPECT_FALSE(store.IsPinned(first.candidate_id));
+
+  CandidatePinRequest semantic_mismatch = first;
+  semantic_mismatch.expected_candidate = stored[1];
+  CandidateStorePinLeaseResult semantic = store.AcquirePinLease(std::span(&semantic_mismatch, 1));
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(semantic));
+  EXPECT_EQ(std::get<CandidateStoreError>(semantic).code,
+            CandidateStoreErrorCode::kCandidateSemanticMismatch);
+  EXPECT_FALSE(store.IsPinned(first.candidate_id));
+
+  const std::array duplicate_group = {first, first};
+  CandidateStorePinLeaseResult duplicate = store.AcquirePinLease(duplicate_group);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(duplicate));
+  EXPECT_EQ(std::get<CandidateStoreError>(duplicate).code,
+            CandidateStoreErrorCode::kInvalidPinLeaseRequest);
+  EXPECT_FALSE(store.IsPinned(first.candidate_id));
+
+  const std::array valid_group = {second, first};
+  CandidateStorePinLeaseResult valid = store.AcquirePinLease(valid_group);
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(valid));
+  CandidateStorePinLease lease = std::get<CandidateStorePinLease>(std::move(valid));
+  EXPECT_TRUE(store.IsPinned(first.candidate_id));
+  EXPECT_TRUE(store.IsPinned(second.candidate_id));
+  lease.Release();
+  EXPECT_FALSE(store.IsPinned(first.candidate_id));
+  EXPECT_FALSE(store.IsPinned(second.candidate_id));
+}
+
+TEST(CandidateStoreTest, IndependentPinLeasesReleaseOnlyTheirOwnAcquisitionInEitherOrder) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  CandidateStore store(StoreConfig());
+  const CandidateAdmissionContext context{
+      .board = board, .compiled_board = compiled, .request = cases[0].request};
+  CandidateStoreAdmissionResult admitted = store.Admit(context, CandidateCopy(cases[0].generated));
+  ASSERT_TRUE(std::holds_alternative<StoredCandidate>(admitted));
+  const StoredCandidate candidate = std::get<StoredCandidate>(std::move(admitted));
+  const CandidatePinRequest request{
+      .net = candidate->net(),
+      .candidate_id = candidate->id(),
+      .candidate_payload_checksum = candidate->data().payload_checksum,
+      .expected_candidate = candidate,
+  };
+
+  CandidateStorePinLeaseResult first_result = store.AcquirePinLease(std::span(&request, 1));
+  CandidateStorePinLeaseResult second_result = store.AcquirePinLease(std::span(&request, 1));
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(first_result));
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(second_result));
+  CandidateStorePinLease first = std::get<CandidateStorePinLease>(std::move(first_result));
+  CandidateStorePinLease second = std::get<CandidateStorePinLease>(std::move(second_result));
+  EXPECT_TRUE(store.IsPinned(request.candidate_id));
+  first.Release();
+  EXPECT_FALSE(first.active());
+  EXPECT_TRUE(store.IsPinned(request.candidate_id));
+  first.Release();
+  EXPECT_TRUE(store.IsPinned(request.candidate_id));
+  second.Release();
+  EXPECT_FALSE(store.IsPinned(request.candidate_id));
+
+  CandidateStorePinLeaseResult third_result = store.AcquirePinLease(std::span(&request, 1));
+  CandidateStorePinLeaseResult fourth_result = store.AcquirePinLease(std::span(&request, 1));
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(third_result));
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(fourth_result));
+  CandidateStorePinLease third = std::get<CandidateStorePinLease>(std::move(third_result));
+  CandidateStorePinLease fourth = std::get<CandidateStorePinLease>(std::move(fourth_result));
+  fourth.Release();
+  EXPECT_TRUE(store.IsPinned(request.candidate_id));
+  third.Release();
+  EXPECT_FALSE(store.IsPinned(request.candidate_id));
+}
+
+TEST(CandidateStoreTest, PinLeaseItemBoundAcceptsEqualityAndRejectsOneOverAtomically) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  CandidateStoreConfig config = StoreConfig(3);
+  config.maximum_pin_lease_items_per_transaction = 2;
+  CandidateStore store(config);
+  std::array<StoredCandidate, 3> stored;
+  std::array<CandidatePinRequest, 3> requests;
+  for (std::size_t index = 0; index < cases.size(); ++index) {
+    const CandidateAdmissionContext context{
+        .board = board, .compiled_board = compiled, .request = cases[index].request};
+    CandidateStoreAdmissionResult admitted =
+        store.Admit(context, CandidateCopy(cases[index].generated));
+    ASSERT_TRUE(std::holds_alternative<StoredCandidate>(admitted));
+    stored[index] = std::get<StoredCandidate>(std::move(admitted));
+    requests[index] = CandidatePinRequest{
+        .net = stored[index]->net(),
+        .candidate_id = stored[index]->id(),
+        .candidate_payload_checksum = stored[index]->data().payload_checksum,
+        .expected_candidate = stored[index],
+    };
+  }
+
+  CandidateStorePinLeaseResult equality = store.AcquirePinLease(std::span(requests).first<2>());
+  ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(equality));
+  CandidateStorePinLease equality_lease = std::get<CandidateStorePinLease>(std::move(equality));
+  EXPECT_TRUE(store.IsPinned(requests[0].candidate_id));
+  EXPECT_TRUE(store.IsPinned(requests[1].candidate_id));
+  equality_lease.Release();
+
+  CandidateStorePinLeaseResult one_over = store.AcquirePinLease(requests);
+  ASSERT_TRUE(std::holds_alternative<CandidateStoreError>(one_over));
+  EXPECT_EQ(std::get<CandidateStoreError>(one_over).code,
+            CandidateStoreErrorCode::kPinLeaseInputBoundExceeded);
+  for (const CandidatePinRequest& request : requests) {
+    EXPECT_FALSE(store.IsPinned(request.candidate_id));
+  }
+}
+
+TEST(CandidateStoreTest, ScopedPinLeaseCanSafelyOutliveItsStore) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  std::optional<CandidateStorePinLease> lease;
+  {
+    CandidateStore store(StoreConfig());
+    const CandidateAdmissionContext context{
+        .board = board, .compiled_board = compiled, .request = cases[0].request};
+    CandidateStoreAdmissionResult admitted =
+        store.Admit(context, CandidateCopy(cases[0].generated));
+    ASSERT_TRUE(std::holds_alternative<StoredCandidate>(admitted));
+    const StoredCandidate candidate = std::get<StoredCandidate>(std::move(admitted));
+    const CandidatePinRequest request{
+        .net = candidate->net(),
+        .candidate_id = candidate->id(),
+        .candidate_payload_checksum = candidate->data().payload_checksum,
+        .expected_candidate = candidate,
+    };
+    CandidateStorePinLeaseResult result = store.AcquirePinLease(std::span(&request, 1));
+    ASSERT_TRUE(std::holds_alternative<CandidateStorePinLease>(result));
+    lease.emplace(std::get<CandidateStorePinLease>(std::move(result)));
+    EXPECT_TRUE(store.IsPinned(request.candidate_id));
+  }
+  ASSERT_TRUE(lease.has_value());
+  EXPECT_FALSE(lease->active());
+  lease->Release();
+  EXPECT_FALSE(lease->active());
+  lease->Release();
+}
+
+TEST(CandidateStoreTest, DuplicateIdsAndGeometryRetainStableRepresentatives) {
   BoardData data = test_support::ValidM1BoardData();
   data.obstacles.clear();
   const BoardSnapshot board = Snapshot(std::move(data));
@@ -793,44 +929,6 @@ TEST(CandidateStoreTest, DuplicateIdsGeometryAndResourcesRetainStableRepresentat
   EXPECT_TRUE(std::ranges::any_of(store.Rejections(), [](const CandidateRejection& rejection) {
     return rejection.code == CandidateRejectionCode::kDuplicateGeometry;
   }));
-
-  const RouteCandidate straight_candidate =
-      test_support::AcceptedCandidate(context, cases[0].generated);
-  const CandidateAdmissionContext shoulder_context{
-      .board = board, .compiled_board = compiled, .request = cases[1].request};
-  RouteCandidate shoulder_candidate =
-      test_support::AcceptedCandidate(shoulder_context, cases[1].generated);
-  shoulder_candidate =
-      CandidateStoreTestPeer::ForceResources(shoulder_candidate, straight_candidate);
-  const CandidateStoreAdmissionResult duplicate_resources =
-      CandidateStoreTestPeer::Publish(store, std::move(shoulder_candidate));
-  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(duplicate_resources));
-  EXPECT_EQ(std::get<CandidateRejection>(duplicate_resources).code,
-            CandidateRejectionCode::kDuplicateResources);
-}
-
-TEST(CandidateStoreTest, SignatureCollisionsUseFullEqualityAndNeverFalseDeduplicate) {
-  BoardData data = test_support::ValidM1BoardData();
-  data.obstacles.clear();
-  const BoardSnapshot board = Snapshot(std::move(data));
-  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
-  const CandidateAdmissionContext first_context{
-      .board = board, .compiled_board = compiled, .request = cases[1].request};
-  const CandidateAdmissionContext second_context{
-      .board = board, .compiled_board = compiled, .request = cases[2].request};
-  const RouteCandidate first = test_support::AcceptedCandidate(first_context, cases[1].generated);
-  RouteCandidate collision = test_support::AcceptedCandidate(second_context, cases[2].generated);
-  collision = CandidateStoreTestPeer::ForceSignatures(collision, first.data().geometry_signature,
-                                                      first.data().resource_signature);
-
-  CandidateStore store(StoreConfig(2));
-  ASSERT_TRUE(
-      std::holds_alternative<StoredCandidate>(CandidateStoreTestPeer::Publish(store, first)));
-  ASSERT_TRUE(std::holds_alternative<StoredCandidate>(
-      CandidateStoreTestPeer::Publish(store, std::move(collision))));
-  EXPECT_EQ(store.Enumerate(cases[0].request.net).size(), 2U);
-  EXPECT_EQ(CandidateStoreTestPeer::LastDuplicateEqualityChecks(store), 2U);
 }
 
 TEST(CandidateStoreTest, DistinctSignaturesSkipCanonicalDuplicateEquality) {
@@ -853,12 +951,149 @@ TEST(CandidateStoreTest, DistinctSignaturesSkipCanonicalDuplicateEquality) {
   ASSERT_NE(candidates[0].data().resource_signature, candidates[2].data().resource_signature);
   ASSERT_NE(candidates[1].data().resource_signature, candidates[2].data().resource_signature);
 
+  std::vector<CandidateAdmissionItem> items;
+  for (const CandidateCase& candidate : cases) {
+    items.push_back(CandidateAdmissionItem{
+        .request = candidate.request,
+        .generated = CandidateCopy(candidate.generated),
+    });
+  }
   CandidateStore store(StoreConfig(3));
   const std::vector<CandidateStoreAdmissionResult> results =
-      CandidateStoreTestPeer::PublishBatch(store, std::move(candidates));
+      store.AdmitBatch(board, compiled, std::move(items));
 
   ASSERT_EQ(results.size(), 3U);
-  EXPECT_EQ(CandidateStoreTestPeer::LastDuplicateEqualityChecks(store), 0U);
+  EXPECT_EQ(store.telemetry().last_duplicate_equality_checks, 0U);
+}
+
+TEST(CandidateStoreTest, SignatureBucketEqualityRejectsAuthenticPayloadCollisions) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
+  const RouteCandidate top = test_support::AcceptedCandidate(
+      CandidateAdmissionContext{
+          .board = board, .compiled_board = compiled, .request = cases[1].request},
+      cases[1].generated);
+  const RouteCandidate bottom = test_support::AcceptedCandidate(
+      CandidateAdmissionContext{
+          .board = board, .compiled_board = compiled, .request = cases[2].request},
+      cases[2].generated);
+  ASSERT_NE(top.data().geometry, bottom.data().geometry);
+  ASSERT_NE(top.data().resources, bottom.data().resources);
+
+  // Model an adversarially collided lookup bucket without mutating either
+  // sealed candidate. Production must still use full canonical equality.
+  EXPECT_FALSE(internal::GeometryEqualWithinSignatureBucket(top, bottom));
+  EXPECT_FALSE(internal::ResourcesEqualWithinSignatureBucket(top, bottom));
+  EXPECT_EQ(internal::ClassifySignatureBucketDuplicate(top, bottom, true, true),
+            internal::SignatureBucketDuplicate::kNone);
+
+  const std::array straight = {
+      LayerSegment{.layer = 0,
+                   .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 100, .y = 0}}},
+  };
+  const CandidateCase same_geometry = MakeCase(board, compiled, 77, 777, straight, 100);
+  const RouteCandidate first_straight = test_support::AcceptedCandidate(
+      CandidateAdmissionContext{
+          .board = board, .compiled_board = compiled, .request = cases[0].request},
+      cases[0].generated);
+  const RouteCandidate second_straight = test_support::AcceptedCandidate(
+      CandidateAdmissionContext{
+          .board = board, .compiled_board = compiled, .request = same_geometry.request},
+      same_geometry.generated);
+  EXPECT_TRUE(internal::GeometryEqualWithinSignatureBucket(first_straight, second_straight));
+  EXPECT_TRUE(internal::ResourcesEqualWithinSignatureBucket(first_straight, second_straight));
+  EXPECT_EQ(internal::ClassifySignatureBucketDuplicate(first_straight, second_straight, true, true),
+            internal::SignatureBucketDuplicate::kGeometry);
+  EXPECT_EQ(
+      internal::ClassifySignatureBucketDuplicate(first_straight, second_straight, false, true),
+      internal::SignatureBucketDuplicate::kResources);
+}
+
+TEST(CandidateStoreTest, CheckedRankAndByteArithmeticCoverUint64Boundaries) {
+  CandidateMetrics smaller;
+  CandidateMetrics larger;
+  smaller.orthogonal_step_count = std::numeric_limits<std::uint64_t>::max();
+  larger.orthogonal_step_count = std::numeric_limits<std::uint64_t>::max();
+  larger.diagonal_step_count = 1;
+  EXPECT_EQ(internal::CompareTotalStepCount(smaller, larger), std::strong_ordering::less);
+  EXPECT_EQ(internal::CompareTotalStepCount(larger, smaller), std::strong_ordering::greater);
+  EXPECT_EQ(internal::CompareTotalStepCount(larger, larger), std::strong_ordering::equal);
+
+  EXPECT_EQ(internal::CheckedLogicalByteSum(std::numeric_limits<std::uint64_t>::max() - 1U, 1U),
+            std::optional<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()));
+  EXPECT_FALSE(
+      internal::CheckedLogicalByteSum(std::numeric_limits<std::uint64_t>::max(), 1U).has_value());
+}
+
+TEST(CandidateStoreTest, OversizedAuthenticStableWinnerNeverPromotesDuplicateLoser) {
+  BoardData data = test_support::ValidM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const std::array lower_cost_larger_payload = {
+      LayerSegment{.layer = 0,
+                   .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 20, .y = 20}}},
+      LayerSegment{.layer = 0,
+                   .centerline = {.start = {.x = 20, .y = 20}, .end = {.x = 40, .y = 0}}},
+      LayerSegment{.layer = 0,
+                   .centerline = {.start = {.x = 40, .y = 0}, .end = {.x = 60, .y = 20}}},
+      LayerSegment{.layer = 0,
+                   .centerline = {.start = {.x = 60, .y = 20}, .end = {.x = 80, .y = 0}}},
+      LayerSegment{.layer = 0,
+                   .centerline = {.start = {.x = 80, .y = 0}, .end = {.x = 100, .y = 0}}},
+  };
+  const std::array higher_cost_smaller_payload = {
+      LayerSegment{.layer = 0, .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 0, .y = 30}}},
+      LayerSegment{.layer = 0,
+                   .centerline = {.start = {.x = 0, .y = 30}, .end = {.x = 30, .y = 0}}},
+      LayerSegment{.layer = 0,
+                   .centerline = {.start = {.x = 30, .y = 0}, .end = {.x = 100, .y = 0}}},
+  };
+  const CandidateCase winner_case =
+      MakeCase(board, compiled, 50, 500, lower_cost_larger_payload, 144);
+  const CandidateCase loser_case =
+      MakeCase(board, compiled, 50, 500, higher_cost_smaller_payload, 148);
+  RouteCandidate winner = test_support::AcceptedCandidate(
+      CandidateAdmissionContext{
+          .board = board, .compiled_board = compiled, .request = winner_case.request},
+      winner_case.generated);
+  RouteCandidate smaller_loser = test_support::AcceptedCandidate(
+      CandidateAdmissionContext{
+          .board = board, .compiled_board = compiled, .request = loser_case.request},
+      loser_case.generated);
+  ASSERT_EQ(winner.id(), smaller_loser.id());
+  ASSERT_TRUE(CandidateRanksBefore(winner, smaller_loser));
+  ASSERT_GT(winner.logical_bytes(), smaller_loser.logical_bytes());
+
+  const CandidateId id = winner.id();
+  const board_ir::EntityRef net = winner.net();
+  const std::uint64_t byte_budget = winner.logical_bytes() - 1U;
+  ASSERT_LE(smaller_loser.logical_bytes(), byte_budget);
+  CandidateStore store(StoreConfig(2, byte_budget));
+  std::vector<CandidateAdmissionItem> items;
+  items.push_back(CandidateAdmissionItem{
+      .request = loser_case.request,
+      .generated = CandidateCopy(loser_case.generated),
+  });
+  items.push_back(CandidateAdmissionItem{
+      .request = winner_case.request,
+      .generated = CandidateCopy(winner_case.generated),
+  });
+  const std::vector<CandidateStoreAdmissionResult> results =
+      store.AdmitBatch(board, compiled, std::move(items));
+  EXPECT_TRUE(std::ranges::any_of(results, [](const CandidateStoreAdmissionResult& result) {
+    const auto* rejection = std::get_if<CandidateRejection>(&result);
+    return rejection != nullptr && rejection->code == CandidateRejectionCode::kBudgetExhausted;
+  }));
+  EXPECT_TRUE(std::ranges::any_of(results, [](const CandidateStoreAdmissionResult& result) {
+    const auto* rejection = std::get_if<CandidateRejection>(&result);
+    return rejection != nullptr && rejection->code == CandidateRejectionCode::kDuplicateIdentity;
+  }));
+  EXPECT_TRUE(store.Enumerate(net).empty());
+  EXPECT_FALSE(store.IsPinned(id));
 }
 
 TEST(CandidateStoreTest, DiversityOverlapDominanceByteCapsAndExplicitPruneAreDeterministic) {
@@ -887,89 +1122,15 @@ TEST(CandidateStoreTest, DiversityOverlapDominanceByteCapsAndExplicitPruneAreDet
   ASSERT_EQ(byte_limited.Enumerate(cases[0].request.net).size(), 1U);
   EXPECT_EQ(byte_limited.Enumerate(cases[0].request.net).front()->id(), straight.id());
 
-  CandidateStore forced_overfull(StoreConfig(1));
-  CandidateStoreTestPeer::ForcePool(forced_overfull, {straight, top});
-  const std::optional<CandidateRejection> pruned = forced_overfull.Prune(cases[0].request.net);
-  ASSERT_TRUE(pruned.has_value());
-  EXPECT_EQ(pruned->code, CandidateRejectionCode::kBudgetExhausted);
-  ASSERT_EQ(forced_overfull.Enumerate(cases[0].request.net).size(), 1U);
-  EXPECT_EQ(forced_overfull.Enumerate(cases[0].request.net).front()->id(), straight.id());
-}
-
-TEST(CandidateStoreTest, StableRankComparesTotalStepCountWithoutUint64Wraparound) {
-  BoardData data = test_support::ValidM1BoardData();
-  data.obstacles.clear();
-  const BoardSnapshot board = Snapshot(std::move(data));
-  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
-  const CandidateAdmissionContext first_context{
-      .board = board, .compiled_board = compiled, .request = cases[0].request};
-  const CandidateAdmissionContext second_context{
-      .board = board, .compiled_board = compiled, .request = cases[1].request};
-  const RouteCandidate first = test_support::AcceptedCandidate(first_context, cases[0].generated);
-  const RouteCandidate second = test_support::AcceptedCandidate(second_context, cases[1].generated);
-  CandidateMetrics larger_total = first.data().metrics;
-  CandidateMetrics smaller_total = larger_total;
-  larger_total.orthogonal_step_count = std::numeric_limits<std::uint64_t>::max();
-  larger_total.diagonal_step_count = 1;
-  smaller_total.orthogonal_step_count = std::numeric_limits<std::uint64_t>::max();
-  smaller_total.diagonal_step_count = 0;
-  const RouteCandidate larger = CandidateStoreTestPeer::ForceMetrics(first, larger_total);
-  const RouteCandidate smaller = CandidateStoreTestPeer::ForceMetrics(second, smaller_total);
-
-  EXPECT_TRUE(CandidateRanksBefore(smaller, larger));
-  EXPECT_FALSE(CandidateRanksBefore(larger, smaller));
-}
-
-TEST(CandidateStoreTest, GeometricOverlapUsesExactDbuProjectionNotResourceEdgeCounts) {
-  BoardData data = test_support::ValidM1BoardData();
-  data.obstacles.clear();
-  const BoardSnapshot board = Snapshot(std::move(data));
-  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
-  const CandidateAdmissionContext straight_context{
-      .board = board,
-      .compiled_board = compiled,
-      .request = cases[0].request,
-  };
-  const CandidateAdmissionContext shoulder_context{
-      .board = board,
-      .compiled_board = compiled,
-      .request = cases[1].request,
-  };
-  const RouteCandidate straight =
-      test_support::AcceptedCandidate(straight_context, cases[0].generated);
-  const RouteCandidate shoulder =
-      test_support::AcceptedCandidate(shoulder_context, cases[1].generated);
-
-  // Keep the shoulder's nonuniform 20/60/20 DBU exact geometry while making
-  // its injected resource footprint indistinguishable from the straight path.
-  // Geometric overlap remains the two 20 DBU collinear intervals over the
-  // smaller path's 100 DBU projection; resource-edge counts are not its unit.
-  const RouteCandidate misleading_resources =
-      CandidateStoreTestPeer::ForceResources(shoulder, straight);
-  EXPECT_NEAR(ResourceJaccardOverlap(straight, misleading_resources), 1.0, 1e-12);
-  EXPECT_NEAR(GeometricOverlapRatio(straight, misleading_resources), 0.4, 1e-12);
-}
-
-TEST(CandidateStoreTest, CheckedByteEnumerationDetectsInjectedOverflow) {
-  BoardData data = test_support::ValidM1BoardData();
-  data.obstacles.clear();
-  const BoardSnapshot board = Snapshot(std::move(data));
-  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
-  const CandidateAdmissionContext first_context{
-      .board = board, .compiled_board = compiled, .request = cases[1].request};
-  const CandidateAdmissionContext second_context{
-      .board = board, .compiled_board = compiled, .request = cases[2].request};
-  RouteCandidate first = test_support::AcceptedCandidate(first_context, cases[1].generated);
-  RouteCandidate second = test_support::AcceptedCandidate(second_context, cases[2].generated);
-  first =
-      CandidateStoreTestPeer::ForceLogicalBytes(first, std::numeric_limits<std::uint64_t>::max());
-  second = CandidateStoreTestPeer::ForceLogicalBytes(second, 1);
-  CandidateStore store(StoreConfig(2, std::numeric_limits<std::uint64_t>::max()));
-  CandidateStoreTestPeer::ForcePool(store, {std::move(first), std::move(second)});
-  EXPECT_FALSE(store.CandidateBytes(cases[0].request.net).has_value());
+  std::vector<StoredCandidate> overfull_pool;
+  overfull_pool.push_back(std::make_shared<const RouteCandidate>(straight));
+  overfull_pool.push_back(std::make_shared<const RouteCandidate>(top));
+  const internal::RetentionSelection selection =
+      internal::SelectRetentionForPool(std::move(overfull_pool), StoreConfig(1), {});
+  ASSERT_EQ(selection.retained.size(), 1U);
+  ASSERT_EQ(selection.pruned.size(), 1U);
+  EXPECT_EQ(selection.retained.front()->id(), straight.id());
+  EXPECT_EQ(selection.pruned.front()->id(), top.id());
 }
 
 TEST(CandidateStoreTest, RejectionCapUsesCanonicalSchemaFieldOrder) {
@@ -993,8 +1154,8 @@ TEST(CandidateStoreTest, RejectionCapUsesCanonicalSchemaFieldOrder) {
         .maximum_candidate_bytes_per_net = 1,
         .maximum_rejection_records = 1,
     });
-    CandidateStoreTestPeer::RetainRejection(store, reverse ? present_candidate : missing_candidate);
-    CandidateStoreTestPeer::RetainRejection(store, reverse ? missing_candidate : present_candidate);
+    store.RetainRejection(reverse ? present_candidate : missing_candidate);
+    store.RetainRejection(reverse ? missing_candidate : present_candidate);
     const std::vector<CandidateRejection> retained = store.Rejections();
     ASSERT_EQ(retained.size(), 1U);
     EXPECT_FALSE(retained.front().candidate_id.has_value());
@@ -1280,11 +1441,11 @@ TEST(CandidateStoreTest, PublicRejectionRetentionIsCanonicalBoundedAndBatchOrder
     if (reverse) {
       const std::array records = {first, second};
       store.RetainRejections(records);
-      EXPECT_EQ(CandidateStoreTestPeer::RejectionBatchMerges(store), 1U);
+      EXPECT_EQ(store.telemetry().rejection_batch_merges, 1U);
     } else {
       store.RetainRejection(second);
       store.RetainRejection(first);
-      EXPECT_EQ(CandidateStoreTestPeer::RejectionBatchMerges(store), 0U);
+      EXPECT_EQ(store.telemetry().rejection_batch_merges, 0U);
     }
     return store.Rejections();
   };
@@ -1470,194 +1631,6 @@ TEST(CandidateStoreTest, HostilePublicRejectionIngestionRetainsOnlyBoundedV1Repl
             ComputeRejectionLogicalBytes(retained_boundary).value());
 }
 
-TEST(CandidateStoreTest, PublicationWorkOnlyDependsOnTouchedPools) {
-  BoardData data = test_support::ValidM1BoardData();
-  data.obstacles.clear();
-  const BoardSnapshot board = Snapshot(std::move(data));
-  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
-  const CandidateAdmissionContext first_context{
-      .board = board, .compiled_board = compiled, .request = cases[0].request};
-  const CandidateAdmissionContext second_context{
-      .board = board, .compiled_board = compiled, .request = cases[1].request};
-  const RouteCandidate existing =
-      test_support::AcceptedCandidate(first_context, cases[0].generated);
-  const RouteCandidate incoming =
-      test_support::AcceptedCandidate(second_context, cases[1].generated);
-
-  CandidateStore baseline(StoreConfig());
-  CandidateStoreTestPeer::ForcePool(baseline, {existing});
-  ASSERT_TRUE(
-      std::holds_alternative<StoredCandidate>(CandidateStoreTestPeer::Publish(baseline, incoming)));
-  const std::uint64_t baseline_work =
-      CandidateStoreTestPeer::LastPublicationCandidateInspections(baseline);
-
-  std::vector<RouteCandidate> crowded_pool = {existing};
-  for (std::uint64_t index = 0; index < 128; ++index) {
-    crowded_pool.push_back(CandidateStoreTestPeer::ForceNetAndId(
-        existing, board_ir::EntityRef{.id = 10'000 + index, .generation = 0},
-        CandidateId{.high = 0xfeed'faceU, .low = index + 1}));
-  }
-  CandidateStore crowded(StoreConfig());
-  CandidateStoreTestPeer::ForcePool(crowded, std::move(crowded_pool));
-  ASSERT_TRUE(
-      std::holds_alternative<StoredCandidate>(CandidateStoreTestPeer::Publish(crowded, incoming)));
-  EXPECT_EQ(CandidateStoreTestPeer::LastPublicationCandidateInspections(crowded), baseline_work);
-  ASSERT_EQ(crowded.Enumerate(board_ir::EntityRef{.id = 10'064, .generation = 0}).size(), 1U);
-}
-
-TEST(CandidateStoreTest, GlobalIdIndexRejectsCrossNetCollisionWithoutTouchingEitherPool) {
-  BoardData data = test_support::ValidM1BoardData();
-  data.obstacles.clear();
-  const BoardSnapshot board = Snapshot(std::move(data));
-  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
-  const CandidateAdmissionContext first_context{
-      .board = board, .compiled_board = compiled, .request = cases[0].request};
-  const CandidateAdmissionContext second_context{
-      .board = board, .compiled_board = compiled, .request = cases[1].request};
-  const RouteCandidate existing =
-      test_support::AcceptedCandidate(first_context, cases[0].generated);
-  const RouteCandidate incoming = CandidateStoreTestPeer::ForceNetAndId(
-      test_support::AcceptedCandidate(second_context, cases[1].generated),
-      board_ir::EntityRef{.id = 88, .generation = 0}, existing.id());
-
-  CandidateStore store(StoreConfig());
-  CandidateStoreTestPeer::ForcePool(store, {existing});
-  const CandidateStoreAdmissionResult result = CandidateStoreTestPeer::Publish(store, incoming);
-  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(result));
-  EXPECT_EQ(std::get<CandidateRejection>(result).code, CandidateRejectionCode::kDuplicateIdentity);
-  EXPECT_EQ(store.Enumerate(existing.net()).size(), 1U);
-  EXPECT_TRUE(store.Enumerate(incoming.net()).empty());
-}
-
-TEST(CandidateStoreTest, BytePressureNeverPromotesLowerRankedDuplicate) {
-  BoardData data = test_support::ValidM1BoardData();
-  data.obstacles.clear();
-  const BoardSnapshot board = Snapshot(std::move(data));
-  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
-  const std::array straight = {
-      LayerSegment{.layer = 0,
-                   .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 100, .y = 0}}},
-  };
-  const CandidateCase first_duplicate = MakeCase(board, compiled, 20, 200, straight, 100);
-  const CandidateCase second_duplicate = MakeCase(board, compiled, 21, 201, straight, 100);
-  const CandidateAdmissionContext pin_context{
-      .board = board, .compiled_board = compiled, .request = cases[1].request};
-  const CandidateAdmissionContext first_context{
-      .board = board, .compiled_board = compiled, .request = first_duplicate.request};
-  const CandidateAdmissionContext second_context{
-      .board = board, .compiled_board = compiled, .request = second_duplicate.request};
-  const RouteCandidate pin_source =
-      test_support::AcceptedCandidate(pin_context, cases[1].generated);
-  const RouteCandidate first =
-      test_support::AcceptedCandidate(first_context, first_duplicate.generated);
-  const RouteCandidate second =
-      test_support::AcceptedCandidate(second_context, second_duplicate.generated);
-  const RouteCandidate& preferred_source = CandidateRanksBefore(first, second) ? first : second;
-  const RouteCandidate& lower_ranked_source = CandidateRanksBefore(first, second) ? second : first;
-  const RouteCandidate pinned = CandidateStoreTestPeer::ForceLogicalBytes(pin_source, 100);
-  const RouteCandidate preferred = CandidateStoreTestPeer::ForceLogicalBytes(preferred_source, 200);
-  const RouteCandidate lower_ranked =
-      CandidateStoreTestPeer::ForceLogicalBytes(lower_ranked_source, 50);
-
-  CandidateStore store(StoreConfig(3, 250));
-  ASSERT_TRUE(
-      std::holds_alternative<StoredCandidate>(CandidateStoreTestPeer::Publish(store, pinned)));
-  ASSERT_FALSE(store.Pin(44, pinned.id()).has_value());
-  const std::vector<CandidateStoreAdmissionResult> results =
-      CandidateStoreTestPeer::PublishBatch(store, {lower_ranked, preferred});
-  ASSERT_EQ(results.size(), 2U);
-  EXPECT_TRUE(std::ranges::all_of(results, [](const CandidateStoreAdmissionResult& result) {
-    return std::holds_alternative<CandidateRejection>(result);
-  }));
-  EXPECT_TRUE(std::ranges::any_of(results, [](const CandidateStoreAdmissionResult& result) {
-    return std::get<CandidateRejection>(result).code == CandidateRejectionCode::kBudgetExhausted;
-  }));
-  EXPECT_TRUE(std::ranges::any_of(results, [](const CandidateStoreAdmissionResult& result) {
-    return std::get<CandidateRejection>(result).code == CandidateRejectionCode::kDuplicateGeometry;
-  }));
-  const std::vector<StoredCandidate> retained = store.Enumerate(pinned.net());
-  ASSERT_EQ(retained.size(), 1U);
-  EXPECT_EQ(retained.front()->id(), pinned.id());
-}
-
-TEST(CandidateStoreTest, OversizedStableWinnerNeverPromotesSmallerDuplicateLoser) {
-  BoardData data = test_support::ValidM1BoardData();
-  data.obstacles.clear();
-  const BoardSnapshot board = Snapshot(std::move(data));
-  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  const std::array<CandidateCase, 3> cases = ThreeCandidates(board, compiled);
-  const std::array straight_segments = {
-      LayerSegment{.layer = 0,
-                   .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 100, .y = 0}}},
-  };
-  const std::array shoulder_segments = {
-      LayerSegment{.layer = 0, .centerline = {.start = {.x = 0, .y = 0}, .end = {.x = 20, .y = 0}}},
-      LayerSegment{.layer = 0,
-                   .centerline = {.start = {.x = 20, .y = 0}, .end = {.x = 20, .y = 20}}},
-      LayerSegment{.layer = 0,
-                   .centerline = {.start = {.x = 20, .y = 20}, .end = {.x = 80, .y = 20}}},
-      LayerSegment{.layer = 0,
-                   .centerline = {.start = {.x = 80, .y = 20}, .end = {.x = 80, .y = 0}}},
-      LayerSegment{.layer = 0,
-                   .centerline = {.start = {.x = 80, .y = 0}, .end = {.x = 100, .y = 0}}},
-  };
-
-  const auto accept = [&](const CandidateCase& candidate_case) {
-    return test_support::AcceptedCandidate(
-        CandidateAdmissionContext{
-            .board = board, .compiled_board = compiled, .request = candidate_case.request},
-        candidate_case.generated);
-  };
-  const auto run = [&](RouteCandidate first, RouteCandidate second,
-                       CandidateRejectionCode duplicate_code) {
-    if (CandidateRanksBefore(second, first)) {
-      std::swap(first, second);
-    }
-    first = CandidateStoreTestPeer::ForceLogicalBytes(first, 251);
-    second = CandidateStoreTestPeer::ForceLogicalBytes(second, 1);
-    CandidateStore store(StoreConfig(4, 250));
-    const std::vector<CandidateStoreAdmissionResult> results =
-        CandidateStoreTestPeer::PublishBatch(store, {second, first});
-    ASSERT_EQ(results.size(), 2U);
-    EXPECT_TRUE(std::ranges::all_of(results, [](const CandidateStoreAdmissionResult& result) {
-      return std::holds_alternative<CandidateRejection>(result);
-    }));
-    EXPECT_TRUE(std::ranges::any_of(results, [](const CandidateStoreAdmissionResult& result) {
-      return std::get<CandidateRejection>(result).code == CandidateRejectionCode::kBudgetExhausted;
-    }));
-    EXPECT_TRUE(
-        std::ranges::any_of(results, [duplicate_code](const CandidateStoreAdmissionResult& result) {
-          return std::get<CandidateRejection>(result).code == duplicate_code;
-        }));
-    EXPECT_TRUE(store.Enumerate(first.net()).empty());
-  };
-
-  const CandidateCase same_id_first = MakeCase(board, compiled, 40, 400, straight_segments, 100);
-  const CandidateCase same_id_second = MakeCase(board, compiled, 40, 400, shoulder_segments, 152);
-  ASSERT_EQ(same_id_first.generated.id, same_id_second.generated.id);
-  run(accept(same_id_first), accept(same_id_second), CandidateRejectionCode::kDuplicateIdentity);
-
-  const CandidateCase same_geometry_first =
-      MakeCase(board, compiled, 41, 401, straight_segments, 100);
-  const CandidateCase same_geometry_second =
-      MakeCase(board, compiled, 42, 402, straight_segments, 100);
-  run(accept(same_geometry_first), accept(same_geometry_second),
-      CandidateRejectionCode::kDuplicateGeometry);
-
-  const CandidateAdmissionContext straight_context{
-      .board = board, .compiled_board = compiled, .request = cases[0].request};
-  const CandidateAdmissionContext shoulder_context{
-      .board = board, .compiled_board = compiled, .request = cases[1].request};
-  const RouteCandidate straight =
-      test_support::AcceptedCandidate(straight_context, cases[0].generated);
-  const RouteCandidate shoulder = CandidateStoreTestPeer::ForceResources(
-      test_support::AcceptedCandidate(shoulder_context, cases[1].generated), straight);
-  run(straight, shoulder, CandidateRejectionCode::kDuplicateResources);
-}
-
 TEST(CandidateStoreTest, StoreRejectsAssociationDriftAcrossBoardSnapshots) {
   BoardData first_data = test_support::ValidM1BoardData();
   first_data.obstacles.clear();
@@ -1687,6 +1660,64 @@ TEST(CandidateStoreTest, StoreRejectsAssociationDriftAcrossBoardSnapshots) {
   ASSERT_EQ(store.Enumerate(first.request.net).size(), 1U);
   EXPECT_EQ(store.Enumerate(first.request.net).front()->data().associations,
             AssociationsFor(first_board, first_compiled));
+}
+
+TEST(CandidateStoreTest, FirstNetBindingPersistsAcrossPinnedMultiPoolRollback) {
+  BoardData data = test_support::ValidM1TwoNetBoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const geometry_compiler::CompilerProfile compiler_profile =
+      test_support::DefaultCompilerProfile({0});
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = board.data().nets[1].ref;
+  board_ir::RoutingProfile changed_first_profile = board.data().routing_profile;
+  ++changed_first_profile.clearance;
+  const AuthenticNetCase first =
+      PrepareAuthenticNetCase(board, compiler_profile, board.data().routing_profile);
+  const AuthenticNetCase second =
+      PrepareAuthenticNetCase(board, compiler_profile, std::move(second_profile));
+  const AuthenticNetCase changed_first =
+      PrepareAuthenticNetCase(board, compiler_profile, std::move(changed_first_profile));
+  CandidateStore store(StoreConfig(2));
+
+  const CandidateAdmissionContext second_context{
+      .board = board, .compiled_board = second.compiled, .request = second.request};
+  const CandidateStoreAdmissionResult second_incumbent = store.Admit(
+      second_context, test_support::CandidateDraft(board, second.compiled, second.request, 1, 1));
+  ASSERT_TRUE(std::holds_alternative<StoredCandidate>(second_incumbent));
+  const CandidateId pinned_id = std::get<StoredCandidate>(second_incumbent)->id();
+  ASSERT_FALSE(store.Pin(77, pinned_id).has_value());
+
+  const CandidateAdmissionContext first_context{
+      .board = board, .compiled_board = first.compiled, .request = first.request};
+  std::vector<RouteCandidate> transaction;
+  transaction.push_back(test_support::AcceptedCandidate(
+      first_context, test_support::CandidateDraft(board, first.compiled, first.request, 1, 2)));
+  transaction.push_back(test_support::AcceptedCandidate(
+      second_context, test_support::CandidateDraft(board, second.compiled, second.request, 1, 3)));
+  const std::vector<CandidateStoreAdmissionResult> rolled_back =
+      internal::PublishWithPinnedRollbackForTesting(store, std::move(transaction),
+                                                    second.request.net);
+  ASSERT_EQ(rolled_back.size(), 2U);
+  EXPECT_TRUE(std::ranges::all_of(rolled_back, [](const auto& result) {
+    const auto* rejection = std::get_if<CandidateRejection>(&result);
+    return rejection != nullptr && rejection->code == CandidateRejectionCode::kBudgetExhausted;
+  }));
+  EXPECT_TRUE(store.Enumerate(first.request.net).empty());
+  ASSERT_EQ(store.Enumerate(second.request.net).size(), 1U);
+  EXPECT_EQ(store.Enumerate(second.request.net).front()->id(), pinned_id);
+
+  const CandidateAdmissionContext changed_context{
+      .board = board,
+      .compiled_board = changed_first.compiled,
+      .request = changed_first.request,
+  };
+  const CandidateStoreAdmissionResult drift = store.Admit(
+      changed_context,
+      test_support::CandidateDraft(board, changed_first.compiled, changed_first.request, 1, 4));
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(drift));
+  EXPECT_EQ(std::get<CandidateRejection>(drift).invariant_id,
+            "candidate.store.net_context_drift.v1");
 }
 
 }  // namespace

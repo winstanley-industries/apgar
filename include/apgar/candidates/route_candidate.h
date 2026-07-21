@@ -5,6 +5,7 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -19,6 +20,14 @@
 #include "apgar/routing/candidate_policy.h"
 #include "apgar/routing/cpu_astar.h"
 #include "apgar/routing/planar_route.h"
+
+namespace apgar::gpu {
+
+struct PlanarCandidateBatch;
+struct PlanarCandidateBatchQuery;
+class PlanarCandidateBatchItem;
+
+}  // namespace apgar::gpu
 
 namespace apgar::candidates {
 
@@ -48,9 +57,9 @@ struct Hash128 {
 using CandidateId = Hash128;
 using CandidateSignature = Hash128;
 
-struct RouteCandidateAdmissionFactory;
-struct GeneratedRouteCandidateProducerFactory;
-struct CandidateProducerEvidence;
+class RouteCandidateAdmissionFactory;
+class GeneratedRouteCandidateProducerFactory;
+struct GeneratedRouteCandidate;
 
 // Copyable opaque capability. Callers may move/copy/reset a handle, but only
 // typed producer adapters can create evidence and admission requires an exact
@@ -64,9 +73,10 @@ class CandidateProducerEvidenceHandle {
   CandidateProducerEvidenceHandle& operator=(CandidateProducerEvidenceHandle&&) noexcept = default;
 
  private:
-  std::shared_ptr<const CandidateProducerEvidence> evidence_;
+  struct Evidence;
+  std::shared_ptr<const Evidence> evidence_;
 
-  friend struct GeneratedRouteCandidateProducerFactory;
+  friend class GeneratedRouteCandidateProducerFactory;
 };
 
 struct CandidateAssociations {
@@ -222,12 +232,13 @@ class RouteCandidate {
   friend bool operator==(const RouteCandidate&, const RouteCandidate&) = default;
 
  private:
-  explicit RouteCandidate(GeneratedRouteCandidate data) : data_(std::move(data)) {}
+  explicit RouteCandidate(GeneratedRouteCandidate data) : data_(std::move(data)) {
+    data_.producer_evidence = {};
+  }
 
   GeneratedRouteCandidate data_;
 
-  friend struct RouteCandidateAdmissionFactory;
-  friend class CandidateStoreTestPeer;
+  friend class RouteCandidateAdmissionFactory;
 };
 
 enum class CandidateLifecycleStage : std::uint8_t {
@@ -288,6 +299,40 @@ struct CandidateAdmissionContext {
 
 using CandidateAdmissionResult = std::variant<RouteCandidate, CandidateRejection>;
 
+namespace internal {
+
+enum class CandidateProducerAuthority : std::uint8_t;
+
+[[nodiscard]] CandidateAdmissionResult AdmitRouteCandidateWithVerifiedRequestPolicy(
+    const CandidateAdmissionContext& context,
+    const routing::CandidatePolicyResult& verified_request_policy,
+    GeneratedRouteCandidate&& generated);
+
+}  // namespace internal
+
+// Fully defined access class: consumers cannot complete or extend it to reach
+// RouteCandidate's private constructor. Every public method runs complete
+// exact admission and clamps hostile test budgets to schema maxima.
+class RouteCandidateAdmissionFactory final {
+ public:
+  RouteCandidateAdmissionFactory() = delete;
+
+  [[nodiscard]] static CandidateAdmissionResult AdmitWithBudgets(
+      const CandidateAdmissionContext& context, GeneratedRouteCandidate&& generated,
+      std::uint64_t maximum_pair_checks, std::uint64_t maximum_expanded_resource_edges);
+
+ private:
+  [[nodiscard]] static CandidateAdmissionResult AdmitWithVerifiedPolicy(
+      const CandidateAdmissionContext& context, GeneratedRouteCandidate generated,
+      std::uint64_t maximum_pair_checks, std::uint64_t maximum_expanded_resource_edges,
+      const routing::CandidatePolicyResult* verified_request_policy);
+  [[nodiscard]] static RouteCandidate Make(GeneratedRouteCandidate data);
+
+  friend CandidateAdmissionResult internal::AdmitRouteCandidateWithVerifiedRequestPolicy(
+      const CandidateAdmissionContext&, const routing::CandidatePolicyResult&,
+      GeneratedRouteCandidate&&);
+};
+
 // Batch/query identities describe deterministic scheduling and remain distinct
 // from a policy's candidate ordinal. Generator/backend/device provenance is
 // derived by typed evidence builders rather than accepted from callers.
@@ -300,6 +345,46 @@ struct CandidateSchedulingIdentity {
 };
 
 using CandidateDraftBuildResult = std::variant<GeneratedRouteCandidate, CandidateRejection>;
+
+struct GpuCandidateBatchBuildRequest {
+  std::reference_wrapper<const gpu::PlanarCandidateBatchQuery> query;
+  std::reference_wrapper<const routing::NormalizedCandidateGenerationPolicy> normalized_policy;
+  std::reference_wrapper<const gpu::PlanarCandidateBatchItem> item;
+};
+
+struct GpuCandidateBatchBuildFailure {
+  CandidateRejectionCode code = CandidateRejectionCode::kInternalInvariant;
+  std::string invariant_id;
+  std::string detail;
+};
+
+using GpuCandidateBatchBuildResult =
+    std::variant<std::vector<CandidateDraftBuildResult>, GpuCandidateBatchBuildFailure>;
+
+// Fully defined and non-extensible. Sealing remains private to the concrete
+// out-of-line typed-producer adapter; authentication is read-only.
+class GeneratedRouteCandidateProducerFactory final {
+ public:
+  GeneratedRouteCandidateProducerFactory() = delete;
+
+  [[nodiscard]] static bool Authenticates(const GeneratedRouteCandidate& candidate);
+
+ private:
+  static void Seal(GeneratedRouteCandidate& candidate,
+                   internal::CandidateProducerAuthority authority);
+
+  friend CandidateDraftBuildResult BuildGeneratedCandidateFromCpuRoute(
+      const board_ir::BoardSnapshot&, const geometry_compiler::CompiledBoard&,
+      const routing::CpuRouteRequest&, const routing::NormalizedCandidateGenerationPolicy&,
+      const routing::CpuRoute&, CandidateSchedulingIdentity);
+  friend CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItem(
+      const board_ir::BoardSnapshot&, const geometry_compiler::CompiledBoard&,
+      const gpu::PlanarCandidateBatchQuery&, const routing::NormalizedCandidateGenerationPolicy&,
+      const gpu::PlanarCandidateBatch&, const gpu::PlanarCandidateBatchItem&);
+  friend GpuCandidateBatchBuildResult BuildGeneratedCandidatesFromGpuBatchItems(
+      const board_ir::BoardSnapshot&, const geometry_compiler::CompiledBoard&,
+      const gpu::PlanarCandidateBatch&, std::span<const GpuCandidateBatchBuildRequest>);
+};
 
 [[nodiscard]] CandidateAssociations AssociationsFor(
     const board_ir::BoardSnapshot& board,

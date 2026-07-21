@@ -75,14 +75,26 @@ required to equal the policy's `candidate_ordinal`.
 
 The CPU route accepted by that builder is itself an opaque exact capability:
 `RouteWithCpuAStar` seals its Board/compiler/rule associations, normalized
-policy identity, scalar cost, and exact segment sequence. A public `CpuRoute`
+policy identity, exact net/endpoints/layers, routing-profile fingerprint,
+scalar cost, and exact segment sequence. A public `CpuRoute`
 aggregate without that evidence, or any mutation of a sealed semantic field,
 is rejected with `candidate.builder.cpu_producer_authentication.v1`. Test code
-may reseal deliberately injected routes only by depending on the source-private
-Bazel `testonly` decorator library; production targets and installed public
-headers expose no evidence mint. APGAR implementation code intentionally
-depending on source-private headers is inside this C++ trust boundary; hostile
-runtime inputs and clients of the supported public dependency graph are not.
+has no reseal operation: exact diagnostic probes use the source-private
+unsealed validation builder, and exact fixture paths are produced by the real
+CPU A* entry point over a restricted copy of the authentic compiled view.
+Production targets and installed public headers expose no evidence mint. CPU and candidate evidence pointees are
+private nested implementation types. Their access classes are fully defined
+and non-extensible, and sealing plus accepted-candidate construction remain
+private operations. A consumer therefore cannot complete a public
+forward-declared friend type to mint evidence or invoke the `RouteCandidate`
+constructor. APGAR implementation code intentionally depending on
+source-private headers is inside this C++ trust boundary; hostile runtime inputs
+and clients of the supported public dependency graph are not.
+
+Validated GPU route-item evidence likewise retains the exact net, requested
+endpoints/layers, and routing-profile fingerprint inside its immutable route
+snapshot. Reusing genuine scheduling IDs or a geometrically compatible path
+cannot attribute execution for one authentic net to another.
 
 `CpuRoute::lattice_path` is a redundant search-reconstruction trace and
 `CpuRoute::telemetry` is diagnostic. Neither field participates in CPU producer

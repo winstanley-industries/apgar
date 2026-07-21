@@ -462,7 +462,7 @@ public:
 - **GEN-003** Every candidate MUST include provenance sufficient to reproduce it.
 - **GEN-004** Generators SHOULD support banned or penalized resource sets to produce diverse alternatives.
 - **GEN-005** Generators MUST NOT mutate global resource usage while searching.
-- **GEN-006** Generator identity and backend provenance MUST be derived at a trusted producer-adapter boundary, not accepted from caller-selected metadata. A CPU adapter MUST require opaque evidence sealed by the actual CPU A* result path and bound to its exact associations, policy, cost, and geometry before stamping CPU provenance; deliberately malformed-route resealing is restricted to a source-private Bazel `testonly` dependency. A GPU candidate adapter MUST require immutable opaque host-validation evidence bound to the batch, query, policy, immutable device view, and reconstructed route, plus authentication that the prepared view was produced by the exact final supported GPU-backend type, before it can stamp GPU provenance. The authentication decision MUST live in an always-linked core implementation; an optional backend library MUST NOT receive an otherwise-undefined public friend or seal-minting hook. Generic backends and wrappers remain ineligible even when they report GPU-looking metadata or forward work to a real GPU. Public result fields alone are not such evidence.
+- **GEN-006** Generator identity and backend provenance MUST be derived at a trusted producer-adapter boundary, not accepted from caller-selected metadata. A CPU adapter MUST require opaque evidence sealed by the actual CPU A* result path and bound to its exact associations, policy, cost, and geometry before stamping CPU provenance; no test or production dependency may expose a route-evidence reseal operation. A GPU candidate adapter MUST require immutable opaque host-validation evidence bound to the batch, query, policy, immutable device view, and reconstructed route, plus authentication that the prepared view was produced by the exact final supported GPU-backend type, before it can stamp GPU provenance. The authentication decision MUST live in an always-linked core implementation; an optional backend library MUST NOT receive an otherwise-undefined public friend or seal-minting hook. Generic backends and wrappers remain ineligible even when they report GPU-looking metadata or forward work to a real GPU. Public result fields alone are not such evidence.
 
 ### 12.2 Heading-aware sweep router
 
@@ -922,7 +922,7 @@ OrthoRoute's documented full-lattice estimates illustrate why APGAR should avoid
 | 1 - Compiled fields | Sparse tiles, directional masks, rule buckets, CPU reference router | Conservatism suite passes; memory telemetry exists. |
 | 2 - GPU kernel bakeoff | Sweep and frontier prototypes | Differential correctness; dispatch benchmark report. |
 | 3 - Candidate store | Compression, dedup, metrics, provenance | Best-of-k and diversity curves reproducible. |
-| 4 - Global allocator | Prices, worlds, selection, column generation | Beats sequential baseline on selected synthetic families. |
+| 4 - Global allocator | Representative multi-net workload, resource capacities, deterministic one-world selection, prices, and targeted column generation; multi-world execution follows the reference path | Under equal time and memory budgets, a versioned multi-net candidate-allocation workflow deterministically improves a declared board-level outcome over a named sequential baseline; see Section 29.2. |
 | 5 - Legalizer/DRC | Exact transaction pipeline and host validation | Zero supported violations on committed corpus outputs. |
 | 6 - Incremental session | Deltas, dirty dependency tracking, checkpoints | Incremental equivalence and latency targets met. |
 | 7 - Specialty pilots | Escape and differential-pair prototypes | Interfaces validated without core redesign. |
@@ -938,6 +938,102 @@ OrthoRoute's documented full-lattice estimates illustrate why APGAR should avoid
 - Through vias only.
 - Line-segment output with configured mitered corners.
 - No shove, copper pours, differential pairs, buses, or length tuning.
+
+### 29.2 Phase 4 global-allocator evidence gate
+
+Phase 4 validates APGAR's central board-level hypothesis: reusable candidate
+pools plus global allocation must improve routing outcomes, not merely execute
+one path query, candidate batch, or allocator inner loop faster. Work should
+proceed through a representative multi-net workload and resource-capacity
+contract, a deterministic single-world CPU reference, negotiated prices with
+targeted candidate regeneration, and only then multi-world or GPU allocator
+acceleration.
+
+#### Required workload
+
+- The canonical corpus MUST contain distinct nets with distinct terminals and
+  route requests. Repeating alternative policies for one net MAY remain a
+  controlled comparison but MUST NOT substitute for multi-net evidence.
+- The corpus MUST cover exact small instances, allocator-stressing synthetic
+  families, and at least one imported multi-net board limited to explicitly
+  supported rules. It MUST include hundreds of distinct nets and a documented
+  stress tier targeting thousands; a lower memory-bounded maximum is a
+  scalability result and MUST NOT be hidden by replacing nets with same-net
+  alternatives.
+- Candidate pools MUST include realistic small per-net schedules such as 4, 8,
+  and 16 requested alternatives. Larger pools MAY characterize scaling but
+  MUST NOT be the only regime used to claim Phase 4 success.
+- Controlled families MUST vary route length, occupancy, run fragmentation,
+  turn complexity, reachability, rule bucket, and region-of-interest size.
+  Reports MUST state how these features affect compatible batch fill,
+  prepared-view reuse, and CPU/GPU dispatch.
+- At fixed total query counts, evidence MUST distinguish one net with many
+  alternatives, many nets with one candidate, and many nets with small
+  candidate pools. Per-net diversity work MUST remain scoped to each net rather
+  than becoming an artificial all-candidate quadratic operation.
+
+#### Correctness and determinism
+
+- A CPU reference MUST independently reproduce every correctness-critical
+  allocator primitive, including candidate scoring, resource accumulation,
+  capacity overuse, selection, and price updates. Any GPU implementation MUST
+  pass CPU/GPU differential tests before contributing performance evidence.
+- Each world MUST select exactly one immutable candidate for every routable net
+  with an admissible pool and retain a structured outcome for a net with no
+  admissible candidate. Selected candidate identity and provenance MUST remain
+  bound to its exact net, terminals, Board IR snapshot, compiled view, rule
+  bucket, and policy.
+- Resource usage and over-capacity totals MUST equal an independent CPU
+  recomputation from canonical candidate footprints. Resource refinement MUST
+  remain available when exact conflicts cannot be represented by the current
+  capacity model.
+- Prices, histories, iteration counts, regeneration budgets, and world state
+  MUST be bounded, versioned, and replayable. Identical board, configuration,
+  seed, candidate pools, and supported backend/device class MUST produce the
+  same externally visible selections and diagnostics.
+- Candidate generators MUST continue to read immutable price snapshots and
+  MUST NOT mutate global occupancy while searching. Unsupported rules or
+  resource semantics MUST be declared and delegated rather than approximated
+  silently.
+
+#### Equal-budget decision evidence
+
+- The primary comparison MUST name a sequential negotiated-routing baseline
+  and hold wall-clock, memory, supported-rule, corpus, candidate-generation,
+  and stopping budgets equal. CPU comparisons MUST use a persistent production
+  worker pool rather than per-invocation thread creation when the allocator
+  implementation uses persistent workers.
+- Prepared-session timing MUST include scheduling, compatible-batch formation,
+  candidate generation, compact readback, exact validation and admission,
+  per-net store publication, selection, resource accumulation, price updates,
+  targeted regeneration, and transient release. Import, compilation, initial
+  upload, cache misses, and release MUST also be reported in a separate cold
+  scope; neither scope may hide required disconnected-result confirmation.
+- The predeclared primary outcome MUST be board-level and lexicographic:
+  maximize nets with an admissible selected candidate, then minimize total
+  over-capacity resource usage, then minimize the configured quality objective,
+  subject to predeclared candidate-quality and exact-rejection guardrails.
+  Candidate queries per second and world iterations per second are diagnostic
+  metrics, not Phase 4 success criteria.
+- Phase 4 exits only when uncertainty-qualified, family-level evidence shows a
+  strict improvement over the named sequential baseline on at least two
+  allocator-stressing synthetic families at equal budgets, without reducing
+  the primary feasibility outcome or violating the declared guardrails on the
+  imported supported-rule case. Pooled throughput MUST NOT hide family
+  regressions, and negative or workload-specific results MUST remain visible.
+- The report MUST publish per-net candidate yield and diversity consumed,
+  selected-candidate quality, unresolved overuse, convergence or stall reason,
+  columns requested and admitted, batch fill, prepared-view cache behavior,
+  stage timings, CPU/GPU utilization context, and peak host/device memory.
+  Every optimization claim MUST bind the versioned corpus, configuration,
+  hardware, toolchains, exact clean commit, and comparison baseline.
+
+This Phase 4 gate establishes resource-feasible candidate allocation, not final
+board legality. Exact combined-geometry legalization, APGAR DRC, host-CAD
+validation, shove, tuning, differential pairs, buses, and other deferred
+specialty behavior remain governed by Phases 5 and 7. Individually selected
+candidates remain subject to the existing exact admission and GPU trust
+boundaries throughout Phase 4.
 
 ## 30. Risks and Mitigations
 

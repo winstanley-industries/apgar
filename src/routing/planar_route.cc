@@ -5,6 +5,8 @@
 #include <limits>
 #include <ranges>
 
+#include "src/routing/planar_route_internal.h"
+
 namespace apgar::routing {
 namespace {
 
@@ -20,18 +22,31 @@ using Wide = __int128_t;
 std::optional<CompiledBoardAssociationIssue> ValidateCompiledBoardAssociation(
     const board_ir::BoardSnapshot& board,
     const geometry_compiler::CompiledBoard& compiled_board) noexcept {
-  if (compiled_board.source_board_content_hash() != board.content_hash()) {
+  return internal::ValidateCompiledBoardAssociationView(
+      board, internal::CompiledBoardAssociationView{
+                 .source_board_content_hash = compiled_board.source_board_content_hash(),
+                 .compiler_profile_fingerprint = compiled_board.compiler_profile_fingerprint(),
+                 .compiler_version = compiled_board.compiler_version(),
+                 .rule_bucket = compiled_board.rule_bucket(),
+                 .routing_profile = compiled_board.routing_profile(),
+                 .profile = compiled_board.profile(),
+             });
+}
+
+std::optional<CompiledBoardAssociationIssue> internal::ValidateCompiledBoardAssociationView(
+    const board_ir::BoardSnapshot& board,
+    const internal::CompiledBoardAssociationView& compiled) noexcept {
+  if (compiled.source_board_content_hash != board.content_hash()) {
     return CompiledBoardAssociationIssue::kSourceBoardMismatch;
   }
-  if (compiled_board.compiler_version() != geometry_compiler::kGeometryCompilerVersion) {
+  if (compiled.compiler_version != geometry_compiler::kGeometryCompilerVersion) {
     return CompiledBoardAssociationIssue::kCompilerVersionMismatch;
   }
-  if (compiled_board.compiler_profile_fingerprint() !=
-      geometry_compiler::FingerprintCompilerProfile(compiled_board.profile())) {
+  if (compiled.compiler_profile_fingerprint !=
+      geometry_compiler::FingerprintCompilerProfile(compiled.profile)) {
     return CompiledBoardAssociationIssue::kProfileFingerprintMismatch;
   }
-  if (compiled_board.rule_bucket() !=
-      geometry_compiler::DeriveM1RuleBucket(board.data().routing_profile)) {
+  if (compiled.rule_bucket != geometry_compiler::DeriveM1RuleBucket(compiled.routing_profile)) {
     return CompiledBoardAssociationIssue::kRuleBucketMismatch;
   }
   return std::nullopt;
@@ -40,7 +55,7 @@ std::optional<CompiledBoardAssociationIssue> ValidateCompiledBoardAssociation(
 std::optional<RouteRequestAdmissionIssue> ValidateTwoTerminalRouteRequest(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     const CpuRouteRequest& request) noexcept {
-  const board_ir::RoutingProfile& routing = board.data().routing_profile;
+  const board_ir::RoutingProfile& routing = compiled_board.routing_profile();
   if (request.net != routing.net || board.FindNet(request.net) == nullptr) {
     return RouteRequestAdmissionIssue::kRoutingProfileNetMismatch;
   }
@@ -80,7 +95,13 @@ std::optional<RouteRequestAdmissionIssue> ValidateTwoTerminalRouteRequest(
 TwoTerminalRequestResult BuildTwoTerminalRouteRequest(const board_ir::BoardSnapshot& board,
                                                       board_ir::LayerId start_layer,
                                                       board_ir::LayerId goal_layer) noexcept {
-  const board_ir::Net* net = board.FindNet(board.data().routing_profile.net);
+  return BuildTwoTerminalRouteRequest(board, board.data().routing_profile, start_layer, goal_layer);
+}
+
+TwoTerminalRequestResult BuildTwoTerminalRouteRequest(
+    const board_ir::BoardSnapshot& board, const board_ir::RoutingProfile& routing_profile,
+    board_ir::LayerId start_layer, board_ir::LayerId goal_layer) noexcept {
+  const board_ir::Net* net = board.FindNet(routing_profile.net);
   if (net == nullptr) {
     return TwoTerminalRequestIssue::kMissingRoutingProfileNet;
   }

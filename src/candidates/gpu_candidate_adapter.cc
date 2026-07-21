@@ -143,13 +143,19 @@ CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItemImpl(
   route_associations.board_content_hash = route->source_board_content_hash;
   route_associations.compiler_profile_fingerprint = route->compiler_profile_fingerprint;
   route_associations.geometry_compiler_version = route->compiler_version;
+  route_associations.routing_profile_fingerprint = route->routing_profile_fingerprint;
   route_associations.rule_bucket_identity = route->rule_bucket_identity;
   if (!item.has_validated_route_evidence() ||
       item.validated_batch_schema_version() != batch.schema_version ||
       item.validated_batch_id() != batch.batch_id || route->generator != batch.generator ||
       route->backend != batch.backend ||
       route->device_view_fingerprint != batch.device_view_fingerprint ||
-      route->policy_identity != item.policy_identity()) {
+      route->policy_identity != item.policy_identity() || route->net != query.request.net ||
+      route->requested_start != query.request.start ||
+      route->requested_goal != query.request.goal ||
+      route->requested_start_layer != query.request.start_layer ||
+      route->requested_goal_layer != query.request.goal_layer ||
+      route->routing_profile_fingerprint != context_associations.routing_profile_fingerprint) {
     return reject(route_associations, CandidateRejectionCode::kAssociationMismatch,
                   "candidate.builder.gpu_result_envelope.v1",
                   "GPU route lacks a host-validation seal or its sealed associations do not match "
@@ -163,8 +169,7 @@ CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItemImpl(
   }
   return internal::BuildGeneratedCandidateFromValidatedPlanarRoute(
       board, compiled_board, query.request, normalized_policy, route_associations,
-      route->policy_identity, route->total_cost, route->segments, provenance,
-      internal::CandidateProducerAuthority::kAuthenticatedCudaBatch);
+      route->policy_identity, route->total_cost, route->segments, provenance);
 }
 
 }  // namespace
@@ -174,9 +179,14 @@ CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItem(
     const gpu::PlanarCandidateBatchQuery& query,
     const routing::NormalizedCandidateGenerationPolicy& normalized_policy,
     const gpu::PlanarCandidateBatch& batch, const gpu::PlanarCandidateBatchItem& item) {
-  return BuildGeneratedCandidateFromGpuBatchItemImpl(board, compiled_board, query,
-                                                     normalized_policy, batch, item,
-                                                     BatchItemMembership::kScanBatch);
+  CandidateDraftBuildResult result =
+      BuildGeneratedCandidateFromGpuBatchItemImpl(board, compiled_board, query, normalized_policy,
+                                                  batch, item, BatchItemMembership::kScanBatch);
+  if (auto* generated = std::get_if<GeneratedRouteCandidate>(&result); generated != nullptr) {
+    GeneratedRouteCandidateProducerFactory::Seal(
+        *generated, internal::CandidateProducerAuthority::kAuthenticatedCudaBatch);
+  }
+  return result;
 }
 
 GpuCandidateBatchBuildResult BuildGeneratedCandidatesFromGpuBatchItems(
@@ -207,9 +217,14 @@ GpuCandidateBatchBuildResult BuildGeneratedCandidatesFromGpuBatchItems(
     const BatchItemMembership membership = std::ranges::distance(matches) == 1
                                                ? BatchItemMembership::kUnique
                                                : BatchItemMembership::kNotUnique;
-    results.push_back(BuildGeneratedCandidateFromGpuBatchItemImpl(
+    CandidateDraftBuildResult result = BuildGeneratedCandidateFromGpuBatchItemImpl(
         board, compiled_board, request.query.get(), request.normalized_policy.get(), batch,
-        request.item.get(), membership));
+        request.item.get(), membership);
+    if (auto* generated = std::get_if<GeneratedRouteCandidate>(&result); generated != nullptr) {
+      GeneratedRouteCandidateProducerFactory::Seal(
+          *generated, internal::CandidateProducerAuthority::kAuthenticatedCudaBatch);
+    }
+    results.push_back(std::move(result));
   }
   return results;
 }

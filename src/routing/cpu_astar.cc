@@ -18,11 +18,31 @@
 #include <vector>
 
 #include "apgar/board_ir/stable_hash.h"
-#include "apgar/geometry/exact.h"
+#include "src/geometry/exact_internal.h"
 #include "src/routing/cpu_astar_internal.h"
 
 namespace apgar::routing {
+
+struct CpuRouteProducerEvidenceHandle::Evidence {
+  std::uint64_t source_board_content_hash = 0;
+  std::uint64_t compiler_profile_fingerprint = 0;
+  std::uint32_t compiler_version = 0;
+  std::uint64_t routing_profile_fingerprint = 0;
+  std::uint64_t rule_bucket_identity = 0;
+  board_ir::EntityRef net;
+  board_ir::Point64 requested_start;
+  board_ir::Point64 requested_goal;
+  board_ir::LayerId requested_start_layer = 0;
+  board_ir::LayerId requested_goal_layer = 0;
+  std::uint64_t candidate_policy_identity = 0;
+  std::uint64_t total_cost = 0;
+  std::vector<LayerSegment> segments;
+};
+
 namespace {
+
+thread_local const std::span<const geometry_compiler::SparseTile>*
+    g_restricted_cpu_astar_tile_view_for_testing = nullptr;
 
 using geometry_compiler::CompiledBoard;
 using geometry_compiler::CompilerProfile;
@@ -211,8 +231,8 @@ struct QueueGreater {
 }
 
 [[nodiscard]] std::optional<RouteFailure> ValidateExactSegments(
-    const board_ir::BoardSnapshot& board, const CpuRouteRequest& request,
-    std::span<const LayerSegment> segments) {
+    const board_ir::BoardSnapshot& board, const board_ir::RoutingProfile& routing_profile,
+    const CpuRouteRequest& request, std::span<const LayerSegment> segments) {
   if (request.start_layer != request.goal_layer) {
     return Failure(RouteFailureCode::kUnsupportedLayerTransition,
                    "M1 compiled fields are planar; exact through-via transitions are not defined");
@@ -232,7 +252,8 @@ struct QueueGreater {
                      "Reconstructed route segments are not exactly contiguous");
     }
     const geometry::MovementValidationResult exact =
-        geometry::ValidateMovement(board, segment.layer, segment.centerline);
+        geometry::internal::ValidateMovementForPreparedProfile(board, routing_profile,
+                                                               segment.layer, segment.centerline);
     if (!exact.legal()) {
       return Failure(RouteFailureCode::kValidationFailed,
                      "Exact reconstructed-route validation failed: " + exact.detail,
@@ -247,18 +268,85 @@ struct QueueGreater {
   return std::nullopt;
 }
 
+[[nodiscard]] const geometry_compiler::SparseTile* FindTileInView(
+    std::span<const geometry_compiler::SparseTile> tiles,
+    const geometry_compiler::TileKey& key) noexcept {
+  const auto tile = std::ranges::lower_bound(tiles, key, {}, &geometry_compiler::SparseTile::key);
+  return tile != tiles.end() && tile->key == key ? &*tile : nullptr;
+}
+
+[[nodiscard]] const geometry_compiler::CompiledNode* FindNodeInView(
+    const CompilerProfile& profile, std::span<const geometry_compiler::SparseTile> tiles,
+    board_ir::LayerId layer, std::int64_t lattice_x, std::int64_t lattice_y) noexcept {
+  const LatticeIndex index{.x = lattice_x, .y = lattice_y};
+  const geometry_compiler::SparseTile* tile =
+      FindTileInView(tiles, geometry_compiler::TileForLatticeIndex(profile, layer, index));
+  if (tile == nullptr) {
+    return nullptr;
+  }
+  const std::uint64_t local_index = geometry_compiler::LocalNodeIndex(profile, index);
+  const auto node = std::ranges::lower_bound(tile->nodes, local_index, {},
+                                             &geometry_compiler::CompiledNode::local_index);
+  return node != tile->nodes.end() && node->local_index == local_index ? &*node : nullptr;
+}
+
+[[nodiscard]] bool ContainsNodeInView(const CompilerProfile& profile,
+                                      std::span<const geometry_compiler::SparseTile> tiles,
+                                      board_ir::LayerId layer, std::int64_t lattice_x,
+                                      std::int64_t lattice_y) noexcept {
+  return FindNodeInView(profile, tiles, layer, lattice_x, lattice_y) != nullptr;
+}
+
+[[nodiscard]] bool EdgeIsLegalInView(const CompilerProfile& profile,
+                                     std::span<const geometry_compiler::SparseTile> tiles,
+                                     board_ir::LayerId layer, std::int64_t lattice_x,
+                                     std::int64_t lattice_y, Direction direction) noexcept {
+  const geometry_compiler::CompiledNode* node =
+      FindNodeInView(profile, tiles, layer, lattice_x, lattice_y);
+  return node != nullptr && (node->legal_edges & geometry_compiler::MaskFor(direction)) != 0;
+}
+
 }  // namespace
 
-bool CpuRouteHasAuthenticatedAStarEvidence(const CpuRoute& route) noexcept {
-  const std::shared_ptr<const CpuRouteProducerEvidence>& evidence =
-      route.producer_evidence.evidence;
+void CpuRouteEvidenceAccess::Seal(CpuRoute& route) {
+  route.producer_evidence.evidence_ =
+      std::make_shared<const CpuRouteProducerEvidenceHandle::Evidence>(
+          CpuRouteProducerEvidenceHandle::Evidence{
+              .source_board_content_hash = route.source_board_content_hash,
+              .compiler_profile_fingerprint = route.compiler_profile_fingerprint,
+              .compiler_version = route.compiler_version,
+              .routing_profile_fingerprint = route.routing_profile_fingerprint,
+              .rule_bucket_identity = route.rule_bucket_identity,
+              .net = route.net,
+              .requested_start = route.requested_start,
+              .requested_goal = route.requested_goal,
+              .requested_start_layer = route.requested_start_layer,
+              .requested_goal_layer = route.requested_goal_layer,
+              .candidate_policy_identity = route.candidate_policy_identity,
+              .total_cost = route.total_cost,
+              .segments = route.segments,
+          });
+}
+
+bool CpuRouteEvidenceAccess::Authenticates(const CpuRoute& route) noexcept {
+  const std::shared_ptr<const CpuRouteProducerEvidenceHandle::Evidence>& evidence =
+      route.producer_evidence.evidence_;
   return evidence != nullptr &&
          evidence->source_board_content_hash == route.source_board_content_hash &&
          evidence->compiler_profile_fingerprint == route.compiler_profile_fingerprint &&
          evidence->compiler_version == route.compiler_version &&
+         evidence->routing_profile_fingerprint == route.routing_profile_fingerprint &&
          evidence->rule_bucket_identity == route.rule_bucket_identity &&
+         evidence->net == route.net && evidence->requested_start == route.requested_start &&
+         evidence->requested_goal == route.requested_goal &&
+         evidence->requested_start_layer == route.requested_start_layer &&
+         evidence->requested_goal_layer == route.requested_goal_layer &&
          evidence->candidate_policy_identity == route.candidate_policy_identity &&
          evidence->total_cost == route.total_cost && evidence->segments == route.segments;
+}
+
+bool CpuRouteHasAuthenticatedAStarEvidence(const CpuRoute& route) noexcept {
+  return CpuRouteEvidenceAccess::Authenticates(route);
 }
 
 std::optional<RouteFailure> ValidateReconstructedRoute(const board_ir::BoardSnapshot& board,
@@ -280,7 +368,7 @@ std::optional<RouteFailure> ValidateReconstructedRoute(const board_ir::BoardSnap
   if (std::holds_alternative<CandidatePolicyError>(normalized_policy)) {
     return PolicyFailure(std::get<CandidatePolicyError>(normalized_policy));
   }
-  return ValidateExactSegments(board, request, segments);
+  return ValidateExactSegments(board, compiled_board.routing_profile(), request, segments);
 }
 
 std::optional<RouteFailure> ValidateReconstructedRouteWithNormalizedPolicy(
@@ -303,12 +391,14 @@ std::optional<RouteFailure> ValidateReconstructedRouteWithNormalizedPolicy(
     return Failure(RouteFailureCode::kInternalInvariant,
                    "Preflight-normalized candidate policy has a stale identity");
   }
-  return ValidateExactSegments(board, request, segments);
+  return ValidateExactSegments(board, compiled_board.routing_profile(), request, segments);
 }
 
-CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
-                                 const CompiledBoard& compiled_board,
-                                 const CpuRouteRequest& request) {
+namespace {
+
+CpuRouteResult RouteWithCpuAStarUsingTileViewImpl(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    const CpuRouteRequest& request, std::span<const geometry_compiler::SparseTile> compiled_tiles) {
   if (std::optional<CompiledBoardAssociationIssue> association =
           ValidateCompiledBoardAssociation(board, compiled_board);
       association.has_value()) {
@@ -384,8 +474,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
     }
     ++telemetry.expanded_states;
 
-    const geometry_compiler::CompiledNode* current_node =
-        compiled_board.FindNode(request.start_layer, current.state.x, current.state.y);
+    const geometry_compiler::CompiledNode* current_node = FindNodeInView(
+        profile, compiled_tiles, request.start_layer, current.state.x, current.state.y);
     if (current_node == nullptr) {
       return Failure(RouteFailureCode::kInternalInvariant,
                      "A* expanded a state outside the represented sparse field", std::nullopt,
@@ -421,8 +511,9 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
           neighbor_x > std::numeric_limits<std::int64_t>::max() ||
           neighbor_y < std::numeric_limits<std::int64_t>::min() ||
           neighbor_y > std::numeric_limits<std::int64_t>::max() ||
-          !compiled_board.ContainsNode(request.start_layer, static_cast<std::int64_t>(neighbor_x),
-                                       static_cast<std::int64_t>(neighbor_y))) {
+          !ContainsNodeInView(profile, compiled_tiles, request.start_layer,
+                              static_cast<std::int64_t>(neighbor_x),
+                              static_cast<std::int64_t>(neighbor_y))) {
         return Failure(RouteFailureCode::kInternalInvariant,
                        "Compiled legal edge points outside the represented sparse field",
                        std::nullopt, telemetry);
@@ -525,8 +616,9 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
         LatticeIndex{.x = reversed_states[index].x, .y = reversed_states[index].y});
     if (!direction.has_value() ||
         (profile.heading_mask & geometry_compiler::HeadingFor(*direction)) == 0 ||
-        !compiled_board.EdgeIsLegal(request.start_layer, reversed_states[index - 1].x,
-                                    reversed_states[index - 1].y, *direction)) {
+        !EdgeIsLegalInView(profile, compiled_tiles, request.start_layer,
+                           reversed_states[index - 1].x, reversed_states[index - 1].y,
+                           *direction)) {
       return Failure(RouteFailureCode::kInternalInvariant,
                      "A* reconstruction does not follow adjacent compiled legal edges",
                      std::nullopt, telemetry);
@@ -563,7 +655,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
   }
 
   std::vector<LayerSegment> segments = CoalesceSegments(request.start_layer, points);
-  if (std::optional<RouteFailure> invalid = ValidateExactSegments(board, request, segments);
+  if (std::optional<RouteFailure> invalid =
+          ValidateExactSegments(board, compiled_board.routing_profile(), request, segments);
       invalid.has_value()) {
     invalid->telemetry = telemetry;
     return std::move(*invalid);
@@ -573,7 +666,13 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       .source_board_content_hash = compiled_board.source_board_content_hash(),
       .compiler_profile_fingerprint = compiled_board.compiler_profile_fingerprint(),
       .compiler_version = compiled_board.compiler_version(),
+      .routing_profile_fingerprint = FingerprintRoutingProfile(compiled_board.routing_profile()),
       .rule_bucket_identity = compiled_board.rule_bucket().identity,
+      .net = request.net,
+      .requested_start = request.start,
+      .requested_goal = request.goal,
+      .requested_start_layer = request.start_layer,
+      .requested_goal_layer = request.goal_layer,
       .candidate_policy_identity = normalized_policy.identity,
       .total_cost = reconstructed_cost,
       .lattice_path = std::move(points),
@@ -581,17 +680,45 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       .telemetry = telemetry,
       .producer_evidence = {},
   };
-  route.producer_evidence.evidence =
-      std::make_shared<const CpuRouteProducerEvidence>(CpuRouteProducerEvidence{
-          .source_board_content_hash = route.source_board_content_hash,
-          .compiler_profile_fingerprint = route.compiler_profile_fingerprint,
-          .compiler_version = route.compiler_version,
-          .rule_bucket_identity = route.rule_bucket_identity,
-          .candidate_policy_identity = route.candidate_policy_identity,
-          .total_cost = route.total_cost,
-          .segments = route.segments,
-      });
   return route;
+}
+
+}  // namespace
+
+CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
+                                 const CompiledBoard& compiled_board,
+                                 const CpuRouteRequest& request) {
+  const std::span<const geometry_compiler::SparseTile> tiles =
+      g_restricted_cpu_astar_tile_view_for_testing == nullptr
+          ? compiled_board.tiles()
+          : *g_restricted_cpu_astar_tile_view_for_testing;
+  CpuRouteResult result = RouteWithCpuAStarUsingTileViewImpl(board, compiled_board, request, tiles);
+  if (auto* route = std::get_if<CpuRoute>(&result); route != nullptr) {
+    CpuRouteEvidenceAccess::Seal(*route);
+  }
+  return result;
+}
+
+CpuRouteResult internal::RouteWithCpuAStarUsingTileView(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    const CpuRouteRequest& request, std::span<const geometry_compiler::SparseTile> tiles) {
+  return RouteWithCpuAStarUsingTileViewImpl(board, compiled_board, request, tiles);
+}
+
+CpuRouteResult internal::RouteWithCpuAStarUsingRestrictedTileViewForTesting(
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    const CpuRouteRequest& request, std::span<const geometry_compiler::SparseTile> tiles) {
+  const std::span<const geometry_compiler::SparseTile>* previous =
+      g_restricted_cpu_astar_tile_view_for_testing;
+  g_restricted_cpu_astar_tile_view_for_testing = &tiles;
+  try {
+    CpuRouteResult result = RouteWithCpuAStar(board, compiled_board, request);
+    g_restricted_cpu_astar_tile_view_for_testing = previous;
+    return result;
+  } catch (...) {
+    g_restricted_cpu_astar_tile_view_for_testing = previous;
+    throw;
+  }
 }
 
 }  // namespace apgar::routing
