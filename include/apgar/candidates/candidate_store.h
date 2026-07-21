@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,10 @@ inline constexpr std::uint64_t kDefaultMaximumAdmissionInputBytesPerTransaction 
 inline constexpr std::uint64_t kDefaultMaximumAdmissionWorkUnitsPerTransaction = 100'000'000;
 inline constexpr std::uint64_t kDefaultMaximumPinLeaseItemsPerTransaction = 1'024;
 inline constexpr std::uint64_t kMaximumPinLeaseItemsPerTransaction = 1'000'000;
+inline constexpr std::uint64_t kDefaultMaximumExpectedPoolsPerInvocation = 100'000;
+inline constexpr std::uint64_t kDefaultMaximumExpectedCandidatesPerInvocation = 1'000'000;
+inline constexpr std::uint64_t kMaximumExpectedPoolsPerInvocation = 1'000'000;
+inline constexpr std::uint64_t kMaximumExpectedCandidatesPerInvocation = 1'000'000;
 
 struct CandidateStoreConfig {
   std::uint64_t maximum_candidates_per_net = 0;
@@ -48,6 +53,11 @@ struct CandidateStoreConfig {
   // of retained-pool and candidate-admission limits.
   std::uint64_t maximum_pin_lease_items_per_transaction =
       kDefaultMaximumPinLeaseItemsPerTransaction;
+  // Bounds the immutable source-pool compare performed by one conditional
+  // deterministic invocation independently of generated-column bounds.
+  std::uint64_t maximum_expected_pools_per_invocation = kDefaultMaximumExpectedPoolsPerInvocation;
+  std::uint64_t maximum_expected_candidates_per_invocation =
+      kDefaultMaximumExpectedCandidatesPerInvocation;
 
   friend bool operator==(const CandidateStoreConfig&, const CandidateStoreConfig&) = default;
 };
@@ -63,6 +73,10 @@ enum class CandidateStoreErrorCode : std::uint8_t {
   kPinLeaseIdentityExhausted = 7,
   kResourceExhausted = 8,
   kCandidateSemanticMismatch = 9,
+  kInvalidInvocation = 10,
+  kInvocationInputBoundExceeded = 11,
+  kStoreDrift = 12,
+  kInvocationAdmissionPreflightFailed = 13,
 };
 
 struct CandidateStoreError {
@@ -102,6 +116,7 @@ class CandidateStorePinLease {
 
   void Release() noexcept;
   [[nodiscard]] bool active() const noexcept;
+  [[nodiscard]] bool belongs_to(const CandidateStore& store) const noexcept;
 
  private:
   struct Control;
@@ -121,6 +136,27 @@ struct CandidateAdmissionItem {
   routing::PlanarRouteRequest request;
   GeneratedRouteCandidate generated;
 };
+
+// One generated item in a deterministic invocation. Different items may use
+// distinct authentic per-net CompiledBoards while sharing one BoardSnapshot.
+struct CandidateInvocationGeneratedItem {
+  std::reference_wrapper<const geometry_compiler::CompiledBoard> compiled_board;
+  routing::PlanarRouteRequest request;
+  GeneratedRouteCandidate generated;
+};
+
+using CandidateInvocationItem = std::variant<CandidateInvocationGeneratedItem, CandidateRejection>;
+
+// Exact source pool expected by a conditional invocation. The per-net
+// association binding remains authoritative when candidates is empty.
+struct CandidateStoreExpectedPool {
+  board_ir::EntityRef net{};
+  CandidateAssociations associations;
+  std::vector<StoredCandidate> candidates;
+};
+
+using CandidateStoreInvocationAdmissionResult =
+    std::variant<std::vector<CandidateStoreAdmissionResult>, CandidateStoreError>;
 
 struct CandidateStoreTelemetry {
   std::uint64_t last_publication_candidate_inspections = 0;
@@ -165,6 +201,16 @@ class CandidateStore {
   [[nodiscard]] std::vector<CandidateStoreAdmissionResult> AdmitBatch(
       const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
       std::vector<CandidateAdmissionItem>&& items);
+  // Publishes one complete deterministic invocation through one CAN-004
+  // boundary. Every item and expected pool is preflighted before exact work.
+  // Immediately before publication, all expected pools are compared under the
+  // publication mutex by association and canonical complete immutable value.
+  // Drift and aggregate admission preflight failures are typed and change no
+  // store state.
+  [[nodiscard]] CandidateStoreInvocationAdmissionResult AdmitInvocationIfSourcePoolsMatch(
+      const board_ir::BoardSnapshot& board,
+      std::vector<CandidateStoreExpectedPool>&& expected_source_pools,
+      std::vector<CandidateInvocationItem>&& items);
 
   [[nodiscard]] std::vector<StoredCandidate> Enumerate(board_ir::EntityRef net) const;
   [[nodiscard]] std::vector<CandidateRejection> Rejections() const;
@@ -190,6 +236,10 @@ class CandidateStore {
   // lock. Failure leaves every candidate's pin state unchanged.
   [[nodiscard]] CandidateStorePinLeaseResult AcquirePinLease(
       std::span<const CandidatePinRequest> requests);
+  // Acquires a store-identity lease without pinning candidates. This is an
+  // explicit capability for zero-selection allocator plans; AcquirePinLease
+  // continues to reject an empty candidate group.
+  [[nodiscard]] CandidateStorePinLeaseResult AcquireEmptyPinLease();
   [[nodiscard]] bool IsPinned(CandidateId candidate_id) const;
 
   // Reapplies the deterministic retention order. Pins are always preserved;
@@ -214,6 +264,11 @@ class CandidateStore {
       std::vector<CandidateRejection> canonical_rejections);
   [[nodiscard]] std::vector<CandidateStoreAdmissionResult> PublishAdmissionResults(
       std::vector<CandidateAdmissionResult> admitted);
+  [[nodiscard]] CandidateStoreInvocationAdmissionResult PublishConditionalAdmissionResults(
+      std::vector<CandidateAdmissionResult> admitted,
+      const std::vector<CandidateStoreExpectedPool>& expected_source_pools);
+  [[nodiscard]] bool ExpectedPoolsMatchLocked(
+      const std::vector<CandidateStoreExpectedPool>& expected_source_pools) const noexcept;
   [[nodiscard]] CandidateStoreAdmissionResult PublishAcceptedLocked(RouteCandidate candidate);
   [[nodiscard]] std::vector<CandidateStoreAdmissionResult> PublishAcceptedBatchLocked(
       std::vector<RouteCandidate> candidates,

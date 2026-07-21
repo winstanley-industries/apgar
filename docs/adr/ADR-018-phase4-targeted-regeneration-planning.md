@@ -51,7 +51,27 @@ and because caller-chosen pin owners did not represent independent lifetimes.
   only collision-prone identity summaries. The plan owns that move-only RAII
   lease. Independent store-issued leases reference-count overlapping
   candidates; no caller-supplied owner identity participates in correctness or
-  deterministic replay.
+  deterministic replay. A plan with zero selected candidates acquires the
+  store's active zero-candidate identity lease, binding later execution to that
+  exact store without inventing a candidate or changing the deterministic
+  pinned count.
+- Reserve source-request candidate-count headroom while assigning columns and
+  require at most one complete-price column plus one column for each retained
+  ordered action. A plan therefore cannot promise more new candidates than its
+  refreshed One-World request can represent or more forced columns than it can
+  deterministically distinguish.
+- Define the CPU-reference targeted-policy translation. Every global price
+  record is strictly validated, then every synthesized policy applies the
+  complete target-legal projection of nonzero next negotiated total prices and
+  checked `(intrinsic weight - 1) * base step/bend` surcharges, making CPU A*
+  optimize the same weighted intrinsic-plus-price scalar as One-World
+  selection. The first column is price-only; later columns each ban one
+  distinct ordered hot action. Candidate Policy v1 requires the banned edge's
+  redundant price entry to be omitted while every other target-legal present
+  or historical price remains. Global resources absent from the target's
+  authentic compiled view are irrelevant to that target and are omitted only
+  after their global price records pass canonical order and total validation;
+  action resources may never be omitted.
 
 ## Consequences
 
@@ -68,6 +88,7 @@ and because caller-chosen pin owners did not represent independent lifetimes.
   while still leasing retained source selections.
 - Planning remains a bounded CPU reference. Later GPU or compressed-index
   versions require differential agreement.
-- Alternative-policy synthesis, actual generation/admission, stall diagnostics,
-  multi-world retention, corpus work, and equal-budget evidence remain open
+- ADR-019 composes this plan and policy schedule with authentic CPU generation,
+  conditional exact admission, successor selection, and stall diagnostics.
+  Multi-world retention, corpus work, and equal-budget evidence remain open
   Phase 4 work.

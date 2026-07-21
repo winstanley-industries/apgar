@@ -47,6 +47,14 @@ first planner expansion, and every action-rescan addition before that rescan.
 The source request's independent One-World bound still applies to validation
 of all pool alternatives.
 
+Column planning additionally reserves candidate-count headroom in the complete
+source request. At most
+`source_limits.maximum_candidates - source_candidate_count` columns may be
+requested across the plan. Zero remaining headroom produces an empty target
+list. For every retained target, requested columns are also at most one plus
+the number of retained ordered resource actions: the first column is the
+complete-price search and every later column has one distinct action to ban.
+
 ## Canonical request and pool manifests
 
 Manifest construction occurs only after production request and exact-candidate
@@ -146,13 +154,50 @@ limit and remaining global action budget.
 
 Ranked nets are retained until a target, total-column, or total-action budget
 is exhausted. A retained net requests
-`min(maximum_columns_per_net, conflict_resource_count)` columns, truncated by
-the remaining total-column budget, and retains at least one action. Aggregate
-conflict counts and impacts cover retained targets and must fit unsigned 64-bit
-fields.
+`min(maximum_columns_per_net, conflict_resource_count,
+resource_action_count + 1)` columns, truncated by the remaining total-column
+and source-request candidate-headroom budgets, and retains at least one action.
+Aggregate conflict counts and impacts cover retained targets and must fit
+unsigned 64-bit fields.
 
 Each target records its pool manifest/count, source-selected ID/checksum,
 next-price winner ID/checksum/score, metrics, budget, and ordered actions.
+
+## CPU policy synthesis
+
+`BuildTargetedRegenerationPoliciesV1` is the deterministic CPU-reference
+translation from one retained target to exactly `requested_columns` normalized
+Candidate Generation Policy v1 values. It accepts only the target's authentic
+Prepared Net Routing Context, the plan's next Negotiated Price State, the
+One-World intrinsic-cost weight, and explicit deterministic seed/first-ordinal
+scheduling inputs. Board/compiler/routing/net associations must match, the
+first ordinal plus the column count must fit `u32`, every retained action
+resource must exist in the prepared Compiled Board, and the aggregate generated
+policy resource-entry count is bounded by the Candidate Policy v1 maximum.
+
+Every policy represents the complete target-legal projection of the nonzero
+next-price field. Every global price record is first checked for canonical
+order and exact present/history/clamped-total consistency. A record whose
+resource is absent from this target's authentic Compiled Board is then omitted:
+that edge cannot occur in any candidate for this target and contributes zero
+to every target route. Every retained target-legal resource with price
+`total_price` receives that exact additional edge cost. Intrinsic routing
+cost is scaled to the One-World objective by checked surcharges
+`(intrinsic_cost_weight - 1) * base_cost` independently for orthogonal,
+diagonal, and bend costs. Thus an unbanned CPU route minimizes the same
+`intrinsic_cost_weight * intrinsic_base_cost + price_cost` scalar used by
+One-World selection. Present and historical price components are not treated
+differently; a history-only nonzero total remains a policy penalty.
+
+Column zero has no action ban. Column `i > 0` bans ordered resource action
+`i - 1`. Candidate Policy v1 forbids one resource from being both banned and
+penalized, so that absent edge's otherwise complete price entry is removed;
+all other nonzero target-legal next-price records remain. Target action
+resources are always required to exist in the target's Compiled Board even
+when unrelated global price records are projected away. Policies retain the
+supplied seed and use consecutive candidate ordinals. Any association,
+resource, canonical-order, price-total, policy-normalization, arithmetic, or
+aggregate-work failure is structured and no partial policy batch is returned.
 
 ## CandidateStore lease
 
@@ -164,6 +209,13 @@ the complete immutable candidate value for the complete group under one lock.
 Missing, detached, stale, semantically mismatched (including an ID/checksum
 collision), duplicate, or over-bound input fails without changing any pin
 count.
+
+When both validated selections contain zero candidates, the factory instead
+acquires an active zero-candidate identity lease from the exact CandidateStore.
+It pins no candidate and leaves `pinned_candidate_count` equal to zero, but its
+active/store-ownership checks preserve the same executor binding as a nonempty
+retention lease. Thus an all-empty authentic workload can reach its structured
+no-work outcome without accepting a plan against a different store.
 
 Independent acquisitions receive independent opaque lease identities and are
 reference-counted even when they retain the same candidate. Releasing either
@@ -211,7 +263,8 @@ decision-rule change requires a new schema version.
 
 ## Deliberate boundary
 
-This slice decides a bounded, store-backed hotset and column/action budgets. It
-does not synthesize alternative policies, run CPU/GPU candidate generation,
-publish candidates, detect post-generation stall, retain multiple worlds, or
-claim Phase 4 evidence-gate success.
+This slice decides a bounded, store-backed hotset and column/action budgets and
+defines deterministic CPU-reference policy synthesis. Targeted Regeneration
+Execution v1 composes this plan with authentic CPU generation, conditional
+publication, refreshed selection, and stall diagnostics. Neither schema retains
+multiple worlds or claims Phase 4 evidence-gate success.

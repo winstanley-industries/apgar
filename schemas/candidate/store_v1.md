@@ -21,7 +21,10 @@ Configuration supplies positive per-net accepted-candidate and accepted-byte
 caps, a bounded rejection-record cap, a separate rejection-ingestion item cap,
 and three independent admission-transaction caps: item count, aggregate input
 logical bytes, and deterministic work units. A separate positive pin-lease item
-cap bounds the identities examined by one atomic group acquisition. The default
+cap bounds the identities examined by one atomic group acquisition. Conditional
+invocation admission additionally bounds its expected source roster by pool and
+candidate count. Defaults are 100,000 expected pools and 1,000,000 expected
+candidates, and neither may exceed the v1 hard maximum of 1,000,000. The default
 rejection-ingestion and pin-lease caps are each 1,024 records per call; the
 pin-lease cap cannot exceed the v1 hard maximum of 1,000,000 identities. The
 default admission-transaction caps are 1,024 items, 64 MiB, and 100,000,000
@@ -111,6 +114,54 @@ different linearizations of future calls. Callers requiring schedule-independent
 publication must use one batch. Ranking and pruning use total stable keys and
 never depend on hash-table iteration, pointer values, or item order within a
 batch. Enumeration is sorted by the ranking key and then candidate ID.
+
+### Conditional deterministic invocation admission
+
+Phase 4 execution uses one conditional invocation boundary rather than racing
+per-column admissions. Its caller transfers one common immutable Board
+Snapshot; a nonempty bounded roster of expected source pools, including
+explicit empty pools; and a bounded invocation vector. Every expected pool
+binds its exact per-net Candidate Associations even when it contains no
+candidate. Each invocation item is either a route request, generated candidate,
+and authentic non-owning per-item Compiled Board reference, or a structured
+pre-generation Candidate Rejection v1. Generated and rejected items must carry
+the association binding declared by their expected pool.
+
+Expected-pool and invocation order are not semantic. Every invocation item
+must name a net in the expected roster. Expected candidates must be nonnull,
+name their pool's exact net, and have globally unique candidate IDs. Before
+exact work or store mutation, the store checks configuration, total invocation
+items, worst-case rejection items, expected pool/candidate counts, all
+candidate/policy shapes, aggregate bytes, and deterministic work. Every item
+is charged to the rejection-item cap because any generated draft may fail
+exact admission. Invalid rosters and over-bound invocations return typed store
+errors without publishing candidate or rejection state.
+
+Aggregate candidate/policy shape, logical-byte, and deterministic-work
+preflight failures return typed
+`CandidateStoreError::kInvocationAdmissionPreflightFailed`. Its invariant and
+detail diagnostic uses fixed failure precedence and aggregate maxima/totals, so
+input permutation cannot select a different error. Such a failure mutates no
+pool, global identity, rejection history, session or per-net association
+binding, pin state, or telemetry.
+
+Every generated draft then crosses ordinary exact RouteCandidate admission
+against its own Compiled Board and request. All exact-admission outcomes and
+submitted pre-generation rejections are collected before publication. Under
+the single existing publication mutex, the store compares every expected pool
+with the corresponding current pool in canonical retention order. Count, net,
+candidate ID, checksum, or any complete typed immutable-candidate difference is
+store drift; hashes and pointer identity are never equality authority. An
+absent current pool equals only an explicitly empty expected pool. A persistent
+per-net association binding is compared independently of retained candidates,
+so a bound-but-empty pool still detects routing-profile and rule-bucket drift.
+
+Drift returns `CandidateStoreError::kStoreDrift` and changes no pool, global-ID
+index, rejection history, or telemetry. On a match, all accepted and rejected
+items publish through one CAN-004 boundary, so final retention and results are
+independent of worker/input order across distinct authentic net profiles and
+rule buckets. An empty item vector is a side-effect-free exact drift-validation
+operation.
 
 The v1 retention rank compares this exact tuple, lower first:
 
@@ -241,3 +292,10 @@ is a no-op because the store and its candidate pools no longer exist.
 The store-issued lease identity is runtime metadata, not replay identity and not
 caller-controlled allocator state. Phase 3 does not define allocator worlds,
 prices, selection, or column generation.
+`belongs_to(store)` additionally proves that a live lease was issued by that
+exact store control block. It is false for another live store, a released or
+moved-from lease, and every lease whose store has been destroyed.
+`AcquireEmptyPinLease()` is the explicit zero-selection capability: it issues
+an active store-bound lease while pinning no candidates. Ordinary
+`AcquirePinLease()` continues to reject an empty candidate group, preventing an
+accidental empty selection from being reinterpreted as store-identity proof.

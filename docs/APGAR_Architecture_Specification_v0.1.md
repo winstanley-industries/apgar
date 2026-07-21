@@ -995,6 +995,12 @@ acceleration.
   MUST NOT mutate global occupancy while searching. Unsupported rules or
   resource semantics MUST be declared and delegated rather than approximated
   silently.
+- One targeted-regeneration execution MUST validate its complete source pools,
+  collect authentic generator outputs, publish candidates and diagnostics
+  through one CAN-004 transaction, rerun the CPU reference at the same immutable
+  price snapshot, and retain refreshed winners before releasing source-world
+  retention. Known exact conflicts absent from the current resource vocabulary
+  MUST produce resource-refinement-required rather than convergence or stall.
 
 #### Equal-budget decision evidence
 

@@ -58,6 +58,15 @@ bool CandidateStorePinLease::active() const noexcept {
   return control->store != nullptr;
 }
 
+bool CandidateStorePinLease::belongs_to(const CandidateStore& store) const noexcept {
+  const std::shared_ptr<Control> control = control_;
+  if (control == nullptr || lease_id_ == 0) {
+    return false;
+  }
+  std::scoped_lock lock(control->mutex);
+  return control->store == &store;
+}
+
 void CandidateStorePinLease::Release() noexcept {
   std::shared_ptr<Control> control = std::move(control_);
   const std::uint64_t lease_id = std::exchange(lease_id_, 0);
@@ -666,7 +675,12 @@ struct RetentionSelectionImpl {
          config.maximum_admission_input_bytes_per_transaction > 0 &&
          config.maximum_admission_work_units_per_transaction > 0 &&
          config.maximum_pin_lease_items_per_transaction > 0 &&
-         config.maximum_pin_lease_items_per_transaction <= kMaximumPinLeaseItemsPerTransaction;
+         config.maximum_pin_lease_items_per_transaction <= kMaximumPinLeaseItemsPerTransaction &&
+         config.maximum_expected_pools_per_invocation > 0 &&
+         config.maximum_expected_pools_per_invocation <= kMaximumExpectedPoolsPerInvocation &&
+         config.maximum_expected_candidates_per_invocation > 0 &&
+         config.maximum_expected_candidates_per_invocation <=
+             kMaximumExpectedCandidatesPerInvocation;
 }
 
 [[nodiscard]] CandidateRejection TransactionRejection(
@@ -888,17 +902,18 @@ void AccumulateCandidateShape(const GeneratedRouteCandidate& candidate,
   return std::nullopt;
 }
 
-template <typename RequestAt, typename CandidateAt>
+template <typename CompiledAt, typename RequestAt, typename CandidateAt>
 [[nodiscard]] std::optional<CandidateRejection> PreflightAdmissionTransaction(
     const CandidateStoreConfig& config, const board_ir::BoardSnapshot& board,
-    const geometry_compiler::CompiledBoard& compiled_board, std::size_t item_count,
-    RequestAt&& request_at, CandidateAt&& candidate_at) {
-  const CandidateAssociations associations = AssociationsFor(board, compiled_board);
+    std::size_t item_count, CompiledAt&& compiled_at, RequestAt&& request_at,
+    CandidateAt&& candidate_at) {
   if (std::optional<CandidateRejection> rejection =
-          PreflightAdmissionItemCount(config, associations, item_count);
+          PreflightAdmissionItemCount(config, CandidateAssociations{}, item_count);
       rejection.has_value()) {
     return rejection;
   }
+  const CandidateAssociations associations =
+      item_count == 0 ? CandidateAssociations{} : AssociationsFor(board, compiled_at(0));
 
   CandidateTransactionShapeSummary shape_summary;
   for (std::size_t index = 0; index < item_count; ++index) {
@@ -1001,6 +1016,7 @@ template <typename RequestAt, typename CandidateAt>
   for (std::size_t index = 0; index < item_count; ++index) {
     const GeneratedRouteCandidate& candidate = candidate_at(index);
     const routing::PlanarRouteRequest& request = request_at(index);
+    const geometry_compiler::CompiledBoard& compiled_board = compiled_at(index);
     const std::optional<std::uint64_t> candidate_bytes = ComputeCandidateLogicalBytes(candidate);
     if (!candidate_bytes.has_value() || !CheckedAddWork(*candidate_bytes, input_bytes)) {
       return TransactionRejection(associations, CandidateRejectionCode::kMemoryAccountingOverflow,
@@ -1288,7 +1304,10 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
     return {std::move(*rejection)};
   }
   if (std::optional<CandidateRejection> rejection = PreflightAdmissionTransaction(
-          config_, context.board, context.compiled_board, generated.size(),
+          config_, context.board, generated.size(),
+          [&context](std::size_t) -> const geometry_compiler::CompiledBoard& {
+            return context.compiled_board;
+          },
           [&context](std::size_t) -> const routing::PlanarRouteRequest& { return context.request; },
           [&generated](std::size_t index) -> const GeneratedRouteCandidate& {
             return generated[index];
@@ -1326,7 +1345,10 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     std::vector<CandidateAdmissionItem>&& items) {
   if (std::optional<CandidateRejection> rejection = PreflightAdmissionTransaction(
-          config_, board, compiled_board, items.size(),
+          config_, board, items.size(),
+          [&compiled_board](std::size_t) -> const geometry_compiler::CompiledBoard& {
+            return compiled_board;
+          },
           [&items](std::size_t index) -> const routing::PlanarRouteRequest& {
             return items[index].request;
           },
@@ -1347,6 +1369,160 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
   }
 
   return PublishAdmissionResults(std::move(admitted));
+}
+
+CandidateStoreInvocationAdmissionResult CandidateStore::AdmitInvocationIfSourcePoolsMatch(
+    const board_ir::BoardSnapshot& board,
+    std::vector<CandidateStoreExpectedPool>&& expected_source_pools,
+    std::vector<CandidateInvocationItem>&& items) {
+  const auto invocation_error = [](CandidateStoreErrorCode code, std::string detail) {
+    return CandidateStoreInvocationAdmissionResult(
+        CandidateStoreError{.code = code, .detail = std::move(detail)});
+  };
+  if (!valid()) {
+    return invocation_error(CandidateStoreErrorCode::kInvalidConfiguration,
+                            "Cannot admit an invocation into an invalid candidate store");
+  }
+  if (items.size() > config_.maximum_admission_items_per_transaction) {
+    return invocation_error(CandidateStoreErrorCode::kInvocationInputBoundExceeded,
+                            "Invocation exceeds the configured input-item bound");
+  }
+  // Every submitted item can become one rejection. This worst-case check
+  // guarantees that exact admission cannot discover a larger rejection batch
+  // after mutation has begun.
+  if (items.size() > config_.maximum_rejection_items_per_transaction) {
+    return invocation_error(CandidateStoreErrorCode::kInvocationInputBoundExceeded,
+                            "Invocation exceeds the configured rejection-item bound");
+  }
+  if (expected_source_pools.empty()) {
+    return invocation_error(CandidateStoreErrorCode::kInvalidInvocation,
+                            "Invocation must declare its complete expected source-pool roster");
+  }
+  if (expected_source_pools.size() > config_.maximum_expected_pools_per_invocation) {
+    return invocation_error(CandidateStoreErrorCode::kInvocationInputBoundExceeded,
+                            "Invocation exceeds the configured expected-pool bound");
+  }
+  UWide expected_candidate_count = 0;
+  for (const CandidateStoreExpectedPool& pool : expected_source_pools) {
+    expected_candidate_count += static_cast<UWide>(pool.candidates.size());
+  }
+  if (expected_candidate_count > config_.maximum_expected_candidates_per_invocation) {
+    return invocation_error(CandidateStoreErrorCode::kInvocationInputBoundExceeded,
+                            "Invocation exceeds the configured expected-candidate bound");
+  }
+
+  try {
+    std::ranges::sort(expected_source_pools, [](const CandidateStoreExpectedPool& left,
+                                                const CandidateStoreExpectedPool& right) {
+      return std::tie(left.net.id, left.net.generation) <
+             std::tie(right.net.id, right.net.generation);
+    });
+    if (std::ranges::adjacent_find(expected_source_pools, {}, &CandidateStoreExpectedPool::net) !=
+        expected_source_pools.end()) {
+      return invocation_error(CandidateStoreErrorCode::kInvalidInvocation,
+                              "Invocation contains a duplicate expected source pool");
+    }
+
+    std::set<CandidateId> expected_candidate_ids;
+    for (CandidateStoreExpectedPool& pool : expected_source_pools) {
+      for (const StoredCandidate& candidate : pool.candidates) {
+        if (candidate == nullptr || candidate->net() != pool.net ||
+            candidate->data().associations != pool.associations) {
+          return invocation_error(
+              CandidateStoreErrorCode::kInvalidInvocation,
+              "Expected source pool contains a null candidate or a candidate for another net or "
+              "association binding");
+        }
+        if (!expected_candidate_ids.insert(candidate->id()).second) {
+          return invocation_error(CandidateStoreErrorCode::kInvalidInvocation,
+                                  "Expected source pools contain a duplicate candidate identity");
+        }
+      }
+      std::ranges::sort(pool.candidates, CandidatePointerRanksBefore);
+    }
+
+    const auto expected_pool_for =
+        [&expected_source_pools](board_ir::EntityRef net) -> const CandidateStoreExpectedPool* {
+      const auto found =
+          std::ranges::lower_bound(expected_source_pools, std::pair{net.id, net.generation}, {},
+                                   [](const CandidateStoreExpectedPool& pool) {
+                                     return std::pair{pool.net.id, pool.net.generation};
+                                   });
+      return found != expected_source_pools.end() && found->net == net ? &*found : nullptr;
+    };
+    std::vector<CandidateInvocationGeneratedItem*> generated;
+    generated.reserve(items.size());
+    for (CandidateInvocationItem& item : items) {
+      if (auto* draft = std::get_if<CandidateInvocationGeneratedItem>(&item); draft != nullptr) {
+        const CandidateStoreExpectedPool* expected = expected_pool_for(draft->request.net);
+        if (expected == nullptr) {
+          return invocation_error(CandidateStoreErrorCode::kInvalidInvocation,
+                                  "Generated invocation item names a net outside the expected "
+                                  "source-pool roster");
+        }
+        if (AssociationsFor(board, draft->compiled_board.get()) != expected->associations) {
+          return invocation_error(CandidateStoreErrorCode::kInvalidInvocation,
+                                  "Generated invocation item differs from its expected source "
+                                  "pool association binding");
+        }
+        generated.push_back(draft);
+      } else {
+        const CandidateRejection& rejection = std::get<CandidateRejection>(item);
+        const CandidateStoreExpectedPool* expected =
+            rejection.net.has_value() ? expected_pool_for(*rejection.net) : nullptr;
+        if (expected == nullptr) {
+          return invocation_error(CandidateStoreErrorCode::kInvalidInvocation,
+                                  "Pre-generation rejection must name a net in the expected "
+                                  "source-pool roster");
+        }
+        if (rejection.associations != expected->associations) {
+          return invocation_error(CandidateStoreErrorCode::kInvalidInvocation,
+                                  "Pre-generation rejection differs from its expected source "
+                                  "pool association binding");
+        }
+      }
+    }
+
+    if (std::optional<CandidateRejection> rejection = PreflightAdmissionTransaction(
+            config_, board, generated.size(),
+            [&generated](std::size_t index) -> const geometry_compiler::CompiledBoard& {
+              return generated[index]->compiled_board.get();
+            },
+            [&generated](std::size_t index) -> const routing::PlanarRouteRequest& {
+              return generated[index]->request;
+            },
+            [&generated](std::size_t index) -> const GeneratedRouteCandidate& {
+              return generated[index]->generated;
+            });
+        rejection.has_value()) {
+      return invocation_error(CandidateStoreErrorCode::kInvocationAdmissionPreflightFailed,
+                              rejection->invariant_id + ": " + rejection->detail);
+    }
+
+    std::vector<CandidateAdmissionResult> admitted;
+    admitted.reserve(items.size());
+    for (CandidateInvocationItem& item : items) {
+      if (auto* draft = std::get_if<CandidateInvocationGeneratedItem>(&item); draft != nullptr) {
+        const CandidateAdmissionContext context{
+            .board = board,
+            .compiled_board = draft->compiled_board.get(),
+            .request = draft->request,
+        };
+        admitted.push_back(AdmitRouteCandidate(context, std::move(draft->generated)));
+      } else {
+        admitted.emplace_back(std::get<CandidateRejection>(std::move(item)));
+      }
+    }
+    return PublishConditionalAdmissionResults(std::move(admitted), expected_source_pools);
+  } catch (const std::bad_alloc&) {
+    return invocation_error(CandidateStoreErrorCode::kResourceExhausted,
+                            "Host allocation failed while preparing conditional invocation "
+                            "admission");
+  } catch (const std::length_error&) {
+    return invocation_error(CandidateStoreErrorCode::kResourceExhausted,
+                            "Host container limits were exhausted while preparing conditional "
+                            "invocation admission");
+  }
 }
 
 std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAdmissionResults(
@@ -1375,6 +1551,80 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAdmissionResul
                  std::make_move_iterator(publication_results.end()));
   std::ranges::sort(results, StoreResultBefore);
   return results;
+}
+
+CandidateStoreInvocationAdmissionResult CandidateStore::PublishConditionalAdmissionResults(
+    std::vector<CandidateAdmissionResult> admitted,
+    const std::vector<CandidateStoreExpectedPool>& expected_source_pools) {
+  std::vector<CandidateStoreAdmissionResult> results;
+  results.reserve(admitted.size());
+  std::vector<RouteCandidate> accepted;
+  accepted.reserve(admitted.size());
+  std::vector<CandidateRejection> canonical_rejections;
+  canonical_rejections.reserve(admitted.size());
+  for (CandidateAdmissionResult& result : admitted) {
+    if (auto* rejection = std::get_if<CandidateRejection>(&result); rejection != nullptr) {
+      CandidateRejection canonical = CanonicalizeCandidateRejectionV1(*rejection);
+      canonical_rejections.push_back(canonical);
+      results.emplace_back(std::move(canonical));
+    } else {
+      accepted.push_back(std::get<RouteCandidate>(std::move(result)));
+    }
+  }
+  std::ranges::sort(accepted, CandidateTotalBefore);
+
+  std::scoped_lock lock(mutex_);
+  if (!ExpectedPoolsMatchLocked(expected_source_pools)) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kStoreDrift,
+        .detail = "Candidate store source pools changed before invocation publication"};
+  }
+  if (admitted.empty()) {
+    return results;
+  }
+  std::vector<CandidateStoreAdmissionResult> publication_results =
+      PublishAcceptedBatchLocked(std::move(accepted), std::move(canonical_rejections));
+  results.insert(results.end(), std::make_move_iterator(publication_results.begin()),
+                 std::make_move_iterator(publication_results.end()));
+  std::ranges::sort(results, StoreResultBefore);
+  return results;
+}
+
+bool CandidateStore::ExpectedPoolsMatchLocked(
+    const std::vector<CandidateStoreExpectedPool>& expected_source_pools) const noexcept {
+  for (const CandidateStoreExpectedPool& expected : expected_source_pools) {
+    const auto association = net_associations_.find(expected.net);
+    if (association != net_associations_.end()) {
+      if (association->second != expected.associations) {
+        return false;
+      }
+    } else {
+      if ((bound_associations_.has_value() &&
+           !SameStoreSession(*bound_associations_, expected.associations)) ||
+          pools_.contains(expected.net) || !expected.candidates.empty()) {
+        return false;
+      }
+    }
+    const auto found = pools_.find(expected.net);
+    if (found == pools_.end()) {
+      if (!expected.candidates.empty()) {
+        return false;
+      }
+      continue;
+    }
+    const CandidatePool& actual = found->second;
+    if (actual.size() != expected.candidates.size()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < actual.size(); ++index) {
+      if (actual[index] == nullptr || expected.candidates[index] == nullptr ||
+          actual[index]->net() != expected.candidates[index]->net() ||
+          actual[index]->data() != expected.candidates[index]->data()) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 std::vector<StoredCandidate> CandidateStore::Enumerate(board_ir::EntityRef net) const {
@@ -1638,6 +1888,39 @@ CandidateStorePinLeaseResult CandidateStore::AcquirePinLease(
 
   for (const CandidatePinRequest& request : canonical_requests) {
     ++pin_counts_.find(request.candidate_id)->second;
+  }
+  next_pin_lease_id_ = lease_id == std::numeric_limits<std::uint64_t>::max() ? 0 : lease_id + 1;
+  return CandidateStorePinLease(pin_lease_control_, lease_id);
+}
+
+CandidateStorePinLeaseResult CandidateStore::AcquireEmptyPinLease() {
+  if (!valid()) {
+    return CandidateStoreError{.code = CandidateStoreErrorCode::kInvalidConfiguration,
+                               .detail = "Cannot acquire a lease from an invalid candidate store"};
+  }
+
+  std::scoped_lock lock(mutex_);
+  if (next_pin_lease_id_ == 0) {
+    return CandidateStoreError{.code = CandidateStoreErrorCode::kPinLeaseIdentityExhausted,
+                               .detail = "Candidate pin lease identity space is exhausted"};
+  }
+  const std::uint64_t lease_id = next_pin_lease_id_;
+  try {
+    const auto [unused, inserted] = pin_leases_.emplace(lease_id, std::vector<CandidateId>{});
+    static_cast<void>(unused);
+    if (!inserted) {
+      return CandidateStoreError{.code = CandidateStoreErrorCode::kPinLeaseIdentityExhausted,
+                                 .detail = "Candidate pin lease identity was already active"};
+    }
+  } catch (const std::bad_alloc&) {
+    return CandidateStoreError{
+        .code = CandidateStoreErrorCode::kResourceExhausted,
+        .detail = "Host allocation failed while acquiring an empty store-identity lease"};
+  } catch (const std::length_error&) {
+    return CandidateStoreError{.code = CandidateStoreErrorCode::kResourceExhausted,
+                               .detail =
+                                   "Host container limits were exhausted while acquiring an empty "
+                                   "store-identity lease"};
   }
   next_pin_lease_id_ = lease_id == std::numeric_limits<std::uint64_t>::max() ? 0 : lease_id + 1;
   return CandidateStorePinLease(pin_lease_control_, lease_id);

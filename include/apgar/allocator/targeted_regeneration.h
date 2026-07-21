@@ -105,6 +105,10 @@ class TargetedRegenerationPlan {
   [[nodiscard]] bool has_active_pin_lease() const noexcept {
     return pin_lease_.has_value() && pin_lease_->active();
   }
+  [[nodiscard]] bool pin_lease_belongs_to(
+      const candidates::CandidateStore& candidate_store) const noexcept {
+    return pin_lease_.has_value() && pin_lease_->belongs_to(candidate_store);
+  }
   [[nodiscard]] const TargetedRegenerationConfig& config() const noexcept { return config_; }
   [[nodiscard]] const NegotiatedPriceState& price_state() const noexcept { return price_state_; }
   [[nodiscard]] const std::vector<TargetedRegenerationNet>& targets() const noexcept {
@@ -204,6 +208,20 @@ class TargetedRegenerationPlan {
 
 using TargetedRegenerationPlanResult =
     std::variant<TargetedRegenerationPlan, TargetedRegenerationError>;
+
+using TargetedRegenerationPolicyResult =
+    std::variant<std::vector<routing::NormalizedCandidateGenerationPolicy>,
+                 TargetedRegenerationError>;
+
+// Deterministic CPU-reference pricing policies for one retained regeneration
+// target. Column zero applies the complete next negotiated-price field. Each
+// later column additionally bans one distinct resource in the target's stable
+// action order. The scheduling seed and first ordinal are caller-visible
+// provenance inputs and are checked before any policy bulk is materialized.
+[[nodiscard]] TargetedRegenerationPolicyResult BuildTargetedRegenerationPoliciesV1(
+    const PreparedNetRoutingContext& context, const NegotiatedPriceState& next_price_state,
+    std::uint64_t intrinsic_cost_weight, const TargetedRegenerationNet& target,
+    std::uint64_t deterministic_seed, std::uint32_t first_candidate_ordinal);
 
 [[nodiscard]] TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
     std::uint32_t schema_version, const NegotiatedPriceState& previous_price_state,

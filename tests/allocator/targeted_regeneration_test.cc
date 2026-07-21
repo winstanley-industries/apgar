@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <set>
 #include <span>
@@ -24,7 +25,11 @@ namespace apgar::allocator {
 namespace {
 
 [[nodiscard]] MultiNetWorkload BuiltWorkload(MultiNetWorkloadResult result) {
-  EXPECT_TRUE(std::holds_alternative<MultiNetWorkload>(result));
+  EXPECT_TRUE(std::holds_alternative<MultiNetWorkload>(result))
+      << (std::holds_alternative<MultiNetWorkloadError>(result)
+              ? std::string(std::get<MultiNetWorkloadError>(result).invariant_id) + ": " +
+                    std::string(std::get<MultiNetWorkloadError>(result).detail)
+              : std::string{});
   if (!std::holds_alternative<MultiNetWorkload>(result)) {
     std::abort();
   }
@@ -73,6 +78,20 @@ namespace {
     std::abort();
   }
   return std::get<TargetedRegenerationPlan>(std::move(result));
+}
+
+[[nodiscard]] std::vector<routing::NormalizedCandidateGenerationPolicy> BuiltPolicies(
+    TargetedRegenerationPolicyResult result) {
+  EXPECT_TRUE(
+      std::holds_alternative<std::vector<routing::NormalizedCandidateGenerationPolicy>>(result))
+      << (std::holds_alternative<TargetedRegenerationError>(result)
+              ? std::string(std::get<TargetedRegenerationError>(result).invariant_id) + ": " +
+                    std::string(std::get<TargetedRegenerationError>(result).detail)
+              : std::string{});
+  if (!std::holds_alternative<std::vector<routing::NormalizedCandidateGenerationPolicy>>(result)) {
+    std::abort();
+  }
+  return std::get<std::vector<routing::NormalizedCandidateGenerationPolicy>>(std::move(result));
 }
 
 [[nodiscard]] candidates::StoredCandidate Stored(candidates::CandidateStoreAdmissionResult result) {
@@ -291,6 +310,245 @@ TEST(TargetedRegenerationTest, PlansAuthenticConflictedNetsDeterministically) {
   EXPECT_EQ(reordered, first);
 }
 
+TEST(TargetedRegenerationTest, BuildsCompletePricedCpuPoliciesAndOrderedActionBans) {
+  PlanningFixture fixture = BuildPlanningFixture(0);
+  const TargetedRegenerationPlan plan = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, PlanConfig()));
+  ASSERT_FALSE(plan.targets().empty());
+  const TargetedRegenerationNet& target = plan.targets().front();
+  const PreparedNetRoutingContext* context = fixture.workload.FindNet(target.net);
+  ASSERT_NE(context, nullptr);
+
+  const std::vector<routing::NormalizedCandidateGenerationPolicy> policies = BuiltPolicies(
+      BuildTargetedRegenerationPoliciesV1(*context, plan.price_state(), 3, target, 0x1234U, 17));
+  ASSERT_EQ(policies.size(), target.requested_columns);
+  const internal::TargetedRegenerationPolicyEntryProjectionV1 entry_projection =
+      internal::ProjectTargetedRegenerationPolicyEntriesV1(context->compiled_board,
+                                                           plan.price_state().prices(), target);
+  std::uint64_t actual_policy_entries = 0;
+  const geometry_compiler::DeterministicCosts costs = context->compiled_board.profile().costs;
+  for (std::size_t column = 0; column < policies.size(); ++column) {
+    const routing::CandidateGenerationPolicy& policy = policies[column].policy;
+    actual_policy_entries += policy.banned_resources.size() + policy.resource_penalties.size();
+    EXPECT_EQ(policy.deterministic_seed, 0x1234U);
+    EXPECT_EQ(policy.candidate_ordinal, 17U + column);
+    EXPECT_EQ(policy.orthogonal_step_surcharge, 2U * costs.orthogonal_step);
+    EXPECT_EQ(policy.diagonal_step_surcharge, 2U * costs.diagonal_step);
+    EXPECT_EQ(policy.bend_surcharge, 2U * costs.bend);
+    if (column == 0) {
+      EXPECT_TRUE(policy.banned_resources.empty());
+      ASSERT_EQ(policy.resource_penalties.size(), plan.price_state().prices().size());
+    } else {
+      ASSERT_EQ(policy.banned_resources.size(), 1U);
+      EXPECT_EQ(policy.banned_resources.front(), target.resource_actions[column - 1U].resource);
+    }
+    for (const NegotiatedResourcePrice& price : plan.price_state().prices()) {
+      const bool banned = std::ranges::binary_search(policy.banned_resources, price.resource);
+      EXPECT_EQ(routing::PolicyPenaltyForResource(policy, price.resource),
+                banned ? 0U : price.total_price);
+    }
+  }
+  EXPECT_EQ(entry_projection.aggregate_entry_count, actual_policy_entries);
+  EXPECT_TRUE(internal::TargetedRegenerationPolicyEntriesFitV1(
+      routing::kMaximumPolicyResourceEntries, routing::kMaximumPolicyResourceEntries));
+  EXPECT_FALSE(internal::TargetedRegenerationPolicyEntriesFitV1(
+      routing::kMaximumPolicyResourceEntries + 1U, routing::kMaximumPolicyResourceEntries));
+
+  const std::vector<routing::NormalizedCandidateGenerationPolicy> repeated = BuiltPolicies(
+      BuildTargetedRegenerationPoliciesV1(*context, plan.price_state(), 3, target, 0x1234U, 17));
+  EXPECT_EQ(repeated, policies);
+}
+
+TEST(TargetedRegenerationTest, ProjectsAuthenticGlobalPricesToEachTargetLegalView) {
+  board_ir::BoardData board_data = test_support::ValidM1TwoNetBoardData();
+  ASSERT_FALSE(board_data.obstacles.empty());
+  board_data.obstacles.front().bounds = {
+      .min = {.x = 40, .y = 15},
+      .max = {.x = 60, .y = 25},
+  };
+  const board_ir::BoardSnapshot board = test_support::Snapshot(std::move(board_data));
+  const geometry_compiler::CompilerProfile compiler_profile =
+      test_support::DefaultCompilerProfile({0});
+  board_ir::RoutingProfile first_profile = board.data().routing_profile;
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = board.data().nets[1].ref;
+  const std::array specs = {
+      MultiNetRoutingSpec{.routing_profile = first_profile, .start_layer = 0, .goal_layer = 0},
+      MultiNetRoutingSpec{.routing_profile = second_profile, .start_layer = 0, .goal_layer = 0},
+  };
+  const MultiNetWorkload workload = BuiltWorkload(BuildMultiNetWorkload(
+      kMultiNetWorkloadSchemaVersion, board, compiler_profile, specs, specs.size()));
+  const ResourceCapacityModel capacities = BuiltCapacities(BuildResourceCapacityModel(
+      kResourceCapacityModelSchemaVersion, board, workload.nets().front().compiled_board, 0, {}));
+
+  std::vector<CandidatePool> pools;
+  pools.reserve(workload.nets().size());
+  std::uint64_t query = 1;
+  for (const PreparedNetRoutingContext& context : workload.nets()) {
+    candidates::GeneratedRouteCandidate draft =
+        test_support::CandidateDraft(board, context.compiled_board, context.request, 1, query++);
+    candidates::RouteCandidate accepted = test_support::AcceptedCandidate(
+        candidates::CandidateAdmissionContext{
+            .board = board,
+            .compiled_board = context.compiled_board,
+            .request = context.request,
+        },
+        std::move(draft));
+    pools.push_back(CandidatePool{
+        .net = context.request.net,
+        .candidates = {std::make_shared<const candidates::RouteCandidate>(std::move(accepted))},
+    });
+  }
+
+  const NegotiatedPriceState initial = BuiltState(
+      BuildInitialNegotiatedPriceState(kNegotiatedPriceStateSchemaVersion, capacities, workload,
+                                       NegotiatedPriceConfig{
+                                           .present_step_per_overuse_unit = 3,
+                                           .history_step_per_overuse_unit = 5,
+                                           .maximum_price_per_resource = 100,
+                                           .maximum_iterations = 4,
+                                           .maximum_price_records = 1'000,
+                                       }));
+  OneWorldAllocationRequest request{
+      .associations = capacities.associations(),
+      .capacities = capacities,
+      .prices = BuiltSnapshot(BuildPriceSnapshotForState(capacities, initial)),
+      .intrinsic_cost_weight = 1,
+      .limits = OneWorldAllocatorLimits{},
+      .pools = std::move(pools),
+      .workload = &workload,
+  };
+  const OneWorldAllocation first_world = BuiltWorld(AllocateOneWorld(request));
+  ASSERT_EQ(first_world.selected_net_count, 2U);
+  const NegotiatedPriceState first_prices =
+      BuiltState(UpdateNegotiatedPrices(initial, request, first_world));
+
+  const PreparedNetRoutingContext& target_context = workload.nets().front();
+  const PreparedNetRoutingContext& other_context = workload.nets()[1];
+  ASSERT_EQ(target_context.request.start_layer, 0U);
+  const auto current_outside_target_view =
+      std::ranges::find_if(first_prices.prices(), [&](const NegotiatedResourcePrice& price) {
+        return price.present_price > 0 &&
+               !routing::ResourceExists(target_context.compiled_board, price.resource) &&
+               routing::ResourceExists(other_context.compiled_board, price.resource);
+      });
+  ASSERT_NE(current_outside_target_view, first_prices.prices().end());
+  TargetedRegenerationNet target;
+  target.net = target_context.request.net;
+  target.requested_columns = 1;
+  const auto expect_complete_projection = [&](const NegotiatedPriceState& global_prices) {
+    const std::vector<routing::NormalizedCandidateGenerationPolicy> policies = BuiltPolicies(
+        BuildTargetedRegenerationPoliciesV1(target_context, global_prices, 3, target, 0x1234U, 7));
+    ASSERT_EQ(policies.size(), 1U);
+    const routing::CandidateGenerationPolicy& policy = policies.front().policy;
+    const geometry_compiler::DeterministicCosts costs =
+        target_context.compiled_board.profile().costs;
+    EXPECT_EQ(policy.orthogonal_step_surcharge, 2U * costs.orthogonal_step);
+    EXPECT_EQ(policy.diagonal_step_surcharge, 2U * costs.diagonal_step);
+    EXPECT_EQ(policy.bend_surcharge, 2U * costs.bend);
+    std::size_t legal_price_count = 0;
+    for (const NegotiatedResourcePrice& price : global_prices.prices()) {
+      const bool target_legal =
+          routing::ResourceExists(target_context.compiled_board, price.resource);
+      legal_price_count += target_legal ? 1U : 0U;
+      EXPECT_EQ(routing::PolicyPenaltyForResource(policy, price.resource),
+                target_legal ? price.total_price : 0U);
+    }
+    EXPECT_EQ(policy.resource_penalties.size(), legal_price_count);
+  };
+  expect_complete_projection(first_prices);
+
+  request.prices = BuiltSnapshot(BuildPriceSnapshotForState(capacities, first_prices));
+  ASSERT_EQ(request.pools.size(), 2U);
+  request.pools[1].candidates.clear();
+  const OneWorldAllocation second_world = BuiltWorld(AllocateOneWorld(request));
+  ASSERT_EQ(second_world.selected_net_count, 1U);
+  const NegotiatedPriceState second_prices =
+      BuiltState(UpdateNegotiatedPrices(first_prices, request, second_world));
+  const auto history_only_outside_target_view =
+      std::ranges::find_if(second_prices.prices(), [&](const NegotiatedResourcePrice& price) {
+        return price.present_price == 0 && price.history_price > 0 &&
+               !routing::ResourceExists(target_context.compiled_board, price.resource) &&
+               routing::ResourceExists(other_context.compiled_board, price.resource);
+      });
+  ASSERT_NE(history_only_outside_target_view, second_prices.prices().end());
+  expect_complete_projection(second_prices);
+}
+
+TEST(TargetedRegenerationTest, RejectsPolicyOverflowInvalidResourceAndOrdinalOverflow) {
+  PlanningFixture fixture = BuildPlanningFixture(0);
+  const TargetedRegenerationPlan plan = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, PlanConfig()));
+  ASSERT_FALSE(plan.targets().empty());
+  TargetedRegenerationNet target = plan.targets().front();
+  const PreparedNetRoutingContext* context = fixture.workload.FindNet(target.net);
+  ASSERT_NE(context, nullptr);
+
+  const TargetedRegenerationPolicyResult weighted_overflow = BuildTargetedRegenerationPoliciesV1(
+      *context, plan.price_state(), std::numeric_limits<std::uint64_t>::max(), target, 1, 0);
+  ASSERT_TRUE(std::holds_alternative<TargetedRegenerationError>(weighted_overflow));
+  EXPECT_EQ(std::get<TargetedRegenerationError>(weighted_overflow).code,
+            TargetedRegenerationErrorCode::kArithmeticOverflow);
+
+  target.requested_columns = 2;
+  target.resource_actions.resize(1);
+  target.resource_actions.front().resource.lattice_x = std::numeric_limits<std::int64_t>::max();
+  const TargetedRegenerationPolicyResult invalid_resource =
+      BuildTargetedRegenerationPoliciesV1(*context, plan.price_state(), 1, target, 1, 0);
+  ASSERT_TRUE(std::holds_alternative<TargetedRegenerationError>(invalid_resource));
+  EXPECT_EQ(std::get<TargetedRegenerationError>(invalid_resource).code,
+            TargetedRegenerationErrorCode::kInvalidPricingInput);
+
+  target = plan.targets().front();
+  target.requested_columns = 2;
+  const TargetedRegenerationPolicyResult ordinal_overflow = BuildTargetedRegenerationPoliciesV1(
+      *context, plan.price_state(), 1, target, 1, std::numeric_limits<std::uint32_t>::max());
+  ASSERT_TRUE(std::holds_alternative<TargetedRegenerationError>(ordinal_overflow));
+  EXPECT_EQ(std::get<TargetedRegenerationError>(ordinal_overflow).code,
+            TargetedRegenerationErrorCode::kArithmeticOverflow);
+}
+
+TEST(TargetedRegenerationTest, CandidateHeadroomCapsRequestedColumnsExactly) {
+  PlanningFixture no_headroom = BuildPlanningFixture(0);
+  no_headroom.request.limits.maximum_candidates = no_headroom.request.pools.size();
+  const TargetedRegenerationPlan none = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, no_headroom.initial_price_state, no_headroom.request,
+      no_headroom.world, *no_headroom.store, PlanConfig()));
+  EXPECT_TRUE(none.targets().empty());
+  EXPECT_EQ(none.total_requested_columns(), 0U);
+
+  PlanningFixture one_slot = BuildPlanningFixture(0);
+  one_slot.request.limits.maximum_candidates = one_slot.request.pools.size() + 1U;
+  const TargetedRegenerationPlan one = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, one_slot.initial_price_state, one_slot.request,
+      one_slot.world, *one_slot.store, PlanConfig()));
+  ASSERT_EQ(one.targets().size(), 1U);
+  EXPECT_EQ(one.targets().front().requested_columns, 1U);
+  EXPECT_EQ(one.total_requested_columns(), 1U);
+}
+
+TEST(TargetedRegenerationTest, ZeroSelectionPlanRetainsExactStoreIdentityLease) {
+  PlanningFixture fixture = BuildPlanningFixture(1);
+  for (CandidatePool& pool : fixture.request.pools) {
+    pool.candidates.clear();
+  }
+  fixture.world = BuiltWorld(AllocateOneWorld(fixture.request));
+  ASSERT_EQ(fixture.world.selected_net_count, 0U);
+
+  const TargetedRegenerationPlan plan = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, PlanConfig()));
+  EXPECT_TRUE(plan.targets().empty());
+  EXPECT_EQ(plan.pinned_candidate_count(), 0U);
+  EXPECT_TRUE(plan.has_active_pin_lease());
+  EXPECT_TRUE(plan.pin_lease_belongs_to(*fixture.store));
+
+  candidates::CandidateStore other_store(fixture.store->config());
+  EXPECT_FALSE(plan.pin_lease_belongs_to(other_store));
+}
+
 TEST(TargetedRegenerationTest, EmptyWhenFeasibleAndDeterministicallyCapsHotsetBudgets) {
   PlanningFixture feasible = BuildPlanningFixture(1);
   ASSERT_EQ(feasible.world.total_overuse_units, 0U);
@@ -454,6 +712,22 @@ TEST(TargetedRegenerationTest, CompletePoolAlternativeSuppressesUnnecessaryRegen
     const OneWorldAllocation next_world = BuiltWorld(AllocateOneWorld(next_request));
     EXPECT_EQ(next_world.selections.front().candidate_id, alternative->id());
     EXPECT_EQ(next_world.total_overuse_units, 0U);
+
+    const NegotiatedPriceState history_only =
+        BuiltState(UpdateNegotiatedPrices(plan.price_state(), next_request, next_world));
+    const auto historical =
+        std::ranges::find_if(history_only.prices(), [](const NegotiatedResourcePrice& price) {
+          return price.present_price == 0 && price.history_price > 0;
+        });
+    ASSERT_NE(historical, history_only.prices().end());
+    TargetedRegenerationNet synthetic_target;
+    synthetic_target.net = context.request.net;
+    synthetic_target.requested_columns = 1;
+    const std::vector<routing::NormalizedCandidateGenerationPolicy> policies = BuiltPolicies(
+        BuildTargetedRegenerationPoliciesV1(context, history_only, 1, synthetic_target, 99, 7));
+    ASSERT_EQ(policies.size(), 1U);
+    EXPECT_EQ(routing::PolicyPenaltyForResource(policies.front().policy, historical->resource),
+              historical->history_price);
   }
   EXPECT_FALSE(store.IsPinned(intrinsic_best->id()));
   EXPECT_FALSE(store.IsPinned(alternative->id()));

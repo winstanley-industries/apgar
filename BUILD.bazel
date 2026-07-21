@@ -268,6 +268,29 @@ cc_library(
 )
 
 cc_library(
+    name = "targeted_regeneration_execution",
+    srcs = [
+        "src/allocator/targeted_regeneration_execution.cc",
+        "src/allocator/targeted_regeneration_execution_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/targeted_regeneration_execution.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":multi_net_workload",
+        ":negotiated_prices",
+        ":one_world_allocator",
+        ":targeted_regeneration",
+    ],
+)
+
+cc_library(
     name = "one_world_fault_test_support",
     testonly = True,
     srcs = ["tests/support/one_world_fault_test_support.cc"],
@@ -1125,6 +1148,36 @@ cc_test(
         ":one_world_allocator",
         ":planar_route",
         ":targeted_regeneration",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "targeted_regeneration_execution_test",
+    size = "small",
+    srcs = [
+        "tests/allocator/targeted_regeneration_execution_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":negotiated_prices",
+        ":one_world_allocator",
+        ":planar_route",
+        ":targeted_regeneration",
+        ":targeted_regeneration_execution",
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],

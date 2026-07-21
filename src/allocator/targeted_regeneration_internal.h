@@ -37,11 +37,29 @@ struct TargetedRegenerationResourceScanV1 {
   std::vector<RegenerationResourceAction> resource_actions;
 };
 
+struct TargetedRegenerationPolicyEntryProjectionV1 {
+  std::uint64_t target_legal_price_count = 0;
+  std::uint64_t aggregate_entry_count = 0;
+
+  friend bool operator==(const TargetedRegenerationPolicyEntryProjectionV1&,
+                         const TargetedRegenerationPolicyEntryProjectionV1&) = default;
+};
+
 using TargetedRegenerationResourceScanResultV1 =
     std::variant<TargetedRegenerationResourceScanV1, TargetedRegenerationError>;
 
 [[nodiscard]] bool TargetedRegenerationTargetRanksBeforeV1(
     const TargetedRegenerationNet& left, const TargetedRegenerationNet& right) noexcept;
+
+// Counts the exact aggregate policy entries without allocating policy storage.
+// Inputs are expected to have passed canonical price/action validation.
+[[nodiscard]] TargetedRegenerationPolicyEntryProjectionV1
+ProjectTargetedRegenerationPolicyEntriesV1(const geometry_compiler::CompiledBoard& compiled_board,
+                                           std::span<const NegotiatedResourcePrice> prices,
+                                           const TargetedRegenerationNet& target) noexcept;
+
+[[nodiscard]] bool TargetedRegenerationPolicyEntriesFitV1(std::uint64_t projected_entries,
+                                                          std::uint64_t maximum_entries) noexcept;
 
 // Production resource scan shared with arithmetic/ranking regressions. Inputs
 // are expected to have passed the complete negotiated-price/world validation.

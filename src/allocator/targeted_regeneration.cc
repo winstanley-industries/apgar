@@ -156,7 +156,8 @@ struct TargetBetter {
 }
 
 template <typename Operation>
-[[nodiscard]] TargetedRegenerationPlanResult WithFailureEnvelope(Operation&& operation) {
+[[nodiscard]] auto WithFailureEnvelope(Operation&& operation)
+    -> decltype(std::forward<Operation>(operation)()) {
   try {
     return std::forward<Operation>(operation)();
   } catch (const std::bad_alloc&) {
@@ -168,6 +169,31 @@ template <typename Operation>
                  "allocator.targeted_regeneration.host_container_exhausted.v1",
                  "Host container limits were exhausted within regeneration bounds");
   }
+}
+
+[[nodiscard]] TargetedRegenerationError TranslatePolicyFailure(
+    const routing::CandidatePolicyError& failure) noexcept {
+  switch (failure.code) {
+    case routing::CandidatePolicyErrorCode::kCostOverflow:
+      return Error(TargetedRegenerationErrorCode::kArithmeticOverflow,
+                   "allocator.targeted_regeneration.policy_cost.v1",
+                   "A targeted-regeneration policy cost exceeds finite uint64 routing cost");
+    case routing::CandidatePolicyErrorCode::kTooManyResources:
+      return Error(TargetedRegenerationErrorCode::kWorkBoundExceeded,
+                   "allocator.targeted_regeneration.policy_resources.v1",
+                   "Targeted-regeneration policy resources exceed the schema-v1 work bound");
+    case routing::CandidatePolicyErrorCode::kUnsupportedSchema:
+    case routing::CandidatePolicyErrorCode::kUnsupportedObjective:
+    case routing::CandidatePolicyErrorCode::kInvalidResource:
+    case routing::CandidatePolicyErrorCode::kConflictingResourceAction:
+    case routing::CandidatePolicyErrorCode::kInvalidAlternativeSchedule:
+      return Error(TargetedRegenerationErrorCode::kInvalidPricingInput,
+                   "allocator.targeted_regeneration.policy_input.v1",
+                   "Targeted-regeneration policy input is invalid for the prepared net");
+  }
+  return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+               "allocator.targeted_regeneration.policy_error.v1",
+               "Candidate-policy validation returned an unknown error");
 }
 
 }  // namespace
@@ -233,6 +259,188 @@ std::uint64_t internal::ComputeTargetedRegenerationPlanChecksumV1(
 bool internal::TargetedRegenerationTargetRanksBeforeV1(
     const TargetedRegenerationNet& left, const TargetedRegenerationNet& right) noexcept {
   return TargetRanksBefore(left, right);
+}
+
+internal::TargetedRegenerationPolicyEntryProjectionV1
+internal::ProjectTargetedRegenerationPolicyEntriesV1(
+    const geometry_compiler::CompiledBoard& compiled_board,
+    std::span<const NegotiatedResourcePrice> prices,
+    const TargetedRegenerationNet& target) noexcept {
+  TargetedRegenerationPolicyEntryProjectionV1 projection;
+  for (const NegotiatedResourcePrice& price : prices) {
+    if (routing::ResourceExists(compiled_board, price.resource)) {
+      ++projection.target_legal_price_count;
+    }
+  }
+  projection.aggregate_entry_count = projection.target_legal_price_count * target.requested_columns;
+  for (std::uint64_t column = 1; column < target.requested_columns; ++column) {
+    const routing::EdgeResourceKey& action =
+        target.resource_actions[static_cast<std::size_t>(column - 1U)].resource;
+    const auto price =
+        std::ranges::lower_bound(prices, action, {}, &NegotiatedResourcePrice::resource);
+    if (price == prices.end() || price->resource != action) {
+      ++projection.aggregate_entry_count;
+    }
+  }
+  return projection;
+}
+
+bool internal::TargetedRegenerationPolicyEntriesFitV1(std::uint64_t projected_entries,
+                                                      std::uint64_t maximum_entries) noexcept {
+  return projected_entries <= maximum_entries;
+}
+
+TargetedRegenerationPolicyResult BuildTargetedRegenerationPoliciesV1(
+    const PreparedNetRoutingContext& context, const NegotiatedPriceState& next_price_state,
+    std::uint64_t intrinsic_cost_weight, const TargetedRegenerationNet& target,
+    std::uint64_t deterministic_seed, std::uint32_t first_candidate_ordinal) {
+  if (next_price_state.schema_version() != kNegotiatedPriceStateSchemaVersion ||
+      next_price_state.associations().board_content_hash !=
+          context.compiled_board.source_board_content_hash() ||
+      next_price_state.associations().compiler_profile_fingerprint !=
+          context.compiled_board.compiler_profile_fingerprint() ||
+      next_price_state.associations().geometry_compiler_version !=
+          context.compiled_board.compiler_version() ||
+      target.net != context.request.net || target.net != context.routing_profile.net ||
+      context.routing_profile_fingerprint !=
+          routing::FingerprintRoutingProfile(context.routing_profile) ||
+      context.routing_profile_fingerprint !=
+          routing::FingerprintRoutingProfile(context.compiled_board.routing_profile())) {
+    return Error(TargetedRegenerationErrorCode::kInvalidPricingInput,
+                 "allocator.targeted_regeneration.policy_association.v1",
+                 "Policy synthesis input does not match the prepared net and next price state");
+  }
+  if (intrinsic_cost_weight == 0 || target.requested_columns == 0 ||
+      target.requested_columns > kMaximumAllocatorCandidatesV1 ||
+      target.resource_actions.size() > kMaximumAllocatorResourceRecordsV1 ||
+      target.requested_columns > static_cast<UWide>(target.resource_actions.size()) + 1U) {
+    return Error(
+        TargetedRegenerationErrorCode::kInvalidConfiguration,
+        "allocator.targeted_regeneration.policy_configuration.v1",
+        "Policy synthesis requires positive bounded columns and one action per forced column");
+  }
+  if (static_cast<UWide>(first_candidate_ordinal) + target.requested_columns - 1U >
+      std::numeric_limits<std::uint32_t>::max()) {
+    return Error(TargetedRegenerationErrorCode::kArithmeticOverflow,
+                 "allocator.targeted_regeneration.policy_ordinal.v1",
+                 "Targeted-regeneration candidate ordinals overflow uint32");
+  }
+
+  return WithFailureEnvelope([&]() -> TargetedRegenerationPolicyResult {
+    for (std::size_t index = 0; index < target.resource_actions.size(); ++index) {
+      const RegenerationResourceAction& action = target.resource_actions[index];
+      if (!routing::ResourceExists(context.compiled_board, action.resource)) {
+        return Error(TargetedRegenerationErrorCode::kInvalidPricingInput,
+                     "allocator.targeted_regeneration.policy_action_resource.v1",
+                     "A targeted-regeneration action resource is absent from the prepared net");
+      }
+      if (index != 0) {
+        const RegenerationResourceAction& previous = target.resource_actions[index - 1U];
+        if (previous.resource == action.resource || ActionRanksBefore(action, previous)) {
+          return Error(TargetedRegenerationErrorCode::kInvalidPricingInput,
+                       "allocator.targeted_regeneration.policy_action_order.v1",
+                       "Targeted-regeneration actions are duplicate or outside stable order");
+        }
+      }
+    }
+
+    const UWide weight_increment = intrinsic_cost_weight - 1U;
+    const geometry_compiler::DeterministicCosts costs = context.compiled_board.profile().costs;
+    const UWide orthogonal_surcharge = weight_increment * costs.orthogonal_step;
+    const UWide diagonal_surcharge = weight_increment * costs.diagonal_step;
+    const UWide bend_surcharge = weight_increment * costs.bend;
+    if (orthogonal_surcharge > std::numeric_limits<std::uint64_t>::max() ||
+        diagonal_surcharge > std::numeric_limits<std::uint64_t>::max() ||
+        bend_surcharge > std::numeric_limits<std::uint64_t>::max()) {
+      return Error(TargetedRegenerationErrorCode::kArithmeticOverflow,
+                   "allocator.targeted_regeneration.policy_weight.v1",
+                   "Intrinsic-cost weighting overflows candidate-policy surcharges");
+    }
+
+    std::optional<routing::EdgeResourceKey> previous_price_resource;
+    for (const NegotiatedResourcePrice& price : next_price_state.prices()) {
+      const UWide raw_total = static_cast<UWide>(price.present_price) + price.history_price;
+      const std::uint64_t expected_total = static_cast<std::uint64_t>(
+          std::min<UWide>(raw_total, next_price_state.config().maximum_price_per_resource));
+      if (price.total_price == 0 ||
+          price.present_price > next_price_state.config().maximum_price_per_resource ||
+          price.history_price > next_price_state.config().maximum_price_per_resource ||
+          price.total_price != expected_total ||
+          price.total_clamped !=
+              (raw_total > next_price_state.config().maximum_price_per_resource) ||
+          (previous_price_resource.has_value() &&
+           !(previous_price_resource.value() < price.resource))) {
+        return Error(
+            TargetedRegenerationErrorCode::kInvalidPricingInput,
+            "allocator.targeted_regeneration.policy_price_resource.v1",
+            "Next negotiated prices are noncanonical, duplicate, or internally inconsistent");
+      }
+      previous_price_resource = price.resource;
+    }
+
+    const internal::TargetedRegenerationPolicyEntryProjectionV1 entry_projection =
+        internal::ProjectTargetedRegenerationPolicyEntriesV1(context.compiled_board,
+                                                             next_price_state.prices(), target);
+    if (!internal::TargetedRegenerationPolicyEntriesFitV1(entry_projection.aggregate_entry_count,
+                                                          routing::kMaximumPolicyResourceEntries)) {
+      return Error(TargetedRegenerationErrorCode::kWorkBoundExceeded,
+                   "allocator.targeted_regeneration.policy_resources.v1",
+                   "Targeted-regeneration policy batch exceeds its aggregate resource-entry bound");
+    }
+
+    routing::CandidateGenerationPolicy base_policy;
+    base_policy.objective = routing::CandidateObjective::kResourceDiverse;
+    base_policy.deterministic_seed = deterministic_seed;
+    base_policy.candidate_ordinal = first_candidate_ordinal;
+    base_policy.orthogonal_step_surcharge = static_cast<std::uint64_t>(orthogonal_surcharge);
+    base_policy.diagonal_step_surcharge = static_cast<std::uint64_t>(diagonal_surcharge);
+    base_policy.bend_surcharge = static_cast<std::uint64_t>(bend_surcharge);
+    base_policy.resource_penalties.reserve(
+        static_cast<std::size_t>(entry_projection.target_legal_price_count));
+    for (const NegotiatedResourcePrice& price : next_price_state.prices()) {
+      if (!routing::ResourceExists(context.compiled_board, price.resource)) {
+        // Prices are global across compatible net/rule views. An edge absent
+        // from this target's compiled view contributes zero to every route for
+        // that target and therefore is not part of its complete legal
+        // projection.
+        continue;
+      }
+      base_policy.resource_penalties.push_back(routing::ResourcePenalty{
+          .resource = price.resource,
+          .additional_cost = price.total_price,
+      });
+    }
+
+    std::vector<routing::NormalizedCandidateGenerationPolicy> policies;
+    policies.reserve(static_cast<std::size_t>(target.requested_columns));
+    for (std::uint64_t column = 0; column < target.requested_columns; ++column) {
+      routing::CandidateGenerationPolicy policy = base_policy;
+      policy.candidate_ordinal =
+          static_cast<std::uint32_t>(static_cast<std::uint64_t>(first_candidate_ordinal) + column);
+      if (column != 0) {
+        const routing::EdgeResourceKey& banned =
+            target.resource_actions[static_cast<std::size_t>(column - 1U)].resource;
+        const auto penalty = std::ranges::lower_bound(policy.resource_penalties, banned, {},
+                                                      &routing::ResourcePenalty::resource);
+        if (penalty != policy.resource_penalties.end() && penalty->resource == banned) {
+          // A ban makes the priced edge absent. Removing its otherwise-complete
+          // price record satisfies the policy contract forbidding one resource
+          // from being both banned and penalized.
+          policy.resource_penalties.erase(penalty);
+        }
+        policy.banned_resources.push_back(banned);
+      }
+      routing::CandidatePolicyResult normalized =
+          routing::NormalizeCandidateGenerationPolicy(context.compiled_board, policy);
+      if (const auto* failure = std::get_if<routing::CandidatePolicyError>(&normalized);
+          failure != nullptr) {
+        return TranslatePolicyFailure(*failure);
+      }
+      policies.push_back(
+          std::get<routing::NormalizedCandidateGenerationPolicy>(std::move(normalized)));
+    }
+    return policies;
+  });
 }
 
 internal::TargetedRegenerationResourceScanResultV1 internal::ScanTargetedRegenerationResourcesV1(
@@ -353,6 +561,13 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
                    "allocator.targeted_regeneration.source_selection_projection.v1",
                    "The source world selection projection differs from the complete request");
     }
+    if (source_selection.source_candidate_count > source_request.limits.maximum_candidates) {
+      return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                   "allocator.targeted_regeneration.candidate_headroom.v1",
+                   "Validated source candidates exceed the source request candidate bound");
+    }
+    const std::uint64_t candidate_headroom =
+        source_request.limits.maximum_candidates - source_selection.source_candidate_count;
 
     NegotiatedPriceStateResult update =
         UpdateNegotiatedPrices(previous_price_state, source_request, world);
@@ -403,7 +618,7 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
 
     const std::uint64_t maximum_retained_targets =
         std::min({config.maximum_target_nets, config.maximum_total_columns,
-                  config.maximum_total_resource_actions});
+                  config.maximum_total_resource_actions, candidate_headroom});
     std::priority_queue<TargetedRegenerationNet, std::vector<TargetedRegenerationNet>, TargetBetter>
         best_targets;
     for (std::size_t index = 0; index < next_selection.pools.size(); ++index) {
@@ -443,7 +658,7 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
       };
       if (best_targets.size() < maximum_retained_targets) {
         best_targets.push(std::move(target));
-      } else if (TargetRanksBefore(target, best_targets.top())) {
+      } else if (maximum_retained_targets != 0 && TargetRanksBefore(target, best_targets.top())) {
         best_targets.pop();
         best_targets.push(std::move(target));
       }
@@ -463,7 +678,8 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
     std::size_t retained_target_count = 0;
     for (TargetedRegenerationNet& target : targets) {
       if (total_columns >= config.maximum_total_columns ||
-          total_actions >= config.maximum_total_resource_actions) {
+          total_actions >= config.maximum_total_resource_actions ||
+          total_columns >= candidate_headroom) {
         break;
       }
       const std::uint64_t available_actions = static_cast<std::uint64_t>(
@@ -513,10 +729,14 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
         break;
       }
       const std::uint64_t desired_columns =
-          std::min(config.maximum_columns_per_net, target.conflict_resource_count);
+          std::min({config.maximum_columns_per_net, target.conflict_resource_count,
+                    static_cast<std::uint64_t>(target.resource_actions.size()) + 1U});
       const std::uint64_t available_columns = static_cast<std::uint64_t>(
           static_cast<UWide>(config.maximum_total_columns) - total_columns);
-      target.requested_columns = std::min(desired_columns, available_columns);
+      const std::uint64_t available_candidate_headroom =
+          static_cast<std::uint64_t>(static_cast<UWide>(candidate_headroom) - total_columns);
+      target.requested_columns =
+          std::min({desired_columns, available_columns, available_candidate_headroom});
       if (target.requested_columns == 0) {
         break;
       }
@@ -565,19 +785,18 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
         std::ranges::unique(pin_requests, {}, &candidates::CandidatePinRequest::candidate_id);
     pin_requests.erase(unique_end.begin(), unique_end.end());
     std::optional<candidates::CandidateStorePinLease> pin_lease;
-    if (!pin_requests.empty()) {
-      candidates::CandidateStorePinLeaseResult lease_result =
-          candidate_store.AcquirePinLease(pin_requests);
-      if (const auto* failure = std::get_if<candidates::CandidateStoreError>(&lease_result);
-          failure != nullptr) {
-        return Error(failure->code == candidates::CandidateStoreErrorCode::kResourceExhausted
-                         ? TargetedRegenerationErrorCode::kResourceExhausted
-                         : TargetedRegenerationErrorCode::kCandidateStoreLease,
-                     "allocator.targeted_regeneration.candidate_store_lease.v1",
-                     "CandidateStore could not atomically retain the selected candidate group");
-      }
-      pin_lease.emplace(std::get<candidates::CandidateStorePinLease>(std::move(lease_result)));
+    candidates::CandidateStorePinLeaseResult lease_result =
+        pin_requests.empty() ? candidate_store.AcquireEmptyPinLease()
+                             : candidate_store.AcquirePinLease(pin_requests);
+    if (const auto* failure = std::get_if<candidates::CandidateStoreError>(&lease_result);
+        failure != nullptr) {
+      return Error(failure->code == candidates::CandidateStoreErrorCode::kResourceExhausted
+                       ? TargetedRegenerationErrorCode::kResourceExhausted
+                       : TargetedRegenerationErrorCode::kCandidateStoreLease,
+                   "allocator.targeted_regeneration.candidate_store_lease.v1",
+                   "CandidateStore could not issue the plan's exact identity/retention lease");
     }
+    pin_lease.emplace(std::get<candidates::CandidateStorePinLease>(std::move(lease_result)));
 
     const internal::TargetedRegenerationChecksumHeaderV1 checksum_header{
         .schema_version = schema_version,

@@ -151,6 +151,31 @@ now.
   index. Unrelated nets are neither copied nor compared. A pinned-budget
   failure rolls the complete candidate publication back, preserving the prior
   linearizable snapshot.
+- Phase 4 deterministic invocations may condition one heterogeneous
+  multi-net publication on a complete expected source-pool roster. One common
+  Board Snapshot accompanies per-item authentic Compiled Board references,
+  route requests, and generated candidates; pre-generation Candidate
+  Rejections may occupy peer items. Pool/item order is nonsemantic. Positive
+  expected-pool and expected-candidate caps bound the compare independently of
+  generated-column caps, and every invocation item is precharged to the
+  rejection-item cap before exact work. Each draft crosses ordinary exact
+  admission against its own context, then all outcomes enter the existing
+  single CAN-004 publication boundary.
+- Every expected pool carries its exact per-net Candidate Associations,
+  including an explicitly empty pool. Items must agree with that binding.
+  Aggregate shape, logical-byte, or deterministic-work preflight failure
+  returns typed `kInvocationAdmissionPreflightFailed` using permutation-stable
+  aggregate diagnostics and mutates neither candidate/rejection state,
+  association bindings, pins, nor telemetry.
+- Immediately before that publication, the store mutex protects a canonical
+  comparison of every expected source pool with current retained state.
+  Complete typed immutable candidate equality is authoritative; counts, IDs,
+  checksums, and pointers cannot substitute for it. Missing, extra, replaced,
+  same-ID semantically different candidates, or a persistent per-net
+  association mismatch return typed `kStoreDrift` and mutate neither pools,
+  global IDs, rejection history, nor telemetry. Association comparison remains
+  authoritative when a bound pool retains zero candidates. An empty item
+  vector performs only this exact validation and is side-effect-free.
 - Duplicate groups are decided once over the complete touched pool. Pins remain
   the only override; otherwise only the total stable-rank winner is eligible.
   Representative selection, including same-ID selection, precedes individual
@@ -201,8 +226,13 @@ now.
   Scoped or explicit release is idempotent and removes only that acquisition,
   so one plan cannot prematurely unpin another plan's shared selection. A lease
   reports inactive after store destruction and its late release is harmless. A
-  pinned candidate is never pruned; Phase 3 does not define worlds, selection,
-  congestion, or prices.
+  live lease can additionally prove that it belongs to one exact store control
+  block; another live store, a released lease, and a destroyed owning store all
+  fail that check. `AcquireEmptyPinLease()` explicitly creates the same active
+  store-identity capability while pinning zero candidates for zero-selection
+  plans; ordinary empty group acquisition remains invalid. A pinned candidate
+  is never pruned; Phase 3 does not define worlds, selection, congestion, or
+  prices.
 - Concurrent generation publishes through one explicit batch, which is sorted
   and serialized using stable total keys. Batch results do not depend on worker
   completion order, pointer identity, or unordered-container iteration.
