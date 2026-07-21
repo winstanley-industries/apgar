@@ -1186,6 +1186,11 @@ acceleration.
   selected-candidate quality, unresolved overuse, convergence or stall reason,
   columns requested and admitted, batch fill, prepared-view cache behavior,
   stage timings, CPU/GPU utilization context, and peak host/device memory.
+  Successful in-process per-net yield, pool diversity, and selected-candidate
+  fields are versioned by
+  `schemas/benchmark/phase4_per_net_arm_telemetry_v1.md`; the diagnostic seam
+  remains separate from Raw Evidence v1 until a reviewed report serializer and
+  independent validator bind it.
   Every optimization claim MUST bind the versioned corpus, configuration,
   hardware, toolchains, exact clean commit, and comparison baseline.
 

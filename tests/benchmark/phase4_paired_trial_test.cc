@@ -1,9 +1,11 @@
 #include "apgar/benchmark/phase4_paired_trial.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -16,6 +18,8 @@
 
 namespace apgar::benchmark {
 namespace {
+
+static_assert(!std::is_convertible_v<Phase4TrialArmDiagnosticExecutionV1, Phase4TrialArmExecution>);
 
 template <typename Value, typename Error>
 [[nodiscard]] Value ValueOf(std::variant<Value, Error> result) {
@@ -145,6 +149,309 @@ template <typename Value, typename Error>
     std::uint32_t workers = 1) {
   return ValueOf<std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer>>(
       allocator::CreatePersistentCpuCandidatePoolPreparer({.worker_count = workers}));
+}
+
+[[nodiscard]] Phase4PerNetColumnOutcomesV1 BaselineColumnsFor(
+    const allocator::SequentialNegotiatedBaselineResult& result, board_ir::EntityRef net) {
+  Phase4PerNetColumnOutcomesV1 expected;
+  for (const allocator::SequentialNegotiatedColumnRecord& column : result.columns()) {
+    if (!(column.net == net)) {
+      continue;
+    }
+    ++expected.requested_columns;
+    ++expected.executed_route_queries;
+    switch (column.outcome) {
+      case allocator::SequentialNegotiatedColumnOutcome::kAdmitted:
+        ++expected.admitted_candidates;
+        break;
+      case allocator::SequentialNegotiatedColumnOutcome::kRouteDisconnected:
+        ++expected.disconnected_columns;
+        break;
+      case allocator::SequentialNegotiatedColumnOutcome::kRouteUnsupported:
+        ++expected.unsupported_columns;
+        break;
+      case allocator::SequentialNegotiatedColumnOutcome::kBuildRejected:
+      case allocator::SequentialNegotiatedColumnOutcome::kAdmissionRejected:
+        if (column.rejection.has_value() &&
+            column.rejection->code == candidates::CandidateRejectionCode::kExactValidation) {
+          ++expected.exact_validation_rejections;
+        } else {
+          ++expected.other_rejections;
+        }
+        break;
+    }
+  }
+  return expected;
+}
+
+void AddPreparationColumnIndependently(const allocator::CpuCandidatePoolColumnRecord& column,
+                                       Phase4PerNetColumnOutcomesV1* expected) {
+  ++expected->requested_columns;
+  const bool skipped =
+      column.outcome == allocator::CpuCandidatePoolColumnOutcome::kSkippedAfterDisconnectedProof ||
+      column.outcome == allocator::CpuCandidatePoolColumnOutcome::kSkippedAfterUnsupportedProof;
+  if (!skipped) {
+    ++expected->executed_route_queries;
+  }
+  switch (column.outcome) {
+    case allocator::CpuCandidatePoolColumnOutcome::kAdmitted:
+      ++expected->admitted_candidates;
+      break;
+    case allocator::CpuCandidatePoolColumnOutcome::kDuplicate:
+      ++expected->duplicate_candidates;
+      break;
+    case allocator::CpuCandidatePoolColumnOutcome::kRouteDisconnected:
+      ++expected->disconnected_columns;
+      break;
+    case allocator::CpuCandidatePoolColumnOutcome::kRouteUnsupported:
+      ++expected->unsupported_columns;
+      break;
+    case allocator::CpuCandidatePoolColumnOutcome::kSkippedAfterDisconnectedProof:
+    case allocator::CpuCandidatePoolColumnOutcome::kSkippedAfterUnsupportedProof:
+      ++expected->skipped_columns;
+      break;
+    case allocator::CpuCandidatePoolColumnOutcome::kBuildRejected:
+    case allocator::CpuCandidatePoolColumnOutcome::kAdmissionRejected:
+      if (column.rejection_code == candidates::CandidateRejectionCode::kExactValidation) {
+        ++expected->exact_validation_rejections;
+      } else {
+        ++expected->other_rejections;
+      }
+      break;
+  }
+}
+
+void AddRegenerationColumnIndependently(const allocator::TargetedRegenerationColumnRecord& column,
+                                        Phase4PerNetColumnOutcomesV1* expected) {
+  ++expected->requested_columns;
+  ++expected->executed_route_queries;
+  switch (column.outcome) {
+    case allocator::TargetedRegenerationColumnOutcome::kAdmitted:
+      ++expected->admitted_candidates;
+      break;
+    case allocator::TargetedRegenerationColumnOutcome::kDuplicate:
+      ++expected->duplicate_candidates;
+      break;
+    case allocator::TargetedRegenerationColumnOutcome::kRouteDisconnected:
+      ++expected->disconnected_columns;
+      break;
+    case allocator::TargetedRegenerationColumnOutcome::kRouteUnsupported:
+      ++expected->unsupported_columns;
+      break;
+    case allocator::TargetedRegenerationColumnOutcome::kBuildRejected:
+    case allocator::TargetedRegenerationColumnOutcome::kAdmissionRejected:
+      if (column.rejection_code == candidates::CandidateRejectionCode::kExactValidation) {
+        ++expected->exact_validation_rejections;
+      } else {
+        ++expected->other_rejections;
+      }
+      break;
+    case allocator::TargetedRegenerationColumnOutcome::kQueryInFlight:
+    case allocator::TargetedRegenerationColumnOutcome::kBuildInFlight:
+    case allocator::TargetedRegenerationColumnOutcome::kGeneratedPendingPublication:
+    case allocator::TargetedRegenerationColumnOutcome::kRejectionEvidenceInFlight:
+    case allocator::TargetedRegenerationColumnOutcome::
+        kPublicationCommittedOutcomeCorrelationPending:
+      ADD_FAILURE() << "successful source session retained an in-flight regeneration column";
+      break;
+  }
+}
+
+[[nodiscard]] Phase4PerNetColumnOutcomesV1 CandidateColumnsFor(
+    const allocator::CpuCandidateAllocationSession& session, board_ir::EntityRef net) {
+  Phase4PerNetColumnOutcomesV1 expected;
+  for (const allocator::CpuCandidatePoolColumnRecord& column : session.preparation().columns()) {
+    if (column.net == net) {
+      AddPreparationColumnIndependently(column, &expected);
+    }
+  }
+  for (const allocator::CpuCandidateAllocationEpochRecord& epoch : session.epochs()) {
+    for (const allocator::TargetedRegenerationColumnRecord& column : epoch.columns) {
+      if (column.net == net) {
+        AddRegenerationColumnIndependently(column, &expected);
+      }
+    }
+  }
+  return expected;
+}
+
+[[nodiscard]] const allocator::OneWorldAllocation& ChosenWorld(
+    const allocator::CpuCandidateAllocationSession& session) {
+  if (const std::optional<std::uint64_t> preferred =
+          session.final_multi_world().preferred_world_identity();
+      preferred.has_value()) {
+    const auto& retained = session.final_multi_world().retained_worlds();
+    const auto selected =
+        std::find_if(retained.begin(), retained.end(),
+                     [preferred](const auto& world) { return world.world_identity == *preferred; });
+    EXPECT_NE(selected, retained.end());
+    if (selected != retained.end()) {
+      return selected->world;
+    }
+  }
+  return session.final_single_world();
+}
+
+void ExpectReportMatchesPoolAndSelection(const Phase4PerNetReportV1& report,
+                                         const allocator::CandidatePool& pool,
+                                         const allocator::NetSelection& selection) {
+  ASSERT_EQ(report.net, pool.net);
+  ASSERT_EQ(report.net, selection.net);
+  ASSERT_EQ(report.final_pool_size, pool.candidates.size());
+  std::vector<candidates::CandidateSignature> geometry_signatures;
+  std::vector<candidates::CandidateSignature> resource_signatures;
+  std::optional<std::uint64_t> best_cost;
+  for (const candidates::StoredCandidate& candidate : pool.candidates) {
+    ASSERT_NE(candidate, nullptr);
+    geometry_signatures.push_back(candidate->data().geometry_signature);
+    resource_signatures.push_back(candidate->data().resource_signature);
+    const std::uint64_t cost = candidate->data().metrics.intrinsic_base_cost;
+    if (!best_cost.has_value() || cost < *best_cost) {
+      best_cost = cost;
+    }
+  }
+  std::sort(geometry_signatures.begin(), geometry_signatures.end());
+  geometry_signatures.erase(std::unique(geometry_signatures.begin(), geometry_signatures.end()),
+                            geometry_signatures.end());
+  std::sort(resource_signatures.begin(), resource_signatures.end());
+  resource_signatures.erase(std::unique(resource_signatures.begin(), resource_signatures.end()),
+                            resource_signatures.end());
+  EXPECT_EQ(report.unique_geometry_signature_count, geometry_signatures.size());
+  EXPECT_EQ(report.unique_resource_signature_count, resource_signatures.size());
+  EXPECT_EQ(report.pool_best_intrinsic_cost, best_cost);
+
+  std::uint64_t pairs = 0;
+  unsigned __int128 resource_sum = 0;
+  unsigned __int128 geometric_sum = 0;
+  std::uint64_t resource_minimum = kPhase4OverlapPartsPerMillion;
+  std::uint64_t geometric_minimum = kPhase4OverlapPartsPerMillion;
+  for (std::size_t left = 0; left < pool.candidates.size(); ++left) {
+    for (std::size_t right = left + 1; right < pool.candidates.size(); ++right) {
+      const std::optional<std::uint64_t> resource =
+          candidates::ResourceJaccardOverlapPpmV1(*pool.candidates[left], *pool.candidates[right]);
+      const std::optional<std::uint64_t> geometric =
+          candidates::GeometricOverlapRatioPpmV1(*pool.candidates[left], *pool.candidates[right]);
+      ASSERT_TRUE(resource.has_value());
+      ASSERT_TRUE(geometric.has_value());
+      ++pairs;
+      resource_sum += *resource;
+      geometric_sum += *geometric;
+      resource_minimum = std::min(resource_minimum, *resource);
+      geometric_minimum = std::min(geometric_minimum, *geometric);
+    }
+  }
+  EXPECT_EQ(report.candidate_pair_count, pairs);
+  if (pairs == 0) {
+    EXPECT_EQ(report.mean_resource_overlap_ppm, 0U);
+    EXPECT_EQ(report.minimum_resource_overlap_ppm, 0U);
+    EXPECT_EQ(report.mean_geometric_overlap_ppm, 0U);
+    EXPECT_EQ(report.minimum_geometric_overlap_ppm, 0U);
+  } else {
+    EXPECT_EQ(report.mean_resource_overlap_ppm,
+              static_cast<std::uint64_t>((resource_sum + pairs / 2) / pairs));
+    EXPECT_EQ(report.minimum_resource_overlap_ppm, resource_minimum);
+    EXPECT_EQ(report.mean_geometric_overlap_ppm,
+              static_cast<std::uint64_t>((geometric_sum + pairs / 2) / pairs));
+    EXPECT_EQ(report.minimum_geometric_overlap_ppm, geometric_minimum);
+  }
+
+  EXPECT_EQ(report.selected_status, selection.status);
+  EXPECT_EQ(report.selected_candidate_id, selection.candidate_id);
+  EXPECT_EQ(report.selected_candidate_payload_checksum, selection.candidate_payload_checksum);
+  if (selection.status == allocator::NetSelectionStatus::kSelected) {
+    ASSERT_NE(selection.candidate, nullptr);
+    EXPECT_EQ(report.selected_candidate_metrics, selection.candidate->data().metrics);
+  } else {
+    EXPECT_FALSE(report.selected_candidate_metrics.has_value());
+  }
+}
+
+[[nodiscard]] allocator::CpuCandidateAllocationSession ExecuteCandidateSessionForSources(
+    const Phase4PairedTrialSpec& spec) {
+  Phase4RepresentativeCase corpus = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV1(spec.case_id, {}, spec.corpus_limits));
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  allocator::PreparedCpuCandidatePools prepared =
+      ValueOf<allocator::PreparedCpuCandidatePools>(allocator::PrepareInitialCpuCandidatePools(
+          *preparer, corpus.board, corpus.workload, spec.preparation_config));
+  return ValueOf<allocator::CpuCandidateAllocationSession>(
+      allocator::ExecuteCpuCandidateAllocationSession(
+          allocator::kCpuCandidateAllocationSessionSchemaVersion, std::move(corpus.board),
+          std::move(corpus.workload), std::move(corpus.capacities), std::move(prepared),
+          spec.candidate_session_config));
+}
+
+[[nodiscard]] Phase4ArmReportTelemetryV1 GoldenTelemetry() {
+  Phase4ArmReportTelemetryV1 telemetry;
+  // This is a pure byte-order fixture, not a structurally valid report. Every
+  // encoded integer is deliberately distinct so field swaps cannot hide.
+  telemetry.schema_version = 401;
+  telemetry.associated_semantic_checksum = 0x1020'3040'5060'7080ULL;
+  Phase4PerNetReportV1 selected;
+  selected.schema_version = 402;
+  selected.net = {.id = 11, .generation = 2};
+  selected.columns = Phase4PerNetColumnOutcomesV1{
+      .requested_columns = 101,
+      .executed_route_queries = 102,
+      .admitted_candidates = 103,
+      .duplicate_candidates = 104,
+      .disconnected_columns = 105,
+      .unsupported_columns = 106,
+      .skipped_columns = 107,
+      .exact_validation_rejections = 108,
+      .other_rejections = 109,
+  };
+  selected.final_pool_size = 110;
+  selected.unique_geometry_signature_count = 111;
+  selected.unique_resource_signature_count = 112;
+  selected.candidate_pair_count = 113;
+  selected.mean_resource_overlap_ppm = 114;
+  selected.minimum_resource_overlap_ppm = 115;
+  selected.mean_geometric_overlap_ppm = 116;
+  selected.minimum_geometric_overlap_ppm = 117;
+  selected.selected_status = allocator::NetSelectionStatus::kSelected;
+  selected.selected_candidate_id = candidates::CandidateId{
+      .high = 0x1111'2222'3333'4444ULL,
+      .low = 0x5555'6666'7777'8888ULL,
+  };
+  selected.selected_candidate_payload_checksum = 0x9999'aaaa'bbbb'ccccULL;
+  selected.selected_candidate_metrics = candidates::CandidateMetrics{
+      .scalar_policy_cost = 201,
+      .intrinsic_base_cost = 202,
+      .orthogonal_step_count = 203,
+      .diagonal_step_count = 204,
+      .bend_count = 205,
+      .line_primitive_count = 206,
+      .via_count = 207,
+      .axis_aligned_length_dbu = 208,
+      .diagonal_projection_dbu = 209,
+  };
+  selected.pool_best_intrinsic_cost = 210;
+  Phase4PerNetReportV1 no_candidate;
+  no_candidate.schema_version = 403;
+  no_candidate.net = {.id = 12, .generation = 3};
+  no_candidate.columns = Phase4PerNetColumnOutcomesV1{
+      .requested_columns = 301,
+      .executed_route_queries = 302,
+      .admitted_candidates = 303,
+      .duplicate_candidates = 304,
+      .disconnected_columns = 305,
+      .unsupported_columns = 306,
+      .skipped_columns = 307,
+      .exact_validation_rejections = 308,
+      .other_rejections = 309,
+  };
+  no_candidate.final_pool_size = 310;
+  no_candidate.unique_geometry_signature_count = 311;
+  no_candidate.unique_resource_signature_count = 312;
+  no_candidate.candidate_pair_count = 313;
+  no_candidate.mean_resource_overlap_ppm = 314;
+  no_candidate.minimum_resource_overlap_ppm = 315;
+  no_candidate.mean_geometric_overlap_ppm = 316;
+  no_candidate.minimum_geometric_overlap_ppm = 317;
+  telemetry.per_net = {selected, no_candidate};
+  telemetry.telemetry_checksum = internal::ComputePhase4ArmReportTelemetryChecksumV1(telemetry);
+  return telemetry;
 }
 
 // Synthetic contract input only. Canonical evidence must come from the
@@ -587,6 +894,352 @@ TEST(Phase4PairedTrialTest, AssemblyRequiresDistinctArmProcessInstances) {
   const Phase4PairedTrialError error = ErrorOf<Phase4PairedTrialResult>(
       AssemblePhase4PairedTrialV1(std::move(arms.baseline), std::move(arms.candidate)));
   EXPECT_EQ(error.invariant_id, "P4PAIR-ASSEMBLE-AUTHORITY-001");
+}
+
+TEST(Phase4PairedTrialTest, DiagnosticPerNetTelemetryClosesAuthenticBaselineAndCandidateCase) {
+  const Phase4PairedTrialSpec spec = Spec();
+  Phase4TrialArmDiagnosticExecutionV1 baseline = ValueOf<Phase4TrialArmDiagnosticExecutionV1>(
+      ExecutePhase4TrialArmDiagnosticV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  Phase4TrialArmDiagnosticExecutionV1 candidate =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  const Phase4TrialArmExecution normal_baseline = ValueOf<Phase4TrialArmExecution>(
+      ExecutePhase4TrialArmV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  const Phase4TrialArmExecution normal_candidate =
+      ValueOf<Phase4TrialArmExecution>(ExecutePhase4TrialArmV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  Phase4RepresentativeCase corpus = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV1(spec.case_id, {}, spec.corpus_limits));
+
+  EXPECT_EQ(baseline.semantics, normal_baseline.semantics);
+  EXPECT_EQ(candidate.semantics, normal_candidate.semantics);
+  EXPECT_EQ(baseline.telemetry.per_net.size(), 6U);
+  EXPECT_EQ(candidate.telemetry.per_net.size(), 6U);
+  EXPECT_FALSE(internal::ValidatePhase4ArmReportTelemetryV1(baseline.semantics, corpus.workload,
+                                                            baseline.telemetry)
+                   .has_value());
+  EXPECT_FALSE(internal::ValidatePhase4ArmReportTelemetryV1(candidate.semantics, corpus.workload,
+                                                            candidate.telemetry)
+                   .has_value());
+  for (const Phase4PerNetReportV1& report : candidate.telemetry.per_net) {
+    const std::uint64_t expected_pairs =
+        report.final_pool_size < 2 ? 0 : report.final_pool_size * (report.final_pool_size - 1) / 2;
+    EXPECT_EQ(report.candidate_pair_count, expected_pairs);
+    EXPECT_LE(report.mean_resource_overlap_ppm, kPhase4OverlapPartsPerMillion);
+    EXPECT_LE(report.mean_geometric_overlap_ppm, kPhase4OverlapPartsPerMillion);
+    if (report.selected_status == allocator::NetSelectionStatus::kSelected) {
+      ASSERT_TRUE(report.selected_candidate_metrics.has_value());
+      ASSERT_TRUE(report.pool_best_intrinsic_cost.has_value());
+      EXPECT_LE(*report.pool_best_intrinsic_cost,
+                report.selected_candidate_metrics->intrinsic_base_cost);
+    }
+  }
+}
+
+TEST(Phase4PairedTrialTest, BaselineTelemetryMatchesIndependentAuthenticColumnsPoolsAndSelections) {
+  const Phase4PairedTrialSpec spec = Spec();
+  const Phase4TrialArmDiagnosticExecutionV1 diagnostic =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(
+          ExecutePhase4TrialArmDiagnosticV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  Phase4RepresentativeCase corpus = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV1(spec.case_id, {}, spec.corpus_limits));
+  allocator::SequentialNegotiatedBaselineResult source =
+      ValueOf<allocator::SequentialNegotiatedBaselineResult>(
+          allocator::ExecuteSequentialNegotiatedBaseline(corpus.board, corpus.workload,
+                                                         corpus.capacities, spec.baseline_config));
+  ASSERT_EQ(diagnostic.telemetry.per_net.size(), source.final_pools().size());
+  ASSERT_EQ(diagnostic.telemetry.per_net.size(), source.final_world().selections.size());
+  for (std::size_t index = 0; index < diagnostic.telemetry.per_net.size(); ++index) {
+    const Phase4PerNetReportV1& report = diagnostic.telemetry.per_net[index];
+    EXPECT_EQ(report.columns, BaselineColumnsFor(source, report.net));
+    ExpectReportMatchesPoolAndSelection(report, source.final_pools()[index],
+                                        source.final_world().selections[index]);
+  }
+}
+
+TEST(Phase4PairedTrialTest, CandidateTelemetryMatchesAuthenticCase101Sources) {
+  const Phase4PairedTrialSpec spec = Spec(Phase4TrialOrder::kBaselineFirst, 101, 6);
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  const Phase4TrialArmDiagnosticExecutionV1 diagnostic =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  allocator::CpuCandidateAllocationSession source = ExecuteCandidateSessionForSources(spec);
+  const allocator::OneWorldAllocation& selected_world = ChosenWorld(source);
+  ASSERT_EQ(diagnostic.telemetry.per_net.size(), source.final_pools().size());
+  ASSERT_EQ(diagnostic.telemetry.per_net.size(), selected_world.selections.size());
+  for (std::size_t index = 0; index < diagnostic.telemetry.per_net.size(); ++index) {
+    const Phase4PerNetReportV1& report = diagnostic.telemetry.per_net[index];
+    EXPECT_EQ(report.columns, CandidateColumnsFor(source, report.net));
+    ExpectReportMatchesPoolAndSelection(report, source.final_pools()[index],
+                                        selected_world.selections[index]);
+  }
+}
+
+TEST(Phase4PairedTrialTest, CandidateTelemetryMatchesAuthenticCase102Sources) {
+  const Phase4PairedTrialSpec spec = Spec(Phase4TrialOrder::kBaselineFirst, 102, 6);
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  const Phase4TrialArmDiagnosticExecutionV1 diagnostic =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  allocator::CpuCandidateAllocationSession source = ExecuteCandidateSessionForSources(spec);
+  const allocator::OneWorldAllocation& selected_world = ChosenWorld(source);
+  for (std::size_t index = 0; index < diagnostic.telemetry.per_net.size(); ++index) {
+    const Phase4PerNetReportV1& report = diagnostic.telemetry.per_net[index];
+    EXPECT_EQ(report.columns, CandidateColumnsFor(source, report.net));
+    ExpectReportMatchesPoolAndSelection(report, source.final_pools()[index],
+                                        selected_world.selections[index]);
+  }
+}
+
+TEST(Phase4PairedTrialTest, ColumnClassificationCoversEveryTerminalAndInFlightOutcome) {
+  Phase4PerNetColumnOutcomesV1 baseline;
+  const auto add_baseline = [&baseline](allocator::SequentialNegotiatedColumnOutcome outcome,
+                                        std::optional<candidates::CandidateRejectionCode> code =
+                                            std::nullopt) {
+    allocator::SequentialNegotiatedColumnRecord column;
+    column.outcome = outcome;
+    if (code.has_value()) {
+      candidates::CandidateRejection rejection;
+      rejection.code = *code;
+      column.rejection = rejection;
+    }
+    EXPECT_TRUE(internal::AccumulatePhase4BaselineColumnV1(column, &baseline));
+  };
+  add_baseline(allocator::SequentialNegotiatedColumnOutcome::kAdmitted);
+  add_baseline(allocator::SequentialNegotiatedColumnOutcome::kRouteDisconnected);
+  add_baseline(allocator::SequentialNegotiatedColumnOutcome::kRouteUnsupported);
+  add_baseline(allocator::SequentialNegotiatedColumnOutcome::kBuildRejected,
+               candidates::CandidateRejectionCode::kExactValidation);
+  add_baseline(allocator::SequentialNegotiatedColumnOutcome::kAdmissionRejected,
+               candidates::CandidateRejectionCode::kInvalidInput);
+  EXPECT_EQ(baseline, (Phase4PerNetColumnOutcomesV1{
+                          .requested_columns = 5,
+                          .executed_route_queries = 5,
+                          .admitted_candidates = 1,
+                          .disconnected_columns = 1,
+                          .unsupported_columns = 1,
+                          .exact_validation_rejections = 1,
+                          .other_rejections = 1,
+                      }));
+
+  Phase4PerNetColumnOutcomesV1 preparation;
+  const auto add_preparation =
+      [&preparation](allocator::CpuCandidatePoolColumnOutcome outcome,
+                     std::optional<candidates::CandidateRejectionCode> code = std::nullopt) {
+        allocator::CpuCandidatePoolColumnRecord column;
+        column.outcome = outcome;
+        column.rejection_code = code;
+        EXPECT_TRUE(internal::AccumulatePhase4PreparationColumnV1(column, &preparation));
+      };
+  add_preparation(allocator::CpuCandidatePoolColumnOutcome::kAdmitted);
+  add_preparation(allocator::CpuCandidatePoolColumnOutcome::kDuplicate);
+  add_preparation(allocator::CpuCandidatePoolColumnOutcome::kRouteDisconnected);
+  add_preparation(allocator::CpuCandidatePoolColumnOutcome::kRouteUnsupported);
+  add_preparation(allocator::CpuCandidatePoolColumnOutcome::kSkippedAfterDisconnectedProof);
+  add_preparation(allocator::CpuCandidatePoolColumnOutcome::kSkippedAfterUnsupportedProof);
+  add_preparation(allocator::CpuCandidatePoolColumnOutcome::kBuildRejected,
+                  candidates::CandidateRejectionCode::kInvalidInput);
+  add_preparation(allocator::CpuCandidatePoolColumnOutcome::kAdmissionRejected,
+                  candidates::CandidateRejectionCode::kExactValidation);
+  EXPECT_EQ(preparation, (Phase4PerNetColumnOutcomesV1{
+                             .requested_columns = 8,
+                             .executed_route_queries = 6,
+                             .admitted_candidates = 1,
+                             .duplicate_candidates = 1,
+                             .disconnected_columns = 1,
+                             .unsupported_columns = 1,
+                             .skipped_columns = 2,
+                             .exact_validation_rejections = 1,
+                             .other_rejections = 1,
+                         }));
+
+  Phase4PerNetColumnOutcomesV1 regeneration;
+  const auto add_regeneration =
+      [&regeneration](allocator::TargetedRegenerationColumnOutcome outcome,
+                      std::optional<candidates::CandidateRejectionCode> code = std::nullopt) {
+        allocator::TargetedRegenerationColumnRecord column;
+        column.outcome = outcome;
+        column.rejection_code = code;
+        EXPECT_TRUE(internal::AccumulatePhase4RegenerationColumnV1(column, &regeneration));
+      };
+  add_regeneration(allocator::TargetedRegenerationColumnOutcome::kAdmitted);
+  add_regeneration(allocator::TargetedRegenerationColumnOutcome::kDuplicate);
+  add_regeneration(allocator::TargetedRegenerationColumnOutcome::kRouteDisconnected);
+  add_regeneration(allocator::TargetedRegenerationColumnOutcome::kRouteUnsupported);
+  add_regeneration(allocator::TargetedRegenerationColumnOutcome::kBuildRejected,
+                   candidates::CandidateRejectionCode::kExactValidation);
+  add_regeneration(allocator::TargetedRegenerationColumnOutcome::kAdmissionRejected,
+                   candidates::CandidateRejectionCode::kInvalidInput);
+  EXPECT_EQ(regeneration, (Phase4PerNetColumnOutcomesV1{
+                              .requested_columns = 6,
+                              .executed_route_queries = 6,
+                              .admitted_candidates = 1,
+                              .duplicate_candidates = 1,
+                              .disconnected_columns = 1,
+                              .unsupported_columns = 1,
+                              .exact_validation_rejections = 1,
+                              .other_rejections = 1,
+                          }));
+
+  for (const allocator::TargetedRegenerationColumnOutcome in_flight :
+       {allocator::TargetedRegenerationColumnOutcome::kQueryInFlight,
+        allocator::TargetedRegenerationColumnOutcome::kBuildInFlight,
+        allocator::TargetedRegenerationColumnOutcome::kGeneratedPendingPublication,
+        allocator::TargetedRegenerationColumnOutcome::kRejectionEvidenceInFlight,
+        allocator::TargetedRegenerationColumnOutcome::
+            kPublicationCommittedOutcomeCorrelationPending}) {
+    allocator::TargetedRegenerationColumnRecord column;
+    column.outcome = in_flight;
+    Phase4PerNetColumnOutcomesV1 rejected;
+    EXPECT_FALSE(internal::AccumulatePhase4RegenerationColumnV1(column, &rejected));
+  }
+}
+
+TEST(Phase4PairedTrialTest, TelemetryChecksumHasLiteralGoldenAndFieldGroupSensitivity) {
+  const Phase4ArmReportTelemetryV1 golden = GoldenTelemetry();
+  EXPECT_EQ(golden.telemetry_checksum, 4'209'921'871'565'787'050ULL);
+
+  Phase4ArmReportTelemetryV1 association = golden;
+  ++association.associated_semantic_checksum;
+  EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(association),
+            golden.telemetry_checksum);
+  Phase4ArmReportTelemetryV1 net = golden;
+  ++net.per_net[0].net.generation;
+  EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(net), golden.telemetry_checksum);
+  Phase4ArmReportTelemetryV1 columns = golden;
+  ++columns.per_net[0].columns.other_rejections;
+  EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(columns),
+            golden.telemetry_checksum);
+  Phase4ArmReportTelemetryV1 diversity = golden;
+  ++diversity.per_net[0].mean_geometric_overlap_ppm;
+  EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(diversity),
+            golden.telemetry_checksum);
+  Phase4ArmReportTelemetryV1 identity = golden;
+  ++identity.per_net[0].selected_candidate_id->low;
+  EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(identity),
+            golden.telemetry_checksum);
+  Phase4ArmReportTelemetryV1 payload = golden;
+  ++*payload.per_net[0].selected_candidate_payload_checksum;
+  EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(payload),
+            golden.telemetry_checksum);
+  Phase4ArmReportTelemetryV1 metrics = golden;
+  ++metrics.per_net[0].selected_candidate_metrics->via_count;
+  EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(metrics),
+            golden.telemetry_checksum);
+  Phase4ArmReportTelemetryV1 best_cost = golden;
+  ++*best_cost.per_net[0].pool_best_intrinsic_cost;
+  EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(best_cost),
+            golden.telemetry_checksum);
+  Phase4ArmReportTelemetryV1 no_candidate = golden;
+  ++no_candidate.per_net[1].columns.skipped_columns;
+  EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(no_candidate),
+            golden.telemetry_checksum);
+}
+
+TEST(Phase4PairedTrialTest, DiagnosticPerNetTelemetryIsRepeatedlyDeterministic) {
+  const Phase4PairedTrialSpec spec = Spec();
+  const Phase4TrialArmDiagnosticExecutionV1 first_baseline =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(
+          ExecutePhase4TrialArmDiagnosticV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  const Phase4TrialArmDiagnosticExecutionV1 second_baseline =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(
+          ExecutePhase4TrialArmDiagnosticV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  EXPECT_EQ(first_baseline.semantics, second_baseline.semantics);
+  EXPECT_EQ(first_baseline.telemetry, second_baseline.telemetry);
+
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  const Phase4TrialArmDiagnosticExecutionV1 first_candidate =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  const Phase4TrialArmDiagnosticExecutionV1 second_candidate =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  EXPECT_EQ(first_candidate.semantics, second_candidate.semantics);
+  EXPECT_EQ(first_candidate.telemetry, second_candidate.telemetry);
+}
+
+TEST(Phase4PairedTrialTest, DiagnosticValidatorRejectsReauthenticatedRosterAndClosureDrift) {
+  const Phase4PairedTrialSpec spec = Spec();
+  const Phase4TrialArmDiagnosticExecutionV1 diagnostic =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(
+          ExecutePhase4TrialArmDiagnosticV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  Phase4RepresentativeCase corpus = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV1(spec.case_id, {}, spec.corpus_limits));
+
+  {
+    Phase4ArmReportTelemetryV1 changed = diagnostic.telemetry;
+    std::swap(changed.per_net[0], changed.per_net[1]);
+    changed.telemetry_checksum = internal::ComputePhase4ArmReportTelemetryChecksumV1(changed);
+    ASSERT_TRUE(
+        internal::ValidatePhase4ArmReportTelemetryV1(diagnostic.semantics, corpus.workload, changed)
+            .has_value());
+  }
+  {
+    Phase4ArmReportTelemetryV1 changed = diagnostic.telemetry;
+    ++changed.per_net[0].net.id;
+    changed.telemetry_checksum = internal::ComputePhase4ArmReportTelemetryChecksumV1(changed);
+    ASSERT_TRUE(
+        internal::ValidatePhase4ArmReportTelemetryV1(diagnostic.semantics, corpus.workload, changed)
+            .has_value());
+  }
+  {
+    Phase4ArmReportTelemetryV1 changed = diagnostic.telemetry;
+    ++changed.per_net[0].columns.requested_columns;
+    changed.telemetry_checksum = internal::ComputePhase4ArmReportTelemetryChecksumV1(changed);
+    ASSERT_TRUE(
+        internal::ValidatePhase4ArmReportTelemetryV1(diagnostic.semantics, corpus.workload, changed)
+            .has_value());
+  }
+  {
+    Phase4ArmReportTelemetryV1 changed = diagnostic.telemetry;
+    auto selected =
+        std::find_if(changed.per_net.begin(), changed.per_net.end(),
+                     [](const auto& net) { return net.selected_candidate_metrics.has_value(); });
+    ASSERT_NE(selected, changed.per_net.end());
+    ++selected->selected_candidate_metrics->intrinsic_base_cost;
+    changed.telemetry_checksum = internal::ComputePhase4ArmReportTelemetryChecksumV1(changed);
+    ASSERT_TRUE(
+        internal::ValidatePhase4ArmReportTelemetryV1(diagnostic.semantics, corpus.workload, changed)
+            .has_value());
+  }
+  {
+    Phase4ArmReportTelemetryV1 changed = diagnostic.telemetry;
+    auto selected =
+        std::find_if(changed.per_net.begin(), changed.per_net.end(),
+                     [](const auto& net) { return net.selected_candidate_id.has_value(); });
+    ASSERT_NE(selected, changed.per_net.end());
+    selected->selected_candidate_id = candidates::CandidateId{};
+    changed.telemetry_checksum = internal::ComputePhase4ArmReportTelemetryChecksumV1(changed);
+    ASSERT_TRUE(
+        internal::ValidatePhase4ArmReportTelemetryV1(diagnostic.semantics, corpus.workload, changed)
+            .has_value());
+  }
+  Phase4ArmReportTelemetryV1 checksum_changed = diagnostic.telemetry;
+  ++checksum_changed.per_net[0].mean_resource_overlap_ppm;
+  EXPECT_NE(internal::ComputePhase4ArmReportTelemetryChecksumV1(checksum_changed),
+            diagnostic.telemetry.telemetry_checksum);
+}
+
+TEST(Phase4PairedTrialTest, ValidatorRejectsReauthenticatedPerNetPoolAdmissionMismatch) {
+  const Phase4PairedTrialSpec spec = Spec();
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  const Phase4TrialArmDiagnosticExecutionV1 diagnostic =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  Phase4RepresentativeCase corpus = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV1(spec.case_id, {}, spec.corpus_limits));
+  Phase4ArmReportTelemetryV1 changed = diagnostic.telemetry;
+  auto report = std::find_if(changed.per_net.begin(), changed.per_net.end(),
+                             [](const auto& net) { return net.final_pool_size != 0; });
+  ASSERT_NE(report, changed.per_net.end());
+  report->final_pool_size = report->columns.admitted_candidates + 1;
+  report->candidate_pair_count = report->final_pool_size * (report->final_pool_size - 1) / 2;
+  changed.telemetry_checksum = internal::ComputePhase4ArmReportTelemetryChecksumV1(changed);
+  const std::optional<Phase4PairedTrialError> error =
+      internal::ValidatePhase4ArmReportTelemetryV1(diagnostic.semantics, corpus.workload, changed);
+  ASSERT_TRUE(error.has_value());
+  EXPECT_EQ(error->invariant_id, "P4REPORT-CLOSURE-001");
 }
 
 }  // namespace

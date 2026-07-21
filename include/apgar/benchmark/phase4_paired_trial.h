@@ -2,17 +2,23 @@
 #define APGAR_BENCHMARK_PHASE4_PAIRED_TRIAL_H_
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include "apgar/allocator/cpu_candidate_allocation_session.h"
 #include "apgar/allocator/sequential_negotiated_baseline.h"
 #include "apgar/benchmark/phase4_representative_corpus.h"
+#include "apgar/candidates/route_candidate.h"
 
 namespace apgar::benchmark {
 
 inline constexpr std::uint32_t kPhase4PairedTrialSchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4ExternalAuthoritySchemaVersion = 1;
+inline constexpr std::uint32_t kPhase4PerNetReportSchemaVersion = 1;
+inline constexpr std::uint32_t kPhase4ArmReportTelemetrySchemaVersion = 1;
+inline constexpr std::uint64_t kPhase4OverlapPartsPerMillion = 1'000'000;
 
 enum class Phase4TrialArm : std::uint8_t {
   kSequentialBaseline = 0,
@@ -153,6 +159,70 @@ struct Phase4TrialArmExecution {
   friend bool operator==(const Phase4TrialArmExecution&, const Phase4TrialArmExecution&) = default;
 };
 
+// One closed partition of every column requested for one net. Executed route
+// queries exclude only explicit proof-backed skipped columns. Duplicate,
+// disconnected, unsupported, skipped, exact-validation, and other rejections
+// together with admissions exactly partition requested_columns.
+struct Phase4PerNetColumnOutcomesV1 {
+  std::uint64_t requested_columns = 0;
+  std::uint64_t executed_route_queries = 0;
+  std::uint64_t admitted_candidates = 0;
+  std::uint64_t duplicate_candidates = 0;
+  std::uint64_t disconnected_columns = 0;
+  std::uint64_t unsupported_columns = 0;
+  std::uint64_t skipped_columns = 0;
+  std::uint64_t exact_validation_rejections = 0;
+  std::uint64_t other_rejections = 0;
+
+  friend bool operator==(const Phase4PerNetColumnOutcomesV1&,
+                         const Phase4PerNetColumnOutcomesV1&) = default;
+};
+
+struct Phase4PerNetReportV1 {
+  std::uint32_t schema_version = kPhase4PerNetReportSchemaVersion;
+  board_ir::EntityRef net{};
+  Phase4PerNetColumnOutcomesV1 columns;
+  std::uint64_t final_pool_size = 0;
+  std::uint64_t unique_geometry_signature_count = 0;
+  std::uint64_t unique_resource_signature_count = 0;
+  std::uint64_t candidate_pair_count = 0;
+  std::uint64_t mean_resource_overlap_ppm = 0;
+  std::uint64_t minimum_resource_overlap_ppm = 0;
+  std::uint64_t mean_geometric_overlap_ppm = 0;
+  std::uint64_t minimum_geometric_overlap_ppm = 0;
+  allocator::NetSelectionStatus selected_status =
+      allocator::NetSelectionStatus::kNoAdmissibleCandidate;
+  std::optional<candidates::CandidateId> selected_candidate_id;
+  std::optional<std::uint64_t> selected_candidate_payload_checksum;
+  std::optional<candidates::CandidateMetrics> selected_candidate_metrics;
+  std::optional<std::uint64_t> pool_best_intrinsic_cost;
+
+  friend bool operator==(const Phase4PerNetReportV1&, const Phase4PerNetReportV1&) = default;
+};
+
+// Diagnostic telemetry is intentionally separate from the decision-eligible
+// raw-evidence wire. Its association names the exact semantic checksum returned
+// by the same in-process contender execution.
+struct Phase4ArmReportTelemetryV1 {
+  std::uint32_t schema_version = kPhase4ArmReportTelemetrySchemaVersion;
+  std::uint64_t associated_semantic_checksum = 0;
+  std::vector<Phase4PerNetReportV1> per_net;
+  std::uint64_t telemetry_checksum = 0;
+
+  friend bool operator==(const Phase4ArmReportTelemetryV1&,
+                         const Phase4ArmReportTelemetryV1&) = default;
+};
+
+struct Phase4TrialArmDiagnosticExecutionV1 {
+  // Deliberately not a Phase4TrialArmExecution: diagnostic overlap work is not
+  // an isolated measured arm and cannot be passed to FinalizePhase4TrialArmV1.
+  Phase4TrialArmSemantics semantics;
+  Phase4ArmReportTelemetryV1 telemetry;
+
+  friend bool operator==(const Phase4TrialArmDiagnosticExecutionV1&,
+                         const Phase4TrialArmDiagnosticExecutionV1&) = default;
+};
+
 struct Phase4ExternalResourceObservation {
   std::uint32_t schema_version = kPhase4ExternalAuthoritySchemaVersion;
   Phase4ExternalAuthorityKind authority_kind =
@@ -266,6 +336,8 @@ struct Phase4TrialArmFailure {
 };
 
 using Phase4TrialArmExecutionResult = std::variant<Phase4TrialArmExecution, Phase4TrialArmFailure>;
+using Phase4TrialArmDiagnosticExecutionResultV1 =
+    std::variant<Phase4TrialArmDiagnosticExecutionV1, Phase4TrialArmFailure>;
 using Phase4TrialArmRecordResult = std::variant<Phase4TrialArmRecord, Phase4PairedTrialError>;
 using Phase4PairedTrialAssemblyResult =
     std::variant<Phase4PairedTrialResult, Phase4PairedTrialError>;
@@ -275,6 +347,13 @@ using Phase4PairedTrialAssemblyResult =
 // returning. Process isolation, watchdog enforcement, and peak-memory
 // measurement belong to the external observation finalized below.
 [[nodiscard]] Phase4TrialArmExecutionResult ExecutePhase4TrialArmV1(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+// Executes the same contender path and additionally derives checksum-bound
+// per-net reporting telemetry while the authentic final pools, columns, and
+// selected world are still alive. It does not alter the raw evidence wire.
+[[nodiscard]] Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
 

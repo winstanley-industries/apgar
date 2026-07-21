@@ -37,6 +37,8 @@ enum class SignatureBucketDuplicate : std::uint8_t {
                                                          const CandidateMetrics& right) noexcept;
 [[nodiscard]] std::optional<std::uint64_t> CheckedLogicalByteSum(std::uint64_t accumulated,
                                                                  std::uint64_t next) noexcept;
+[[nodiscard]] std::optional<std::uint64_t> QuantizeOverlapRatioPpmV1(
+    std::uint64_t numerator, std::uint64_t denominator) noexcept;
 
 struct RetentionSelection {
   std::vector<StoredCandidate> retained;

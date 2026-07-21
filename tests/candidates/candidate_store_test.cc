@@ -1634,6 +1634,8 @@ TEST(CandidateStoreTest, DiversityOverlapDominanceByteCapsAndExplicitPruneAreDet
   EXPECT_FALSE(CandidateMetricsDominate(top, straight));
   EXPECT_NEAR(ResourceJaccardOverlap(straight, top), 0.2, 1e-12);
   EXPECT_NEAR(GeometricOverlapRatio(straight, top), 0.4, 1e-12);
+  EXPECT_EQ(ResourceJaccardOverlapPpmV1(straight, top), 200'000U);
+  EXPECT_EQ(GeometricOverlapRatioPpmV1(straight, top), 400'000U);
 
   CandidateStore byte_limited(StoreConfig(2, straight.logical_bytes() + top.logical_bytes() - 1));
   ASSERT_TRUE(std::holds_alternative<StoredCandidate>(
@@ -1652,6 +1654,19 @@ TEST(CandidateStoreTest, DiversityOverlapDominanceByteCapsAndExplicitPruneAreDet
   ASSERT_EQ(selection.pruned.size(), 1U);
   EXPECT_EQ(selection.retained.front()->id(), straight.id());
   EXPECT_EQ(selection.pruned.front()->id(), top.id());
+}
+
+TEST(CandidateStoreTest, ExactOverlapPpmQuantizationRoundsHalfValuesUpWithoutFloatingPoint) {
+  EXPECT_FALSE(internal::QuantizeOverlapRatioPpmV1(0, 0).has_value());
+  EXPECT_FALSE(internal::QuantizeOverlapRatioPpmV1(2, 1).has_value());
+  EXPECT_EQ(internal::QuantizeOverlapRatioPpmV1(0, 1), 0U);
+  EXPECT_EQ(internal::QuantizeOverlapRatioPpmV1(1, 2'000'001), 0U);
+  EXPECT_EQ(internal::QuantizeOverlapRatioPpmV1(1, 2'000'000), 1U);
+  EXPECT_EQ(internal::QuantizeOverlapRatioPpmV1(3, 2'000'000), 2U);
+  EXPECT_EQ(internal::QuantizeOverlapRatioPpmV1(6, 400'000), 15U);
+  EXPECT_EQ(internal::QuantizeOverlapRatioPpmV1(7, 400'000), 18U);
+  EXPECT_EQ(internal::QuantizeOverlapRatioPpmV1(8, 400'000), 20U);
+  EXPECT_EQ(internal::QuantizeOverlapRatioPpmV1(1, 1), 1'000'000U);
 }
 
 TEST(CandidateStoreTest, RejectionCapUsesCanonicalSchemaFieldOrder) {

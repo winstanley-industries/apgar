@@ -2,6 +2,7 @@
 #define APGAR_SRC_BENCHMARK_PHASE4_PAIRED_TRIAL_INTERNAL_H_
 
 #include <cstdint>
+#include <optional>
 
 #include "apgar/benchmark/phase4_paired_trial.h"
 
@@ -21,6 +22,25 @@ namespace apgar::benchmark::internal {
 
 [[nodiscard]] std::uint64_t ComputePhase4TrialArmSemanticChecksumV1(
     const Phase4TrialArmSemantics& semantics) noexcept;
+
+[[nodiscard]] std::uint64_t ComputePhase4ArmReportTelemetryChecksumV1(
+    const Phase4ArmReportTelemetryV1& telemetry) noexcept;
+
+[[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4ArmReportTelemetryV1(
+    const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
+    const Phase4ArmReportTelemetryV1& telemetry) noexcept;
+
+[[nodiscard]] bool AccumulatePhase4BaselineColumnV1(
+    const allocator::SequentialNegotiatedColumnRecord& column,
+    Phase4PerNetColumnOutcomesV1* outcomes) noexcept;
+
+[[nodiscard]] bool AccumulatePhase4PreparationColumnV1(
+    const allocator::CpuCandidatePoolColumnRecord& column,
+    Phase4PerNetColumnOutcomesV1* outcomes) noexcept;
+
+[[nodiscard]] bool AccumulatePhase4RegenerationColumnV1(
+    const allocator::TargetedRegenerationColumnRecord& column,
+    Phase4PerNetColumnOutcomesV1* outcomes) noexcept;
 
 [[nodiscard]] std::uint64_t ComputePhase4TrialArmArtifactChecksumV1(
     const Phase4TrialArmRecord& record) noexcept;

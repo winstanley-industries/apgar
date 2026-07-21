@@ -176,6 +176,14 @@ struct CandidateStoreTelemetry {
 [[nodiscard]] double ResourceJaccardOverlap(const RouteCandidate& left,
                                             const RouteCandidate& right) noexcept;
 [[nodiscard]] double GeometricOverlapRatio(const RouteCandidate& left, const RouteCandidate& right);
+// Exact integer-ratio v1 quantization used by durable telemetry. Each ratio is
+// rounded to nearest integer ppm with exact halves upward. Invalid/nonmatching
+// candidate contexts retain the established zero-overlap value; nullopt is
+// reserved for arithmetic failure and must fail durable telemetry closed.
+[[nodiscard]] std::optional<std::uint64_t> ResourceJaccardOverlapPpmV1(
+    const RouteCandidate& left, const RouteCandidate& right) noexcept;
+[[nodiscard]] std::optional<std::uint64_t> GeometricOverlapRatioPpmV1(const RouteCandidate& left,
+                                                                      const RouteCandidate& right);
 
 class CandidateStore {
  public:

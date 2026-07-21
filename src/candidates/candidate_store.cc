@@ -536,6 +536,21 @@ struct ProjectedInterval {
   return shared;
 }
 
+[[nodiscard]] std::optional<std::uint64_t> QuantizeOverlapRatioPpm(UWide numerator,
+                                                                   UWide denominator) noexcept {
+  constexpr UWide kMaximumUWide = ~UWide{0};
+  constexpr UWide kPartsPerMillion = 1'000'000;
+  if (denominator == 0 || numerator > denominator ||
+      numerator > (kMaximumUWide - denominator / 2) / kPartsPerMillion) {
+    return std::nullopt;
+  }
+  const UWide rounded = (numerator * kPartsPerMillion + denominator / 2) / denominator;
+  if (rounded > kPartsPerMillion) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint64_t>(rounded);
+}
+
 struct RetentionSelectionImpl {
   std::vector<StoredCandidate> retained;
   std::vector<StoredCandidate> pruned;
@@ -1221,6 +1236,40 @@ double GeometricOverlapRatio(const RouteCandidate& left, const RouteCandidate& r
   const UWide shared =
       std::min(SharedProjectedLength(left_intervals, right_intervals), denominator);
   return static_cast<double>(shared) / static_cast<double>(denominator);
+}
+
+std::optional<std::uint64_t> ResourceJaccardOverlapPpmV1(const RouteCandidate& left,
+                                                         const RouteCandidate& right) noexcept {
+  if (!SameCandidateContext(left, right)) {
+    return 0;
+  }
+  const ResourceCounts counts = CountResources(left, right);
+  const UWide union_count = static_cast<UWide>(counts.left) + counts.right - counts.intersection;
+  return QuantizeOverlapRatioPpm(counts.intersection, union_count);
+}
+
+std::optional<std::uint64_t> GeometricOverlapRatioPpmV1(const RouteCandidate& left,
+                                                        const RouteCandidate& right) {
+  if (!SameCandidateContext(left, right)) {
+    return 0;
+  }
+  std::vector<ProjectedInterval> left_intervals;
+  std::vector<ProjectedInterval> right_intervals;
+  UWide left_projection = 0;
+  UWide right_projection = 0;
+  if (!BuildProjectedIntervals(left, left_intervals, left_projection) ||
+      !BuildProjectedIntervals(right, right_intervals, right_projection)) {
+    return 0;
+  }
+  const UWide denominator = std::min(left_projection, right_projection);
+  const UWide shared =
+      std::min(SharedProjectedLength(left_intervals, right_intervals), denominator);
+  return QuantizeOverlapRatioPpm(shared, denominator);
+}
+
+std::optional<std::uint64_t> internal::QuantizeOverlapRatioPpmV1(
+    std::uint64_t numerator, std::uint64_t denominator) noexcept {
+  return QuantizeOverlapRatioPpm(numerator, denominator);
 }
 
 CandidateStore::CandidateStore(CandidateStoreConfig config)
