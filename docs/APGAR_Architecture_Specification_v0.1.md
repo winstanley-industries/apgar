@@ -1213,6 +1213,13 @@ acceleration.
   Section 29.2 exit gate.
   Every optimization claim MUST bind the versioned corpus, configuration,
   hardware, toolchains, exact clean commit, and comparison baseline.
+  The pre-observation Phase 4 matrix, lexicographic comparison, family-level
+  exact sign test and Holm correction, non-regression guardrails, and diagnostic
+  timing summaries are versioned by
+  `schemas/benchmark/phase4_statistical_decision_protocol_v1.md`. Its canonical
+  104-cell expansion includes 86 noncalibration closure cells. It contains no
+  observed decision and does not complete Phase 4; missing or failed evidence
+  remains incomplete rather than becoming an allocator loss.
 
 This Phase 4 gate establishes resource-feasible candidate allocation, not final
 board legality. Exact combined-geometry legalization, APGAR DRC, host-CAD
