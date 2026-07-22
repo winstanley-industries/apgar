@@ -1021,6 +1021,17 @@ acceleration.
   alternatives, many nets with one candidate, and many nets with small
   candidate pools. Per-net diversity work MUST remain scoped to each net rather
   than becoming an artificial all-candidate quadratic operation.
+  The dedicated publication is versioned by
+  `schemas/benchmark/phase4_fixed_query_control_v1.md`. Its common 1024-query
+  opportunity applies only to initial candidate preparation. The buildable
+  256x4, 128x8, and 64x16 paired trials retain their unequal whole-trial
+  opportunities because regeneration adds two queries per net; cross-shape
+  whole-trial timing is therefore not an equal-query control. The 1x1024 and
+  1024x1 endpoints remain descriptor-only with explicitly unavailable
+  measurements, never numeric zero placeholders. Every diversity count is a
+  sum of within-net unordered pairs; cross-net candidate pairs are forbidden.
+  Executed rows MUST fully validate and bind Raw, per-net report, and
+  operational authorities from one clean source, environment, and cap set.
 
 #### Correctness and determinism
 

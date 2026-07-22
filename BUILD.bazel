@@ -964,6 +964,63 @@ py_test(
 )
 
 py_binary(
+    name = "phase4_fixed_query_controls",
+    srcs = ["tools/project_phase4_fixed_query_controls.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/project_phase4_fixed_query_controls.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_operational_projection_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_fixed_query_controls_lib",
+    srcs = ["tools/project_phase4_fixed_query_controls.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_operational_projection_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_fixed_query_controls_test",
+    size = "medium",
+    srcs = [
+        "tests/tools/project_phase4_fixed_query_controls_test.py",
+        "tests/tools/validate_phase4_raw_evidence_test.py",
+    ],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        ":phase4_fixed_query_controls",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/project_phase4_fixed_query_controls_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_fixed_query_controls_lib",
+        ":phase4_operational_projection_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_workload_net_roster_manifest_validator_lib",
+    ],
+)
+
+py_binary(
     name = "phase4_statistical_protocol_validator",
     srcs = ["tools/validate_phase4_statistical_protocol.py"],
     data = [
