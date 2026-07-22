@@ -1,6 +1,6 @@
 # ADR-030: Phase 4 Per-Net Report Artifact
 
-**Status:** Accepted for the sixteenth Phase 4 vertical slice
+**Status:** Accepted for the sixteenth Phase 4 vertical slice; publication join added by ADR-031
 **Date:** July 20, 2026
 **Applies to:** Canonical diagnostic serialization and representative net-roster identity
 
@@ -32,8 +32,9 @@ could otherwise be rechecksummed into a report.
   checksum pinned for all 38 successful representative-manifest rows.
 - Retain explicit exclusions for fixed-query 2000/2001 and compiled-work-bound
   stress 3001/3002. Their evidence kinds belong to the later query/stress slice.
-- Emit deterministic compact one-line JSON. Defer diagnostic process execution
-  and the independent raw/report file join to the next slice.
+- Emit deterministic compact one-line JSON. ADR-031 supplies diagnostic process
+  execution and the independent Raw/report file join without changing this
+  artifact or Raw v1.
 
 ## Consequences
 
@@ -44,7 +45,7 @@ unknown enum, wrong operational identity, or impossible contender-component
 shape into a valid report.
 
 The in-process validator can authenticate raw-reference structure but cannot
-prove a separate raw file exists. Publication therefore still requires the
-deferred independent join validator and external expected-commit input. This
-slice does not advance query/stress evidence, statistics, legalization, or
-Phase 4 completion.
+prove a separate raw file exists. ADR-031's independent join validator and
+external expected-commit input now provide that publication proof. This slice
+does not advance query/stress evidence, statistics, legalization, or Phase 4
+completion.

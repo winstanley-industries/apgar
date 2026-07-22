@@ -294,7 +294,7 @@ def _expected_rows(representative_path: pathlib.Path) -> tuple[int, list[dict[st
     return corpus_checksum, rows
 
 
-def validate(manifest_path: pathlib.Path, representative_path: pathlib.Path) -> None:
+def validate(manifest_path: pathlib.Path, representative_path: pathlib.Path) -> Mapping[str, Any]:
     corpus_checksum, expected_rows = _expected_rows(representative_path)
     document = _object(_read_json(manifest_path, "workload-net roster manifest"), "manifest")
     _fields(document, _ROOT_FIELDS, "manifest")
@@ -358,6 +358,23 @@ def validate(manifest_path: pathlib.Path, representative_path: pathlib.Path) -> 
     computed = _manifest_checksum(schema_version, corpus_version, corpus_checksum, rows, exclusions)
     if declared_manifest_checksum != computed:
         raise ManifestError("manifest checksum does not authenticate the semantic manifest")
+    return document
+
+
+def validated_successful_case_roster(
+    case_id: int,
+    manifest_path: pathlib.Path = _DEFAULT_MANIFEST,
+    representative_path: pathlib.Path = _DEFAULT_REPRESENTATIVE,
+) -> tuple[Mapping[str, Any], tuple[tuple[int, int], ...]]:
+    """Return one authenticated successful row and its independently frozen full roster."""
+    if isinstance(case_id, bool) or not 0 <= case_id <= _U32_MAX:
+        raise ManifestError("case_id must be an unsigned 32-bit integer")
+    document = validate(manifest_path, representative_path)
+    matches = [row for row in document["successful_cases"] if row["case_id"] == case_id]
+    if len(matches) != 1:
+        raise ManifestError("case is absent from the frozen successful roster manifest")
+    row = matches[0]
+    return row, tuple(_roster_for(row["case_id"], row["workload_net_count"]))
 
 
 def main() -> int:

@@ -20,6 +20,8 @@ _CANONICAL_REPETITIONS = 20
 _CANONICAL_WORKERS = 4
 _CANONICAL_ROUTE_WORK_UNITS_PER_QUERY = 1_000_000_000
 _MAXIMUM_WATCHDOG_NANOSECONDS = 24 * 60 * 60 * 1_000_000_000
+_MAXIMUM_RAW_JSON_BYTES = 64 * 1024 * 1024
+_MAXIMUM_JSON_NESTING_DEPTH = 64
 _MAXIMUM_CORPUS_LIMITS = {
     "maximum_nets": 4_096,
     "maximum_compiled_nodes": 100_000_000,
@@ -653,6 +655,8 @@ def _semantics(value: Any, label: str) -> Mapping[str, Any]:
         or result["final_candidate_count"] > result["admitted_candidates"]
         or outcome["selected_net_count"] > result["final_candidate_count"]
         or outcome["overused_resource_count"] > outcome["total_overuse_units"]
+        or result["capacity_model_checksum"] == 0
+        or outcome["world_checksum"] == 0
     ):
         raise EvidenceError(f"{label} route, candidate, or outcome counters are inconsistent")
     if result["arm"] == 0:
@@ -668,6 +672,10 @@ def _semantics(value: Any, label: str) -> Mapping[str, Any]:
                 )
             )
             or result["requested_columns"] != actual["route_queries"]
+            or result["preparation_checksum"] != 0
+            or result["algorithm_session_checksum"] == 0
+            or result["final_pool_manifest_checksum"] != 0
+            or result["final_rejection_manifest_checksum"] != 0
         ):
             raise EvidenceError(f"{label} baseline accounting is inconsistent")
     else:
@@ -685,6 +693,10 @@ def _semantics(value: Any, label: str) -> Mapping[str, Any]:
                 result["regeneration_route_queries"],
                 result["regeneration_route_work_units"],
             )
+            or result["preparation_checksum"] == 0
+            or result["algorithm_session_checksum"] == 0
+            or result["final_pool_manifest_checksum"] == 0
+            or result["final_rejection_manifest_checksum"] == 0
         ):
             raise EvidenceError(f"{label} candidate accounting is inconsistent")
     if result["terminal_reason"] == 0 and (
@@ -1919,36 +1931,49 @@ def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _check_canonical_key_order(value: Any, label: str = "raw cell") -> None:
-    if isinstance(value, dict):
-        keys = tuple(value)
-        key_set = set(keys)
-        known_orders = (
-            _TOP_FIELDS,
-            _CONFIG_FIELDS,
-            _BUDGET_FIELDS,
-            _LIMIT_FIELDS,
-            _ENVIRONMENT_FIELDS,
-            _PAIR_ATTEMPT_FIELDS,
-            _ATTEMPT_FIELDS,
-            _RECORD_FIELDS,
-            _SEMANTICS_FIELDS,
-            _OPPORTUNITY_FIELDS,
-            _OUTCOME_FIELDS,
-            _LIFECYCLE_FIELDS,
-            _OBSERVATION_FIELDS,
-            _FAILURE_FIELDS,
-            _RESULT_FIELDS,
-        )
-        for expected in known_orders:
-            if key_set == set(expected):
-                if keys != tuple(expected):
-                    raise EvidenceError(f"{label} fields are not in canonical key order")
-                break
-        for key, child in value.items():
-            _check_canonical_key_order(child, f"{label}.{key}")
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            _check_canonical_key_order(child, f"{label}[{index}]")
+    pending = [(value, label, 0)]
+    while pending:
+        current, current_label, depth = pending.pop()
+        if depth > _MAXIMUM_JSON_NESTING_DEPTH:
+            raise EvidenceError(
+                f"{current_label} exceeds the {_MAXIMUM_JSON_NESTING_DEPTH}-level nesting bound"
+            )
+        if isinstance(current, dict):
+            keys = tuple(current)
+            key_set = set(keys)
+            known_orders = (
+                _TOP_FIELDS,
+                _CONFIG_FIELDS,
+                _BUDGET_FIELDS,
+                _LIMIT_FIELDS,
+                _ENVIRONMENT_FIELDS,
+                _PAIR_ATTEMPT_FIELDS,
+                _ATTEMPT_FIELDS,
+                _RECORD_FIELDS,
+                _SEMANTICS_FIELDS,
+                _OPPORTUNITY_FIELDS,
+                _OUTCOME_FIELDS,
+                _LIFECYCLE_FIELDS,
+                _OBSERVATION_FIELDS,
+                _FAILURE_FIELDS,
+                _RESULT_FIELDS,
+            )
+            for expected in known_orders:
+                if key_set == set(expected):
+                    if keys != tuple(expected):
+                        raise EvidenceError(
+                            f"{current_label} fields are not in canonical key order"
+                        )
+                    break
+            pending.extend(
+                (child, f"{current_label}.{key}", depth + 1)
+                for key, child in reversed(tuple(current.items()))
+            )
+        elif isinstance(current, list):
+            pending.extend(
+                (child, f"{current_label}[{index}]", depth + 1)
+                for index, child in reversed(tuple(enumerate(current)))
+            )
 
 
 def _reject_non_json_constant(value: str) -> Any:
@@ -1957,7 +1982,11 @@ def _reject_non_json_constant(value: str) -> Any:
 
 def read_document(path: pathlib.Path) -> Any:
     try:
-        raw = path.read_text(encoding="utf-8")
+        with path.open("rb") as stream:
+            encoded = stream.read(_MAXIMUM_RAW_JSON_BYTES + 1)
+        if len(encoded) > _MAXIMUM_RAW_JSON_BYTES:
+            raise EvidenceError(f"raw cell exceeds the {_MAXIMUM_RAW_JSON_BYTES}-byte input bound")
+        raw = encoded.decode("utf-8")
         document = json.loads(
             raw,
             object_pairs_hook=_reject_duplicate_pairs,
@@ -1976,10 +2005,19 @@ def read_document(path: pathlib.Path) -> Any:
         if raw != canonical:
             raise EvidenceError("raw cell must be canonical one-line JSON followed by one LF")
         return document
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
         if isinstance(error, EvidenceError):
             raise
         raise EvidenceError(f"cannot read raw cell {path}: {error}") from error
+
+
+def read_validated_publication_document(
+    path: pathlib.Path, *, expected_commit: str
+) -> Mapping[str, Any]:
+    """Read once and fully validate one canonical publication Raw v1 cell."""
+    document = read_document(path)
+    validate_document(document, expected_commit=expected_commit)
+    return _object(document, "raw cell")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1992,13 +2030,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     options = parser.parse_args(argv)
     try:
         for path in options.paths:
-            validate_document(
-                read_document(path),
-                allow_unstamped=options.testing_allow_unstamped,
-                expected_commit=options.expected_commit,
-                expected_repetitions=options.testing_repetitions,
-                expected_workers=options.testing_workers,
-            )
+            if (
+                not options.testing_allow_unstamped
+                and options.testing_repetitions == _CANONICAL_REPETITIONS
+                and options.testing_workers == _CANONICAL_WORKERS
+            ):
+                read_validated_publication_document(path, expected_commit=options.expected_commit)
+            else:
+                validate_document(
+                    read_document(path),
+                    allow_unstamped=options.testing_allow_unstamped,
+                    expected_commit=options.expected_commit,
+                    expected_repetitions=options.testing_repetitions,
+                    expected_workers=options.testing_workers,
+                )
     except EvidenceError as error:
         print(f"Phase 4 raw evidence validation failed: {error}", file=sys.stderr)
         return 1

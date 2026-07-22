@@ -3,6 +3,7 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library", "cuda_test")
 load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
 load("//bazel:source_stamp.bzl", "source_stamp_header")
 
@@ -896,6 +897,14 @@ py_binary(
     python_version = "3.13",
 )
 
+py_library(
+    name = "phase4_raw_evidence_validator_lib",
+    srcs = ["tools/validate_phase4_raw_evidence.py"],
+    data = ["schemas/benchmark/phase4_representative_manifest_v1.json"],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+)
+
 py_test(
     name = "phase4_raw_evidence_validator_test",
     size = "small",
@@ -921,6 +930,48 @@ py_binary(
     python_version = "3.13",
 )
 
+py_library(
+    name = "phase4_workload_net_roster_manifest_validator_lib",
+    srcs = ["tools/validate_phase4_workload_net_roster_manifest.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+)
+
+py_binary(
+    name = "phase4_per_net_report_validator",
+    srcs = ["tools/validate_phase4_per_net_report.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_per_net_report.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_workload_net_roster_manifest_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_per_net_report_validator_lib",
+    srcs = ["tools/validate_phase4_per_net_report.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_workload_net_roster_manifest_validator_lib",
+    ],
+)
+
 py_test(
     name = "phase4_workload_net_roster_manifest_validator_test",
     size = "small",
@@ -935,6 +986,27 @@ py_test(
     legacy_create_init = 0,
     main = "tests/tools/validate_phase4_workload_net_roster_manifest_test.py",
     python_version = "3.13",
+)
+
+py_test(
+    name = "phase4_per_net_report_validator_test",
+    size = "small",
+    srcs = [
+        "tests/tools/validate_phase4_per_net_report_test.py",
+        "tests/tools/validate_phase4_raw_evidence_test.py",
+    ],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_per_net_report_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_workload_net_roster_manifest_validator_lib",
+    ],
 )
 
 py_test(
@@ -1123,6 +1195,41 @@ cc_binary(
 )
 
 cc_binary(
+    name = "phase4_per_net_report_runner",
+    srcs = ["tools/phase4_per_net_report_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    linkopts = ["-pthread"],
+    tags = ["manual"],
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_paired_trial",
+        ":phase4_per_net_report_artifact",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_per_net_report_test_runner",
+    testonly = True,
+    srcs = ["tools/phase4_per_net_report_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    defines = ["APGAR_PHASE4_REPORT_RUNNER_TESTING"],
+    linkopts = ["-pthread"],
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_paired_trial",
+        ":phase4_per_net_report_artifact",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
     name = "phase4_evidence_fault_runner",
     testonly = True,
     srcs = ["tools/phase4_evidence_runner.cc"],
@@ -1147,6 +1254,27 @@ py_test(
         ":phase4_evidence_runner",
     ],
     legacy_create_init = 0,
+)
+
+py_test(
+    name = "phase4_per_net_report_process_test",
+    size = "medium",
+    srcs = ["tests/benchmark/phase4_per_net_report_process_test.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
+        ":phase4_evidence_runner",
+        ":phase4_per_net_report_runner",
+        ":phase4_per_net_report_test_runner",
+    ],
+    legacy_create_init = 0,
+    python_version = "3.13",
+    deps = [
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_workload_net_roster_manifest_validator_lib",
+    ],
 )
 
 cc_test(

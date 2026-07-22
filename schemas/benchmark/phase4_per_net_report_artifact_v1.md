@@ -80,7 +80,8 @@ integers, lowercase booleans, required JSON string escaping, and one terminal
 LF. It contains configuration budget caps but no measured arm timing, process
 lifecycle, utilization, or resource observations.
 
-This slice supplies the C++ DTO, serializer, frozen roster, and rebuilding
-validator only. It does not launch a diagnostic process, read a raw artifact,
-perform an external expected-commit join, publish evidence, compute statistics,
-or change Raw/Wire v1.
+This schema supplies the C++ DTO, serializer, frozen roster, and rebuilding
+validator. Diagnostic process execution and the external expected-commit
+Raw/report join are defined separately by
+`phase4_per_net_report_publication_join_v1.md`; they do not change this artifact
+or Raw/Wire v1. Neither schema publishes evidence statistics.

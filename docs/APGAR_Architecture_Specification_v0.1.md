@@ -1193,8 +1193,13 @@ acceleration.
   the independently frozen complete-EntityRef representative roster, and the
   rebuilding C++ validator are versioned by
   `schemas/benchmark/phase4_per_net_report_artifact_v1.md`. The report is
-  explicitly not decision-eligible; a separate process runner and independent
-  Raw/report file join must bind it before publication.
+  explicitly not decision-eligible. The separate diagnostic process and
+  independent publication join are versioned by
+  `schemas/benchmark/phase4_per_net_report_publication_join_v1.md`; publication
+  first validates complete Raw v1 with an independently supplied expected
+  commit, then binds exact source/config/cell/pair/arm identities and compares
+  both complete diagnostic semantics objects with the Raw repetition-zero
+  baseline-first records.
   Every optimization claim MUST bind the versioned corpus, configuration,
   hardware, toolchains, exact clean commit, and comparison baseline.
 

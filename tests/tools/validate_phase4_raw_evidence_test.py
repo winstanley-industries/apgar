@@ -93,8 +93,8 @@ def _semantics(repetition: int, arm: int, order: int) -> dict[str, object]:
         "final_candidate_count": 8 if candidate else 6,
         "preparation_checksum": 901 if candidate else 0,
         "algorithm_session_checksum": 902,
-        "final_pool_manifest_checksum": 903,
-        "final_rejection_manifest_checksum": 904,
+        "final_pool_manifest_checksum": 903 if candidate else 0,
+        "final_rejection_manifest_checksum": 904 if candidate else 0,
         "terminal_reason": 0,
         "candidate_outcome_source": 1 if candidate else 0,
         "outcome": {
@@ -428,6 +428,36 @@ class Phase4RawEvidenceValidatorTest(unittest.TestCase):
         with self.assertRaisesRegex(validator.EvidenceError, "counters are inconsistent"):
             _validate_document(artifact, expected_repetitions=2)
 
+    def test_rejects_rehashed_component_checksum_source_shapes(self) -> None:
+        def reauthenticate(artifact: dict[str, object], semantics: dict[str, object]) -> None:
+            semantics["semantic_checksum"] = validator.compute_semantic_checksum(semantics)
+            artifact["attempts"][0]["candidate"]["record"]["external_observation"][
+                "associated_semantic_checksum"
+            ] = semantics["semantic_checksum"]
+            _refresh_pair(artifact, 0)
+
+        artifact = _artifact(2)
+        baseline = artifact["attempts"][0]["baseline"]["record"]["semantics"]
+        baseline["final_pool_manifest_checksum"] = 1
+        baseline["semantic_checksum"] = validator.compute_semantic_checksum(baseline)
+        artifact["attempts"][0]["baseline"]["record"]["external_observation"][
+            "associated_semantic_checksum"
+        ] = baseline["semantic_checksum"]
+        _refresh_pair(artifact, 0)
+        with self.assertRaisesRegex(validator.EvidenceError, "baseline accounting"):
+            _validate_document(artifact, expected_repetitions=2)
+
+        artifact = _artifact(2)
+        candidate = artifact["attempts"][0]["candidate"]["record"]["semantics"]
+        candidate["preparation_checksum"] = 0
+        candidate["semantic_checksum"] = validator.compute_semantic_checksum(candidate)
+        artifact["attempts"][0]["candidate"]["record"]["external_observation"][
+            "associated_semantic_checksum"
+        ] = candidate["semantic_checksum"]
+        _refresh_pair(artifact, 0)
+        with self.assertRaisesRegex(validator.EvidenceError, "candidate accounting"):
+            _validate_document(artifact, expected_repetitions=2)
+
         artifact = _artifact(2)
         semantics = artifact["attempts"][0]["candidate"]["record"]["semantics"]
         semantics["rejected_columns"] = 1
@@ -647,6 +677,23 @@ class Phase4RawEvidenceValidatorTest(unittest.TestCase):
             path.write_text('{"wire_schema_version":1,"wire_schema_version":1}', encoding="utf-8")
             with self.assertRaisesRegex(validator.EvidenceError, "duplicate JSON object key"):
                 validator.read_document(path)
+
+    def test_bounded_publication_reader_rejects_oversize_and_pathological_nesting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            oversized = root / "oversized.json"
+            oversized.write_bytes(b" " * (validator._MAXIMUM_RAW_JSON_BYTES + 1))
+            with self.assertRaisesRegex(validator.EvidenceError, "byte input bound"):
+                validator.read_validated_publication_document(
+                    oversized, expected_commit=_EXPECTED_COMMIT
+                )
+
+            nested = root / "nested.json"
+            nested.write_text("[" * 2_000 + "0" + "]" * 2_000, encoding="utf-8")
+            with self.assertRaisesRegex(validator.EvidenceError, "nesting|cannot read"):
+                validator.read_validated_publication_document(
+                    nested, expected_commit=_EXPECTED_COMMIT
+                )
 
     def test_rejects_extra_field_and_bool_as_integer(self) -> None:
         artifact = _artifact()
