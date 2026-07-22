@@ -1037,6 +1037,23 @@ acceleration.
   recomputation from canonical candidate footprints. Resource refinement MUST
   remain available when exact conflicts cannot be represented by the current
   capacity model.
+- Canonical exact cases MUST expose a diagnostic final-pool snapshot before the
+  candidate allocation session is destroyed. The snapshot contract is
+  versioned by `schemas/benchmark/phase4_exact_small_snapshot_v1.md`: it binds
+  complete immutable candidate payloads, the current capacity vocabulary, and
+  the production-selected world to the Raw and per-net authorities. Its actual
+  `prod(max(1, pool size))` MUST be preflighted with widened arithmetic against
+  the case bound and 4096 before any candidate traversal; overflow or excess
+  fails as a whole and MUST NOT emit a truncated pool prefix. This diagnostic
+  artifact MUST bind the complete candidate-arm semantics, reproduce the exact
+  ordered two-level final-pool manifest (including empty pools), replay every
+  non-authenticating exact candidate-admission check, and independently expand
+  selected footprints to reproduce capacity overuse. It is subject to frozen
+  component and serialized-output bounds and is an input to independent
+  fixed-pool enumeration, never timing evidence or proof that the frozen pools
+  are route-complete. Raw and per-net checksums in the snapshot are claimed
+  associations until the publication validator loads and joins those external
+  documents.
 - Prices, histories, iteration counts, regeneration budgets, and world state
   MUST be bounded, versioned, and replayable. Identical board, configuration,
   seed, candidate pools, and supported backend/device class MUST produce the

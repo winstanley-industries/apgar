@@ -1689,7 +1689,11 @@ CandidateDraftBuildResult BuildGeneratedCandidateFromCpuRoute(
   return result;
 }
 
-CandidateAdmissionResult RouteCandidateAdmissionFactory::AdmitWithVerifiedPolicy(
+using CandidatePayloadWithoutProducerEvidenceResult =
+    std::variant<GeneratedRouteCandidate, CandidateRejection>;
+
+[[nodiscard]] CandidatePayloadWithoutProducerEvidenceResult
+ValidateCandidatePayloadWithoutProducerEvidenceImpl(
     const CandidateAdmissionContext& context, GeneratedRouteCandidate generated,
     std::uint64_t maximum_pair_checks, std::uint64_t maximum_expanded_resource_edges,
     const routing::CandidatePolicyResult* verified_request_policy) {
@@ -1884,15 +1888,30 @@ CandidateAdmissionResult RouteCandidateAdmissionFactory::AdmitWithVerifiedPolicy
     failure.actual_value = generated.logical_bytes;
     return RejectionFrom(generated, std::move(failure));
   }
-  if (!GeneratedRouteCandidateProducerFactory::Authenticates(generated)) {
+  return generated;
+}
+
+CandidateAdmissionResult RouteCandidateAdmissionFactory::AdmitWithVerifiedPolicy(
+    const CandidateAdmissionContext& context, GeneratedRouteCandidate generated,
+    std::uint64_t maximum_pair_checks, std::uint64_t maximum_expanded_resource_edges,
+    const routing::CandidatePolicyResult* verified_request_policy) {
+  CandidatePayloadWithoutProducerEvidenceResult validated =
+      ValidateCandidatePayloadWithoutProducerEvidenceImpl(
+          context, std::move(generated), maximum_pair_checks, maximum_expanded_resource_edges,
+          verified_request_policy);
+  if (auto* rejection = std::get_if<CandidateRejection>(&validated); rejection != nullptr) {
+    return std::move(*rejection);
+  }
+  GeneratedRouteCandidate canonical = std::get<GeneratedRouteCandidate>(std::move(validated));
+  if (!GeneratedRouteCandidateProducerFactory::Authenticates(canonical)) {
     return RejectionFrom(
-        generated,
+        canonical,
         Failure(CandidateLifecycleStage::kSignedAndDeduplicated,
                 CandidateRejectionCode::kAssociationMismatch,
                 "candidate.provenance.producer_authentication.v1",
                 "Finalized candidate payload is not bound to exact typed producer evidence"));
   }
-  return RouteCandidateAdmissionFactory::Make(std::move(generated));
+  return RouteCandidateAdmissionFactory::Make(std::move(canonical));
 }
 
 CandidateAdmissionResult RouteCandidateAdmissionFactory::AdmitWithBudgets(
@@ -1946,6 +1965,31 @@ CandidateAdmissionResult internal::AdmitRouteCandidateWithVerifiedRequestPolicy(
   return RouteCandidateAdmissionFactory::AdmitWithVerifiedPolicy(
       context, std::move(generated), kMaximumCandidateSelfClearancePairChecks,
       kMaximumCandidateExpandedResourceEdges, &verified_request_policy);
+}
+
+internal::CandidatePayloadWithoutProducerEvidenceValidationResult
+internal::ValidateCandidatePayloadWithoutProducerEvidence(
+    const CandidateAdmissionContext& context, const GeneratedRouteCandidate& generated) {
+  if (const std::optional<VerificationFailure> failure = CandidatePayloadShapeFailure(generated);
+      failure.has_value()) {
+    return RejectionFrom(generated, *failure);
+  }
+  CandidatePayloadWithoutProducerEvidenceResult validated =
+      ValidateCandidatePayloadWithoutProducerEvidenceImpl(
+          context, GeneratedRouteCandidate(generated), kMaximumCandidateSelfClearancePairChecks,
+          kMaximumCandidateExpandedResourceEdges, nullptr);
+  if (auto* rejection = std::get_if<CandidateRejection>(&validated); rejection != nullptr) {
+    return std::move(*rejection);
+  }
+  const GeneratedRouteCandidate& canonical = std::get<GeneratedRouteCandidate>(validated);
+  if (!(canonical == generated)) {
+    return RejectionFrom(
+        generated,
+        Failure(CandidateLifecycleStage::kNormalized, CandidateRejectionCode::kInvalidInput,
+                "candidate.payload.canonical_encoding.v1",
+                "Durable candidate payload is valid only after normalization"));
+  }
+  return std::monostate{};
 }
 
 bool CanonicalGeometryEqual(const RouteCandidate& left, const RouteCandidate& right) noexcept {

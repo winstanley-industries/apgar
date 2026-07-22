@@ -661,6 +661,25 @@ cc_library(
 )
 
 cc_library(
+    name = "phase4_exact_small_snapshot",
+    srcs = ["src/benchmark/phase4_exact_small_snapshot.cc"],
+    hdrs = ["include/apgar/benchmark/phase4_exact_small_snapshot.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":negotiated_prices",
+        ":phase4_paired_trial",
+        ":phase4_per_net_report_artifact",
+        ":phase4_representative_corpus",
+        ":phase4_trial_harness",
+    ],
+)
+
+cc_library(
     name = "phase4_trial_harness_fault_test_variant",
     testonly = True,
     srcs = [
@@ -1320,6 +1339,43 @@ cc_binary(
 )
 
 cc_binary(
+    name = "phase4_exact_small_snapshot_runner",
+    srcs = ["tools/phase4_exact_small_snapshot_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    linkopts = ["-pthread"],
+    tags = ["manual"],
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_exact_small_snapshot",
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_exact_small_snapshot_test_runner",
+    testonly = True,
+    srcs = ["tools/phase4_exact_small_snapshot_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    defines = ["APGAR_PHASE4_EXACT_SNAPSHOT_RUNNER_TESTING"],
+    linkopts = ["-pthread"],
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_exact_small_snapshot",
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
     name = "phase4_evidence_fault_runner",
     testonly = True,
     srcs = ["tools/phase4_evidence_runner.cc"],
@@ -1365,6 +1421,21 @@ py_test(
         ":phase4_raw_evidence_validator_lib",
         ":phase4_workload_net_roster_manifest_validator_lib",
     ],
+)
+
+py_test(
+    name = "phase4_exact_small_snapshot_process_test",
+    size = "medium",
+    srcs = ["tests/benchmark/phase4_exact_small_snapshot_process_test.py"],
+    data = [
+        "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
+        ":phase4_evidence_runner",
+        ":phase4_exact_small_snapshot_test_runner",
+        ":phase4_per_net_report_test_runner",
+    ],
+    legacy_create_init = 0,
+    python_version = "3.13",
+    deps = [":phase4_raw_evidence_validator_lib"],
 )
 
 cc_test(
@@ -2151,6 +2222,24 @@ cc_test(
         ":phase4_paired_trial",
         ":phase4_per_net_report_artifact",
         ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_exact_small_snapshot_test",
+    size = "medium",
+    srcs = [
+        "src/benchmark/phase4_paired_trial_internal.h",
+        "tests/benchmark/phase4_exact_small_snapshot_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase4_exact_small_snapshot",
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
         "@googletest//:gtest_main",
     ],
 )

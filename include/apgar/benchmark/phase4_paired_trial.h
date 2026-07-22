@@ -223,6 +223,21 @@ struct Phase4TrialArmDiagnosticExecutionV1 {
                          const Phase4TrialArmDiagnosticExecutionV1&) = default;
 };
 
+// Candidate-only diagnostic capture. The immutable StoredCandidate handles are
+// copied while the authoritative allocation session and CandidateStore are
+// alive, so the complete frozen pool membership remains available after the
+// session is destroyed. This is not decision-eligible timing evidence.
+struct Phase4CandidatePoolSnapshotExecutionV1 {
+  Phase4TrialArmSemantics semantics;
+  Phase4ArmReportTelemetryV1 telemetry;
+  std::uint32_t capacity_schema_version = allocator::kResourceCapacityModelSchemaVersion;
+  allocator::AllocationAssociations capacity_associations;
+  std::uint32_t default_capacity_units = 0;
+  std::vector<allocator::ResourceCapacityOverride> capacity_overrides;
+  std::vector<allocator::CandidatePool> final_pools;
+  allocator::OneWorldAllocation production_world;
+};
+
 struct Phase4ExternalResourceObservation {
   std::uint32_t schema_version = kPhase4ExternalAuthoritySchemaVersion;
   Phase4ExternalAuthorityKind authority_kind =
@@ -338,6 +353,8 @@ struct Phase4TrialArmFailure {
 using Phase4TrialArmExecutionResult = std::variant<Phase4TrialArmExecution, Phase4TrialArmFailure>;
 using Phase4TrialArmDiagnosticExecutionResultV1 =
     std::variant<Phase4TrialArmDiagnosticExecutionV1, Phase4TrialArmFailure>;
+using Phase4CandidatePoolSnapshotExecutionResultV1 =
+    std::variant<Phase4CandidatePoolSnapshotExecutionV1, Phase4TrialArmFailure>;
 using Phase4TrialArmRecordResult = std::variant<Phase4TrialArmRecord, Phase4PairedTrialError>;
 using Phase4PairedTrialAssemblyResult =
     std::variant<Phase4PairedTrialResult, Phase4PairedTrialError>;
@@ -356,6 +373,13 @@ using Phase4PairedTrialAssemblyResult =
 [[nodiscard]] Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+// Executes the reusable-candidate contender and captures its complete frozen
+// final pools, current capacity vocabulary, and production-selected world
+// before the allocation session is destroyed.
+[[nodiscard]] Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotV1(
+    const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer);
 
 // Converts an independently measured arm execution into a decision-eligible
 // record only when isolated wall and memory authorities were both enforced.

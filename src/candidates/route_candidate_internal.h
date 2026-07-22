@@ -43,6 +43,19 @@ enum class CandidateProducerAuthority : std::uint8_t {
     const routing::CandidatePolicyResult& verified_request_policy,
     GeneratedRouteCandidate&& generated);
 
+// Replays every non-authenticating exact admission check without creating a
+// RouteCandidate or mutating CandidateStore. This is for durable evidence rows
+// that deliberately cannot retain the opaque producer-evidence capability.
+// A successful result is monostate; typed producer authentication must be
+// established independently by the authority that originally admitted the
+// candidate.
+using CandidatePayloadWithoutProducerEvidenceValidationResult =
+    std::variant<std::monostate, CandidateRejection>;
+
+[[nodiscard]] CandidatePayloadWithoutProducerEvidenceValidationResult
+ValidateCandidatePayloadWithoutProducerEvidence(const CandidateAdmissionContext& context,
+                                                const GeneratedRouteCandidate& generated);
+
 }  // namespace apgar::candidates::internal
 
 #endif  // APGAR_SRC_CANDIDATES_ROUTE_CANDIDATE_INTERNAL_H_

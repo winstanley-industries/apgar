@@ -825,7 +825,7 @@ using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmF
 [[nodiscard]] ArmSemanticsResult ExecuteCandidate(
     const Phase4PairedTrialSpec& spec, Phase4RepresentativeCase corpus,
     const ValidatedTrialSpec& validated, allocator::PersistentCpuCandidatePoolPreparer& preparer,
-    Phase4ArmReportTelemetryV1* telemetry) {
+    Phase4ArmReportTelemetryV1* telemetry, Phase4CandidatePoolSnapshotExecutionV1* snapshot) {
   Phase4TrialArmSemantics semantics =
       CommonSemantics(Phase4TrialArm::kReusableCandidateAllocation, spec, corpus, validated);
   allocator::PreparedCpuCandidatePoolsResult preparation =
@@ -940,6 +940,22 @@ using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmF
       return ArmFailure(std::get<Phase4PairedTrialError>(built));
     }
     *telemetry = std::get<Phase4ArmReportTelemetryV1>(std::move(built));
+  }
+  if (snapshot != nullptr) {
+    if (telemetry == nullptr) {
+      return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                              "P4SNAPSHOT-TELEMETRY-001",
+                              "pool snapshot capture requires associated per-net telemetry",
+                              Phase4TrialArm::kReusableCandidateAllocation));
+    }
+    snapshot->semantics = semantics;
+    snapshot->telemetry = *telemetry;
+    snapshot->capacity_schema_version = session.capacities().schema_version();
+    snapshot->capacity_associations = session.capacities().associations();
+    snapshot->default_capacity_units = session.capacities().default_capacity_units();
+    snapshot->capacity_overrides = session.capacities().overrides();
+    snapshot->final_pools = session.final_pools();
+    snapshot->production_world = *chosen_world;
   }
   return semantics;
 }
@@ -1752,6 +1768,7 @@ namespace {
 struct ArmExecutionWithOptionalTelemetry {
   Phase4TrialArmExecution execution;
   std::optional<Phase4ArmReportTelemetryV1> telemetry;
+  std::optional<Phase4CandidatePoolSnapshotExecutionV1> snapshot;
 };
 
 using ArmExecutionWithOptionalTelemetryResult =
@@ -1759,8 +1776,14 @@ using ArmExecutionWithOptionalTelemetryResult =
 
 [[nodiscard]] ArmExecutionWithOptionalTelemetryResult ExecutePhase4TrialArmImpl(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
-    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer, bool capture_telemetry) {
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer, bool capture_telemetry,
+    bool capture_snapshot) {
   try {
+    if (capture_snapshot && arm != Phase4TrialArm::kReusableCandidateAllocation) {
+      return ArmFailure(Error(Phase4PairedTrialErrorCode::kInvalidConfiguration,
+                              "P4SNAPSHOT-ARM-001",
+                              "pool snapshots are candidate-arm diagnostics only", arm));
+    }
     const ValidationResult validation = ValidateSpec(spec, arm);
     if (std::holds_alternative<Phase4PairedTrialError>(validation)) {
       return ArmFailure(std::get<Phase4PairedTrialError>(validation));
@@ -1790,6 +1813,7 @@ using ArmExecutionWithOptionalTelemetryResult =
     }
     Phase4TrialArmSemantics semantics;
     Phase4ArmReportTelemetryV1 telemetry;
+    Phase4CandidatePoolSnapshotExecutionV1 snapshot;
     std::uint64_t case_build_elapsed = 0;
     std::uint64_t prepared_elapsed = 0;
     {
@@ -1818,7 +1842,8 @@ using ArmExecutionWithOptionalTelemetryResult =
               ? ExecuteBaseline(spec, std::move(corpus), validated,
                                 capture_telemetry ? &telemetry : nullptr)
               : ExecuteCandidate(spec, std::move(corpus), validated, *candidate_preparer,
-                                 capture_telemetry ? &telemetry : nullptr);
+                                 capture_telemetry ? &telemetry : nullptr,
+                                 capture_snapshot ? &snapshot : nullptr);
       prepared_elapsed = ElapsedNanoseconds(prepared_start, Clock::now());
       if (std::holds_alternative<Phase4TrialArmFailure>(arm_result)) {
         return std::get<Phase4TrialArmFailure>(std::move(arm_result));
@@ -1840,9 +1865,13 @@ using ArmExecutionWithOptionalTelemetryResult =
                 .preparer_lifecycle = LifecycleObservation(lifecycle_before, lifecycle_after),
             },
         .telemetry = std::nullopt,
+        .snapshot = std::nullopt,
     };
     if (capture_telemetry) {
       output.telemetry = std::move(telemetry);
+    }
+    if (capture_snapshot) {
+      output.snapshot = std::move(snapshot);
     }
     return output;
   } catch (const std::bad_alloc&) {
@@ -1866,7 +1895,7 @@ Phase4TrialArmExecutionResult ExecutePhase4TrialArmV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result =
-      ExecutePhase4TrialArmImpl(arm, spec, imported_fixture, candidate_preparer, false);
+      ExecutePhase4TrialArmImpl(arm, spec, imported_fixture, candidate_preparer, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -1877,7 +1906,7 @@ Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result =
-      ExecutePhase4TrialArmImpl(arm, spec, imported_fixture, candidate_preparer, true);
+      ExecutePhase4TrialArmImpl(arm, spec, imported_fixture, candidate_preparer, true, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -1891,6 +1920,26 @@ Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
       .semantics = std::move(output.execution.semantics),
       .telemetry = std::move(*output.telemetry),
   };
+}
+
+Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotV1(
+    const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  ArmExecutionWithOptionalTelemetryResult result =
+      ExecutePhase4TrialArmImpl(Phase4TrialArm::kReusableCandidateAllocation, spec,
+                                imported_fixture, candidate_preparer, true, true);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.snapshot.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                            "P4SNAPSHOT-INTERNAL-001",
+                            "candidate execution completed without a final-pool snapshot",
+                            Phase4TrialArm::kReusableCandidateAllocation));
+  }
+  return std::move(*output.snapshot);
 }
 
 Phase4TrialArmRecordResult FinalizePhase4TrialArmV1(
