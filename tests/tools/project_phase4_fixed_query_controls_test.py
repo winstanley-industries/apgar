@@ -36,6 +36,7 @@ def _raw(
     *,
     compiler_identity: str = "clang-test",
     setup_limit: int = 3_000,
+    corpus_limits: dict[str, int] | None = None,
 ) -> dict[str, object]:
     result = raw_test._artifact(20)
     _, cases, budgets = raw_validator._representative_manifest()
@@ -44,13 +45,17 @@ def _raw(
     config["case_id"] = case_id
     config["requested_pool_size"] = pool_size
     config["maximum_setup_elapsed_nanoseconds"] = setup_limit
-    config["corpus_limits"] = {
-        "maximum_nets": 4096,
-        "maximum_compiled_nodes": 100_000_000,
-        "maximum_compiled_host_bytes": 8 * 1024 * 1024 * 1024,
-        "maximum_active_regions": 100_000,
-        "maximum_board_entities": 20_000,
-    }
+    config["corpus_limits"] = copy.deepcopy(
+        corpus_limits
+        if corpus_limits is not None
+        else {
+            "maximum_nets": 4096,
+            "maximum_compiled_nodes": 100_000_000,
+            "maximum_compiled_host_bytes": 8 * 1024 * 1024 * 1024,
+            "maximum_active_regions": 100_000,
+            "maximum_board_entities": 20_000,
+        }
+    )
     result["authority_run_identity"] = 10_000 + case_id
     result["controller_identity"] = 20_000 + case_id
     result["environment"]["compiler_identity"] = compiler_identity

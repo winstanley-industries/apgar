@@ -999,6 +999,18 @@ acceleration.
 - Candidate pools MUST include realistic small per-net schedules such as 4, 8,
   and 16 requested alternatives. Larger pools MAY characterize scaling but
   MUST NOT be the only regime used to claim Phase 4 success.
+- The thousands-net stress publication is versioned by
+  `schemas/benchmark/phase4_stress_evidence_v1.md`. Case 3000 MUST bind a full
+  1024-net Raw/report/operational execution, including only the coarse nested
+  timing and process-lifetime `wait4` peaks those authorities actually expose.
+  Cases 3001 and 3002 MUST use the real representative builder's bounded
+  descriptor/Board/one-compiled-net preflight under default limits. Their 739-
+  and 369-net quotients are capacity-derived prefixes, never achieved or
+  materialized counts; candidate preparation and allocation are not reached.
+  Required compiled host bytes are logical estimates, not RSS, and unavailable
+  elapsed or peak-memory measurements MUST remain tagged rather than numeric.
+  The 4096-net target remains unsupported when 1024 is the largest complete Raw
+  success, even though all three diagnostic rows are present.
 - Initial CPU pools are prepared through the persistent, bounded, atomic
   contract in `schemas/allocator/cpu_candidate_pool_preparation_v2.md`.
   Worker count and completion order are operational only: identical semantic
