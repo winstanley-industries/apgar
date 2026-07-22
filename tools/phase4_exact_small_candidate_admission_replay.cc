@@ -1,0 +1,357 @@
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <iostream>
+#include <limits>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include "apgar/benchmark/phase4_representative_corpus.h"
+#include "apgar/candidates/route_candidate.h"
+#include "src/candidates/route_candidate_internal.h"
+
+namespace {
+
+constexpr std::array<std::uint8_t, 8> kMagic = {'A', 'P', 'G', 'A', 'R', 'P', '4', 'E'};
+constexpr std::size_t kMaximumInputBytes = 64ULL * 1024ULL * 1024ULL;
+constexpr std::uint32_t kPoolCount = 6;
+constexpr std::uint32_t kMaximumCandidatesPerPool = 6;
+constexpr std::uint32_t kMaximumCandidates = 36;
+constexpr std::uint64_t kMaximumComponentRows = 100'000;
+constexpr std::uint64_t kMaximumExpandedEdges = 100'000;
+constexpr std::uint64_t kMaximumLogicalBytes = 32ULL * 1024ULL * 1024ULL;
+constexpr std::uint32_t kMaximumDeviceClassBytes = 1024;
+
+class Reader {
+ public:
+  explicit Reader(std::span<const std::uint8_t> bytes) : bytes_(bytes) {}
+
+  [[nodiscard]] bool Done() const noexcept { return position_ == bytes_.size(); }
+
+  [[nodiscard]] bool U8(std::uint8_t* value) noexcept {
+    if (Remaining() < 1) return false;
+    *value = bytes_[position_++];
+    return true;
+  }
+
+  [[nodiscard]] bool U16(std::uint16_t* value) noexcept {
+    std::uint64_t decoded = 0;
+    if (!Unsigned(2, &decoded)) return false;
+    *value = static_cast<std::uint16_t>(decoded);
+    return true;
+  }
+
+  [[nodiscard]] bool U32(std::uint32_t* value) noexcept {
+    std::uint64_t decoded = 0;
+    if (!Unsigned(4, &decoded)) return false;
+    *value = static_cast<std::uint32_t>(decoded);
+    return true;
+  }
+
+  [[nodiscard]] bool U64(std::uint64_t* value) noexcept { return Unsigned(8, value); }
+
+  [[nodiscard]] bool I64(std::int64_t* value) noexcept {
+    std::uint64_t decoded = 0;
+    if (!U64(&decoded)) return false;
+    *value = std::bit_cast<std::int64_t>(decoded);
+    return true;
+  }
+
+  [[nodiscard]] bool Bytes(std::span<const std::uint8_t> expected) noexcept {
+    if (Remaining() < expected.size()) return false;
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+      if (bytes_[position_ + index] != expected[index]) return false;
+    }
+    position_ += expected.size();
+    return true;
+  }
+
+  [[nodiscard]] bool String(std::string* value) {
+    std::uint32_t size = 0;
+    if (!U32(&size) || size > kMaximumDeviceClassBytes || Remaining() < size) return false;
+    value->assign(reinterpret_cast<const char*>(bytes_.data() + position_), size);
+    position_ += size;
+    return true;
+  }
+
+ private:
+  [[nodiscard]] std::size_t Remaining() const noexcept { return bytes_.size() - position_; }
+
+  [[nodiscard]] bool Unsigned(std::size_t size, std::uint64_t* value) noexcept {
+    if (Remaining() < size) return false;
+    std::uint64_t decoded = 0;
+    for (std::size_t index = 0; index < size; ++index) {
+      decoded |= static_cast<std::uint64_t>(bytes_[position_ + index]) << (8U * index);
+    }
+    position_ += size;
+    *value = decoded;
+    return true;
+  }
+
+  std::span<const std::uint8_t> bytes_;
+  std::size_t position_ = 0;
+};
+
+struct Bounds {
+  std::uint32_t candidates = 0;
+  std::uint64_t geometry_rows = 0;
+  std::uint64_t span_rows = 0;
+  std::uint64_t policy_rows = 0;
+  std::uint64_t expanded_edges = 0;
+  std::uint64_t geometry_steps = 0;
+  std::uint64_t logical_bytes = 0;
+};
+
+template <typename Value>
+[[nodiscard]] bool AddWithin(Value* total, Value value, Value maximum) noexcept {
+  if (value > maximum || *total > maximum - value) return false;
+  *total += value;
+  return true;
+}
+
+[[nodiscard]] bool ReadEntity(Reader* reader, apgar::board_ir::EntityRef* entity) noexcept {
+  return reader->U64(&entity->id) && reader->U32(&entity->generation);
+}
+
+[[nodiscard]] bool ReadId(Reader* reader, apgar::candidates::Hash128* id) noexcept {
+  return reader->U64(&id->high) && reader->U64(&id->low);
+}
+
+[[nodiscard]] bool ReadResource(Reader* reader,
+                                apgar::routing::EdgeResourceKey* resource) noexcept {
+  std::uint8_t direction = 0;
+  if (!reader->U32(&resource->layer) || !reader->I64(&resource->lattice_x) ||
+      !reader->I64(&resource->lattice_y) || !reader->U8(&direction) || direction > 3) {
+    return false;
+  }
+  resource->direction = static_cast<apgar::geometry_compiler::Direction>(direction);
+  return true;
+}
+
+[[nodiscard]] bool ReadPolicy(Reader* reader, apgar::routing::CandidateGenerationPolicy* policy,
+                              Bounds* bounds) {
+  std::uint8_t objective = 0;
+  if (!reader->U32(&policy->schema_version) || !reader->U8(&objective) || objective > 3 ||
+      !reader->U64(&policy->deterministic_seed) || !reader->U32(&policy->candidate_ordinal) ||
+      !reader->U64(&policy->orthogonal_step_surcharge) ||
+      !reader->U64(&policy->diagonal_step_surcharge) || !reader->U64(&policy->bend_surcharge)) {
+    return false;
+  }
+  policy->objective = static_cast<apgar::routing::CandidateObjective>(objective);
+  std::uint32_t banned_count = 0;
+  if (!reader->U32(&banned_count) ||
+      !AddWithin(&bounds->policy_rows, static_cast<std::uint64_t>(banned_count),
+                 kMaximumComponentRows)) {
+    return false;
+  }
+  policy->banned_resources.resize(banned_count);
+  for (auto& resource : policy->banned_resources) {
+    if (!ReadResource(reader, &resource)) return false;
+  }
+  std::uint32_t penalty_count = 0;
+  if (!reader->U32(&penalty_count) ||
+      !AddWithin(&bounds->policy_rows, static_cast<std::uint64_t>(penalty_count),
+                 kMaximumComponentRows)) {
+    return false;
+  }
+  policy->resource_penalties.resize(penalty_count);
+  for (auto& penalty : policy->resource_penalties) {
+    if (!ReadResource(reader, &penalty.resource) || !reader->U64(&penalty.additional_cost)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool ReadCandidate(Reader* reader, apgar::candidates::GeneratedRouteCandidate* value,
+                                 std::uint64_t* intrinsic_cost, Bounds* bounds) {
+  if (!AddWithin(&bounds->candidates, 1U, kMaximumCandidates) ||
+      !reader->U16(&value->schema_major) || !reader->U16(&value->schema_minor) ||
+      !ReadId(reader, &value->id) || !ReadEntity(reader, &value->net) ||
+      !ReadEntity(reader, &value->intended_terminals[0]) ||
+      !ReadEntity(reader, &value->intended_terminals[1]) ||
+      !reader->U64(&value->associations.board_content_hash) ||
+      !reader->U64(&value->associations.compiler_profile_fingerprint) ||
+      !reader->U32(&value->associations.geometry_compiler_version) ||
+      !reader->U64(&value->associations.routing_profile_fingerprint) ||
+      !reader->U64(&value->associations.rule_bucket_identity) ||
+      !reader->U32(&value->geometry_schema_version) ||
+      !reader->U32(&value->resource_schema_version) ||
+      !ReadPolicy(reader, &value->policy, bounds) || !reader->U64(&value->policy_identity)) {
+    return false;
+  }
+  std::uint8_t generator = 0;
+  std::uint8_t backend = 0;
+  if (!reader->U8(&generator) || generator > 2 ||
+      !reader->U32(&value->provenance.generator_version) || !reader->U8(&backend) || backend > 1 ||
+      !reader->String(&value->provenance.supported_device_class) ||
+      !reader->U64(&value->provenance.deterministic_seed) ||
+      !reader->U64(&value->provenance.batch_identity) ||
+      !reader->U64(&value->provenance.query_identity) ||
+      !reader->U32(&value->provenance.candidate_ordinal)) {
+    return false;
+  }
+  value->provenance.generator = static_cast<apgar::candidates::CandidateGeneratorKind>(generator);
+  value->provenance.backend = static_cast<apgar::candidates::CandidateBackendKind>(backend);
+
+  std::uint32_t geometry_count = 0;
+  if (!reader->U32(&geometry_count) ||
+      !AddWithin(&bounds->geometry_rows, static_cast<std::uint64_t>(geometry_count),
+                 kMaximumComponentRows)) {
+    return false;
+  }
+  value->geometry.reserve(geometry_count);
+  for (std::uint32_t index = 0; index < geometry_count; ++index) {
+    std::uint8_t kind = 0;
+    apgar::candidates::ExactLinePrimitive line;
+    if (!reader->U8(&kind) || kind != 0 || !reader->U32(&line.layer) ||
+        !reader->I64(&line.centerline.start.x) || !reader->I64(&line.centerline.start.y) ||
+        !reader->I64(&line.centerline.end.x) || !reader->I64(&line.centerline.end.y)) {
+      return false;
+    }
+    using SignedWide = __int128;
+    const SignedWide delta_x = static_cast<SignedWide>(line.centerline.end.x) -
+                               static_cast<SignedWide>(line.centerline.start.x);
+    const SignedWide delta_y = static_cast<SignedWide>(line.centerline.end.y) -
+                               static_cast<SignedWide>(line.centerline.start.y);
+    const std::uint64_t step_count = static_cast<std::uint64_t>(
+        std::max(delta_x < 0 ? -delta_x : delta_x, delta_y < 0 ? -delta_y : delta_y));
+    if (!AddWithin(&bounds->geometry_steps, step_count, kMaximumExpandedEdges)) return false;
+    value->geometry.emplace_back(line);
+  }
+
+  std::uint32_t span_count = 0;
+  if (!reader->U32(&span_count) ||
+      !AddWithin(&bounds->span_rows, static_cast<std::uint64_t>(span_count),
+                 kMaximumComponentRows)) {
+    return false;
+  }
+  value->resources.resize(span_count);
+  for (auto& span : value->resources) {
+    apgar::routing::EdgeResourceKey resource;
+    if (!ReadResource(reader, &resource) || !reader->U32(&span.edge_count) ||
+        !reader->U32(&span.usage_units) ||
+        !AddWithin(&bounds->expanded_edges, static_cast<std::uint64_t>(span.edge_count),
+                   kMaximumExpandedEdges)) {
+      return false;
+    }
+    span.layer = resource.layer;
+    span.lattice_x = resource.lattice_x;
+    span.lattice_y = resource.lattice_y;
+    span.direction = resource.direction;
+  }
+  auto& metrics = value->metrics;
+  if (!reader->U64(&metrics.scalar_policy_cost) || !reader->U64(&metrics.intrinsic_base_cost) ||
+      !reader->U64(&metrics.orthogonal_step_count) || !reader->U64(&metrics.diagonal_step_count) ||
+      !reader->U64(&metrics.bend_count) || !reader->U64(&metrics.line_primitive_count) ||
+      !reader->U64(&metrics.via_count) || !reader->U64(&metrics.axis_aligned_length_dbu) ||
+      !reader->U64(&metrics.diagonal_projection_dbu)) {
+    return false;
+  }
+  std::uint8_t supported = 0;
+  std::uint8_t unsupported = 0;
+  std::uint8_t validation_code = 0;
+  if (!reader->U8(&supported) || supported > 1 || !reader->U8(&unsupported) || unsupported > 1 ||
+      !reader->U32(&value->constraints.connected_intended_terminal_count) ||
+      !reader->U8(&validation_code) || validation_code > 3 ||
+      !ReadId(reader, &value->geometry_signature) || !ReadId(reader, &value->resource_signature) ||
+      !reader->U64(&value->payload_checksum) || !reader->U64(&value->logical_bytes) ||
+      !reader->U64(intrinsic_cost) ||
+      !AddWithin(&bounds->logical_bytes, value->logical_bytes, kMaximumLogicalBytes)) {
+    return false;
+  }
+  value->constraints.supported_hard_constraints_satisfied = supported != 0;
+  value->constraints.unsupported_rules_remain = unsupported != 0;
+  value->constraints.exact_validation_code =
+      static_cast<apgar::candidates::CandidateExactValidationCode>(validation_code);
+  return true;
+}
+
+[[nodiscard]] int Fail(std::string_view message) {
+  std::cerr << "phase4 exact-small candidate admission replay failed: " << message << '\n';
+  return 1;
+}
+
+[[nodiscard]] int Run(std::span<const std::uint8_t> input) {
+  Reader reader(input);
+  std::uint32_t version = 0;
+  std::uint32_t case_id = 0;
+  apgar::benchmark::Phase4RepresentativeCorpusLimits limits;
+  if (!reader.Bytes(kMagic) || !reader.U32(&version) || version != 1 || !reader.U32(&case_id) ||
+      (case_id != 100 && case_id != 101 && case_id != 102) || !reader.U64(&limits.maximum_nets) ||
+      !reader.U64(&limits.maximum_compiled_nodes) ||
+      !reader.U64(&limits.maximum_compiled_host_bytes) ||
+      !reader.U64(&limits.maximum_active_regions) || !reader.U64(&limits.maximum_board_entities)) {
+    return Fail("invalid magic, version, case, or corpus limits");
+  }
+  auto rebuilt = apgar::benchmark::BuildPhase4RepresentativeCaseV1(case_id, {}, limits);
+  if (!std::holds_alternative<apgar::benchmark::Phase4RepresentativeCase>(rebuilt)) {
+    return Fail("representative exact case could not be rebuilt");
+  }
+  const auto& representative = std::get<apgar::benchmark::Phase4RepresentativeCase>(rebuilt);
+  std::uint32_t pool_count = 0;
+  if (!reader.U32(&pool_count) || pool_count != kPoolCount ||
+      representative.workload.nets().size() != kPoolCount) {
+    return Fail("pool count differs from the exact-six rebuilt roster");
+  }
+  Bounds bounds;
+  for (std::uint32_t pool_index = 0; pool_index < pool_count; ++pool_index) {
+    apgar::board_ir::EntityRef pool_net;
+    std::uint32_t candidate_count = 0;
+    const auto& prepared = representative.workload.nets()[pool_index];
+    if (!ReadEntity(&reader, &pool_net) || !(pool_net == prepared.request.net) ||
+        !reader.U32(&candidate_count) || candidate_count > kMaximumCandidatesPerPool) {
+      return Fail("pool roster or candidate count is invalid");
+    }
+    for (std::uint32_t candidate_index = 0; candidate_index < candidate_count; ++candidate_index) {
+      apgar::candidates::GeneratedRouteCandidate candidate;
+      std::uint64_t intrinsic_cost = 0;
+      if (!ReadCandidate(&reader, &candidate, &intrinsic_cost, &bounds)) {
+        return Fail("candidate wire payload is malformed or exceeds a bound");
+      }
+      apgar::routing::PlanarRouteRequest request = prepared.request;
+      request.candidate_policy = candidate.policy;
+      const apgar::candidates::CandidateAdmissionContext context{
+          .board = representative.board,
+          .compiled_board = prepared.compiled_board,
+          .request = request,
+      };
+      if (std::holds_alternative<apgar::candidates::CandidateRejection>(
+              apgar::candidates::internal::ValidateCandidatePayloadWithoutProducerEvidence(
+                  context, candidate)) ||
+          intrinsic_cost != candidate.metrics.intrinsic_base_cost) {
+        return Fail("candidate failed exact non-authenticating admission");
+      }
+    }
+  }
+  if (!reader.Done()) return Fail("trailing bytes follow the exact candidate roster");
+  return 0;
+}
+
+}  // namespace
+
+int main() try {
+  std::vector<std::uint8_t> input;
+  input.reserve(1024 * 1024);
+  std::array<char, 4096> chunk{};
+  while (std::cin) {
+    std::cin.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+    const std::streamsize count = std::cin.gcount();
+    if (count <= 0) break;
+    if (input.size() > kMaximumInputBytes - static_cast<std::size_t>(count)) {
+      return Fail("stdin exceeds the 64 MiB bound");
+    }
+    input.insert(input.end(), chunk.begin(), chunk.begin() + count);
+  }
+  if (std::cin.bad()) return Fail("stdin read failed");
+  return Run(input);
+} catch (const std::exception&) {
+  return Fail("bounded replay terminated with an exception");
+}

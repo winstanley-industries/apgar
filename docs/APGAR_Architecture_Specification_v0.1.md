@@ -1054,6 +1054,23 @@ acceleration.
   are route-complete. Raw and per-net checksums in the snapshot are claimed
   associations until the publication validator loads and joins those external
   documents.
+- Exact-small publication MUST follow
+  `schemas/benchmark/phase4_exact_small_oracle_publication_v1.md`. The
+  independent validator MUST fully validate and structurally join Raw v1,
+  Per-Net Report v1, and the final-pool snapshot before enumeration, including
+  every per-net final-pool and selected identity/payload/metric field rather
+  than telemetry checksums alone. After product-only and aggregate shape-only
+  preflight, it MUST independently reconstruct candidate metrics/resources and
+  replay source-private non-authenticating exact admission against the rebuilt
+  Board/workload without invoking allocator, session, or scoring logic. It MUST
+  enumerate the complete bounded product with an explicit sentinel for each
+  empty pool and rank worlds only by maximum selected-net count, minimum total
+  overuse units, then minimum unweighted intrinsic base cost. Overused-resource
+  count is a separately recomputed diagnostic and MUST NOT rank worlds. Equal
+  objective values establish production optimality even when witnesses differ;
+  the diagnostic artifact retains the optimum count and lowest ordered
+  candidate-ID witness. This is fixed-pool evidence only and remains ineligible
+  for timing or route-completeness claims.
 - Prices, histories, iteration counts, regeneration budgets, and world state
   MUST be bounded, versioned, and replayable. Identical board, configuration,
   seed, candidate pools, and supported backend/device class MUST produce the

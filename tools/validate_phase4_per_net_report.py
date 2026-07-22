@@ -939,6 +939,21 @@ def validate_join(raw_value: Any, report_value: Any, *, expected_commit: str) ->
     _validate_join_documents(raw_value, report_value, expected_commit=expected_commit)
 
 
+def validate_config(value: Any) -> Mapping[str, Any]:
+    """Validate one canonical report/snapshot cell configuration."""
+    return _config(value)
+
+
+def validate_semantics(value: Any, label: str) -> Mapping[str, Any]:
+    """Validate one complete Phase 4 arm semantic object."""
+    return _semantics(value, label)
+
+
+def read_report_document(path: pathlib.Path) -> Any:
+    """Read one canonical per-net report under its frozen input bound."""
+    return _read_canonical(path, "per-net report", _MAX_REPORT_BYTES)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-commit", required=True)
@@ -949,7 +964,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raw_document = raw_validator.read_validated_publication_document(
             options.raw, expected_commit=options.expected_commit
         )
-        report_document = _read_canonical(options.report, "per-net report", _MAX_REPORT_BYTES)
+        report_document = read_report_document(options.report)
         _validate_join_documents(
             raw_document, report_document, expected_commit=options.expected_commit
         )

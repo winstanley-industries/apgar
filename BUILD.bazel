@@ -1081,6 +1081,71 @@ py_library(
     ],
 )
 
+cc_binary(
+    name = "phase4_exact_small_candidate_admission_replay",
+    srcs = ["tools/phase4_exact_small_candidate_admission_replay.cc"],
+    copts = APGAR_COPTS,
+    deps = [
+        ":candidate_contract",
+        ":phase4_representative_corpus",
+    ],
+)
+
+py_binary(
+    name = "phase4_exact_small_oracle_validator",
+    srcs = ["tools/validate_phase4_exact_small_oracle.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        ":phase4_exact_small_candidate_admission_replay",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_exact_small_oracle.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_exact_small_oracle_validator_lib",
+    srcs = ["tools/validate_phase4_exact_small_oracle.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        ":phase4_exact_small_candidate_admission_replay",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_exact_small_oracle_validator_test",
+    size = "medium",
+    srcs = ["tests/tools/validate_phase4_exact_small_oracle_test.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        ":phase4_evidence_runner",
+        ":phase4_exact_small_candidate_admission_replay",
+        ":phase4_exact_small_oracle_validator",
+        ":phase4_exact_small_snapshot_test_runner",
+        ":phase4_per_net_report_test_runner",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_exact_small_oracle_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_exact_small_oracle_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+    ],
+)
+
 py_test(
     name = "phase4_workload_net_roster_manifest_validator_test",
     size = "small",
