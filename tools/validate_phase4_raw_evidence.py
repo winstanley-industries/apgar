@@ -1903,6 +1903,13 @@ def validate_document(
             or candidate_lifecycle["invocations_completed_before"] == 0
         ):
             raise EvidenceError(f"{label} candidate lifecycle does not prove persistent reuse")
+        if repetition == 0 and (
+            candidate_lifecycle["invocations_started_before"] != 1
+            or candidate_lifecycle["invocations_completed_before"] != 1
+        ):
+            raise EvidenceError(
+                f"{label} candidate lifecycle does not begin after exactly one warm-up"
+            )
         if previous_candidate_lifecycle is not None and (
             candidate_lifecycle["invocations_started_before"]
             != previous_candidate_lifecycle["invocations_started_after"]
@@ -1911,6 +1918,14 @@ def validate_document(
         ):
             raise EvidenceError(f"{label} candidate lifecycle is not continuous")
         previous_candidate_lifecycle = candidate_lifecycle
+
+    if previous_candidate_lifecycle is None or (
+        previous_candidate_lifecycle["invocations_started_after"] != expected_repetitions + 1
+        or previous_candidate_lifecycle["invocations_completed_after"] != expected_repetitions + 1
+    ):
+        raise EvidenceError(
+            "candidate lifecycle does not end after one warm-up and all measured repetitions"
+        )
 
     if document["artifact_checksum"] != compute_cell_artifact_checksum(document):
         raise EvidenceError("artifact_checksum does not authenticate the raw cell")

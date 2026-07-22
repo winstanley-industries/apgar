@@ -789,6 +789,25 @@ class Phase4RawEvidenceValidatorTest(unittest.TestCase):
         with self.assertRaisesRegex(validator.EvidenceError, "not continuous"):
             _validate_document(artifact, expected_repetitions=2)
 
+    def test_rejects_continuous_lifecycle_not_anchored_to_one_warmup(self) -> None:
+        artifact = _artifact()
+        for repetition, pair in enumerate(artifact["attempts"]):
+            candidate = pair["candidate"]
+            lifecycle = candidate["record"]["preparer_lifecycle"]
+            for field in (
+                "invocations_started_before",
+                "invocations_started_after",
+                "invocations_completed_before",
+                "invocations_completed_after",
+            ):
+                lifecycle[field] += 1
+            candidate["record"]["external_observation"]["preparer_lifecycle"] = copy.deepcopy(
+                lifecycle
+            )
+            _refresh_pair(artifact, repetition)
+        with self.assertRaisesRegex(validator.EvidenceError, "exactly one warm-up"):
+            _validate_document(artifact, expected_repetitions=2)
+
     def test_rejects_unpaired_attempt_and_result_copy_drift(self) -> None:
         artifact = _artifact()
         artifact["attempts"][0]["result"] = None

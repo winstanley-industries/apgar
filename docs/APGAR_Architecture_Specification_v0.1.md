@@ -1200,6 +1200,17 @@ acceleration.
   commit, then binds exact source/config/cell/pair/arm identities and compares
   both complete diagnostic semantics objects with the Raw repetition-zero
   baseline-first records.
+  Operational Projection v1 is separately versioned by
+  `schemas/benchmark/phase4_operational_projection_v1.md`. It MUST first
+  validate complete canonical Raw v1 against an independently supplied commit,
+  bind every pair and arm authentication layer, and derive only nested timing,
+  route-work, candidate-accounting, process-lifecycle, and process-lifetime
+  peak fields already authenticated by Raw. Measurements absent from Raw MUST
+  use explicit unavailable or not-applicable tags, never numeric zero. A
+  complete Raw cell may be marked as eligible input to later statistics, but
+  its projection is not standalone-decision-eligible, has incomplete matrix
+  coverage and incomplete Phase 4 telemetry, and does not establish the
+  Section 29.2 exit gate.
   Every optimization claim MUST bind the versioned corpus, configuration,
   hardware, toolchains, exact clean commit, and comparison baseline.
 
