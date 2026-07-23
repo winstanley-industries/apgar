@@ -2045,17 +2045,118 @@ py_test(
         ":phase4_operational_capture",
         ":phase4_operational_measurement_validator",
         ":phase4_operational_replay_worker",
+        ":phase4_per_net_report_test_runner",
     ],
     legacy_create_init = 0,
     main = "tests/tools/validate_phase4_operational_measurement_test.py",
     python_version = "3.13",
     tags = ["exact-address-space-envelope"],
     deps = [
+        ":phase4_matrix_aggregator_lib",
         ":phase4_operational_capture_lib",
         ":phase4_operational_measurement_validator_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_same_run_decision_telemetry_validator_lib",
     ],
+)
+
+py_binary(
+    name = "phase4_matrix_aggregator",
+    srcs = ["tools/aggregate_phase4_matrix.py"],
+    legacy_create_init = 0,
+    main = "tools/aggregate_phase4_matrix.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_exact_small_oracle_v2_validator_lib",
+        ":phase4_exact_small_oracle_validator_lib",
+        ":phase4_fixed_query_controls_lib",
+        ":phase4_operational_measurement_validator_lib",
+        ":phase4_operational_projection_lib",
+        ":phase4_per_net_report_v2_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+        ":phase4_statistical_protocol_v4_validator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+        ":phase4_stress_evidence_lib",
+    ],
+)
+
+py_binary(
+    name = "phase4_matrix_runner",
+    srcs = ["tools/run_phase4_matrix.py"],
+    legacy_create_init = 0,
+    main = "tools/run_phase4_matrix.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_matrix_aggregator_lib",
+        ":phase4_operational_capture_lib",
+        ":phase4_per_net_report_v2_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+        ":phase4_statistical_protocol_v4_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_matrix_runner_lib",
+    srcs = ["tools/run_phase4_matrix.py"],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_matrix_aggregator_lib",
+        ":phase4_operational_capture_lib",
+        ":phase4_per_net_report_v2_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+        ":phase4_statistical_protocol_v4_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_matrix_aggregator_lib",
+    srcs = ["tools/aggregate_phase4_matrix.py"],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_exact_small_oracle_v2_validator_lib",
+        ":phase4_exact_small_oracle_validator_lib",
+        ":phase4_fixed_query_controls_lib",
+        ":phase4_operational_measurement_validator_lib",
+        ":phase4_operational_projection_lib",
+        ":phase4_per_net_report_v2_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+        ":phase4_statistical_protocol_v4_validator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+        ":phase4_stress_evidence_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_matrix_aggregator_test",
+    size = "small",
+    srcs = ["tests/tools/aggregate_phase4_matrix_test.py"],
+    legacy_create_init = 0,
+    main = "tests/tools/aggregate_phase4_matrix_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_matrix_aggregator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_matrix_runner_test",
+    size = "small",
+    srcs = ["tests/tools/run_phase4_matrix_test.py"],
+    legacy_create_init = 0,
+    main = "tests/tools/run_phase4_matrix_test.py",
+    python_version = "3.13",
+    deps = [":phase4_matrix_runner_lib"],
 )
 
 py_test(

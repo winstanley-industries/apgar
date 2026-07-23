@@ -1372,6 +1372,19 @@ acceleration.
   canonical algorithm-budget roster. Its logical cells, evidence
   dispositions, decision rules, thresholds, and completion requirements MUST
   remain identical to protocol v3.
+  Complete observed aggregation is versioned by
+  `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
+  MUST derive its exact external bundle inventory from Protocol v4, fully
+  rebuild every Raw/report/capture/operational/oracle/fixed/stress authority
+  against one independently supplied clean commit, and bind all 487 evidence
+  files. Missing, malformed, foreign, failed, or wrongly disposed evidence is
+  incomplete and MUST NOT produce a decision publication or an allocator loss.
+  A complete authentic negative matrix MUST produce a checksummed failed
+  publication. Only Raw owns outcome and paired timing; only Same-Run
+  Telemetry owns exact-rejection guardrails; operational replays remain
+  diagnostic. `phase4_complete=true` requires complete 104-cell coverage, all
+  guardrails, at least two Holm-qualified primary families including the
+  globally coupled family, and all nine frozen completion authorities.
 
 This Phase 4 gate establishes resource-feasible candidate allocation, not final
 board legality. Exact combined-geometry legalization, APGAR DRC, host-CAD

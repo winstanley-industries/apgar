@@ -26,6 +26,7 @@ _MAXIMUM_CAPTURE_BYTES = 32 * 1024 * 1024
 _U64_MAX = (1 << 64) - 1
 _LINUX_SYS_PIDFD_SEND_SIGNAL = 424
 _LINUX_SYS_PIDFD_OPEN = 434
+_PR_SET_PDEATHSIG = 1
 _PR_SET_CHILD_SUBREAPER = 36
 _PR_GET_CHILD_SUBREAPER = 37
 _MAXIMUM_ADOPTED_DESCENDANTS = 4096
@@ -308,7 +309,9 @@ def _provenance(
     uname = platform.uname()
     value: dict[str, Any] = {
         "schema_version": 1,
-        "publication_invocation": "bazel run --config=benchmark //:phase4_operational_capture",
+        "publication_invocation": (
+            "bazel --batch run --config=benchmark //:phase4_operational_capture"
+        ),
         "bazel_release": bazel_release,
         "worker_target": "//:phase4_operational_replay_worker",
         "worker_sha256": worker_identity["sha256"],
@@ -522,6 +525,18 @@ def _set_child_subreaper(enabled: bool) -> None:
         raise OSError(error, os.strerror(error))
 
 
+def _arm_parent_death_signal(expected_parent_pid: int) -> None:
+    if expected_parent_pid <= 1 or os.getppid() != expected_parent_pid:
+        os.kill(os.getpid(), signal.SIGKILL)
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl.restype = ctypes.c_int
+    if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    if os.getppid() != expected_parent_pid:
+        os.kill(os.getpid(), signal.SIGKILL)
+
+
 def _direct_child_pids() -> list[int]:
     try:
         record = pathlib.Path("/proc/thread-self/children").read_text(encoding="ascii")
@@ -662,6 +677,7 @@ def _launch(
                 os.close(descriptor)
         raise
     start = time.monotonic_ns()
+    controller_pid = os.getpid()
     subreaper_was_enabled = True
     subreaper_changed = False
     try:
@@ -694,6 +710,7 @@ def _launch(
         raise
     if pid == 0:
         try:
+            _arm_parent_death_signal(controller_pid)
             os.setsid()
             resource.setrlimit(resource.RLIMIT_AS, (address_space_bytes, address_space_bytes))
             os.dup2(stdout_write, 1)

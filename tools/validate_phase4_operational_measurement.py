@@ -1135,7 +1135,7 @@ def _provenance(value: Any, label: str, compiler_identity: str) -> Mapping[str, 
     if (
         _u32(provenance["schema_version"], f"{label}.schema_version") != 1
         or provenance["publication_invocation"]
-        != "bazel run --config=benchmark //:phase4_operational_capture"
+        != "bazel --batch run --config=benchmark //:phase4_operational_capture"
         or provenance["worker_target"] != "//:phase4_operational_replay_worker"
         or provenance["cplusplus_standard"] != "c++20"
         or provenance["backend"] != "cpu_only"

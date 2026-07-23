@@ -208,6 +208,56 @@ evidence labels, unstamped builds, and dirty source trees. Its
 high-water mark and is not attributable to one benchmark row; deterministic
 owned host payload and device-memory counters remain the subsystem comparisons.
 
+## Phase 4 matrix publication
+
+Phase 4 acquisition must start from a clean committed tree and write evidence
+outside that tree. The runner builds all producers with the checked-in
+`benchmark` configuration, validates Protocol v4 and the canonical budget
+roster before observation, executes the 100 success cells serially, closes the
+four special dispositions, and rebuilds the final 104-cell decision:
+
+```sh
+phase4_commit="$(git rev-parse HEAD)"
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+bazel build //:phase4_matrix_runner
+bazel-bin/phase4_matrix_runner \
+  --expected-commit="${phase4_commit}" \
+  --evidence-root=/absolute/path/outside/apgar/phase4-"${phase4_commit}"
+```
+
+The runner must be executed directly after its Bazel build. Do not wrap it in
+`bazel run`: the outer invocation would hold the Bazel output-base lock while
+the operator launches its benchmark-config builds and captures. Nested Bazel
+commands use batch mode so the runner can contain and reap their complete
+descendant trees. The evidence root must not be inside the APGAR checkout.
+Repeating the exact runner command
+resumes fully installed per-cell artifacts, rejects unknown partial state
+before building or observing, revalidates authorities before use, refuses a
+half-published Raw-v2/same-run pair, and takes a nonblocking exclusive lock so
+two runners cannot acquire the same matrix concurrently. A failed Raw producer
+is retained under `logs/` as incomplete diagnostic evidence and stops the run;
+it is never counted as an allocator loss. Successful acquisition publishes:
+
+```text
+<evidence-root>/matrix/decision-publication.json
+```
+
+The runner exits successfully for either an authentic passing or authentic
+failing complete matrix. Inspect `phase4_exit_status`, `phase4_complete`,
+family results, and guardrail failures in the decision publication. Missing,
+foreign, malformed, aliased, or wrongly disposed evidence makes aggregation
+fail without a decision publication. Revalidate a completed bundle with:
+
+```sh
+bazel run //:phase4_matrix_aggregator -- \
+  --expected-commit="${phase4_commit}" \
+  --evidence-root=/absolute/path/outside/apgar/phase4-"${phase4_commit}" \
+  --validate=/absolute/path/outside/apgar/phase4-"${phase4_commit}"/matrix/decision-publication.json
+```
+
+The Phase 4 result is CPU-only. GPU fields remain explicitly not applicable;
+the matrix does not reuse Phase 2/3 CUDA throughput as allocation evidence.
+
 ## Continuous integration
 
 GitHub Actions runs lint, build, and test checks on Ubuntu and build and test

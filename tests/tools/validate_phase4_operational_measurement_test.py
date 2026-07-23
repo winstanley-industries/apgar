@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from tools import aggregate_phase4_matrix as matrix_aggregator
 from tools import capture_phase4_operational_measurement as capture_tool
 from tools import validate_phase4_operational_measurement as validator
 from tools import validate_phase4_raw_evidence as raw_validator
@@ -48,6 +50,43 @@ def _normalize_raw_only(raw: dict[str, object]) -> None:
     raw["source_stamped"] = True
     raw["source_tree_dirty"] = False
     raw["source_envelope_checksum"] = raw_validator.compute_source_envelope_checksum(raw)
+
+
+def _report_command(raw: dict[str, object]) -> list[str]:
+    config = raw["config"]
+    attempt = raw["attempts"][0]
+    paired = attempt["result"]
+    baseline = attempt["baseline"]["record"]
+    candidate = attempt["candidate"]["record"]
+    return [
+        str(_runfile("phase4_per_net_report_test_runner")),
+        "--testing_allow_unstamped=1",
+        f"--apgar_commit={raw['source_commit']}",
+        f"--case_id={config['case_id']}",
+        f"--pool_size={config['requested_pool_size']}",
+        f"--workers={config['preparation_worker_count']}",
+        f"--repetitions={config['repetitions']}",
+        f"--setup_ns={config['maximum_setup_elapsed_nanoseconds']}",
+        f"--prepared_ns={config['external_budget']['maximum_prepared_elapsed_nanoseconds']}",
+        f"--cold_ns={config['external_budget']['maximum_cold_elapsed_nanoseconds']}",
+        f"--address_space_bytes={config['external_budget']['maximum_address_space_bytes']}",
+        f"--peak_host_bytes={config['external_budget']['maximum_peak_host_bytes']}",
+        f"--maximum_nets={config['corpus_limits']['maximum_nets']}",
+        f"--maximum_compiled_nodes={config['corpus_limits']['maximum_compiled_nodes']}",
+        f"--maximum_compiled_host_bytes={config['corpus_limits']['maximum_compiled_host_bytes']}",
+        f"--maximum_active_regions={config['corpus_limits']['maximum_active_regions']}",
+        f"--maximum_board_entities={config['corpus_limits']['maximum_board_entities']}",
+        f"--raw_cell_plan_checksum={raw['cell_plan_checksum']}",
+        f"--raw_cell_artifact_checksum={raw['artifact_checksum']}",
+        f"--raw_source_envelope_checksum={raw['source_envelope_checksum']}",
+        f"--pair_attempt_checksum={attempt['attempt_checksum']}",
+        f"--paired_semantic_checksum={paired['semantic_checksum']}",
+        f"--paired_artifact_checksum={paired['artifact_checksum']}",
+        f"--baseline_semantic_checksum={baseline['semantics']['semantic_checksum']}",
+        f"--baseline_arm_artifact_checksum={baseline['artifact_checksum']}",
+        f"--candidate_semantic_checksum={candidate['semantics']['semantic_checksum']}",
+        f"--candidate_arm_artifact_checksum={candidate['artifact_checksum']}",
+    ]
 
 
 def _rehash_worker(worker: dict[str, object]) -> None:
@@ -194,6 +233,16 @@ class Phase4OperationalMeasurementTest(unittest.TestCase):
             raise RuntimeError(raw_v1_run.stderr)
         cls.raw_v1 = json.loads(raw_v1_run.stdout)
         _normalize_raw_only(cls.raw_v1)
+        report_v1_run = subprocess.run(
+            _report_command(cls.raw_v1),
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=120,
+        )
+        if report_v1_run.returncode != 0:
+            raise RuntimeError(report_v1_run.stderr)
+        cls.report_v1 = json.loads(report_v1_run.stdout)
         capture_v1_run = subprocess.run(
             [
                 str(_runfile("phase4_operational_capture")),
@@ -265,6 +314,32 @@ class Phase4OperationalMeasurementTest(unittest.TestCase):
             validator.project_document(self.raw_v1, self.capture_v1, self.sidecar)
         with self.assertRaisesRegex(validator.EvidenceError, "requires same-run"):
             validator.project_document(self.raw, self.capture, None)
+
+    def test_matrix_adapter_rebuilds_real_raw_report_capture_and_publication(self) -> None:
+        bindings = [
+            {
+                "kind": kind,
+                "path": f"synthetic/{kind}.json",
+                "artifact_checksum": index + 1,
+                "source_envelope_checksum": index + 2,
+            }
+            for index, kind in enumerate(("raw", "report", "capture", "operational"))
+        ]
+        row = matrix_aggregator.validate_success_cell_documents(
+            raw=self.raw_v1,
+            sidecar=None,
+            report=self.report_v1,
+            capture=self.capture_v1,
+            publication=self.publication_v1,
+            expected_commit=_COMMIT,
+            role="calibration",
+            evidence_requirement="raw_success",
+            in_noncalibration_closure=False,
+            bindings=bindings,
+        )
+        self.assertEqual((row["case_id"], row["requested_pool_size"]), (200, 4))
+        self.assertIn(row["comparison"], {"candidate_win", "candidate_loss", "tie"})
+        self.assertEqual(len(row["timing_diagnostic"]["ratios_ppm"]), 20)
 
     def test_reauthenticated_compact_authority_drift_cannot_cross_process_join(self) -> None:
         changed = copy.deepcopy(self.capture)
@@ -505,6 +580,54 @@ class Phase4OperationalMeasurementTest(unittest.TestCase):
         self.assertTrue(leader_reaped)
         self.assertEqual(observation["process_exit_code"], 0)
         self.assertEqual(worker["kind"], 0)
+
+    def test_detached_worker_dies_when_its_controller_exits(self) -> None:
+        read_descriptor, write_descriptor = os.pipe()
+        ready_read, ready_write = os.pipe()
+        supervisor = os.fork()
+        if supervisor == 0:
+            os.close(read_descriptor)
+            child = os.fork()
+            if child == 0:
+                try:
+                    os.close(ready_read)
+                    capture_tool._arm_parent_death_signal(os.getppid())
+                    os.setsid()
+                    os.write(write_descriptor, f"{os.getpid()}\n".encode("ascii"))
+                    os.close(write_descriptor)
+                    os.write(ready_write, b"1")
+                    os.close(ready_write)
+                    time.sleep(30)
+                finally:
+                    os._exit(0)
+            os.close(write_descriptor)
+            os.close(ready_write)
+            os.read(ready_read, 1)
+            os.close(ready_read)
+            os._exit(0)
+        os.close(write_descriptor)
+        os.close(ready_read)
+        os.close(ready_write)
+        encoded = os.read(read_descriptor, 64)
+        os.close(read_descriptor)
+        os.waitpid(supervisor, 0)
+        worker_pid = int(encoded)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                state = (
+                    pathlib.Path(f"/proc/{worker_pid}/stat")
+                    .read_text(encoding="ascii")
+                    .split(") ", 1)[1][0]
+                )
+            except FileNotFoundError:
+                break
+            if state == "Z":
+                break
+            time.sleep(0.01)
+        else:
+            os.kill(worker_pid, signal.SIGKILL)
+            self.fail("detached operational worker survived controller death")
 
     def test_child_environment_drift_before_reap_is_rejected(self) -> None:
         worker_path = _runfile("phase4_operational_replay_worker")
