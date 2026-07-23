@@ -248,9 +248,19 @@ class Phase4ExactSmallOracleV2Test(unittest.TestCase):
             path = self.root / f"cli-{name}.json"
             path.write_text(_canonical(document), encoding="utf-8")
             paths[name] = path
+        environment = os.environ.copy()
+        for variable in (
+            "JAVA_RUNFILES",
+            "PYTHON_RUNFILES",
+            "RUNFILES_DIR",
+            "RUNFILES_MANIFEST_FILE",
+            "TEST_SRCDIR",
+            "TEST_WORKSPACE",
+        ):
+            environment.pop(variable, None)
         completed = subprocess.run(
             [
-                str(_runfile("phase4_exact_small_oracle_v2_validator")),
+                str(_runfile("phase4_exact_small_oracle_v2_validator").resolve(strict=True)),
                 "--expected-commit",
                 _COMMIT,
                 "--raw",
@@ -265,6 +275,7 @@ class Phase4ExactSmallOracleV2Test(unittest.TestCase):
             check=False,
             text=True,
             capture_output=True,
+            env=environment,
             timeout=30,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)

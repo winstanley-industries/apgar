@@ -14,6 +14,8 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from python.runfiles import runfiles as bazel_runfiles
+
 from tools import validate_phase4_per_net_report as report_validator
 from tools import validate_phase4_raw_evidence as raw_validator
 
@@ -1780,16 +1782,38 @@ def _candidate_admission_payload(snapshot: Mapping[str, Any]) -> bytes:
 
 
 def _admission_replay_path() -> pathlib.Path:
+    try:
+        resolver = bazel_runfiles.Create()
+    except (OSError, UnicodeError, ValueError) as error:
+        raise EvidenceError("cannot resolve exact candidate admission replay runfiles") from error
+    if resolver is not None:
+        resolved = resolver.Rlocation("_main/phase4_exact_small_candidate_admission_replay")
+        if resolved is not None:
+            candidate = pathlib.Path(resolved)
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
+    try:
+        launcher = pathlib.Path(sys.argv[0]).resolve(strict=True)
+    except OSError:
+        launcher = None
+    if launcher is not None:
+        candidate = (
+            pathlib.Path(f"{launcher}.runfiles")
+            / "_main"
+            / "phase4_exact_small_candidate_admission_replay"
+        )
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
     runfiles = os.environ.get("RUNFILES_DIR") or os.environ.get("TEST_SRCDIR")
     workspace = os.environ.get("TEST_WORKSPACE") or "_main"
     if runfiles:
         candidate = (
             pathlib.Path(runfiles) / workspace / "phase4_exact_small_candidate_admission_replay"
         )
-        if candidate.is_file():
+        if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
     raise EvidenceError(
-        "exact candidate admission replay is unavailable; run the validator through Bazel"
+        "exact candidate admission replay is unavailable; build the validator with Bazel"
     )
 
 

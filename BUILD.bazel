@@ -1520,6 +1520,7 @@ py_binary(
     deps = [
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
+        "@rules_python//python/runfiles",
     ],
 )
 
@@ -1536,6 +1537,7 @@ py_library(
     deps = [
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
+        "@rules_python//python/runfiles",
     ],
 )
 
