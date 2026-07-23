@@ -567,6 +567,32 @@ void WritePairAttempt(JsonWriter* writer, const Phase4IsolatedPairAttempt& attem
   writer->EndObject();
 }
 
+void WriteIsolatedCell(JsonWriter* writer, const Phase4IsolatedCellResult& result) {
+  writer->Key("schema_version");
+  writer->IntegerValue(result.schema_version);
+  writer->Key("config");
+  WriteCellConfig(writer, result.config);
+  writer->Key("environment");
+  WriteHostEnvironment(writer, result.environment);
+  writer->Key("corpus_checksum");
+  writer->IntegerValue(result.corpus_checksum);
+  writer->Key("cell_plan_checksum");
+  writer->IntegerValue(result.cell_plan_checksum);
+  writer->Key("authority_run_identity");
+  writer->IntegerValue(result.authority_run_identity);
+  writer->Key("controller_identity");
+  writer->IntegerValue(result.controller_identity);
+  writer->Key("attempts");
+  writer->BeginArray();
+  for (const Phase4IsolatedPairAttempt& attempt : result.attempts) {
+    writer->Element();
+    WritePairAttempt(writer, attempt);
+  }
+  writer->EndArray();
+  writer->Key("artifact_checksum");
+  writer->IntegerValue(result.artifact_checksum);
+}
+
 }  // namespace
 
 std::uint64_t ComputePhase4SourceEnvelopeChecksumV1(std::uint32_t wire_schema_version,
@@ -583,9 +609,68 @@ std::uint64_t ComputePhase4SourceEnvelopeChecksumV1(std::uint32_t wire_schema_ve
   return hash.Finish();
 }
 
-std::string SerializePhase4IsolatedCellJsonV1(const Phase4IsolatedCellResult& result,
-                                              std::string_view source_commit, bool source_stamped,
-                                              bool source_tree_dirty) {
+std::uint64_t ComputePhase4SourceEnvelopeChecksumV2(std::uint32_t raw_evidence_schema_version,
+                                                    std::uint32_t wire_schema_version,
+                                                    std::string_view source_commit,
+                                                    bool source_stamped, bool source_tree_dirty,
+                                                    std::uint64_t cell_artifact_checksum) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-PHASE4-SOURCE-ENVELOPE-V2");
+  hash.AddU32(raw_evidence_schema_version);
+  hash.AddU32(wire_schema_version);
+  hash.AddString(source_commit);
+  hash.AddBool(source_stamped);
+  hash.AddBool(source_tree_dirty);
+  hash.AddU64(cell_artifact_checksum);
+  return hash.Finish();
+}
+
+namespace {
+
+std::uint64_t ComputeIsolatedCellArtifactChecksum(const Phase4IsolatedCellResult& result,
+                                                  std::string_view domain,
+                                                  bool include_same_run_versions) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString(domain);
+  if (include_same_run_versions) {
+    hash.AddU32(kPhase4SameRunRawEvidenceSchemaVersion);
+    hash.AddU32(kPhase4SameRunTrialWireSchemaVersion);
+  }
+  hash.AddU32(result.schema_version);
+  hash.AddU64(result.corpus_checksum);
+  hash.AddU64(result.cell_plan_checksum);
+  hash.AddU64(result.environment.environment_checksum);
+  hash.AddU64(result.authority_run_identity);
+  hash.AddU64(result.controller_identity);
+  hash.AddU64(result.attempts.size());
+  for (const Phase4IsolatedPairAttempt& attempt : result.attempts) {
+    hash.AddU64(attempt.attempt_checksum);
+  }
+  return hash.Finish();
+}
+
+}  // namespace
+
+std::uint64_t ComputePhase4IsolatedCellArtifactChecksumV1(
+    const Phase4IsolatedCellResult& result) noexcept {
+  return ComputeIsolatedCellArtifactChecksum(result, "APGAR-PHASE4-ISOLATED-CELL-ARTIFACT-V1",
+                                             false);
+}
+
+std::uint64_t ComputePhase4SameRunIsolatedCellArtifactChecksumV2(
+    const Phase4IsolatedCellResult& result) noexcept {
+  return ComputeIsolatedCellArtifactChecksum(result, "APGAR-PHASE4-ISOLATED-CELL-ARTIFACT-V2",
+                                             true);
+}
+
+std::optional<std::string> SerializePhase4IsolatedCellJsonV1(const Phase4IsolatedCellResult& result,
+                                                             std::string_view source_commit,
+                                                             bool source_stamped,
+                                                             bool source_tree_dirty) {
+  if (result.carrier != Phase4IsolatedCellCarrier::kRawWireV1 || result.artifact_checksum == 0 ||
+      result.artifact_checksum != ComputePhase4IsolatedCellArtifactChecksumV1(result)) {
+    return std::nullopt;
+  }
   JsonWriter writer;
   writer.BeginObject();
   writer.Key("wire_schema_version");
@@ -600,29 +685,36 @@ std::string SerializePhase4IsolatedCellJsonV1(const Phase4IsolatedCellResult& re
   writer.IntegerValue(ComputePhase4SourceEnvelopeChecksumV1(
       kPhase4TrialWireSchemaVersion, source_commit, source_stamped, source_tree_dirty,
       result.artifact_checksum));
-  writer.Key("schema_version");
-  writer.IntegerValue(result.schema_version);
-  writer.Key("config");
-  WriteCellConfig(&writer, result.config);
-  writer.Key("environment");
-  WriteHostEnvironment(&writer, result.environment);
-  writer.Key("corpus_checksum");
-  writer.IntegerValue(result.corpus_checksum);
-  writer.Key("cell_plan_checksum");
-  writer.IntegerValue(result.cell_plan_checksum);
-  writer.Key("authority_run_identity");
-  writer.IntegerValue(result.authority_run_identity);
-  writer.Key("controller_identity");
-  writer.IntegerValue(result.controller_identity);
-  writer.Key("attempts");
-  writer.BeginArray();
-  for (const Phase4IsolatedPairAttempt& attempt : result.attempts) {
-    writer.Element();
-    WritePairAttempt(&writer, attempt);
+  WriteIsolatedCell(&writer, result);
+  writer.EndObject();
+  return std::move(writer).Finish();
+}
+
+std::optional<std::string> SerializePhase4SameRunIsolatedCellJsonV2(
+    const Phase4IsolatedCellResult& result, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty) {
+  if (result.carrier != Phase4IsolatedCellCarrier::kSameRunWireV2 ||
+      result.artifact_checksum == 0 ||
+      result.artifact_checksum != ComputePhase4SameRunIsolatedCellArtifactChecksumV2(result)) {
+    return std::nullopt;
   }
-  writer.EndArray();
-  writer.Key("artifact_checksum");
-  writer.IntegerValue(result.artifact_checksum);
+  JsonWriter writer;
+  writer.BeginObject();
+  writer.Key("raw_evidence_schema_version");
+  writer.IntegerValue(kPhase4SameRunRawEvidenceSchemaVersion);
+  writer.Key("wire_schema_version");
+  writer.IntegerValue(kPhase4SameRunTrialWireSchemaVersion);
+  writer.Key("source_commit");
+  writer.String(source_commit);
+  writer.Key("source_stamped");
+  writer.Bool(source_stamped);
+  writer.Key("source_tree_dirty");
+  writer.Bool(source_tree_dirty);
+  writer.Key("source_envelope_checksum");
+  writer.IntegerValue(ComputePhase4SourceEnvelopeChecksumV2(
+      kPhase4SameRunRawEvidenceSchemaVersion, kPhase4SameRunTrialWireSchemaVersion, source_commit,
+      source_stamped, source_tree_dirty, result.artifact_checksum));
+  WriteIsolatedCell(&writer, result);
   writer.EndObject();
   return std::move(writer).Finish();
 }

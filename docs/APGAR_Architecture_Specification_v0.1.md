@@ -1257,6 +1257,24 @@ acceleration.
   commit, then binds exact source/config/cell/pair/arm identities and compares
   both complete diagnostic semantics objects with the Raw repetition-zero
   baseline-first records.
+  Exact-validation rejection guardrails instead use
+  `schemas/benchmark/phase4_same_run_decision_telemetry_v1.md`. A distinct
+  telemetry-aware Wire v2 success response MUST carry the ordinary measured
+  arm execution and its minimal per-net column partition from the same
+  authentic contender execution. All 20 repetitions and both arms are
+  required for every exact, held-out, and imported decision cell. The
+  controller MUST apply the Raw process-lifetime invalidation rules to both
+  outputs, and publication MUST join every finalized attempt, arm, external
+  authority, pair, process, dispatch, controller, and cell identity. Existing
+  Raw or diagnostic artifacts cannot be promoted into this authority.
+  The ordinary measured half of that invocation is versioned separately by
+  `schemas/benchmark/phase4_same_run_raw_evidence_v2.md`. Its root MUST bind
+  Raw Evidence schema 2 and the actual Wire-v2 carrier; a Raw-v1 validator MUST
+  reject it. Failed Wire-v2 runs MUST still emit their complete checksummed Raw
+  attempt artifact and exit nonzero without a companion. A companion final
+  path MUST be installed atomically without replacement only after checked Raw
+  output and synchronized unpublished-file construction; partial publication
+  MUST NOT expose the final companion name.
   Operational Projection v1 is separately versioned by
   `schemas/benchmark/phase4_operational_projection_v1.md`. It MUST first
   validate complete canonical Raw v1 against an independently supplied commit,
@@ -1276,7 +1294,12 @@ acceleration.
   `schemas/benchmark/phase4_statistical_decision_protocol_v1.md`. Its canonical
   104-cell expansion includes 86 noncalibration closure cells. It contains no
   observed decision and does not complete Phase 4; missing or failed evidence
-  remains incomplete rather than becoming an allocator loss.
+  remains incomplete rather than becoming an allocator loss. The
+  authority-only supersession in
+  `schemas/benchmark/phase4_statistical_decision_protocol_v2.md` incorporates
+  that exact v1 artifact and changes no decision rule: it assigns the 78 exact,
+  held-out, and imported cells to Same-Run Raw v2 plus their v2 diagnostic
+  joins, while calibration, fixed-query, and stress retain Raw v1.
 
 This Phase 4 gate establishes resource-feasible candidate allocation, not final
 board legality. Exact combined-geometry legalization, APGAR DRC, host-CAD

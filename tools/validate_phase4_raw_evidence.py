@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import os
 import pathlib
 import re
 import sys
@@ -1416,6 +1417,7 @@ def _arm_attempt(
     *,
     expected_manifest_case: Mapping[str, Any] | None = None,
     requested_pool_size: int | None = None,
+    require_success: bool = True,
 ) -> Mapping[str, Any]:
     result = _object(value, label)
     _fields(result, _ATTEMPT_FIELDS, label)
@@ -1432,24 +1434,14 @@ def _arm_attempt(
         "attempt_checksum",
     ):
         (_u32 if field == "repetition_index" else _u64)(result[field], f"{label}.{field}")
-    for field in ("raw_wait_status", "process_exit_code", "terminating_signal"):
+    raw_wait_status = _i32(result["raw_wait_status"], f"{label}.raw_wait_status")
+    if not 0 <= raw_wait_status <= 0xFFFF:
+        raise EvidenceError(f"{label}.raw_wait_status is not an exact Linux wait status")
+    for field in ("process_exit_code", "terminating_signal"):
         _i32(result[field], f"{label}.{field}")
     _bool(result["watchdog_kill_sent"], f"{label}.watchdog_kill_sent")
     _string(result["controller_invariant_id"], f"{label}.controller_invariant_id")
     _string(result["controller_detail"], f"{label}.controller_detail")
-    if any(
-        result[field] != 0
-        for field in ("raw_wait_status", "process_exit_code", "terminating_signal")
-    ):
-        raise EvidenceError(f"{label} worker did not exit cleanly")
-    if (
-        result["watchdog_kill_sent"]
-        or result["controller_invariant_id"]
-        or result["controller_detail"]
-    ):
-        raise EvidenceError(f"{label} contains a controller failure witness")
-    if result["process_instance_identity"] == 0 or result["process_lifetime_peak_host_bytes"] == 0:
-        raise EvidenceError(f"{label} process identity and lifetime peak must be nonzero")
     if result["record"] is not None:
         _record(result["record"], f"{label}.record")
     if result["child_failure"] is not None:
@@ -1465,11 +1457,71 @@ def _arm_attempt(
         raise EvidenceError(f"{label} typed failure must contain exactly one child failure")
     if disposition >= 2 and (result["record"] is not None or result["child_failure"] is not None):
         raise EvidenceError(f"{label} controller failure must not contain a child payload")
+    if disposition == 0:
+        if any(
+            result[field] != 0
+            for field in ("raw_wait_status", "process_exit_code", "terminating_signal")
+        ):
+            raise EvidenceError(f"{label} successful worker did not exit cleanly")
+        if (
+            result["watchdog_kill_sent"]
+            or result["controller_invariant_id"]
+            or result["controller_detail"]
+        ):
+            raise EvidenceError(f"{label} success contains a controller failure witness")
+        if (
+            result["process_instance_identity"] == 0
+            or result["process_lifetime_peak_host_bytes"] == 0
+        ):
+            raise EvidenceError(f"{label} successful process identity and peak must be nonzero")
+    elif disposition == 1:
+        process_authority_witness = result["controller_invariant_id"] in {
+            "P4HARNESS-REAP-BOUNDED-001",
+            "P4HARNESS-WAIT4-AUTHORITY-001",
+        } and bool(result["controller_detail"])
+        if (
+            result["process_instance_identity"] == 0
+            or result["watchdog_kill_sent"]
+            or bool(result["controller_invariant_id"]) != bool(result["controller_detail"])
+            or (result["controller_invariant_id"] and not process_authority_witness)
+            or (result["process_lifetime_peak_host_bytes"] == 0 and not process_authority_witness)
+        ):
+            raise EvidenceError(f"{label} typed child failure has incompatible process state")
+    elif disposition == 4:
+        if (
+            result["process_instance_identity"] == 0
+            or result["terminating_signal"] <= 0
+            or result["raw_wait_status"] == 0
+        ):
+            raise EvidenceError(f"{label} signal disposition lacks a signal exit witness")
+    elif disposition == 5:
+        if (
+            result["process_instance_identity"] == 0
+            or result["process_exit_code"] <= 0
+            or result["raw_wait_status"] == 0
+        ):
+            raise EvidenceError(f"{label} nonzero-exit disposition lacks an exit witness")
+    elif disposition == 7 and (
+        result["process_instance_identity"] != 0 or result["process_lifetime_peak_host_bytes"] != 0
+    ):
+        raise EvidenceError(f"{label} launch failure cannot name a child process")
+    if result["process_instance_identity"] == 0 and (
+        result["process_lifetime_peak_host_bytes"] != 0
+        or result["raw_wait_status"] != 0
+        or result["process_exit_code"] != -1
+        or result["terminating_signal"] != 0
+        or result["watchdog_kill_sent"]
+    ):
+        raise EvidenceError(f"{label} processless attempt contains child process state")
+    if disposition in {2, 3, 4, 5, 6, 7, 8, 9} and (
+        not result["controller_invariant_id"] or not result["controller_detail"]
+    ):
+        raise EvidenceError(f"{label} controller failure lacks its durable witness")
     if result["attempt_checksum"] == 0 or result[
         "attempt_checksum"
     ] != compute_arm_attempt_checksum(result):
         raise EvidenceError(f"{label}.attempt_checksum does not authenticate attempt")
-    if disposition != 0:
+    if require_success and disposition != 0:
         raise EvidenceError(f"{label} is not a successful attempt")
     return result
 
@@ -1510,6 +1562,7 @@ def _pair_attempt(
     *,
     expected_manifest_case: Mapping[str, Any] | None = None,
     requested_pool_size: int | None = None,
+    require_success: bool = True,
 ) -> Mapping[str, Any]:
     result = _object(value, label)
     _fields(result, _PAIR_ATTEMPT_FIELDS, label)
@@ -1523,18 +1576,26 @@ def _pair_attempt(
         f"{label}.baseline",
         expected_manifest_case=expected_manifest_case,
         requested_pool_size=requested_pool_size,
+        require_success=require_success,
     )
     candidate = _arm_attempt(
         result["candidate"],
         f"{label}.candidate",
         expected_manifest_case=expected_manifest_case,
         requested_pool_size=requested_pool_size,
+        require_success=require_success,
     )
     if result["result"] is None:
-        raise EvidenceError(f"{label}.result must contain a completed pair")
-    paired = _paired_result(result["result"], f"{label}.result")
-    if baseline["record"] != paired["baseline"] or candidate["record"] != paired["candidate"]:
-        raise EvidenceError(f"{label} attempt records differ from paired result copies")
+        if require_success:
+            raise EvidenceError(f"{label}.result must contain a completed pair")
+        if baseline["disposition"] == 0 and candidate["disposition"] == 0:
+            raise EvidenceError(f"{label} omits a pair despite two successful arms")
+    else:
+        paired = _paired_result(result["result"], f"{label}.result")
+        if baseline["disposition"] != 0 or candidate["disposition"] != 0:
+            raise EvidenceError(f"{label} failed arm cannot carry a completed pair")
+        if baseline["record"] != paired["baseline"] or candidate["record"] != paired["candidate"]:
+            raise EvidenceError(f"{label} attempt records differ from paired result copies")
     if result["attempt_checksum"] == 0 or result[
         "attempt_checksum"
     ] != compute_pair_attempt_checksum(result):
@@ -1558,6 +1619,9 @@ _TOP_FIELDS = (
     "attempts",
     "artifact_checksum",
 )
+_SAME_RUN_TOP_FIELDS = ("raw_evidence_schema_version",) + _TOP_FIELDS
+_SAME_RUN_RAW_EVIDENCE_SCHEMA_VERSION = 2
+_SAME_RUN_WIRE_SCHEMA_VERSION = 2
 
 
 def compute_cell_plan_checksum(document: Mapping[str, Any]) -> int:
@@ -1589,7 +1653,12 @@ def compute_cell_plan_checksum(document: Mapping[str, Any]) -> int:
 
 def compute_cell_artifact_checksum(document: Mapping[str, Any]) -> int:
     hashed = StableHashBuilder()
-    hashed.string("APGAR-PHASE4-ISOLATED-CELL-ARTIFACT-V1")
+    if "raw_evidence_schema_version" in document:
+        hashed.string("APGAR-PHASE4-ISOLATED-CELL-ARTIFACT-V2")
+        hashed.u32(document["raw_evidence_schema_version"])
+        hashed.u32(document["wire_schema_version"])
+    else:
+        hashed.string("APGAR-PHASE4-ISOLATED-CELL-ARTIFACT-V1")
     hashed.u32(document["schema_version"])
     hashed.u64(document["corpus_checksum"])
     hashed.u64(document["cell_plan_checksum"])
@@ -1635,7 +1704,11 @@ def compute_canonical_budget_checksum(
 
 def compute_source_envelope_checksum(document: Mapping[str, Any]) -> int:
     hashed = StableHashBuilder()
-    hashed.string("APGAR-PHASE4-SOURCE-ENVELOPE-V1")
+    if "raw_evidence_schema_version" in document:
+        hashed.string("APGAR-PHASE4-SOURCE-ENVELOPE-V2")
+        hashed.u32(document["raw_evidence_schema_version"])
+    else:
+        hashed.string("APGAR-PHASE4-SOURCE-ENVELOPE-V1")
     hashed.u32(document["wire_schema_version"])
     hashed.string(document["source_commit"])
     hashed.boolean(document["source_stamped"])
@@ -1655,6 +1728,352 @@ def compute_canonical_root_seed(document: Mapping[str, Any]) -> int:
     return result if result != 0 else 1
 
 
+def _validate_root_checksums(document: Mapping[str, Any], source_envelope_checksum: int) -> None:
+    if document["artifact_checksum"] != compute_cell_artifact_checksum(document):
+        raise EvidenceError("artifact_checksum does not authenticate the raw cell")
+    if (
+        source_envelope_checksum == 0
+        or source_envelope_checksum != compute_source_envelope_checksum(document)
+    ):
+        raise EvidenceError("source_envelope_checksum does not authenticate source provenance")
+
+
+def _validate_success_record_association(
+    document: Mapping[str, Any],
+    config: Mapping[str, Any],
+    manifest_case: Mapping[str, Any],
+    expected_budget_checksum: int,
+    attempt: Mapping[str, Any],
+    arm: Mapping[str, Any],
+    *,
+    repetition: int,
+    expected_order: int,
+    expected_arm: int,
+    label: str,
+) -> None:
+    record = arm["record"]
+    if record is None:
+        raise EvidenceError(f"{label} successful arm is missing its record")
+    semantics = record["semantics"]
+    observation = record["external_observation"]
+    net_count = semantics["workload_net_count"]
+    pool_size = config["requested_pool_size"]
+    expected_queries = net_count * (pool_size + 2)
+    if (
+        semantics["baseline_sweeps"] != pool_size + 2
+        or semantics["candidate_regeneration_epochs"] != 2
+        or semantics["candidate_columns_per_epoch"] != net_count
+        or semantics["candidate_terminal_selection_rounds"] != pool_size + 1
+        or semantics["opportunity"]["route_queries"] != expected_queries
+        or semantics["opportunity"]["route_work_units"]
+        != expected_queries * _CANONICAL_ROUTE_WORK_UNITS_PER_QUERY
+    ):
+        raise EvidenceError(f"{label} does not use the canonical equal-budget shape")
+    if expected_arm == 1:
+        maximum_preparation_queries = net_count * pool_size
+        maximum_regeneration_queries = 2 * net_count
+        if (
+            semantics["preparation_route_queries"] > maximum_preparation_queries
+            or semantics["preparation_route_work_units"]
+            > maximum_preparation_queries * _CANONICAL_ROUTE_WORK_UNITS_PER_QUERY
+            or semantics["regeneration_route_queries"] > maximum_regeneration_queries
+            or semantics["regeneration_route_work_units"]
+            > maximum_regeneration_queries * _CANONICAL_ROUTE_WORK_UNITS_PER_QUERY
+        ):
+            raise EvidenceError(f"{label} candidate component work exceeds its canonical cap")
+    if (
+        arm["arm"] != expected_arm
+        or arm["repetition_index"] != repetition
+        or arm["execution_order"] != expected_order
+        or semantics["arm"] != expected_arm
+        or semantics["repetition_index"] != repetition
+        or semantics["execution_order"] != expected_order
+        or semantics["case_id"] != config["case_id"]
+        or semantics["requested_pool_size"] != config["requested_pool_size"]
+        or semantics["preparation_worker_count"] != config["preparation_worker_count"]
+        or semantics["root_seed"] != attempt["root_seed"]
+        or semantics["corpus_checksum"] != document["corpus_checksum"]
+        or semantics["workload_net_count"] != manifest_case["workload_net_count"]
+        or semantics["descriptor_fingerprint"] != manifest_case["descriptor_fingerprint"]
+        or semantics["case_checksum"] != manifest_case["case_checksum"]
+        or semantics["board_content_hash"] != manifest_case["board_content_hash"]
+        or semantics["workload_checksum"] != manifest_case["workload_checksum"]
+        or semantics["capacity_model_checksum"] != manifest_case["capacity_model_checksum"]
+        or semantics["budget_checksum"] != expected_budget_checksum
+        or semantics["external_budget"] != config["external_budget"]
+    ):
+        raise EvidenceError(f"{label} arm record is associated with another command or cell")
+    if (
+        observation["authority_run_identity"] != document["authority_run_identity"]
+        or observation["controller_identity"] != document["controller_identity"]
+        or observation["process_instance_identity"] != arm["process_instance_identity"]
+        or observation["outer_elapsed_nanoseconds"] != arm["outer_elapsed_nanoseconds"]
+        or observation["peak_host_bytes"] != arm["process_lifetime_peak_host_bytes"]
+    ):
+        raise EvidenceError(f"{label} external observation is associated with another process")
+    lifecycle = record["preparer_lifecycle"]
+    if expected_arm == 0:
+        if (
+            any(lifecycle[field] != 0 for field in _LIFECYCLE_FIELDS)
+            or observation["persistent_preparer_reused"]
+        ):
+            raise EvidenceError(f"{label} baseline lifecycle is invalid")
+    else:
+        workers = config["preparation_worker_count"]
+        if (
+            not observation["persistent_preparer_reused"]
+            or lifecycle["workers_started_before"] != workers
+            or lifecycle["workers_started_after"] != workers
+            or lifecycle["invocations_started_before"] != lifecycle["invocations_completed_before"]
+            or lifecycle["invocations_started_before"] == 0
+            or lifecycle["invocations_started_after"] != lifecycle["invocations_started_before"] + 1
+            or lifecycle["invocations_completed_after"]
+            != lifecycle["invocations_completed_before"] + 1
+        ):
+            raise EvidenceError(f"{label} candidate lifecycle is invalid")
+
+
+def _validate_total_attempts(
+    document: Mapping[str, Any],
+    attempts: Sequence[Any],
+    config: Mapping[str, Any],
+    manifest_case: Mapping[str, Any],
+    expected_budget_checksum: int,
+) -> bool:
+    """Authenticate every attempt before classifying cell completeness."""
+    complete = True
+    expected_root_seed = compute_canonical_root_seed(document)
+    ordered_arms: list[Mapping[str, Any]] = []
+    process_states: list[tuple[int, int, int, int, int] | None] = [None, None]
+    process_attempts: list[list[Mapping[str, Any]]] = [[], []]
+    deterministic_semantics: list[Mapping[str, Any] | None] = [None, None]
+    deterministic_comparison: int | None = None
+    # The persistent preparer performs one warm-up before any measured arm.
+    # Successful records expose the counter around their own invocation. A
+    # controller-side finalization or pair-assembly failure discards that
+    # record after the invocation has already completed, so retain those
+    # authenticated lost invocations in the expected counter as well.
+    expected_candidate_invocations_before = 1
+    lost_candidate_invocation_witnesses = {
+        (6, "P4PAIR-FINALIZE-001"),
+        (6, "P4PAIR-FINALIZE-002"),
+        (6, "P4PAIR-FINALIZE-003"),
+        (6, "P4PAIR-FINALIZE-004"),
+        (8, "P4PAIR-FINALIZE-005"),
+        (6, "P4PAIR-FINALIZE-006"),
+        (6, "P4PAIR-FINALIZE-AUTHORITY-001"),
+        (6, "P4PAIR-FINALIZE-LIFECYCLE-001"),
+        (6, "P4PAIR-FINALIZE-SEMANTICS-001"),
+        (6, "P4PAIR-ASSEMBLE-001"),
+        (6, "P4PAIR-ASSEMBLE-002"),
+        (6, "P4PAIR-ASSEMBLE-ARTIFACT-001"),
+        (6, "P4PAIR-ASSEMBLE-AUTHORITY-001"),
+        (6, "P4HARNESS-SAME-RUN-MISSING-001"),
+    }
+    for repetition, raw_attempt in enumerate(attempts):
+        label = f"attempts[{repetition}]"
+        attempt = _pair_attempt(
+            raw_attempt,
+            label,
+            expected_manifest_case=manifest_case,
+            requested_pool_size=config["requested_pool_size"],
+            require_success=False,
+        )
+        expected_order = repetition % 2
+        if (
+            attempt["case_id"] != config["case_id"]
+            or attempt["requested_pool_size"] != config["requested_pool_size"]
+            or attempt["repetition_index"] != repetition
+            or attempt["execution_order"] != expected_order
+        ):
+            raise EvidenceError(
+                f"{label} is missing, extra, reordered, or associated with another cell"
+            )
+        if attempt["root_seed"] != expected_root_seed:
+            raise EvidenceError(f"{label}.root_seed is not the canonical cell root")
+        for arm_name, expected_arm in (("baseline", 0), ("candidate", 1)):
+            arm = attempt[arm_name]
+            if (
+                arm["arm"] != expected_arm
+                or arm["repetition_index"] != repetition
+                or arm["execution_order"] != expected_order
+            ):
+                raise EvidenceError(f"{label}.{arm_name} is associated with another command")
+            if arm["disposition"] == 0:
+                _validate_success_record_association(
+                    document,
+                    config,
+                    manifest_case,
+                    expected_budget_checksum,
+                    attempt,
+                    arm,
+                    repetition=repetition,
+                    expected_order=expected_order,
+                    expected_arm=expected_arm,
+                    label=f"{label}.{arm_name}",
+                )
+                if expected_arm == 1:
+                    lifecycle = arm["record"]["preparer_lifecycle"]
+                    if (
+                        lifecycle["invocations_started_before"]
+                        != expected_candidate_invocations_before
+                        or lifecycle["invocations_completed_before"]
+                        != expected_candidate_invocations_before
+                    ):
+                        raise EvidenceError("successful candidate lifecycle is not continuous")
+                    expected_candidate_invocations_before += 1
+                semantics = arm["record"]["semantics"]
+                normalized_semantics = {
+                    field: field_value
+                    for field, field_value in semantics.items()
+                    if field not in {"execution_order", "repetition_index", "semantic_checksum"}
+                }
+                if deterministic_semantics[expected_arm] is None:
+                    deterministic_semantics[expected_arm] = normalized_semantics
+                elif deterministic_semantics[expected_arm] != normalized_semantics:
+                    raise EvidenceError(
+                        f"{label}.{arm_name} semantics are not deterministic across repetitions"
+                    )
+            process = arm["process_instance_identity"]
+            if process != 0:
+                state = (
+                    process,
+                    arm["process_lifetime_peak_host_bytes"],
+                    arm["raw_wait_status"],
+                    arm["process_exit_code"],
+                    arm["terminating_signal"],
+                )
+                if process_states[expected_arm] is None:
+                    process_states[expected_arm] = state
+                elif process_states[expected_arm] != state:
+                    raise EvidenceError(
+                        "one contender must retain one process, wait4 peak, and exit state"
+                    )
+                process_attempts[expected_arm].append(arm)
+            elif arm["disposition"] not in {2, 7, 10}:
+                raise EvidenceError("dispatched or child failure is missing its process identity")
+        ordered_arms.extend(
+            (attempt["baseline"], attempt["candidate"])
+            if expected_order == 0
+            else (attempt["candidate"], attempt["baseline"])
+        )
+        candidate = attempt["candidate"]
+        if (
+            candidate["disposition"],
+            candidate["controller_invariant_id"],
+        ) in lost_candidate_invocation_witnesses:
+            expected_candidate_invocations_before += 1
+        if attempt["result"] is not None:
+            comparison = attempt["result"]["comparison"]
+            if deterministic_comparison is None:
+                deterministic_comparison = comparison
+            elif comparison != deterministic_comparison:
+                raise EvidenceError(f"{label} pair comparison is not deterministic")
+        if attempt["result"] is None:
+            complete = False
+    if process_states[0] is not None and process_states[1] is not None:
+        if process_states[0][0] == process_states[1][0]:
+            raise EvidenceError("baseline and candidate observations share a process")
+    unavailable_invariants = {
+        "P4HARNESS-REAP-BOUNDED-001",
+        "P4HARNESS-WAIT4-AUTHORITY-001",
+    }
+    for expected_arm, state in enumerate(process_states):
+        if state is None:
+            continue
+        authority_unavailable = any(
+            arm["controller_invariant_id"] in unavailable_invariants
+            for arm in process_attempts[expected_arm]
+        )
+        if state[1] == 0 and not authority_unavailable:
+            raise EvidenceError("launched process must retain its wait4 lifetime peak")
+        process_wide_failure = any(
+            arm["controller_invariant_id"] in unavailable_invariants
+            or (
+                arm["disposition"] not in {0, 1, 8, 10}
+                and (
+                    arm["disposition"],
+                    arm["controller_invariant_id"],
+                )
+                not in lost_candidate_invocation_witnesses
+            )
+            for arm in process_attempts[expected_arm]
+        )
+        if process_wide_failure and any(
+            arm["disposition"] == 0 for arm in process_attempts[expected_arm]
+        ):
+            raise EvidenceError(
+                "process-wide controller failure must invalidate every prior success"
+            )
+        if authority_unavailable:
+            continue
+        raw_status, exit_code, signal = state[2], state[3], state[4]
+        if os.WIFEXITED(raw_status):
+            matches_wait = exit_code == os.WEXITSTATUS(raw_status) and signal == 0
+        elif os.WIFSIGNALED(raw_status):
+            matches_wait = exit_code == -1 and signal == os.WTERMSIG(raw_status)
+        else:
+            matches_wait = False
+        if not matches_wait:
+            raise EvidenceError("serialized exit tuple does not match exact wait4 status")
+
+    def pristine_not_run(arm: Mapping[str, Any]) -> bool:
+        return (
+            arm["disposition"] == 10
+            and arm["dispatch_ordinal"] == 0
+            and arm["process_instance_identity"] == 0
+            and arm["outer_elapsed_nanoseconds"] == 0
+            and arm["process_lifetime_peak_host_bytes"] == 0
+            and arm["raw_wait_status"] == 0
+            and arm["process_exit_code"] == -1
+            and arm["terminating_signal"] == 0
+            and not arm["watchdog_kill_sent"]
+            and not arm["controller_invariant_id"]
+            and not arm["controller_detail"]
+            and arm["record"] is None
+            and arm["child_failure"] is None
+        )
+
+    positive_count = sum(arm["dispatch_ordinal"] != 0 for arm in ordered_arms)
+    if positive_count == 0:
+        first_failures = [
+            arm
+            for arm in (attempts[0]["baseline"], attempts[0]["candidate"])
+            if arm["disposition"] != 10
+        ]
+        if not first_failures:
+            raise EvidenceError("zero-dispatch cell has no authenticated setup failure")
+        if any(arm["disposition"] not in {1, 2, 4, 5, 6, 7} for arm in first_failures):
+            raise EvidenceError("zero-dispatch failure has a measured-only disposition")
+        if len(first_failures) > 1 and not all(
+            arm["disposition"] == 6 and arm["controller_invariant_id"] == "P4HARNESS-READY-PAIR-001"
+            for arm in first_failures
+        ):
+            raise EvidenceError("setup short-circuit contains multiple independent failures")
+        if any(
+            not pristine_not_run(arm)
+            for arm in (attempts[0]["baseline"], attempts[0]["candidate"])
+            if arm["disposition"] == 10
+        ):
+            raise EvidenceError("unreleased setup peer is not a pristine not-run attempt")
+        if any(
+            not pristine_not_run(arm)
+            for repetition in attempts[1:]
+            for arm in (repetition["baseline"], repetition["candidate"])
+        ):
+            raise EvidenceError("setup failure must leave every later attempt not run")
+    else:
+        for index, arm in enumerate(ordered_arms):
+            if index < positive_count:
+                if arm["dispatch_ordinal"] != index + 1 or arm["disposition"] == 10:
+                    raise EvidenceError("dispatch ordinals must form the prescribed serial prefix")
+            elif not pristine_not_run(arm):
+                raise EvidenceError("no measured arm may be released after the fatal prefix")
+        if any(arm["disposition"] == 1 for arm in ordered_arms[: max(positive_count - 1, 0)]):
+            raise EvidenceError("typed child failure must terminate the dispatch prefix")
+    return complete
+
+
 def validate_document(
     value: Any,
     *,
@@ -1662,8 +2081,10 @@ def validate_document(
     expected_commit: str | None = None,
     expected_repetitions: int = _CANONICAL_REPETITIONS,
     expected_workers: int = _CANONICAL_WORKERS,
+    _expected_raw_evidence_schema_version: int | None = None,
+    _total_attempt_mode: bool = False,
 ) -> None:
-    """Validate one complete raw cell; testing relaxations must be explicit."""
+    """Validate one complete Raw-v1 cell; testing relaxations must be explicit."""
     if (
         isinstance(expected_repetitions, bool)
         or not 1 <= expected_repetitions <= _CANONICAL_REPETITIONS
@@ -1672,9 +2093,21 @@ def validate_document(
     if isinstance(expected_workers, bool) or not 1 <= expected_workers <= 64:
         raise EvidenceError("expected workers must be between 1 and 64")
     document = _object(value, "raw cell")
-    _fields(document, _TOP_FIELDS, "raw cell")
-    if _u32(document["wire_schema_version"], "wire_schema_version") != 1:
-        raise EvidenceError("wire_schema_version must be 1")
+    if _expected_raw_evidence_schema_version is None:
+        _fields(document, _TOP_FIELDS, "raw cell")
+        expected_wire_schema_version = 1
+    else:
+        _fields(document, _SAME_RUN_TOP_FIELDS, "same-run raw cell")
+        if (
+            _u32(document["raw_evidence_schema_version"], "raw_evidence_schema_version")
+            != _expected_raw_evidence_schema_version
+        ):
+            raise EvidenceError(
+                "raw_evidence_schema_version does not name the expected authority contract"
+            )
+        expected_wire_schema_version = _SAME_RUN_WIRE_SCHEMA_VERSION
+    if _u32(document["wire_schema_version"], "wire_schema_version") != expected_wire_schema_version:
+        raise EvidenceError(f"wire_schema_version must be {expected_wire_schema_version}")
     if _u32(document["schema_version"], "schema_version") != 1:
         raise EvidenceError("schema_version must be 1")
     source_commit = _string(document["source_commit"], "source_commit")
@@ -1738,6 +2171,17 @@ def validate_document(
     attempts = _array(document["attempts"], "attempts")
     if len(attempts) != expected_repetitions:
         raise EvidenceError(f"attempts must contain exactly {expected_repetitions} pairs")
+    if _total_attempt_mode:
+        complete = _validate_total_attempts(
+            document,
+            attempts,
+            config,
+            manifest_case,
+            expected_budget_checksum,
+        )
+        _validate_root_checksums(document, source_envelope_checksum)
+        if not complete:
+            return
 
     baseline_process: int | None = None
     candidate_process: int | None = None
@@ -1927,13 +2371,46 @@ def validate_document(
             "candidate lifecycle does not end after one warm-up and all measured repetitions"
         )
 
-    if document["artifact_checksum"] != compute_cell_artifact_checksum(document):
-        raise EvidenceError("artifact_checksum does not authenticate the raw cell")
-    if (
-        source_envelope_checksum == 0
-        or source_envelope_checksum != compute_source_envelope_checksum(document)
-    ):
-        raise EvidenceError("source_envelope_checksum does not authenticate source provenance")
+    _validate_root_checksums(document, source_envelope_checksum)
+
+
+def validate_same_run_document_v2(
+    value: Any,
+    *,
+    allow_unstamped: bool = False,
+    expected_commit: str | None = None,
+    expected_repetitions: int = _CANONICAL_REPETITIONS,
+    expected_workers: int = _CANONICAL_WORKERS,
+) -> None:
+    """Validate Raw-v2 output from the telemetry-aware Wire-v2 controller."""
+    validate_document(
+        value,
+        allow_unstamped=allow_unstamped,
+        expected_commit=expected_commit,
+        expected_repetitions=expected_repetitions,
+        expected_workers=expected_workers,
+        _expected_raw_evidence_schema_version=_SAME_RUN_RAW_EVIDENCE_SCHEMA_VERSION,
+    )
+
+
+def validate_same_run_total_attempt_document_v2(
+    value: Any,
+    *,
+    allow_unstamped: bool = False,
+    expected_commit: str | None = None,
+    expected_repetitions: int = _CANONICAL_REPETITIONS,
+    expected_workers: int = _CANONICAL_WORKERS,
+) -> None:
+    """Authenticate complete or incomplete Raw-v2 total-attempt evidence."""
+    validate_document(
+        value,
+        allow_unstamped=allow_unstamped,
+        expected_commit=expected_commit,
+        expected_repetitions=expected_repetitions,
+        expected_workers=expected_workers,
+        _expected_raw_evidence_schema_version=_SAME_RUN_RAW_EVIDENCE_SCHEMA_VERSION,
+        _total_attempt_mode=True,
+    )
 
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1958,6 +2435,7 @@ def _check_canonical_key_order(value: Any, label: str = "raw cell") -> None:
             key_set = set(keys)
             known_orders = (
                 _TOP_FIELDS,
+                _SAME_RUN_TOP_FIELDS,
                 _CONFIG_FIELDS,
                 _BUDGET_FIELDS,
                 _LIMIT_FIELDS,
@@ -2041,11 +2519,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--testing-repetitions", type=int, default=_CANONICAL_REPETITIONS)
     parser.add_argument("--testing-workers", type=int, default=_CANONICAL_WORKERS)
     parser.add_argument("--expected-commit")
+    parser.add_argument("--same-run-total-attempt-v2", action="store_true")
     parser.add_argument("paths", nargs="+", type=pathlib.Path)
     options = parser.parse_args(argv)
     try:
         for path in options.paths:
-            if (
+            if options.same_run_total_attempt_v2:
+                validate_same_run_total_attempt_document_v2(
+                    read_document(path),
+                    allow_unstamped=options.testing_allow_unstamped,
+                    expected_commit=options.expected_commit,
+                    expected_repetitions=options.testing_repetitions,
+                    expected_workers=options.testing_workers,
+                )
+            elif (
                 not options.testing_allow_unstamped
                 and options.testing_repetitions == _CANONICAL_REPETITIONS
                 and options.testing_workers == _CANONICAL_WORKERS

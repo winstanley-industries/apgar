@@ -133,6 +133,22 @@ class Phase4TrialProcessTest(unittest.TestCase):
         self.assertEqual(baseline["controller_invariant_id"], "P4HARNESS-FRAME-TRAILING-001")
         self.assertFalse(baseline["watchdog_kill_sent"])
 
+    def test_split_second_ready_has_authenticated_state_failure(self) -> None:
+        artifact = self.run_fault("delayed_double_ready")
+        baseline = artifact["attempts"][0]["baseline"]
+        self.assertEqual(baseline["disposition"], 6)
+        self.assertEqual(baseline["controller_invariant_id"], "P4HARNESS-RUN-STATE-001")
+        self.assertTrue(baseline["controller_detail"])
+        self.assertFalse(baseline["watchdog_kill_sent"])
+
+    def test_child_exit_before_launch_gate_does_not_signal_controller(self) -> None:
+        artifact = self.run_fault("exit_before_launch_gate")
+        baseline = artifact["attempts"][0]["baseline"]
+        self.assertEqual(baseline["disposition"], 7)
+        self.assertEqual(baseline["controller_invariant_id"], "P4HARNESS-LAUNCH-GATE-001")
+        self.assertTrue(baseline["controller_detail"])
+        self.assertIsNone(artifact["attempts"][0]["result"])
+
     def test_preparer_factory_resource_failure_is_encodable_summary(self) -> None:
         artifact = self.run_fault("preparer_factory_resource_failure")
         candidate = artifact["attempts"][0]["candidate"]
@@ -143,6 +159,16 @@ class Phase4TrialProcessTest(unittest.TestCase):
             candidate["child_failure"]["summary_invariant_id"],
             "allocator.cpu_candidate_pool.preparer_thread.v1",
         )
+
+    def test_earlier_typed_failure_retains_unavailable_reap_authority(self) -> None:
+        artifact = self.run_fault("preparer_factory_resource_failure_reap_unavailable")
+        candidate = artifact["attempts"][0]["candidate"]
+        self.assertEqual(candidate["disposition"], 1)
+        self.assertIsNotNone(candidate["child_failure"])
+        self.assertEqual(candidate["controller_invariant_id"], "P4HARNESS-REAP-BOUNDED-001")
+        self.assertEqual(candidate["process_lifetime_peak_host_bytes"], 0)
+        self.assertEqual(candidate["raw_wait_status"], 0)
+        self.assertEqual(candidate["process_exit_code"], -1)
 
     def test_ready_and_later_failure_must_match_warmup_case_identity(self) -> None:
         ready = self.run_fault("ready_bad_identity")

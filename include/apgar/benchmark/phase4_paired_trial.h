@@ -18,6 +18,7 @@ inline constexpr std::uint32_t kPhase4PairedTrialSchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4ExternalAuthoritySchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4PerNetReportSchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4ArmReportTelemetrySchemaVersion = 1;
+inline constexpr std::uint32_t kPhase4SameRunArmDecisionTelemetrySchemaVersion = 1;
 inline constexpr std::uint64_t kPhase4OverlapPartsPerMillion = 1'000'000;
 
 enum class Phase4TrialArm : std::uint8_t {
@@ -223,6 +224,36 @@ struct Phase4TrialArmDiagnosticExecutionV1 {
                          const Phase4TrialArmDiagnosticExecutionV1&) = default;
 };
 
+// Minimal decision columns captured while the contender's authentic result
+// objects are still alive. Unlike Phase4PerNetReportV1, this leaf deliberately
+// excludes pool-diversity and selection-detail derivation.
+struct Phase4SameRunPerNetColumnOutcomesV1 {
+  board_ir::EntityRef net{};
+  Phase4PerNetColumnOutcomesV1 columns;
+
+  friend bool operator==(const Phase4SameRunPerNetColumnOutcomesV1&,
+                         const Phase4SameRunPerNetColumnOutcomesV1&) = default;
+};
+
+struct Phase4SameRunArmDecisionTelemetryV1 {
+  std::uint32_t schema_version = kPhase4SameRunArmDecisionTelemetrySchemaVersion;
+  std::uint64_t associated_semantic_checksum = 0;
+  Phase4BoardOutcome outcome;
+  std::vector<Phase4SameRunPerNetColumnOutcomesV1> per_net;
+  std::uint64_t telemetry_checksum = 0;
+
+  friend bool operator==(const Phase4SameRunArmDecisionTelemetryV1&,
+                         const Phase4SameRunArmDecisionTelemetryV1&) = default;
+};
+
+struct Phase4TrialArmWithSameRunTelemetryExecutionV1 {
+  Phase4TrialArmExecution execution;
+  Phase4SameRunArmDecisionTelemetryV1 telemetry;
+
+  friend bool operator==(const Phase4TrialArmWithSameRunTelemetryExecutionV1&,
+                         const Phase4TrialArmWithSameRunTelemetryExecutionV1&) = default;
+};
+
 // Candidate-only diagnostic capture. The immutable StoredCandidate handles are
 // copied while the authoritative allocation session and CandidateStore are
 // alive, so the complete frozen pool membership remains available after the
@@ -353,6 +384,8 @@ struct Phase4TrialArmFailure {
 using Phase4TrialArmExecutionResult = std::variant<Phase4TrialArmExecution, Phase4TrialArmFailure>;
 using Phase4TrialArmDiagnosticExecutionResultV1 =
     std::variant<Phase4TrialArmDiagnosticExecutionV1, Phase4TrialArmFailure>;
+using Phase4TrialArmWithSameRunTelemetryExecutionResultV1 =
+    std::variant<Phase4TrialArmWithSameRunTelemetryExecutionV1, Phase4TrialArmFailure>;
 using Phase4CandidatePoolSnapshotExecutionResultV1 =
     std::variant<Phase4CandidatePoolSnapshotExecutionV1, Phase4TrialArmFailure>;
 using Phase4TrialArmRecordResult = std::variant<Phase4TrialArmRecord, Phase4PairedTrialError>;
@@ -371,6 +404,15 @@ using Phase4PairedTrialAssemblyResult =
 // per-net reporting telemetry while the authentic final pools, columns, and
 // selected world are still alive. It does not alter the raw evidence wire.
 [[nodiscard]] Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+// Executes one authentic contender and returns its ordinary measured execution
+// together with the board outcome and per-net column partition captured from
+// that exact execution. External process authority remains responsible for
+// finalizing the measured arm.
+[[nodiscard]] Phase4TrialArmWithSameRunTelemetryExecutionResultV1
+ExecutePhase4TrialArmWithSameRunTelemetryV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
 

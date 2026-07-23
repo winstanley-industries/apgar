@@ -1252,5 +1252,85 @@ TEST(Phase4PairedTrialTest, ValidatorRejectsReauthenticatedPerNetPoolAdmissionMi
   EXPECT_EQ(error->invariant_id, "P4REPORT-CLOSURE-001");
 }
 
+TEST(Phase4PairedTrialTest, SameRunDecisionTelemetryClosesAuthenticBaselineAndCandidateExecution) {
+  const Phase4PairedTrialSpec spec = Spec();
+  const Phase4TrialArmWithSameRunTelemetryExecutionV1 baseline =
+      ValueOf<Phase4TrialArmWithSameRunTelemetryExecutionV1>(
+          ExecutePhase4TrialArmWithSameRunTelemetryV1(Phase4TrialArm::kSequentialBaseline, spec,
+                                                      {}));
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  const Phase4TrialArmWithSameRunTelemetryExecutionV1 candidate =
+      ValueOf<Phase4TrialArmWithSameRunTelemetryExecutionV1>(
+          ExecutePhase4TrialArmWithSameRunTelemetryV1(Phase4TrialArm::kReusableCandidateAllocation,
+                                                      spec, {}, preparer.get()));
+  const Phase4RepresentativeCase corpus = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV1(spec.case_id, {}, spec.corpus_limits));
+
+  for (const Phase4TrialArmWithSameRunTelemetryExecutionV1* arm : {&baseline, &candidate}) {
+    EXPECT_EQ(arm->telemetry.associated_semantic_checksum,
+              arm->execution.semantics.semantic_checksum);
+    EXPECT_EQ(arm->telemetry.outcome, arm->execution.semantics.outcome);
+    EXPECT_EQ(arm->telemetry.per_net.size(), arm->execution.semantics.workload_net_count);
+    EXPECT_FALSE(internal::ValidatePhase4SameRunArmDecisionTelemetryV1(
+                     arm->execution.semantics, corpus.workload, arm->telemetry)
+                     .has_value());
+  }
+
+  const Phase4TrialArmDiagnosticExecutionV1 diagnostic =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(
+          ExecutePhase4TrialArmDiagnosticV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  ASSERT_EQ(baseline.telemetry.per_net.size(), diagnostic.telemetry.per_net.size());
+  for (std::size_t index = 0; index < baseline.telemetry.per_net.size(); ++index) {
+    EXPECT_EQ(baseline.telemetry.per_net[index].net, diagnostic.telemetry.per_net[index].net);
+    EXPECT_EQ(baseline.telemetry.per_net[index].columns,
+              diagnostic.telemetry.per_net[index].columns);
+  }
+}
+
+TEST(Phase4PairedTrialTest, SameRunDecisionValidatorRejectsReauthenticatedAssociationDrift) {
+  const Phase4PairedTrialSpec spec = Spec();
+  const Phase4TrialArmWithSameRunTelemetryExecutionV1 captured =
+      ValueOf<Phase4TrialArmWithSameRunTelemetryExecutionV1>(
+          ExecutePhase4TrialArmWithSameRunTelemetryV1(Phase4TrialArm::kSequentialBaseline, spec,
+                                                      {}));
+  const Phase4RepresentativeCase corpus = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV1(spec.case_id, {}, spec.corpus_limits));
+
+  {
+    Phase4SameRunArmDecisionTelemetryV1 changed = captured.telemetry;
+    std::swap(changed.per_net[0], changed.per_net[1]);
+    changed.telemetry_checksum =
+        internal::ComputePhase4SameRunArmDecisionTelemetryChecksumV1(changed);
+    const std::optional<Phase4PairedTrialError> error =
+        internal::ValidatePhase4SameRunArmDecisionTelemetryV1(captured.execution.semantics,
+                                                              corpus.workload, changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4SAMERUN-NET-002");
+  }
+  {
+    Phase4SameRunArmDecisionTelemetryV1 changed = captured.telemetry;
+    ++changed.outcome.world_checksum;
+    changed.telemetry_checksum =
+        internal::ComputePhase4SameRunArmDecisionTelemetryChecksumV1(changed);
+    const std::optional<Phase4PairedTrialError> error =
+        internal::ValidatePhase4SameRunArmDecisionTelemetryV1(captured.execution.semantics,
+                                                              corpus.workload, changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4SAMERUN-AUTH-001");
+  }
+  {
+    Phase4SameRunArmDecisionTelemetryV1 changed = captured.telemetry;
+    ++changed.per_net[0].columns.requested_columns;
+    ++changed.per_net[0].columns.other_rejections;
+    changed.telemetry_checksum =
+        internal::ComputePhase4SameRunArmDecisionTelemetryChecksumV1(changed);
+    const std::optional<Phase4PairedTrialError> error =
+        internal::ValidatePhase4SameRunArmDecisionTelemetryV1(captured.execution.semantics,
+                                                              corpus.workload, changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4SAMERUN-CLOSURE-001");
+  }
+}
+
 }  // namespace
 }  // namespace apgar::benchmark

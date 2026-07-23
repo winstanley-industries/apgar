@@ -46,6 +46,7 @@ using Wide = unsigned __int128;
   return Phase4TrialHarnessError{
       .invariant_id = std::string(invariant),
       .detail = std::string(detail),
+      .raw_cell = std::nullopt,
   };
 }
 

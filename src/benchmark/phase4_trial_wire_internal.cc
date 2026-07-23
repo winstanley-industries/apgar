@@ -21,6 +21,8 @@
 #include <variant>
 #include <vector>
 
+#include "src/benchmark/phase4_paired_trial_internal.h"
+
 namespace apgar::benchmark::internal {
 namespace {
 
@@ -36,6 +38,11 @@ static_assert(kPhase4TrialWireHeaderBytesV1 ==
               kMagic.size() + kSchemaBytes + kKindBytes + kLengthBytes);
 static_assert(kPhase4TrialWireMaxFrameBytesV1 == kPhase4TrialWireHeaderBytesV1 +
                                                      kPhase4TrialWireMaximumPayloadBytesV1 +
+                                                     kChecksumBytes);
+static_assert(kPhase4TrialWireHeaderBytesV2 ==
+              kMagic.size() + kSchemaBytes + kKindBytes + kLengthBytes);
+static_assert(kPhase4TrialWireMaxFrameBytesV2 == kPhase4TrialWireHeaderBytesV2 +
+                                                     kPhase4TrialWireMaximumPayloadBytesV2 +
                                                      kChecksumBytes);
 
 [[nodiscard]] Phase4TrialWireError Error(std::string_view invariant_id, std::string detail) {
@@ -285,6 +292,8 @@ class PayloadReader {
   }
 
   [[nodiscard]] const Phase4TrialWireError& error() const { return *error_; }
+
+  [[nodiscard]] std::size_t Remaining() const noexcept { return remaining(); }
 
  private:
   [[nodiscard]] std::size_t remaining() const noexcept { return bytes_.size() - position_; }
@@ -679,6 +688,157 @@ void EncodeExecution(PayloadWriter& writer, const Phase4TrialArmExecution& execu
   return true;
 }
 
+[[nodiscard]] Phase4TrialWireError AsV2Error(Phase4TrialWireError error) {
+  if (error.invariant_id.ends_with(".v1")) {
+    error.invariant_id.back() = '2';
+  }
+  return error;
+}
+
+[[nodiscard]] Phase4TrialWireError ResourceErrorV2(std::string_view detail) {
+  return Error("benchmark.phase4_trial_wire.resource.v2", std::string(detail));
+}
+
+[[nodiscard]] bool EntityRefBeforeV2(board_ir::EntityRef left, board_ir::EntityRef right) noexcept {
+  return left.id < right.id || (left.id == right.id && left.generation < right.generation);
+}
+
+[[nodiscard]] std::optional<Phase4TrialWireError> ValidateSameRunDecisionExecutionV2(
+    const Phase4TrialArmWithSameRunTelemetryExecutionV1& decision_execution) {
+  const Phase4TrialArmExecution& execution = decision_execution.execution;
+  const Phase4TrialArmSemantics& semantics = execution.semantics;
+  const Phase4SameRunArmDecisionTelemetryV1& telemetry = decision_execution.telemetry;
+  if (std::optional<Phase4PairedTrialError> error = ValidatePhase4TrialArmSemanticsV1(semantics);
+      error.has_value()) {
+    return Error("benchmark.phase4_trial_wire.success_semantics.v2",
+                 std::string("same-run success payload contains invalid arm semantics: ") +
+                     std::string(error->detail));
+  }
+  if (telemetry.schema_version != kPhase4SameRunArmDecisionTelemetrySchemaVersion ||
+      telemetry.associated_semantic_checksum == 0 ||
+      telemetry.associated_semantic_checksum != semantics.semantic_checksum ||
+      !(telemetry.outcome == semantics.outcome) ||
+      telemetry.per_net.size() != semantics.workload_net_count ||
+      telemetry.per_net.size() > kPhase4TrialWireMaximumTelemetryRowsV2) {
+    return Error("benchmark.phase4_trial_wire.telemetry_association.v2",
+                 "same-run telemetry schema, semantic association, outcome, or roster count is "
+                 "invalid");
+  }
+  if (telemetry.telemetry_checksum == 0 ||
+      telemetry.telemetry_checksum !=
+          ComputePhase4SameRunArmDecisionTelemetryChecksumV1(telemetry)) {
+    return Error("benchmark.phase4_trial_wire.telemetry_checksum.v2",
+                 "same-run telemetry checksum is absent or invalid");
+  }
+
+  using Wide = unsigned __int128;
+  Wide requested = 0;
+  Wide executed = 0;
+  Wide admitted = 0;
+  Wide rejected = 0;
+  for (std::size_t index = 0; index < telemetry.per_net.size(); ++index) {
+    const Phase4SameRunPerNetColumnOutcomesV1& row = telemetry.per_net[index];
+    if (row.net.id == 0 ||
+        (index != 0 && !EntityRefBeforeV2(telemetry.per_net[index - 1].net, row.net))) {
+      return Error("benchmark.phase4_trial_wire.telemetry_roster.v2",
+                   "same-run telemetry requires a strictly sorted nonzero full-EntityRef roster");
+    }
+    const Phase4PerNetColumnOutcomesV1& columns = row.columns;
+    const Wide terminal = static_cast<Wide>(columns.admitted_candidates) +
+                          columns.duplicate_candidates + columns.disconnected_columns +
+                          columns.unsupported_columns + columns.skipped_columns +
+                          columns.exact_validation_rejections + columns.other_rejections;
+    if (terminal != columns.requested_columns ||
+        static_cast<Wide>(columns.executed_route_queries) + columns.skipped_columns !=
+            columns.requested_columns) {
+      return Error("benchmark.phase4_trial_wire.telemetry_partition.v2",
+                   "same-run per-net columns do not form a closed requested-column partition");
+    }
+    requested += columns.requested_columns;
+    executed += columns.executed_route_queries;
+    admitted += columns.admitted_candidates;
+    rejected += terminal - columns.admitted_candidates;
+  }
+  if (requested != semantics.requested_columns || executed != semantics.actual.route_queries ||
+      admitted != semantics.admitted_candidates || rejected != semantics.rejected_columns) {
+    return Error("benchmark.phase4_trial_wire.telemetry_totals.v2",
+                 "same-run telemetry column totals do not match the measured arm semantics");
+  }
+  return std::nullopt;
+}
+
+void EncodeColumnOutcomesV2(PayloadWriter& writer, const Phase4PerNetColumnOutcomesV1& columns) {
+  writer.AddU64(columns.requested_columns);
+  writer.AddU64(columns.executed_route_queries);
+  writer.AddU64(columns.admitted_candidates);
+  writer.AddU64(columns.duplicate_candidates);
+  writer.AddU64(columns.disconnected_columns);
+  writer.AddU64(columns.unsupported_columns);
+  writer.AddU64(columns.skipped_columns);
+  writer.AddU64(columns.exact_validation_rejections);
+  writer.AddU64(columns.other_rejections);
+}
+
+[[nodiscard]] bool DecodeColumnOutcomesV2(PayloadReader& reader,
+                                          Phase4PerNetColumnOutcomesV1* columns) {
+  return reader.ReadU64(&columns->requested_columns, "telemetry.columns.requested_columns") &&
+         reader.ReadU64(&columns->executed_route_queries,
+                        "telemetry.columns.executed_route_queries") &&
+         reader.ReadU64(&columns->admitted_candidates, "telemetry.columns.admitted_candidates") &&
+         reader.ReadU64(&columns->duplicate_candidates, "telemetry.columns.duplicate_candidates") &&
+         reader.ReadU64(&columns->disconnected_columns, "telemetry.columns.disconnected_columns") &&
+         reader.ReadU64(&columns->unsupported_columns, "telemetry.columns.unsupported_columns") &&
+         reader.ReadU64(&columns->skipped_columns, "telemetry.columns.skipped_columns") &&
+         reader.ReadU64(&columns->exact_validation_rejections,
+                        "telemetry.columns.exact_validation_rejections") &&
+         reader.ReadU64(&columns->other_rejections, "telemetry.columns.other_rejections");
+}
+
+void EncodeSameRunTelemetryV2(PayloadWriter& writer,
+                              const Phase4SameRunArmDecisionTelemetryV1& telemetry) {
+  writer.AddU32(telemetry.schema_version);
+  writer.AddU64(telemetry.associated_semantic_checksum);
+  EncodeBoardOutcome(writer, telemetry.outcome);
+  writer.AddU32(static_cast<std::uint32_t>(telemetry.per_net.size()));
+  for (const Phase4SameRunPerNetColumnOutcomesV1& row : telemetry.per_net) {
+    writer.AddU64(row.net.id);
+    writer.AddU32(row.net.generation);
+    EncodeColumnOutcomesV2(writer, row.columns);
+  }
+  writer.AddU64(telemetry.telemetry_checksum);
+}
+
+[[nodiscard]] bool DecodeSameRunTelemetryV2(PayloadReader& reader, std::uint32_t expected_row_count,
+                                            Phase4SameRunArmDecisionTelemetryV1* telemetry) {
+  constexpr std::size_t kMinimumPerNetRowBytesV2 =
+      sizeof(std::uint64_t) + sizeof(std::uint32_t) + 9U * sizeof(std::uint64_t);
+  std::uint32_t count = 0;
+  if (!reader.ReadU32(&telemetry->schema_version, "telemetry.schema_version") ||
+      !reader.ReadU64(&telemetry->associated_semantic_checksum,
+                      "telemetry.associated_semantic_checksum") ||
+      !DecodeBoardOutcome(reader, &telemetry->outcome) ||
+      !reader.ReadU32(&count, "telemetry.per_net_count")) {
+    return false;
+  }
+  if (count != expected_row_count || count > kPhase4TrialWireMaximumTelemetryRowsV2 ||
+      reader.Remaining() < sizeof(telemetry->telemetry_checksum) ||
+      static_cast<std::size_t>(count) >
+          (reader.Remaining() - sizeof(telemetry->telemetry_checksum)) / kMinimumPerNetRowBytesV2) {
+    return reader.Reject("benchmark.phase4_trial_wire.telemetry_bound.v2",
+                         "same-run telemetry roster count exceeds its semantic or remaining-byte "
+                         "bound");
+  }
+  telemetry->per_net.resize(count);
+  for (Phase4SameRunPerNetColumnOutcomesV1& row : telemetry->per_net) {
+    if (!reader.ReadU64(&row.net.id, "telemetry.net.id") ||
+        !reader.ReadU32(&row.net.generation, "telemetry.net.generation") ||
+        !DecodeColumnOutcomesV2(reader, &row.columns)) {
+      return false;
+    }
+  }
+  return reader.ReadU64(&telemetry->telemetry_checksum, "telemetry.telemetry_checksum");
+}
+
 [[nodiscard]] bool EncodeFailure(PayloadWriter& writer, const Phase4DurableArmFailure& failure) {
   writer.AddU32(failure.schema_version);
   writer.AddByte(static_cast<std::uint8_t>(failure.summary_code));
@@ -930,6 +1090,197 @@ void EncodeExecution(PayloadWriter& writer, const Phase4TrialArmExecution& execu
   return message;
 }
 
+[[nodiscard]] Phase4TrialWireMessageKind MessageKindV2(const Phase4TrialWireMessageV2& message) {
+  return std::visit(
+      []<typename Message>(const Message&) {
+        if constexpr (std::is_same_v<Message, Phase4TrialWireReady>) {
+          return Phase4TrialWireMessageKind::kReady;
+        } else if constexpr (std::is_same_v<Message, Phase4TrialWireRunCommand>) {
+          return Phase4TrialWireMessageKind::kRun;
+        } else if constexpr (std::is_same_v<Message, Phase4TrialWireStop>) {
+          return Phase4TrialWireMessageKind::kStop;
+        } else if constexpr (std::is_same_v<Message, Phase4TrialWireSuccessV2>) {
+          return Phase4TrialWireMessageKind::kSuccess;
+        } else if constexpr (std::is_same_v<Message, Phase4TrialWireFailure>) {
+          return Phase4TrialWireMessageKind::kFailure;
+        } else {
+          return Phase4TrialWireMessageKind::kStopped;
+        }
+      },
+      message);
+}
+
+[[nodiscard]] std::variant<std::vector<std::uint8_t>, Phase4TrialWireError> EncodePayloadV2(
+    const Phase4TrialWireMessageV2& message) {
+  PayloadWriter writer;
+  const std::optional<Phase4TrialWireError> validation = std::visit(
+      [](const auto& value) -> std::optional<Phase4TrialWireError> {
+        using Message = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Message, Phase4TrialWireReady>) {
+          if (std::optional<Phase4TrialWireError> error = ValidateReady(value); error.has_value()) {
+            return AsV2Error(std::move(*error));
+          }
+        } else if constexpr (std::is_same_v<Message, Phase4TrialWireRunCommand>) {
+          if (!ValidOrder(value.execution_order)) {
+            return Error("benchmark.phase4_trial_wire.run_enum.v2",
+                         "run command contains an unknown execution order");
+          }
+        } else if constexpr (std::is_same_v<Message, Phase4TrialWireSuccessV2>) {
+          return ValidateSameRunDecisionExecutionV2(value.decision_execution);
+        } else if constexpr (std::is_same_v<Message, Phase4TrialWireFailure>) {
+          if (std::optional<Phase4TrialWireError> error = ValidateFailure(value.failure);
+              error.has_value()) {
+            return AsV2Error(std::move(*error));
+          }
+        }
+        return std::nullopt;
+      },
+      message);
+  if (validation.has_value()) {
+    return *validation;
+  }
+
+  const bool encoded = std::visit(
+      [&writer](const auto& value) {
+        using Message = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Message, Phase4TrialWireReady>) {
+          writer.AddU32(value.case_id);
+          writer.AddU64(value.descriptor_fingerprint);
+          writer.AddU64(value.case_checksum);
+          writer.AddU64(value.board_content_hash);
+          writer.AddU64(value.workload_checksum);
+          writer.AddU64(value.capacity_model_checksum);
+          return true;
+        } else if constexpr (std::is_same_v<Message, Phase4TrialWireStop> ||
+                             std::is_same_v<Message, Phase4TrialWireStopped>) {
+          return true;
+        } else if constexpr (std::is_same_v<Message, Phase4TrialWireRunCommand>) {
+          writer.AddU32(value.repetition_index);
+          writer.AddByte(static_cast<std::uint8_t>(value.execution_order));
+          return true;
+        } else if constexpr (std::is_same_v<Message, Phase4TrialWireSuccessV2>) {
+          EncodeExecution(writer, value.decision_execution.execution);
+          EncodeSameRunTelemetryV2(writer, value.decision_execution.telemetry);
+          return true;
+        } else {
+          return EncodeFailure(writer, value.failure);
+        }
+      },
+      message);
+  if (!encoded) {
+    return Error("benchmark.phase4_trial_wire.string_bound.v2",
+                 "wire string exceeds the bounded payload representation");
+  }
+  if (writer.bytes().size() > kPhase4TrialWireMaximumPayloadBytesV2) {
+    return Error("benchmark.phase4_trial_wire.payload_bound.v2",
+                 "encoded wire payload exceeds 64 KiB");
+  }
+  return std::move(writer).Take();
+}
+
+[[nodiscard]] Phase4TrialWireDecodeResultV2 DecodePayloadV2(Phase4TrialWireMessageKind kind,
+                                                            std::span<const std::uint8_t> payload) {
+  PayloadReader reader(payload);
+  Phase4TrialWireMessageV2 message;
+  switch (kind) {
+    case Phase4TrialWireMessageKind::kReady: {
+      Phase4TrialWireReady ready;
+      if (!reader.ReadU32(&ready.case_id, "ready.case_id") ||
+          !reader.ReadU64(&ready.descriptor_fingerprint, "ready.descriptor_fingerprint") ||
+          !reader.ReadU64(&ready.case_checksum, "ready.case_checksum") ||
+          !reader.ReadU64(&ready.board_content_hash, "ready.board_content_hash") ||
+          !reader.ReadU64(&ready.workload_checksum, "ready.workload_checksum") ||
+          !reader.ReadU64(&ready.capacity_model_checksum, "ready.capacity_model_checksum")) {
+        return AsV2Error(reader.error());
+      }
+      if (std::optional<Phase4TrialWireError> error = ValidateReady(ready); error.has_value()) {
+        return AsV2Error(std::move(*error));
+      }
+      message = ready;
+      break;
+    }
+    case Phase4TrialWireMessageKind::kRun: {
+      Phase4TrialWireRunCommand run;
+      std::uint8_t order = 0;
+      if (!reader.ReadU32(&run.repetition_index, "run.repetition_index") ||
+          !reader.ReadByte(&order, "run.execution_order")) {
+        return AsV2Error(reader.error());
+      }
+      run.execution_order = static_cast<Phase4TrialOrder>(order);
+      if (!ValidOrder(run.execution_order)) {
+        return Error("benchmark.phase4_trial_wire.run_enum.v2",
+                     "run command contains an unknown execution order");
+      }
+      message = run;
+      break;
+    }
+    case Phase4TrialWireMessageKind::kStop:
+      message = Phase4TrialWireStop{};
+      break;
+    case Phase4TrialWireMessageKind::kSuccess: {
+      Phase4TrialWireSuccessV2 success;
+      if (!DecodeExecution(reader, &success.decision_execution.execution) ||
+          !DecodeSameRunTelemetryV2(
+              reader, success.decision_execution.execution.semantics.workload_net_count,
+              &success.decision_execution.telemetry)) {
+        return AsV2Error(reader.error());
+      }
+      if (std::optional<Phase4TrialWireError> error =
+              ValidateSameRunDecisionExecutionV2(success.decision_execution);
+          error.has_value()) {
+        return *error;
+      }
+      message = std::move(success);
+      break;
+    }
+    case Phase4TrialWireMessageKind::kFailure: {
+      Phase4TrialWireFailure failure;
+      if (!DecodeFailure(reader, &failure.failure)) {
+        return AsV2Error(reader.error());
+      }
+      message = std::move(failure);
+      break;
+    }
+    case Phase4TrialWireMessageKind::kStopped:
+      message = Phase4TrialWireStopped{};
+      break;
+  }
+  if (!reader.Finish()) {
+    return AsV2Error(reader.error());
+  }
+  return message;
+}
+
+[[nodiscard]] std::optional<Phase4TrialWireError> ValidateHeaderV2(
+    std::span<const std::uint8_t> header, Phase4TrialWireMessageKind* kind,
+    std::uint32_t* payload_length) {
+  if (header.size() < kPhase4TrialWireHeaderBytesV2) {
+    return Error("benchmark.phase4_trial_wire.truncated.v2",
+                 "wire frame is shorter than its fixed header");
+  }
+  if (!std::equal(kMagic.begin(), kMagic.end(), header.begin())) {
+    return Error("benchmark.phase4_trial_wire.magic.v2", "wire frame magic is invalid");
+  }
+  std::size_t offset = kMagic.size();
+  const std::uint32_t schema = LoadU32(header, offset);
+  offset += kSchemaBytes;
+  if (schema != kPhase4TrialWireSchemaVersionV2) {
+    return Error("benchmark.phase4_trial_wire.schema.v2", "wire frame schema is unsupported");
+  }
+  *kind = static_cast<Phase4TrialWireMessageKind>(header[offset]);
+  offset += kKindBytes;
+  if (!ValidMessageKind(*kind)) {
+    return Error("benchmark.phase4_trial_wire.kind.v2",
+                 "wire frame contains an unknown message kind");
+  }
+  *payload_length = LoadU32(header, offset);
+  if (*payload_length > kPhase4TrialWireMaximumPayloadBytesV2) {
+    return Error("benchmark.phase4_trial_wire.payload_bound.v2",
+                 "wire frame declares a payload larger than 64 KiB");
+  }
+  return std::nullopt;
+}
+
 [[nodiscard]] std::optional<Phase4TrialWireError> ValidateHeader(
     std::span<const std::uint8_t> header, Phase4TrialWireMessageKind* kind,
     std::uint32_t* payload_length) {
@@ -1145,6 +1496,143 @@ Phase4TrialWireWriteResult WritePhase4TrialWireMessageV1(int descriptor,
   if (std::optional<Phase4TrialWireError> error = WriteExact(descriptor, frame);
       error.has_value()) {
     return *error;
+  }
+  return std::monostate{};
+}
+
+Phase4TrialWireExpectedFrameSizeResult Phase4TrialWireExpectedFrameSizeV2(
+    std::span<const std::uint8_t> prefix) {
+  try {
+    if (prefix.size() < kPhase4TrialWireHeaderBytesV2) {
+      return std::optional<std::size_t>{};
+    }
+    Phase4TrialWireMessageKind kind = Phase4TrialWireMessageKind::kReady;
+    std::uint32_t payload_length = 0;
+    if (std::optional<Phase4TrialWireError> error =
+            ValidateHeaderV2(prefix.first(kPhase4TrialWireHeaderBytesV2), &kind, &payload_length);
+        error.has_value()) {
+      return *error;
+    }
+    return std::optional<std::size_t>{kPhase4TrialWireHeaderBytesV2 +
+                                      static_cast<std::size_t>(payload_length) + kChecksumBytes};
+  } catch (const std::bad_alloc&) {
+    return ResourceErrorV2("host allocation failed while inspecting a wire frame header");
+  } catch (const std::length_error&) {
+    return ResourceErrorV2("host container length failed while inspecting a wire frame header");
+  }
+}
+
+Phase4TrialWireEncodeResultV2 EncodePhase4TrialWireMessageV2(
+    const Phase4TrialWireMessageV2& message) {
+  try {
+    auto payload_result = EncodePayloadV2(message);
+    if (std::holds_alternative<Phase4TrialWireError>(payload_result)) {
+      return std::get<Phase4TrialWireError>(std::move(payload_result));
+    }
+    std::vector<std::uint8_t> payload =
+        std::get<std::vector<std::uint8_t>>(std::move(payload_result));
+    std::vector<std::uint8_t> frame;
+    frame.reserve(kPhase4TrialWireHeaderBytesV2 + payload.size() + kChecksumBytes);
+    frame.insert(frame.end(), kMagic.begin(), kMagic.end());
+    AppendU32(frame, kPhase4TrialWireSchemaVersionV2);
+    AppendByte(frame, static_cast<std::uint8_t>(MessageKindV2(message)));
+    AppendU32(frame, static_cast<std::uint32_t>(payload.size()));
+    frame.insert(frame.end(), payload.begin(), payload.end());
+    AppendU64(frame, Fnv1a(frame));
+    return frame;
+  } catch (const std::bad_alloc&) {
+    return ResourceErrorV2("host allocation failed while encoding a wire frame");
+  } catch (const std::length_error&) {
+    return ResourceErrorV2("host container length failed while encoding a wire frame");
+  }
+}
+
+Phase4TrialWireDecodeResultV2 DecodePhase4TrialWireMessageV2(std::span<const std::uint8_t> frame) {
+  try {
+    if (frame.size() < kPhase4TrialWireHeaderBytesV2) {
+      return Error("benchmark.phase4_trial_wire.truncated.v2",
+                   "wire frame is shorter than its fixed header");
+    }
+    Phase4TrialWireMessageKind kind = Phase4TrialWireMessageKind::kReady;
+    std::uint32_t payload_length = 0;
+    if (std::optional<Phase4TrialWireError> error =
+            ValidateHeaderV2(frame.first(kPhase4TrialWireHeaderBytesV2), &kind, &payload_length);
+        error.has_value()) {
+      return *error;
+    }
+    const std::size_t expected_size =
+        kPhase4TrialWireHeaderBytesV2 + static_cast<std::size_t>(payload_length) + kChecksumBytes;
+    if (frame.size() < expected_size) {
+      return Error("benchmark.phase4_trial_wire.truncated.v2",
+                   "wire frame is shorter than its declared payload");
+    }
+    if (frame.size() > expected_size) {
+      return Error("benchmark.phase4_trial_wire.trailing.v2",
+                   "wire frame has bytes trailing its declared checksum");
+    }
+    const std::size_t checksum_offset = expected_size - kChecksumBytes;
+    if (LoadU64(frame, checksum_offset) != Fnv1a(frame.first(checksum_offset))) {
+      return Error("benchmark.phase4_trial_wire.checksum.v2",
+                   "wire frame FNV-1a checksum does not match its envelope and payload");
+    }
+    return DecodePayloadV2(kind, frame.subspan(kPhase4TrialWireHeaderBytesV2, payload_length));
+  } catch (const std::bad_alloc&) {
+    return ResourceErrorV2("host allocation failed while decoding a wire frame");
+  } catch (const std::length_error&) {
+    return ResourceErrorV2("host container length failed while decoding a wire frame");
+  }
+}
+
+Phase4TrialWireDecodeResultV2 ReadPhase4TrialWireMessageV2(int descriptor) {
+  try {
+    if (descriptor < 0) {
+      return Error("benchmark.phase4_trial_wire.io_descriptor.v2",
+                   "wire read descriptor is negative");
+    }
+    std::array<std::uint8_t, kPhase4TrialWireHeaderBytesV2> header{};
+    if (std::optional<Phase4TrialWireError> error = ReadExact(descriptor, header, "wire header");
+        error.has_value()) {
+      return AsV2Error(std::move(*error));
+    }
+    Phase4TrialWireMessageKind kind = Phase4TrialWireMessageKind::kReady;
+    std::uint32_t payload_length = 0;
+    if (std::optional<Phase4TrialWireError> error =
+            ValidateHeaderV2(header, &kind, &payload_length);
+        error.has_value()) {
+      return *error;
+    }
+    const std::size_t frame_size =
+        kPhase4TrialWireHeaderBytesV2 + static_cast<std::size_t>(payload_length) + kChecksumBytes;
+    std::vector<std::uint8_t> frame(frame_size);
+    std::copy(header.begin(), header.end(), frame.begin());
+    if (std::optional<Phase4TrialWireError> error =
+            ReadExact(descriptor, std::span(frame).subspan(kPhase4TrialWireHeaderBytesV2),
+                      "wire payload and checksum");
+        error.has_value()) {
+      return AsV2Error(std::move(*error));
+    }
+    return DecodePhase4TrialWireMessageV2(frame);
+  } catch (const std::bad_alloc&) {
+    return ResourceErrorV2("host allocation failed while reading a wire frame");
+  } catch (const std::length_error&) {
+    return ResourceErrorV2("host container length failed while reading a wire frame");
+  }
+}
+
+Phase4TrialWireWriteResult WritePhase4TrialWireMessageV2(int descriptor,
+                                                         const Phase4TrialWireMessageV2& message) {
+  if (descriptor < 0) {
+    return Error("benchmark.phase4_trial_wire.io_descriptor.v2",
+                 "wire write descriptor is negative");
+  }
+  Phase4TrialWireEncodeResultV2 encoded = EncodePhase4TrialWireMessageV2(message);
+  if (std::holds_alternative<Phase4TrialWireError>(encoded)) {
+    return std::get<Phase4TrialWireError>(std::move(encoded));
+  }
+  std::vector<std::uint8_t> frame = std::get<std::vector<std::uint8_t>>(std::move(encoded));
+  if (std::optional<Phase4TrialWireError> error = WriteExact(descriptor, frame);
+      error.has_value()) {
+    return AsV2Error(std::move(*error));
   }
   return std::monostate{};
 }

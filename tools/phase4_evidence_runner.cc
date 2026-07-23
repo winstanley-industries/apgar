@@ -1,9 +1,14 @@
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -12,8 +17,10 @@
 
 #include "apgar/benchmark/phase3_commit.h"
 #include "apgar/benchmark/phase3_source_stamp.h"
+#include "apgar/benchmark/phase4_same_run_decision_telemetry.h"
 #include "apgar/benchmark/phase4_trial_harness.h"
 #include "apgar/tooling/runfiles.h"
+#include "src/benchmark/phase4_paired_trial_internal.h"
 
 namespace {
 
@@ -21,9 +28,11 @@ using apgar::benchmark::Phase4CanonicalCellConfig;
 
 struct Options {
   bool worker_mode = false;
+  bool same_run_worker_mode = false;
   bool testing_allow_unstamped = false;
   std::optional<apgar::benchmark::Phase4TrialArm> arm;
   std::optional<std::string> runtime_commit;
+  std::optional<std::string> same_run_telemetry_output;
   std::string fixture_path;
   int request_descriptor = -1;
   int response_descriptor = -1;
@@ -87,6 +96,11 @@ struct Options {
       if (!options.worker_mode) {
         return std::nullopt;
       }
+    } else if (key == "phase4_same_run_worker") {
+      options.same_run_worker_mode = value == "1";
+      if (!options.same_run_worker_mode) {
+        return std::nullopt;
+      }
     } else if (key == "testing_allow_unstamped") {
       options.testing_allow_unstamped = value == "1";
       if (!options.testing_allow_unstamped) {
@@ -102,6 +116,11 @@ struct Options {
       }
     } else if (key == "apgar_commit") {
       options.runtime_commit = std::string(value);
+    } else if (key == "same_run_telemetry_output") {
+      if (value.empty()) {
+        return std::nullopt;
+      }
+      options.same_run_telemetry_output = std::string(value);
     } else if (key == "fixture_path") {
       if (value.empty()) {
         return std::nullopt;
@@ -191,7 +210,100 @@ struct Options {
 
 void PrintUsage() {
   std::cerr << "phase4_evidence_runner requires --case_id=N --pool_size=4|8|16 and a clean "
-               "--apgar_commit=<40 lowercase hex>; all numeric options are strict decimal.\n";
+               "--apgar_commit=<40 lowercase hex>; optional same-run capture requires "
+               "--same_run_telemetry_output=<new path>; all numeric options are strict decimal.\n";
+}
+
+[[nodiscard]] bool WriteNewFile(std::string_view path, std::string_view contents) noexcept {
+  try {
+#if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
+    const char* const fault_mode = std::getenv("APGAR_PHASE4_TRIAL_FAULT_MODE");
+    if (fault_mode != nullptr && std::string_view(fault_mode) == "sidecar_publish_bad_alloc") {
+      throw std::bad_alloc();
+    }
+#endif
+    const std::string final_path(path);
+    const std::size_t separator = final_path.find_last_of('/');
+    const std::string parent = separator == std::string::npos
+                                   ? "."
+                                   : (separator == 0 ? "/" : final_path.substr(0, separator));
+    const std::string name =
+        separator == std::string::npos ? final_path : final_path.substr(separator + 1);
+    if (name.empty()) {
+      return false;
+    }
+    const int parent_descriptor = open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (parent_descriptor < 0) {
+      return false;
+    }
+    std::string temporary_path;
+    int descriptor = -1;
+    for (std::uint32_t attempt = 0; attempt < 128 && descriptor < 0; ++attempt) {
+      temporary_path =
+          parent + "/." + name + ".tmp." + std::to_string(getpid()) + "." + std::to_string(attempt);
+      descriptor = open(temporary_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                        S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+      if (descriptor < 0 && errno != EEXIST) {
+        (void)close(parent_descriptor);
+        return false;
+      }
+    }
+    if (descriptor < 0) {
+      (void)close(parent_descriptor);
+      return false;
+    }
+    std::size_t written = 0;
+    while (written < contents.size()) {
+      const ssize_t result =
+          write(descriptor, contents.data() + written, contents.size() - written);
+      if (result < 0 && errno == EINTR) {
+        continue;
+      }
+      if (result <= 0) {
+        (void)close(descriptor);
+        (void)unlink(temporary_path.c_str());
+        (void)close(parent_descriptor);
+        return false;
+      }
+      written += static_cast<std::size_t>(result);
+    }
+    const bool sync_failed = fsync(descriptor) != 0;
+    const bool close_failed = close(descriptor) != 0;
+    if (sync_failed || close_failed) {
+      (void)unlink(temporary_path.c_str());
+      (void)close(parent_descriptor);
+      return false;
+    }
+#if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
+    if (fault_mode != nullptr && std::string_view(fault_mode) == "sidecar_before_publish") {
+      (void)unlink(temporary_path.c_str());
+      (void)close(parent_descriptor);
+      return false;
+    }
+#endif
+    if (link(temporary_path.c_str(), final_path.c_str()) != 0) {
+      (void)unlink(temporary_path.c_str());
+      (void)close(parent_descriptor);
+      return false;
+    }
+    if (unlink(temporary_path.c_str()) != 0 || fsync(parent_descriptor) != 0) {
+      (void)unlink(final_path.c_str());
+      (void)unlink(temporary_path.c_str());
+      (void)fsync(parent_descriptor);
+      (void)close(parent_descriptor);
+      return false;
+    }
+    (void)close(parent_descriptor);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+[[nodiscard]] bool WriteStdout(std::string_view contents) noexcept {
+  std::cout.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+  std::cout.flush();
+  return std::cout.good();
 }
 
 }  // namespace
@@ -208,12 +320,21 @@ int main(int argc, char** argv) {
     std::cerr << "failed to read the imported Phase 4 fixture\n";
     return 2;
   }
-  if (options.worker_mode) {
-    if (!options.arm.has_value() || options.request_descriptor < 0 ||
-        options.response_descriptor < 0 || options.runtime_commit.has_value() ||
-        options.testing_allow_unstamped) {
+  if (options.worker_mode || options.same_run_worker_mode) {
+    if (options.worker_mode == options.same_run_worker_mode) {
       PrintUsage();
       return 2;
+    }
+    if (!options.arm.has_value() || options.request_descriptor < 0 ||
+        options.response_descriptor < 0 || options.runtime_commit.has_value() ||
+        options.same_run_telemetry_output.has_value() || options.testing_allow_unstamped) {
+      PrintUsage();
+      return 2;
+    }
+    if (options.same_run_worker_mode) {
+      return apgar::benchmark::RunPhase4TrialWorkerWithSameRunTelemetryV1(
+          *options.arm, options.cell, *fixture, options.request_descriptor,
+          options.response_descriptor);
     }
     return apgar::benchmark::RunPhase4TrialWorkerV1(*options.arm, options.cell, *fixture,
                                                     options.request_descriptor,
@@ -239,6 +360,79 @@ int main(int argc, char** argv) {
     std::cerr << "failed to resolve the source-identical worker executable\n";
     return 2;
   }
+  if (options.same_run_telemetry_output.has_value()) {
+    const std::string source_commit =
+        options.runtime_commit.value_or(std::string(apgar::benchmark::kPhase3BuiltCommit));
+    auto execution = apgar::benchmark::RunPhase4IsolatedCellWithSameRunDecisionTelemetryV1(
+        options.cell, executable, options.fixture_path);
+    if (std::holds_alternative<apgar::benchmark::Phase4TrialHarnessError>(execution)) {
+      const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(execution);
+      std::cerr << error.invariant_id << ": " << error.detail << '\n';
+      if (error.raw_cell.has_value()) {
+        const auto raw = apgar::benchmark::SerializePhase4SameRunIsolatedCellJsonV2(
+            *error.raw_cell, source_commit, apgar::benchmark::kPhase3SourceStamped,
+            apgar::benchmark::kPhase3BuiltFromDirtyTree);
+        if (!raw.has_value() || !WriteStdout(*raw)) {
+          std::cerr << "failed to write the same-run Raw evidence artifact\n";
+          return 2;
+        }
+        return 1;
+      }
+      return 2;
+    }
+    auto& capture =
+        std::get<apgar::benchmark::Phase4IsolatedCellWithSameRunDecisionTelemetryV1>(execution);
+#if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
+    const char* const same_run_fault_mode = std::getenv("APGAR_PHASE4_TRIAL_FAULT_MODE");
+    if (same_run_fault_mode != nullptr &&
+        std::string_view(same_run_fault_mode) == "sidecar_corrupt_capture" &&
+        !capture.same_run_attempts.empty()) {
+      capture.same_run_attempts.pop_back();
+    }
+    if (same_run_fault_mode != nullptr &&
+        std::string_view(same_run_fault_mode) == "sidecar_rehashed_partition_drift" &&
+        !capture.same_run_attempts.empty() &&
+        !capture.same_run_attempts.front().baseline.telemetry.per_net.empty()) {
+      auto& pair = capture.same_run_attempts.front();
+      auto& arm = pair.baseline;
+      ++arm.telemetry.per_net.front().columns.requested_columns;
+      arm.telemetry.telemetry_checksum =
+          apgar::benchmark::internal::ComputePhase4SameRunArmDecisionTelemetryChecksumV1(
+              arm.telemetry);
+      arm.capture_checksum =
+          apgar::benchmark::ComputePhase4IsolatedSameRunArmCaptureChecksumV1(arm);
+      pair.capture_checksum =
+          apgar::benchmark::ComputePhase4IsolatedSameRunPairCaptureChecksumV1(pair);
+    }
+    if (same_run_fault_mode != nullptr &&
+        std::string_view(same_run_fault_mode) == "sidecar_rehashed_foreign_record") {
+      apgar::benchmark::RehashForeignPhase4SameRunRecordForTesting(&capture);
+    }
+    if (same_run_fault_mode != nullptr &&
+        std::string_view(same_run_fault_mode) == "sidecar_rehashed_wrong_comparison") {
+      apgar::benchmark::RehashWrongPhase4SameRunComparisonForTesting(&capture);
+    }
+    if (same_run_fault_mode != nullptr &&
+        std::string_view(same_run_fault_mode) == "sidecar_rehashed_nondeterministic_record") {
+      apgar::benchmark::RehashNondeterministicPhase4SameRunRecordForTesting(&capture);
+    }
+#endif
+    const auto raw = apgar::benchmark::SerializePhase4SameRunIsolatedCellJsonV2(
+        capture.raw_cell, source_commit, apgar::benchmark::kPhase3SourceStamped,
+        apgar::benchmark::kPhase3BuiltFromDirtyTree);
+    const auto telemetry = apgar::benchmark::SerializePhase4SameRunDecisionTelemetryJsonV1(
+        capture, *fixture, source_commit, apgar::benchmark::kPhase3SourceStamped,
+        apgar::benchmark::kPhase3BuiltFromDirtyTree);
+    if (!raw.has_value() || !WriteStdout(*raw)) {
+      std::cerr << "failed to write the same-run Raw evidence artifact\n";
+      return 2;
+    }
+    if (!telemetry.has_value() || !WriteNewFile(*options.same_run_telemetry_output, *telemetry)) {
+      std::cerr << "failed to create the same-run decision telemetry artifact\n";
+      return 2;
+    }
+    return 0;
+  }
   auto execution =
       apgar::benchmark::RunPhase4IsolatedCellV1(options.cell, executable, options.fixture_path);
   if (std::holds_alternative<apgar::benchmark::Phase4TrialHarnessError>(execution)) {
@@ -249,9 +443,13 @@ int main(int argc, char** argv) {
   const auto& result = std::get<apgar::benchmark::Phase4IsolatedCellResult>(execution);
   const std::string source_commit =
       options.runtime_commit.value_or(std::string(apgar::benchmark::kPhase3BuiltCommit));
-  std::cout << apgar::benchmark::SerializePhase4IsolatedCellJsonV1(
+  const auto raw = apgar::benchmark::SerializePhase4IsolatedCellJsonV1(
       result, source_commit, apgar::benchmark::kPhase3SourceStamped,
       apgar::benchmark::kPhase3BuiltFromDirtyTree);
+  if (!raw.has_value() || !WriteStdout(*raw)) {
+    std::cerr << "failed to write the Raw evidence artifact\n";
+    return 2;
+  }
   for (const auto& attempt : result.attempts) {
     if (!attempt.result.has_value()) {
       return 1;

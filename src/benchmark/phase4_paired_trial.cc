@@ -431,13 +431,12 @@ template <typename Payload>
   return true;
 }
 
-[[nodiscard]] Phase4PerNetReportV1* FindPerNet(std::vector<Phase4PerNetReportV1>* reports,
-                                               board_ir::EntityRef net) noexcept {
-  const auto iterator =
-      std::lower_bound(reports->begin(), reports->end(), net,
-                       [](const Phase4PerNetReportV1& report, board_ir::EntityRef key) {
-                         return EntityRefBefore(report.net, key);
-                       });
+template <typename PerNet>
+[[nodiscard]] PerNet* FindPerNet(std::vector<PerNet>* reports, board_ir::EntityRef net) noexcept {
+  const auto iterator = std::lower_bound(reports->begin(), reports->end(), net,
+                                         [](const PerNet& report, board_ir::EntityRef key) {
+                                           return EntityRefBefore(report.net, key);
+                                         });
   if (iterator == reports->end() || !(iterator->net == net)) {
     return nullptr;
   }
@@ -539,6 +538,98 @@ template <typename Payload>
 }
 
 using TelemetryBuildResult = std::variant<Phase4ArmReportTelemetryV1, Phase4PairedTrialError>;
+using SameRunTelemetryBuildResult =
+    std::variant<Phase4SameRunArmDecisionTelemetryV1, Phase4PairedTrialError>;
+
+[[nodiscard]] SameRunTelemetryBuildResult BuildSameRunDecisionTelemetry(
+    const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
+    const std::vector<allocator::SequentialNegotiatedColumnRecord>* baseline_columns,
+    const allocator::PreparedCpuCandidatePools* preparation,
+    const std::vector<allocator::CpuCandidateAllocationEpochRecord>* epochs) {
+  Phase4SameRunArmDecisionTelemetryV1 telemetry;
+  telemetry.associated_semantic_checksum = semantics.semantic_checksum;
+  telemetry.outcome = semantics.outcome;
+  telemetry.per_net.reserve(workload.nets().size());
+  for (const allocator::PreparedNetRoutingContext& context : workload.nets()) {
+    telemetry.per_net.push_back(Phase4SameRunPerNetColumnOutcomesV1{
+        .net = context.request.net,
+        .columns = {},
+    });
+  }
+  std::sort(telemetry.per_net.begin(), telemetry.per_net.end(),
+            [](const Phase4SameRunPerNetColumnOutcomesV1& left,
+               const Phase4SameRunPerNetColumnOutcomesV1& right) {
+              return EntityRefBefore(left.net, right.net);
+            });
+  for (std::size_t index = 1; index < telemetry.per_net.size(); ++index) {
+    if (telemetry.per_net[index - 1].net == telemetry.per_net[index].net) {
+      return Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4SAMERUN-NET-001",
+                   "the workload contains a duplicate full EntityRef", semantics.arm);
+    }
+  }
+
+  const auto row_for = [&telemetry, &semantics](board_ir::EntityRef net)
+      -> std::variant<Phase4SameRunPerNetColumnOutcomesV1*, Phase4PairedTrialError> {
+    Phase4SameRunPerNetColumnOutcomesV1* row = FindPerNet(&telemetry.per_net, net);
+    if (row == nullptr) {
+      return Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4SAMERUN-COLUMN-NET-001",
+                   "a column names a net outside the authentic workload", semantics.arm);
+    }
+    return row;
+  };
+  if (baseline_columns != nullptr) {
+    for (const allocator::SequentialNegotiatedColumnRecord& column : *baseline_columns) {
+      auto found = row_for(column.net);
+      if (std::holds_alternative<Phase4PairedTrialError>(found)) {
+        return std::get<Phase4PairedTrialError>(found);
+      }
+      if (!internal::AccumulatePhase4BaselineColumnV1(
+              column, &std::get<Phase4SameRunPerNetColumnOutcomesV1*>(found)->columns)) {
+        return Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4SAMERUN-COLUMN-001",
+                     "a baseline column outcome is unknown or a counter overflowed", semantics.arm);
+      }
+    }
+  }
+  if (preparation != nullptr) {
+    for (const allocator::CpuCandidatePoolColumnRecord& column : preparation->columns()) {
+      auto found = row_for(column.net);
+      if (std::holds_alternative<Phase4PairedTrialError>(found)) {
+        return std::get<Phase4PairedTrialError>(found);
+      }
+      if (!internal::AccumulatePhase4PreparationColumnV1(
+              column, &std::get<Phase4SameRunPerNetColumnOutcomesV1*>(found)->columns)) {
+        return Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4SAMERUN-COLUMN-002",
+                     "a preparation column outcome is unknown or a counter overflowed",
+                     semantics.arm);
+      }
+    }
+  }
+  if (epochs != nullptr) {
+    for (const allocator::CpuCandidateAllocationEpochRecord& epoch : *epochs) {
+      for (const allocator::TargetedRegenerationColumnRecord& column : epoch.columns) {
+        auto found = row_for(column.net);
+        if (std::holds_alternative<Phase4PairedTrialError>(found)) {
+          return std::get<Phase4PairedTrialError>(found);
+        }
+        if (!internal::AccumulatePhase4RegenerationColumnV1(
+                column, &std::get<Phase4SameRunPerNetColumnOutcomesV1*>(found)->columns)) {
+          return Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4SAMERUN-COLUMN-003",
+                       "a successful regeneration retained an in-flight outcome or overflowed",
+                       semantics.arm);
+        }
+      }
+    }
+  }
+
+  telemetry.telemetry_checksum =
+      internal::ComputePhase4SameRunArmDecisionTelemetryChecksumV1(telemetry);
+  if (std::optional<Phase4PairedTrialError> error =
+          internal::ValidatePhase4SameRunArmDecisionTelemetryV1(semantics, workload, telemetry);
+      error.has_value()) {
+    return *error;
+  }
+  return telemetry;
+}
 
 [[nodiscard]] TelemetryBuildResult BuildPerNetTelemetry(
     const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
@@ -547,23 +638,21 @@ using TelemetryBuildResult = std::variant<Phase4ArmReportTelemetryV1, Phase4Pair
     const std::vector<allocator::SequentialNegotiatedColumnRecord>* baseline_columns,
     const allocator::PreparedCpuCandidatePools* preparation,
     const std::vector<allocator::CpuCandidateAllocationEpochRecord>* epochs) {
-  Phase4ArmReportTelemetryV1 telemetry;
-  telemetry.associated_semantic_checksum = semantics.semantic_checksum;
-  telemetry.per_net.reserve(workload.nets().size());
-  for (const allocator::PreparedNetRoutingContext& context : workload.nets()) {
-    Phase4PerNetReportV1 report;
-    report.net = context.request.net;
-    telemetry.per_net.push_back(std::move(report));
+  SameRunTelemetryBuildResult column_result =
+      BuildSameRunDecisionTelemetry(semantics, workload, baseline_columns, preparation, epochs);
+  if (std::holds_alternative<Phase4PairedTrialError>(column_result)) {
+    return std::get<Phase4PairedTrialError>(column_result);
   }
-  std::sort(telemetry.per_net.begin(), telemetry.per_net.end(),
-            [](const Phase4PerNetReportV1& left, const Phase4PerNetReportV1& right) {
-              return EntityRefBefore(left.net, right.net);
-            });
-  for (std::size_t index = 1; index < telemetry.per_net.size(); ++index) {
-    if (telemetry.per_net[index - 1].net == telemetry.per_net[index].net) {
-      return Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4REPORT-NET-001",
-                   "the workload contains a duplicate full EntityRef", semantics.arm);
-    }
+  Phase4SameRunArmDecisionTelemetryV1 column_telemetry =
+      std::get<Phase4SameRunArmDecisionTelemetryV1>(std::move(column_result));
+  Phase4ArmReportTelemetryV1 telemetry;
+  telemetry.associated_semantic_checksum = column_telemetry.associated_semantic_checksum;
+  telemetry.per_net.reserve(column_telemetry.per_net.size());
+  for (Phase4SameRunPerNetColumnOutcomesV1& row : column_telemetry.per_net) {
+    Phase4PerNetReportV1 report;
+    report.net = row.net;
+    report.columns = std::move(row.columns);
+    telemetry.per_net.push_back(std::move(report));
   }
   if (pools.size() != telemetry.per_net.size() ||
       selected_world.selections.size() != telemetry.per_net.size()) {
@@ -590,49 +679,6 @@ using TelemetryBuildResult = std::variant<Phase4ArmReportTelemetryV1, Phase4Pair
     }
     return report;
   };
-  if (baseline_columns != nullptr) {
-    for (const allocator::SequentialNegotiatedColumnRecord& column : *baseline_columns) {
-      auto found = report_for(column.net);
-      if (std::holds_alternative<Phase4PairedTrialError>(found)) {
-        return std::get<Phase4PairedTrialError>(found);
-      }
-      if (!AddBaselineColumn(column, &std::get<Phase4PerNetReportV1*>(found)->columns)) {
-        return Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4REPORT-COLUMN-001",
-                     "a baseline column outcome is unknown or a counter overflowed", semantics.arm);
-      }
-    }
-  }
-  if (preparation != nullptr) {
-    for (const allocator::CpuCandidatePoolColumnRecord& column : preparation->columns()) {
-      auto found = report_for(column.net);
-      if (std::holds_alternative<Phase4PairedTrialError>(found)) {
-        return std::get<Phase4PairedTrialError>(found);
-      }
-      if (!internal::AccumulatePhase4PreparationColumnV1(
-              column, &std::get<Phase4PerNetReportV1*>(found)->columns)) {
-        return Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4REPORT-COLUMN-002",
-                     "a preparation column outcome is unknown or a counter overflowed",
-                     semantics.arm);
-      }
-    }
-  }
-  if (epochs != nullptr) {
-    for (const allocator::CpuCandidateAllocationEpochRecord& epoch : *epochs) {
-      for (const allocator::TargetedRegenerationColumnRecord& column : epoch.columns) {
-        auto found = report_for(column.net);
-        if (std::holds_alternative<Phase4PairedTrialError>(found)) {
-          return std::get<Phase4PairedTrialError>(found);
-        }
-        if (!internal::AccumulatePhase4RegenerationColumnV1(
-                column, &std::get<Phase4PerNetReportV1*>(found)->columns)) {
-          return Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4REPORT-COLUMN-003",
-                       "a successful regeneration retained an in-flight outcome or overflowed",
-                       semantics.arm);
-        }
-      }
-    }
-  }
-
   for (const allocator::CandidatePool& pool : pools) {
     auto found = report_for(pool.net);
     if (std::holds_alternative<Phase4PairedTrialError>(found)) {
@@ -763,10 +809,10 @@ using TelemetryBuildResult = std::variant<Phase4ArmReportTelemetryV1, Phase4Pair
 
 using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmFailure>;
 
-[[nodiscard]] ArmSemanticsResult ExecuteBaseline(const Phase4PairedTrialSpec& spec,
-                                                 Phase4RepresentativeCase corpus,
-                                                 const ValidatedTrialSpec& validated,
-                                                 Phase4ArmReportTelemetryV1* telemetry) {
+[[nodiscard]] ArmSemanticsResult ExecuteBaseline(
+    const Phase4PairedTrialSpec& spec, Phase4RepresentativeCase corpus,
+    const ValidatedTrialSpec& validated, Phase4ArmReportTelemetryV1* telemetry,
+    Phase4SameRunArmDecisionTelemetryV1* same_run_telemetry) {
   Phase4TrialArmSemantics semantics =
       CommonSemantics(Phase4TrialArm::kSequentialBaseline, spec, corpus, validated);
   allocator::SequentialNegotiatedBaselineExecution execution =
@@ -819,13 +865,22 @@ using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmF
     }
     *telemetry = std::get<Phase4ArmReportTelemetryV1>(std::move(built));
   }
+  if (same_run_telemetry != nullptr) {
+    SameRunTelemetryBuildResult built = BuildSameRunDecisionTelemetry(
+        semantics, corpus.workload, &result.columns(), nullptr, nullptr);
+    if (std::holds_alternative<Phase4PairedTrialError>(built)) {
+      return ArmFailure(std::get<Phase4PairedTrialError>(built));
+    }
+    *same_run_telemetry = std::get<Phase4SameRunArmDecisionTelemetryV1>(std::move(built));
+  }
   return semantics;
 }
 
 [[nodiscard]] ArmSemanticsResult ExecuteCandidate(
     const Phase4PairedTrialSpec& spec, Phase4RepresentativeCase corpus,
     const ValidatedTrialSpec& validated, allocator::PersistentCpuCandidatePoolPreparer& preparer,
-    Phase4ArmReportTelemetryV1* telemetry, Phase4CandidatePoolSnapshotExecutionV1* snapshot) {
+    Phase4ArmReportTelemetryV1* telemetry, Phase4SameRunArmDecisionTelemetryV1* same_run_telemetry,
+    Phase4CandidatePoolSnapshotExecutionV1* snapshot) {
   Phase4TrialArmSemantics semantics =
       CommonSemantics(Phase4TrialArm::kReusableCandidateAllocation, spec, corpus, validated);
   allocator::PreparedCpuCandidatePoolsResult preparation =
@@ -940,6 +995,14 @@ using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmF
       return ArmFailure(std::get<Phase4PairedTrialError>(built));
     }
     *telemetry = std::get<Phase4ArmReportTelemetryV1>(std::move(built));
+  }
+  if (same_run_telemetry != nullptr) {
+    SameRunTelemetryBuildResult built = BuildSameRunDecisionTelemetry(
+        semantics, session.workload(), nullptr, &session.preparation(), &session.epochs());
+    if (std::holds_alternative<Phase4PairedTrialError>(built)) {
+      return ArmFailure(std::get<Phase4PairedTrialError>(built));
+    }
+    *same_run_telemetry = std::get<Phase4SameRunArmDecisionTelemetryV1>(std::move(built));
   }
   if (snapshot != nullptr) {
     if (telemetry == nullptr) {
@@ -1380,6 +1443,105 @@ bool AccumulatePhase4RegenerationColumnV1(const allocator::TargetedRegenerationC
   return outcomes != nullptr && AddRegenerationColumn(column, outcomes);
 }
 
+std::uint64_t ComputePhase4SameRunArmDecisionTelemetryChecksumV1(
+    const Phase4SameRunArmDecisionTelemetryV1& telemetry) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-PHASE4-SAME-RUN-ARM-DECISION-TELEMETRY-V1");
+  hash.AddU32(telemetry.schema_version);
+  hash.AddU64(telemetry.associated_semantic_checksum);
+  HashOutcome(hash, telemetry.outcome);
+  hash.AddU64(telemetry.per_net.size());
+  for (const Phase4SameRunPerNetColumnOutcomesV1& row : telemetry.per_net) {
+    hash.AddU64(row.net.id);
+    hash.AddU32(row.net.generation);
+    hash.AddU64(row.columns.requested_columns);
+    hash.AddU64(row.columns.executed_route_queries);
+    hash.AddU64(row.columns.admitted_candidates);
+    hash.AddU64(row.columns.duplicate_candidates);
+    hash.AddU64(row.columns.disconnected_columns);
+    hash.AddU64(row.columns.unsupported_columns);
+    hash.AddU64(row.columns.skipped_columns);
+    hash.AddU64(row.columns.exact_validation_rejections);
+    hash.AddU64(row.columns.other_rejections);
+  }
+  return hash.Finish();
+}
+
+std::optional<Phase4PairedTrialError> ValidatePhase4SameRunArmDecisionTelemetryV1(
+    const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
+    const Phase4SameRunArmDecisionTelemetryV1& telemetry) noexcept {
+  if (std::optional<Phase4PairedTrialError> error = ValidatePhase4TrialArmSemanticsV1(semantics);
+      error.has_value()) {
+    return error;
+  }
+  if (workload.nets().size() > kMaximumPhase4RepresentativeNetsV1 ||
+      telemetry.per_net.size() > kMaximumPhase4RepresentativeNetsV1 ||
+      workload.nets().size() != semantics.workload_net_count ||
+      telemetry.per_net.size() != semantics.workload_net_count) {
+    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4SAMERUN-BOUND-001",
+                 "the authentic workload or same-run roster count is invalid or out of bounds",
+                 semantics.arm);
+  }
+  if (workload.board_content_hash() != semantics.board_content_hash ||
+      workload.workload_checksum() != semantics.workload_checksum ||
+      telemetry.schema_version != kPhase4SameRunArmDecisionTelemetrySchemaVersion ||
+      telemetry.associated_semantic_checksum == 0 ||
+      telemetry.associated_semantic_checksum != semantics.semantic_checksum ||
+      !(telemetry.outcome == semantics.outcome) || telemetry.telemetry_checksum == 0 ||
+      telemetry.telemetry_checksum !=
+          ComputePhase4SameRunArmDecisionTelemetryChecksumV1(telemetry)) {
+    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4SAMERUN-AUTH-001",
+                 "the workload, schema, semantic association, outcome, or checksum is invalid",
+                 semantics.arm);
+  }
+
+  Wide requested = 0;
+  Wide executed = 0;
+  Wide admitted = 0;
+  Wide rejected = 0;
+  for (std::size_t index = 0; index < telemetry.per_net.size(); ++index) {
+    const Phase4SameRunPerNetColumnOutcomesV1& row = telemetry.per_net[index];
+    if (!(row.net == workload.nets()[index].request.net) ||
+        (index != 0 && (!EntityRefBefore(telemetry.per_net[index - 1].net, row.net) ||
+                        !EntityRefBefore(workload.nets()[index - 1].request.net,
+                                         workload.nets()[index].request.net)))) {
+      return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4SAMERUN-NET-002",
+                   "same-run rows must exactly match the sorted workload full-EntityRef roster",
+                   semantics.arm);
+    }
+    const Phase4PerNetColumnOutcomesV1& columns = row.columns;
+    const Wide terminal_columns = static_cast<Wide>(columns.admitted_candidates) +
+                                  columns.duplicate_candidates + columns.disconnected_columns +
+                                  columns.unsupported_columns + columns.skipped_columns +
+                                  columns.exact_validation_rejections + columns.other_rejections;
+    const Wide executed_and_skipped =
+        static_cast<Wide>(columns.executed_route_queries) + columns.skipped_columns;
+    if (!FitsU64(terminal_columns) || ToU64(terminal_columns) != columns.requested_columns ||
+        !FitsU64(executed_and_skipped) ||
+        ToU64(executed_and_skipped) != columns.requested_columns) {
+      return Error(
+          Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4SAMERUN-CLOSURE-001",
+          "a same-run per-net requested, executed, skipped, or terminal partition does not close",
+          semantics.arm);
+    }
+    requested += columns.requested_columns;
+    executed += columns.executed_route_queries;
+    admitted += columns.admitted_candidates;
+    rejected += static_cast<Wide>(columns.duplicate_candidates) + columns.disconnected_columns +
+                columns.unsupported_columns + columns.skipped_columns +
+                columns.exact_validation_rejections + columns.other_rejections;
+  }
+  if (!FitsU64(requested) || ToU64(requested) != semantics.requested_columns ||
+      !FitsU64(executed) || ToU64(executed) != semantics.actual.route_queries ||
+      !FitsU64(admitted) || ToU64(admitted) != semantics.admitted_candidates ||
+      !FitsU64(rejected) || ToU64(rejected) != semantics.rejected_columns) {
+    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4SAMERUN-CLOSURE-002",
+                 "same-run per-net column totals do not close the associated arm semantics",
+                 semantics.arm);
+  }
+  return std::nullopt;
+}
+
 std::uint64_t ComputePhase4ArmReportTelemetryChecksumV1(
     const Phase4ArmReportTelemetryV1& telemetry) noexcept {
   board_ir::StableHashBuilder hash;
@@ -1768,6 +1930,7 @@ namespace {
 struct ArmExecutionWithOptionalTelemetry {
   Phase4TrialArmExecution execution;
   std::optional<Phase4ArmReportTelemetryV1> telemetry;
+  std::optional<Phase4SameRunArmDecisionTelemetryV1> same_run_telemetry;
   std::optional<Phase4CandidatePoolSnapshotExecutionV1> snapshot;
 };
 
@@ -1777,7 +1940,7 @@ using ArmExecutionWithOptionalTelemetryResult =
 [[nodiscard]] ArmExecutionWithOptionalTelemetryResult ExecutePhase4TrialArmImpl(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer, bool capture_telemetry,
-    bool capture_snapshot) {
+    bool capture_same_run_telemetry, bool capture_snapshot) {
   try {
     if (capture_snapshot && arm != Phase4TrialArm::kReusableCandidateAllocation) {
       return ArmFailure(Error(Phase4PairedTrialErrorCode::kInvalidConfiguration,
@@ -1813,6 +1976,7 @@ using ArmExecutionWithOptionalTelemetryResult =
     }
     Phase4TrialArmSemantics semantics;
     Phase4ArmReportTelemetryV1 telemetry;
+    Phase4SameRunArmDecisionTelemetryV1 same_run_telemetry;
     Phase4CandidatePoolSnapshotExecutionV1 snapshot;
     std::uint64_t case_build_elapsed = 0;
     std::uint64_t prepared_elapsed = 0;
@@ -1840,9 +2004,11 @@ using ArmExecutionWithOptionalTelemetryResult =
       auto arm_result =
           arm == Phase4TrialArm::kSequentialBaseline
               ? ExecuteBaseline(spec, std::move(corpus), validated,
-                                capture_telemetry ? &telemetry : nullptr)
+                                capture_telemetry ? &telemetry : nullptr,
+                                capture_same_run_telemetry ? &same_run_telemetry : nullptr)
               : ExecuteCandidate(spec, std::move(corpus), validated, *candidate_preparer,
                                  capture_telemetry ? &telemetry : nullptr,
+                                 capture_same_run_telemetry ? &same_run_telemetry : nullptr,
                                  capture_snapshot ? &snapshot : nullptr);
       prepared_elapsed = ElapsedNanoseconds(prepared_start, Clock::now());
       if (std::holds_alternative<Phase4TrialArmFailure>(arm_result)) {
@@ -1865,10 +2031,14 @@ using ArmExecutionWithOptionalTelemetryResult =
                 .preparer_lifecycle = LifecycleObservation(lifecycle_before, lifecycle_after),
             },
         .telemetry = std::nullopt,
+        .same_run_telemetry = std::nullopt,
         .snapshot = std::nullopt,
     };
     if (capture_telemetry) {
       output.telemetry = std::move(telemetry);
+    }
+    if (capture_same_run_telemetry) {
+      output.same_run_telemetry = std::move(same_run_telemetry);
     }
     if (capture_snapshot) {
       output.snapshot = std::move(snapshot);
@@ -1894,8 +2064,8 @@ using ArmExecutionWithOptionalTelemetryResult =
 Phase4TrialArmExecutionResult ExecutePhase4TrialArmV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
-  ArmExecutionWithOptionalTelemetryResult result =
-      ExecutePhase4TrialArmImpl(arm, spec, imported_fixture, candidate_preparer, false, false);
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl(
+      arm, spec, imported_fixture, candidate_preparer, false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -1905,8 +2075,8 @@ Phase4TrialArmExecutionResult ExecutePhase4TrialArmV1(
 Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
-  ArmExecutionWithOptionalTelemetryResult result =
-      ExecutePhase4TrialArmImpl(arm, spec, imported_fixture, candidate_preparer, true, false);
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl(
+      arm, spec, imported_fixture, candidate_preparer, true, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -1922,12 +2092,33 @@ Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
   };
 }
 
+Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4TrialArmWithSameRunTelemetryV1(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl(
+      arm, spec, imported_fixture, candidate_preparer, false, true, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.same_run_telemetry.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                            "P4SAMERUN-INTERNAL-001",
+                            "same-run execution completed without decision telemetry", arm));
+  }
+  return Phase4TrialArmWithSameRunTelemetryExecutionV1{
+      .execution = std::move(output.execution),
+      .telemetry = std::move(*output.same_run_telemetry),
+  };
+}
+
 Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotV1(
     const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result =
       ExecutePhase4TrialArmImpl(Phase4TrialArm::kReusableCandidateAllocation, spec,
-                                imported_fixture, candidate_preparer, true, true);
+                                imported_fixture, candidate_preparer, true, false, true);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }

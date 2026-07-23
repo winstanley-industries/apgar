@@ -14,6 +14,9 @@ namespace apgar::benchmark {
 
 inline constexpr std::uint32_t kPhase4TrialHarnessSchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4TrialWireSchemaVersion = 1;
+inline constexpr std::uint32_t kPhase4SameRunTrialWireSchemaVersion = 2;
+inline constexpr std::uint32_t kPhase4SameRunRawEvidenceSchemaVersion = 2;
+inline constexpr std::uint32_t kPhase4IsolatedSameRunTelemetrySchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4CanonicalRepetitionsV1 = 20;
 inline constexpr std::uint32_t kPhase4CanonicalPreparationWorkersV1 = 4;
 inline constexpr std::uint64_t kPhase4CanonicalRouteWorkUnitsPerQueryV1 = 1'000'000'000ULL;
@@ -119,6 +122,12 @@ enum class Phase4IsolatedAttemptDisposition : std::uint8_t {
   kNotRunAfterFatal = 10,
 };
 
+enum class Phase4IsolatedCellCarrier : std::uint8_t {
+  kUnspecified = 0,
+  kRawWireV1 = 1,
+  kSameRunWireV2 = 2,
+};
+
 struct Phase4IsolatedArmAttempt {
   std::uint32_t schema_version = kPhase4TrialHarnessSchemaVersion;
   Phase4TrialArm arm = Phase4TrialArm::kSequentialBaseline;
@@ -161,6 +170,9 @@ struct Phase4IsolatedPairAttempt {
 
 struct Phase4IsolatedCellResult {
   std::uint32_t schema_version = kPhase4TrialHarnessSchemaVersion;
+  // Controller-owned, non-serialized carrier authority. Raw-v1 and Raw-v2
+  // serializers reject results produced by the other worker protocol.
+  Phase4IsolatedCellCarrier carrier = Phase4IsolatedCellCarrier::kUnspecified;
   Phase4CanonicalCellConfig config;
   Phase4HostEnvironment environment;
   std::uint64_t corpus_checksum = 0;
@@ -174,15 +186,69 @@ struct Phase4IsolatedCellResult {
                          const Phase4IsolatedCellResult&) = default;
 };
 
+// Controller-bound decision telemetry returned only after the exact worker
+// process has exited cleanly and its ordinary measured arm has been finalized.
+// The attempt, semantic, artifact, and authority checksums make this leaf
+// unusable with any other dispatch or independently rerun observation.
+struct Phase4IsolatedSameRunArmDecisionTelemetryV1 {
+  std::uint32_t schema_version = kPhase4IsolatedSameRunTelemetrySchemaVersion;
+  Phase4TrialArm arm = Phase4TrialArm::kSequentialBaseline;
+  std::uint32_t repetition_index = 0;
+  Phase4TrialOrder execution_order = Phase4TrialOrder::kBaselineFirst;
+  std::uint64_t dispatch_ordinal = 0;
+  std::uint64_t process_instance_identity = 0;
+  std::uint64_t associated_semantic_checksum = 0;
+  std::uint64_t associated_arm_artifact_checksum = 0;
+  std::uint64_t associated_authority_checksum = 0;
+  std::uint64_t associated_arm_attempt_checksum = 0;
+  Phase4SameRunArmDecisionTelemetryV1 telemetry;
+  std::uint64_t capture_checksum = 0;
+
+  friend bool operator==(const Phase4IsolatedSameRunArmDecisionTelemetryV1&,
+                         const Phase4IsolatedSameRunArmDecisionTelemetryV1&) = default;
+};
+
+struct Phase4IsolatedSameRunPairDecisionTelemetryV1 {
+  std::uint32_t schema_version = kPhase4IsolatedSameRunTelemetrySchemaVersion;
+  std::uint32_t case_id = 0;
+  std::uint32_t requested_pool_size = 0;
+  std::uint32_t repetition_index = 0;
+  std::uint64_t root_seed = 0;
+  Phase4TrialOrder execution_order = Phase4TrialOrder::kBaselineFirst;
+  std::uint64_t associated_raw_pair_attempt_checksum = 0;
+  std::uint64_t associated_paired_semantic_checksum = 0;
+  std::uint64_t associated_paired_artifact_checksum = 0;
+  Phase4IsolatedSameRunArmDecisionTelemetryV1 baseline;
+  Phase4IsolatedSameRunArmDecisionTelemetryV1 candidate;
+  std::uint64_t capture_checksum = 0;
+
+  friend bool operator==(const Phase4IsolatedSameRunPairDecisionTelemetryV1&,
+                         const Phase4IsolatedSameRunPairDecisionTelemetryV1&) = default;
+};
+
+struct Phase4IsolatedCellWithSameRunDecisionTelemetryV1 {
+  std::uint32_t schema_version = kPhase4IsolatedSameRunTelemetrySchemaVersion;
+  Phase4IsolatedCellResult raw_cell;
+  std::vector<Phase4IsolatedSameRunPairDecisionTelemetryV1> same_run_attempts;
+  friend bool operator==(const Phase4IsolatedCellWithSameRunDecisionTelemetryV1&,
+                         const Phase4IsolatedCellWithSameRunDecisionTelemetryV1&) = default;
+};
+
 struct Phase4TrialHarnessError {
   std::string invariant_id;
   std::string detail;
+  // Present when the controller completed and authenticated a Raw cell but a
+  // higher-level companion could not be completed. Callers must preserve this
+  // total-attempt evidence even though it is not decision-eligible.
+  std::optional<Phase4IsolatedCellResult> raw_cell;
 
   friend bool operator==(const Phase4TrialHarnessError&, const Phase4TrialHarnessError&) = default;
 };
 
 using Phase4CanonicalSpecResult = std::variant<Phase4PairedTrialSpec, Phase4TrialHarnessError>;
 using Phase4IsolatedCellExecution = std::variant<Phase4IsolatedCellResult, Phase4TrialHarnessError>;
+using Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1 =
+    std::variant<Phase4IsolatedCellWithSameRunDecisionTelemetryV1, Phase4TrialHarnessError>;
 
 [[nodiscard]] Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
@@ -200,6 +266,22 @@ using Phase4IsolatedCellExecution = std::variant<Phase4IsolatedCellResult, Phase
     std::uint32_t wire_schema_version, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty, std::uint64_t cell_artifact_checksum) noexcept;
 
+// Authenticates the distinct Raw Evidence v2 envelope emitted only by the
+// telemetry-aware Wire-v2 controller. The underlying isolated-cell payload
+// remains harness schema v1 and cannot be relabeled as Raw Evidence v1.
+[[nodiscard]] std::uint64_t ComputePhase4SourceEnvelopeChecksumV2(
+    std::uint32_t raw_evidence_schema_version, std::uint32_t wire_schema_version,
+    std::string_view source_commit, bool source_stamped, bool source_tree_dirty,
+    std::uint64_t cell_artifact_checksum) noexcept;
+
+// Raw-v1 preserves its frozen cell domain. Raw-v2 binds the telemetry-aware
+// carrier versions before the otherwise identical cell payload.
+[[nodiscard]] std::uint64_t ComputePhase4IsolatedCellArtifactChecksumV1(
+    const Phase4IsolatedCellResult& result) noexcept;
+
+[[nodiscard]] std::uint64_t ComputePhase4SameRunIsolatedCellArtifactChecksumV2(
+    const Phase4IsolatedCellResult& result) noexcept;
+
 // Linux v1 launches two separately exec'd, long-lived contender workers. All
 // repetitions in a cell share their contender process and its wait4 peak RSS;
 // measured arms run serially in the prescribed AB/BA order.
@@ -207,16 +289,68 @@ using Phase4IsolatedCellExecution = std::variant<Phase4IsolatedCellResult, Phase
     const Phase4CanonicalCellConfig& cell, std::string_view worker_executable,
     std::string_view imported_fixture_path);
 
-[[nodiscard]] std::string SerializePhase4IsolatedCellJsonV1(const Phase4IsolatedCellResult& result,
-                                                            std::string_view source_commit,
-                                                            bool source_stamped,
-                                                            bool source_tree_dirty);
+[[nodiscard]] std::uint64_t ComputePhase4IsolatedSameRunArmCaptureChecksumV1(
+    const Phase4IsolatedSameRunArmDecisionTelemetryV1& capture) noexcept;
+
+[[nodiscard]] std::uint64_t ComputePhase4IsolatedSameRunPairCaptureChecksumV1(
+    const Phase4IsolatedSameRunPairDecisionTelemetryV1& capture) noexcept;
+
+[[nodiscard]] std::uint64_t ComputePhase4IsolatedSameRunCellCaptureChecksumV1(
+    const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
+    std::uint64_t raw_source_envelope_checksum) noexcept;
+
+// Verifies the complete in-memory Raw-v2/capture join before a serializer can
+// publish it. This repeats the immutable checksum, command association,
+// process-lifetime, and canonical-cardinality checks at the publication seam.
+[[nodiscard]] bool ValidatePhase4IsolatedSameRunCellCaptureV1(
+    const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
+    std::string_view imported_fixture);
+
+#if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
+// Test-only adversarial splice used to prove that publication validates
+// command/cell associations after every exposed structural checksum is
+// recomputed.
+void RehashForeignPhase4SameRunRecordForTesting(
+    Phase4IsolatedCellWithSameRunDecisionTelemetryV1* capture) noexcept;
+void RehashWrongPhase4SameRunComparisonForTesting(
+    Phase4IsolatedCellWithSameRunDecisionTelemetryV1* capture) noexcept;
+void RehashNondeterministicPhase4SameRunRecordForTesting(
+    Phase4IsolatedCellWithSameRunDecisionTelemetryV1* capture) noexcept;
+#endif
+
+// Runs the canonical cell through wire v2. Success is all-or-nothing: exactly
+// twenty finalized pairs and their forty same-run telemetry leaves are returned
+// only after both persistent worker processes exit cleanly.
+[[nodiscard]] Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1
+RunPhase4IsolatedCellWithSameRunDecisionTelemetryV1(const Phase4CanonicalCellConfig& cell,
+                                                    std::string_view worker_executable,
+                                                    std::string_view imported_fixture_path);
+
+[[nodiscard]] std::optional<std::string> SerializePhase4IsolatedCellJsonV1(
+    const Phase4IsolatedCellResult& result, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty);
+
+// Serializes the ordinary measured half of a telemetry-aware Wire-v2 run.
+// Publication requires its same-run telemetry companion; Raw-v1 validators
+// intentionally reject this distinct envelope.
+[[nodiscard]] std::optional<std::string> SerializePhase4SameRunIsolatedCellJsonV2(
+    const Phase4IsolatedCellResult& result, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty);
 
 // Hidden worker entry point used by the source-identical harness executable.
 // The request and response descriptors are dedicated protocol sockets.
 [[nodiscard]] int RunPhase4TrialWorkerV1(Phase4TrialArm arm, const Phase4CanonicalCellConfig& cell,
                                          std::string_view imported_fixture, int request_descriptor,
                                          int response_descriptor) noexcept;
+
+// Hidden wire-v2 worker entry point. Control and failure messages retain their
+// v1 shape; every success atomically carries the ordinary measured execution
+// and telemetry derived from that same execution.
+[[nodiscard]] int RunPhase4TrialWorkerWithSameRunTelemetryV1(Phase4TrialArm arm,
+                                                             const Phase4CanonicalCellConfig& cell,
+                                                             std::string_view imported_fixture,
+                                                             int request_descriptor,
+                                                             int response_descriptor) noexcept;
 
 }  // namespace apgar::benchmark
 

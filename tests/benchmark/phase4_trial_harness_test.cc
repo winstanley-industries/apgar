@@ -358,6 +358,7 @@ TEST(Phase4TrialHarnessTest, PreservesFailedPreparationObservationWithoutClaimin
 
 TEST(Phase4TrialHarnessTest, SerializesCanonicalDeterministicJsonWithFullEscaping) {
   Phase4IsolatedCellResult result;
+  result.carrier = Phase4IsolatedCellCarrier::kRawWireV1;
   result.config = Cell();
   result.environment.host_os = "linux\n\t\"\\";
   result.environment.host_kernel = std::string("kernel\x01", 7);
@@ -381,10 +382,16 @@ TEST(Phase4TrialHarnessTest, SerializesCanonicalDeterministicJsonWithFullEscapin
   attempt.candidate.controller_invariant_id = "quoted\"value";
   attempt.attempt_checksum = 6;
   result.attempts.push_back(std::move(attempt));
-  result.artifact_checksum = 7;
+  result.artifact_checksum = ComputePhase4IsolatedCellArtifactChecksumV1(result);
 
-  const std::string first = SerializePhase4IsolatedCellJsonV1(result, "commit\"\\\n", true, false);
-  const std::string second = SerializePhase4IsolatedCellJsonV1(result, "commit\"\\\n", true, false);
+  const auto first_serialized =
+      SerializePhase4IsolatedCellJsonV1(result, "commit\"\\\n", true, false);
+  const auto second_serialized =
+      SerializePhase4IsolatedCellJsonV1(result, "commit\"\\\n", true, false);
+  ASSERT_TRUE(first_serialized.has_value());
+  ASSERT_TRUE(second_serialized.has_value());
+  const std::string& first = *first_serialized;
+  const std::string& second = *second_serialized;
   EXPECT_EQ(first, second);
   ASSERT_FALSE(first.empty());
   EXPECT_EQ(first.front(), '{');
@@ -404,6 +411,19 @@ TEST(Phase4TrialHarnessTest, SerializesCanonicalDeterministicJsonWithFullEscapin
   EXPECT_LT(first.find("\"environment\":"), first.find("\"attempts\":"));
   EXPECT_LT(first.find("\"source_tree_dirty\":false"), first.find("\"source_envelope_checksum\":"));
   EXPECT_LT(first.find("\"source_envelope_checksum\":"), first.find("\"schema_version\":"));
+  EXPECT_EQ(first.find("{\"wire_schema_version\":1,"), 0U);
+  EXPECT_EQ(first.find("raw_evidence_schema_version"), std::string::npos);
+
+  EXPECT_FALSE(
+      SerializePhase4SameRunIsolatedCellJsonV2(result, "commit\"\\\n", true, false).has_value());
+  result.carrier = Phase4IsolatedCellCarrier::kSameRunWireV2;
+  EXPECT_FALSE(SerializePhase4IsolatedCellJsonV1(result, "commit\"\\\n", true, false).has_value());
+  result.artifact_checksum = ComputePhase4SameRunIsolatedCellArtifactChecksumV2(result);
+  const auto same_run =
+      SerializePhase4SameRunIsolatedCellJsonV2(result, "commit\"\\\n", true, false);
+  ASSERT_TRUE(same_run.has_value());
+  EXPECT_EQ(same_run->find("{\"raw_evidence_schema_version\":2,\"wire_schema_version\":2,"), 0U);
+  EXPECT_NE(*same_run, first);
 }
 
 TEST(Phase4TrialHarnessTest, SourceEnvelopeChecksumBindsEveryProvenanceFieldAndArtifact) {
@@ -427,6 +447,24 @@ TEST(Phase4TrialHarnessTest, SourceEnvelopeChecksumBindsEveryProvenanceFieldAndA
             checksum);
   EXPECT_NE(ComputePhase4SourceEnvelopeChecksumV1(kPhase4TrialWireSchemaVersion, kCommit, true,
                                                   false, kArtifactChecksum + 1U),
+            checksum);
+}
+
+TEST(Phase4TrialHarnessTest, SameRunSourceEnvelopeBindsEvidenceAndCarrierVersions) {
+  constexpr std::string_view kCommit = "0123456789abcdef0123456789abcdef01234567";
+  constexpr std::uint64_t kArtifactChecksum = 0x0123456789abcdefULL;
+  const std::uint64_t checksum = ComputePhase4SourceEnvelopeChecksumV2(
+      kPhase4SameRunRawEvidenceSchemaVersion, kPhase4SameRunTrialWireSchemaVersion, kCommit, true,
+      false, kArtifactChecksum);
+
+  EXPECT_NE(checksum, 0U);
+  EXPECT_NE(ComputePhase4SourceEnvelopeChecksumV2(kPhase4SameRunRawEvidenceSchemaVersion + 1U,
+                                                  kPhase4SameRunTrialWireSchemaVersion, kCommit,
+                                                  true, false, kArtifactChecksum),
+            checksum);
+  EXPECT_NE(ComputePhase4SourceEnvelopeChecksumV2(kPhase4SameRunRawEvidenceSchemaVersion,
+                                                  kPhase4SameRunTrialWireSchemaVersion + 1U,
+                                                  kCommit, true, false, kArtifactChecksum),
             checksum);
 }
 

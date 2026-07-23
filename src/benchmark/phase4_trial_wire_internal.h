@@ -19,6 +19,18 @@ inline constexpr std::size_t kPhase4TrialWireHeaderBytesV1 =
 inline constexpr std::size_t kPhase4TrialWireMaxFrameBytesV1 =
     kPhase4TrialWireHeaderBytesV1 + kPhase4TrialWireMaximumPayloadBytesV1 + sizeof(std::uint64_t);
 
+// Wire v2 adds same-run decision telemetry only to successful arm replies. It
+// intentionally keeps an independent schema constant and API so changing the
+// v2 payload can never reinterpret a persisted v1 frame.
+inline constexpr std::uint32_t kPhase4TrialWireSchemaVersionV2 =
+    kPhase4SameRunTrialWireSchemaVersion;
+inline constexpr std::size_t kPhase4TrialWireMaximumPayloadBytesV2 = 64U * 1024U;
+inline constexpr std::size_t kPhase4TrialWireMaximumTelemetryRowsV2 = 384U;
+inline constexpr std::size_t kPhase4TrialWireHeaderBytesV2 =
+    8U + sizeof(std::uint32_t) + sizeof(std::uint8_t) + sizeof(std::uint32_t);
+inline constexpr std::size_t kPhase4TrialWireMaxFrameBytesV2 =
+    kPhase4TrialWireHeaderBytesV2 + kPhase4TrialWireMaximumPayloadBytesV2 + sizeof(std::uint64_t);
+
 enum class Phase4TrialWireMessageKind : std::uint8_t {
   kReady = 0,
   kRun = 1,
@@ -79,6 +91,17 @@ using Phase4TrialWireMessage =
     std::variant<Phase4TrialWireReady, Phase4TrialWireRunCommand, Phase4TrialWireStop,
                  Phase4TrialWireSuccess, Phase4TrialWireFailure, Phase4TrialWireStopped>;
 
+struct Phase4TrialWireSuccessV2 {
+  Phase4TrialArmWithSameRunTelemetryExecutionV1 decision_execution;
+
+  friend bool operator==(const Phase4TrialWireSuccessV2&,
+                         const Phase4TrialWireSuccessV2&) = default;
+};
+
+using Phase4TrialWireMessageV2 =
+    std::variant<Phase4TrialWireReady, Phase4TrialWireRunCommand, Phase4TrialWireStop,
+                 Phase4TrialWireSuccessV2, Phase4TrialWireFailure, Phase4TrialWireStopped>;
+
 struct Phase4TrialWireError {
   std::string invariant_id;
   std::string detail;
@@ -91,6 +114,8 @@ using Phase4TrialWireDecodeResult = std::variant<Phase4TrialWireMessage, Phase4T
 using Phase4TrialWireWriteResult = std::variant<std::monostate, Phase4TrialWireError>;
 using Phase4TrialWireExpectedFrameSizeResult =
     std::variant<std::optional<std::size_t>, Phase4TrialWireError>;
+using Phase4TrialWireEncodeResultV2 = std::variant<std::vector<std::uint8_t>, Phase4TrialWireError>;
+using Phase4TrialWireDecodeResultV2 = std::variant<Phase4TrialWireMessageV2, Phase4TrialWireError>;
 
 // Returns no size until prefix contains the complete fixed header. Once the
 // header is complete, validates its magic, schema, kind, and bounded payload
@@ -114,6 +139,23 @@ using Phase4TrialWireExpectedFrameSizeResult =
 
 [[nodiscard]] Phase4TrialWireWriteResult WritePhase4TrialWireMessageV1(
     int descriptor, const Phase4TrialWireMessage& message);
+
+// V2 uses the same bounded frame envelope and control/failure payloads as V1,
+// but its success payload atomically carries the measured arm execution and
+// checksum-bound telemetry captured by that same contender execution.
+[[nodiscard]] Phase4TrialWireExpectedFrameSizeResult Phase4TrialWireExpectedFrameSizeV2(
+    std::span<const std::uint8_t> prefix);
+
+[[nodiscard]] Phase4TrialWireEncodeResultV2 EncodePhase4TrialWireMessageV2(
+    const Phase4TrialWireMessageV2& message);
+
+[[nodiscard]] Phase4TrialWireDecodeResultV2 DecodePhase4TrialWireMessageV2(
+    std::span<const std::uint8_t> frame);
+
+[[nodiscard]] Phase4TrialWireDecodeResultV2 ReadPhase4TrialWireMessageV2(int descriptor);
+
+[[nodiscard]] Phase4TrialWireWriteResult WritePhase4TrialWireMessageV2(
+    int descriptor, const Phase4TrialWireMessageV2& message);
 
 }  // namespace apgar::benchmark::internal
 

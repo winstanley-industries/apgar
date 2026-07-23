@@ -9,9 +9,41 @@ import unittest
 from fractions import Fraction
 
 from tools import validate_phase4_statistical_protocol as protocol
+from tools import validate_phase4_statistical_protocol_v2 as protocol_v2
 
 
 class Phase4StatisticalProtocolTest(unittest.TestCase):
+    def test_v2_supersedes_only_decision_cell_authority(self) -> None:
+        document = protocol_v2.read_protocol()
+        self.assertEqual(document, protocol_v2.expected_protocol())
+        self.assertEqual(
+            document["supersedes"]["artifact_checksum"],
+            protocol.read_protocol()["artifact_checksum"],
+        )
+        groups = {group["group"]: group for group in protocol_v2.effective_cell_groups()}
+        for name in ("exact", "heldout", "imported"):
+            artifacts = groups[name]["required_artifacts"]
+            self.assertEqual(groups[name]["evidence_requirement"], "same_run_raw_success")
+            self.assertIn("phase4_same_run_raw_evidence_v2", artifacts)
+            self.assertIn("phase4_per_net_report_publication_join_v2", artifacts)
+            self.assertIn("phase4_operational_projection_v2", artifacts)
+            self.assertNotIn("phase4_raw_evidence_v1", artifacts)
+        calibration = groups["calibration"]
+        self.assertEqual(calibration["evidence_requirement"], "raw_success")
+        self.assertIn("phase4_raw_evidence_v1", calibration["required_artifacts"])
+        self.assertNotIn("phase4_same_run_raw_evidence_v2", calibration["required_artifacts"])
+        cells = protocol_v2.expanded_cells()
+        self.assertEqual(sum(row[3] == "same_run_raw_success" for row in cells), 78)
+        self.assertEqual(sum(row[3] == "raw_success" for row in cells), 22)
+        self.assertEqual(
+            document["matrix_authority_counts"]["noncalibration_legacy_raw_v1_success_cells"],
+            4,
+        )
+        self.assertEqual(
+            document["matrix_authority_counts"]["noncalibration_same_run_raw_v2_success_cells"],
+            78,
+        )
+
     def test_checked_in_protocol_and_canonical_expansion(self) -> None:
         document = protocol.read_protocol()
         self.assertEqual(document, protocol.expected_protocol())

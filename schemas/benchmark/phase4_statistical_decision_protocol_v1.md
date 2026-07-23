@@ -1,5 +1,10 @@
 # Phase 4 Statistical Decision Protocol v1
 
+This frozen protocol is incorporated unchanged by the authority-only v2
+supersession. Its statistical decisions remain normative; its Raw-v1 authority
+for exact, held-out, and imported cells is superseded by Same-Run Raw v2 so the
+outcome and rejection partition originate in one Wire-v2 execution.
+
 The canonical machine-readable protocol is
 `phase4_statistical_decision_protocol_v1.json`. It freezes analysis before
 observing decision results; `protocol_frozen=true` and
