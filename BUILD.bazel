@@ -3001,6 +3001,7 @@ cc_test(
         ":cpu_candidate_pool_preparation",
         ":phase4_operational_artifact",
         ":phase4_paired_trial",
+        ":phase4_trial_harness",
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],

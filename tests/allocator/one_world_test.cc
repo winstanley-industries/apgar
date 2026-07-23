@@ -402,6 +402,8 @@ TEST(OneWorldAllocatorTest, SelectionOnlyEvidenceMatchesAllocatorAndBindsCanonic
   EXPECT_TRUE(evidence.selection_projection.resources.empty());
   EXPECT_EQ(evidence.selection_projection.accounting_materialized_resource_edges, 0U);
   EXPECT_EQ(evidence.selected_expanded_resource_uses, world.selected_logical_resource_uses);
+  EXPECT_EQ(internal::RecomputeOneWorldPoolManifestChecksumV1(request.pools),
+            evidence.candidate_pool_manifest_checksum);
 
   std::ranges::reverse(request.pools.front().candidates);
   internal::OneWorldSelectionEvidenceResult reordered_result =
@@ -411,7 +413,35 @@ TEST(OneWorldAllocatorTest, SelectionOnlyEvidenceMatchesAllocatorAndBindsCanonic
       std::get<internal::OneWorldSelectionEvidence>(std::move(reordered_result));
   EXPECT_EQ(reordered.candidate_pool_manifest_checksum, evidence.candidate_pool_manifest_checksum);
   EXPECT_EQ(reordered.request_manifest_checksum, evidence.request_manifest_checksum);
+  EXPECT_EQ(internal::RecomputeOneWorldPoolManifestChecksumV1(request.pools),
+            evidence.candidate_pool_manifest_checksum);
 
+  constexpr board_ir::EntityRef kEmptyNet{.id = 999, .generation = 4};
+  request.pools.push_back(CandidatePool{.net = kEmptyNet, .candidates = {}});
+  internal::OneWorldSelectionEvidenceResult multi_pool_result =
+      internal::SelectOneWorldWithoutAccounting(request);
+  ASSERT_TRUE(std::holds_alternative<internal::OneWorldSelectionEvidence>(multi_pool_result));
+  const std::uint64_t multi_pool_manifest =
+      std::get<internal::OneWorldSelectionEvidence>(std::move(multi_pool_result))
+          .candidate_pool_manifest_checksum;
+  EXPECT_EQ(internal::RecomputeOneWorldPoolManifestChecksumV1(request.pools), multi_pool_manifest);
+  std::ranges::reverse(request.pools);
+  EXPECT_EQ(internal::RecomputeOneWorldPoolManifestChecksumV1(request.pools), multi_pool_manifest);
+
+  std::vector<CandidatePool> duplicate_net_pools = request.pools;
+  duplicate_net_pools.push_back(CandidatePool{.net = kEmptyNet, .candidates = {}});
+  EXPECT_EQ(internal::RecomputeOneWorldPoolManifestChecksumV1(duplicate_net_pools), 0U);
+  const std::array same_pool_duplicate_candidates = {
+      CandidatePool{.net = fixture.base_request.net, .candidates = {fixture.first, fixture.first}},
+  };
+  EXPECT_EQ(internal::RecomputeOneWorldPoolManifestChecksumV1(same_pool_duplicate_candidates), 0U);
+  const std::array cross_pool_duplicate_candidates = {
+      CandidatePool{.net = fixture.base_request.net, .candidates = {fixture.first}},
+      CandidatePool{.net = kEmptyNet, .candidates = {fixture.first}},
+  };
+  EXPECT_EQ(internal::RecomputeOneWorldPoolManifestChecksumV1(cross_pool_duplicate_candidates), 0U);
+
+  request.pools.erase(request.pools.begin());
   OneWorldAllocationRequest reduced_pool_request = request;
   reduced_pool_request.pools.front().candidates = {world.selections.front().candidate};
   internal::OneWorldSelectionEvidenceResult reduced_pool_result =

@@ -1212,28 +1212,60 @@ std::uint64_t internal::ComputeOneWorldChecksumV2(const OneWorldAllocation& worl
 
 std::uint64_t internal::RecomputeOneWorldPoolManifestChecksumV1(
     std::span<const CandidatePool> pools) noexcept {
-  board_ir::StableHashBuilder manifest;
-  manifest.AddString("APGAR-ONE-WORLD-POOLS-MANIFEST-V1");
-  manifest.AddU64(static_cast<std::uint64_t>(pools.size()));
-  for (const CandidatePool& pool : pools) {
-    board_ir::StableHashBuilder pool_hash;
-    pool_hash.AddString("APGAR-ONE-WORLD-POOL-MANIFEST-V1");
-    pool_hash.AddU64(pool.net.id);
-    pool_hash.AddU32(pool.net.generation);
-    pool_hash.AddU64(static_cast<std::uint64_t>(pool.candidates.size()));
-    for (const candidates::StoredCandidate& candidate : pool.candidates) {
-      if (candidate == nullptr) {
-        return 0;
-      }
-      pool_hash.AddU64(candidate->id().high);
-      pool_hash.AddU64(candidate->id().low);
-      pool_hash.AddU64(candidate->data().payload_checksum);
+  try {
+    std::vector<const CandidatePool*> ordered_pools;
+    ordered_pools.reserve(pools.size());
+    for (const CandidatePool& pool : pools) {
+      ordered_pools.push_back(&pool);
     }
-    manifest.AddU64(pool.net.id);
-    manifest.AddU32(pool.net.generation);
-    manifest.AddU64(pool_hash.Finish());
+    std::ranges::sort(ordered_pools, [](const CandidatePool* left, const CandidatePool* right) {
+      return NetKey(left->net) < NetKey(right->net);
+    });
+    if (std::ranges::adjacent_find(ordered_pools,
+                                   [](const CandidatePool* left, const CandidatePool* right) {
+                                     return left->net == right->net;
+                                   }) != ordered_pools.end()) {
+      return 0;
+    }
+
+    board_ir::StableHashBuilder manifest;
+    manifest.AddString("APGAR-ONE-WORLD-POOLS-MANIFEST-V1");
+    manifest.AddU64(static_cast<std::uint64_t>(ordered_pools.size()));
+    std::set<candidates::CandidateId> candidate_ids;
+    for (const CandidatePool* pool : ordered_pools) {
+      std::vector<const candidates::StoredCandidate*> ordered_candidates;
+      ordered_candidates.reserve(pool->candidates.size());
+      for (const candidates::StoredCandidate& candidate : pool->candidates) {
+        if (candidate == nullptr || !candidate_ids.emplace(candidate->id()).second) {
+          return 0;
+        }
+        ordered_candidates.push_back(&candidate);
+      }
+      std::ranges::sort(ordered_candidates, [](const candidates::StoredCandidate* left,
+                                               const candidates::StoredCandidate* right) {
+        return (*left)->id() < (*right)->id();
+      });
+
+      board_ir::StableHashBuilder pool_hash;
+      pool_hash.AddString("APGAR-ONE-WORLD-POOL-MANIFEST-V1");
+      pool_hash.AddU64(pool->net.id);
+      pool_hash.AddU32(pool->net.generation);
+      pool_hash.AddU64(static_cast<std::uint64_t>(ordered_candidates.size()));
+      for (const candidates::StoredCandidate* candidate : ordered_candidates) {
+        pool_hash.AddU64((*candidate)->id().high);
+        pool_hash.AddU64((*candidate)->id().low);
+        pool_hash.AddU64((*candidate)->data().payload_checksum);
+      }
+      manifest.AddU64(pool->net.id);
+      manifest.AddU32(pool->net.generation);
+      manifest.AddU64(pool_hash.Finish());
+    }
+    return manifest.Finish();
+  } catch (const std::bad_alloc&) {
+    return 0;
+  } catch (const std::length_error&) {
+    return 0;
   }
-  return manifest.Finish();
 }
 
 OneWorldAllocationResult AllocateOneWorld(const OneWorldAllocationRequest& request) {

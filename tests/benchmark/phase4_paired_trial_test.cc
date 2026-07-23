@@ -13,6 +13,7 @@
 
 #include "apgar/allocator/cpu_candidate_pool_preparation.h"
 #include "apgar/benchmark/phase4_operational_artifact.h"
+#include "apgar/benchmark/phase4_trial_harness.h"
 #include "apgar/tooling/runfiles.h"
 #include "src/allocator/cpu_candidate_allocation_session_internal.h"
 #include "src/allocator/sequential_negotiated_baseline_internal.h"
@@ -378,7 +379,8 @@ void ExpectReportMatchesPoolAndSelection(const Phase4PerNetReportV1& report,
     const Phase4PairedTrialSpec& spec) {
   Phase4RepresentativeCase corpus = ValueOf<Phase4RepresentativeCase>(
       BuildPhase4RepresentativeCaseV1(spec.case_id, {}, spec.corpus_limits));
-  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer =
+      Preparer(spec.preparation_worker_count);
   allocator::PreparedCpuCandidatePools prepared =
       ValueOf<allocator::PreparedCpuCandidatePools>(allocator::PrepareInitialCpuCandidatePools(
           *preparer, corpus.board, corpus.workload, spec.preparation_config));
@@ -1715,6 +1717,26 @@ TEST(Phase4PairedTrialTest, CandidateReplayAuthorityRejectsStaleNestedLiveChecks
   --retained_price_config.maximum_price_per_resource;
 
   ASSERT_TRUE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+}
+
+TEST(Phase4PairedTrialTest, FragmentedCalibrationReplayWitnessUsesCanonicalCandidateOrder) {
+  Phase4CanonicalCellConfig cell;
+  cell.case_id = 220;
+  cell.requested_pool_size = 4;
+  cell.preparation_worker_count = kPhase4CanonicalPreparationWorkersV1;
+  cell.repetitions = kPhase4CanonicalRepetitionsV1;
+  cell.maximum_setup_elapsed_nanoseconds = 60'000'000'000ULL;
+  cell.external_budget = {
+      .maximum_prepared_elapsed_nanoseconds = 120'000'000'000ULL,
+      .maximum_cold_elapsed_nanoseconds = 180'000'000'000ULL,
+      .maximum_address_space_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL,
+      .maximum_peak_host_bytes = 32ULL * 1024ULL * 1024ULL * 1024ULL,
+  };
+  const Phase4PairedTrialSpec spec = ValueOf<Phase4PairedTrialSpec>(
+      BuildPhase4CanonicalTrialSpecV1(cell, 0, Phase4TrialOrder::kBaselineFirst));
+  allocator::CpuCandidateAllocationSession session = ExecuteCandidateSessionForSources(spec);
+  EXPECT_TRUE(
       allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
 }
 
