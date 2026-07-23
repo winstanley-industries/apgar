@@ -69,6 +69,13 @@ contender's failed or partial state contaminate the other.
 - Reject corpus query-shape pool sizes `1` and `1024` in this v1 runner rather
   than silently clamping them to Candidate-Pool Preparation v2's supported
   `4/8/16` decision sizes.
+- Derive the canonical representative-corpus reconstruction, price,
+  occupancy, candidate-draft, generated-byte, retained-byte, policy, and
+  CandidateStore transaction bounds from the descriptor's largest declared
+  pool. Generic allocator defaults are not evidence that the frozen success
+  cells are structurally executable. The corrective formula is recorded by
+  ADR-040 and checksum-bound by the refreshed representative manifest before
+  matrix observation.
 
 ## Consequences
 

@@ -1,9 +1,9 @@
 # Targeted Regeneration Execution v2
 
-> Superseded for production execution by Targeted Regeneration Execution v3.
+> Superseded for production execution by Targeted Regeneration Execution v4.
 > This frozen document preserves the version-2 seedless replay encoding.
-> Current production callers reject versions `1` and `2` and must use schema
-> version `3`.
+> Current production callers reject versions `1`, `2`, and `3` and must use
+> schema version `4`.
 
 Targeted Regeneration Execution v2 preserves the immutable-plan, conditional
 CAN-004 publication, refreshed-world, lease, and terminal semantics of version

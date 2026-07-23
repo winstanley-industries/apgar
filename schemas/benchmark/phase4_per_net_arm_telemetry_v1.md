@@ -3,9 +3,10 @@
 Per-Net Arm Telemetry v1 is the in-process diagnostic contract that closes the
 per-net reporting fields required by the Phase 4 evidence gate. It is produced
 only while an authentic Sequential Baseline v1 result or Candidate-Allocation
-Session v2 result still owns its complete columns, final pools, and selected
-world. It does not change Paired Trial v1 semantics, the subprocess wire, or
-Raw Evidence v1.
+Session v3 result still owns its complete columns, final pools, and selected
+world. The Session v3 child-authority supersession leaves this telemetry-v1
+shape and checksum domain unchanged. It does not change Paired Trial v1
+semantics, the subprocess wire, or Raw Evidence v1.
 
 ## Association and roster
 

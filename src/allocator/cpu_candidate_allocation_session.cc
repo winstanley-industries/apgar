@@ -15,6 +15,8 @@
 
 #include "apgar/board_ir/stable_hash.h"
 #include "src/allocator/cpu_candidate_allocation_session_internal.h"
+#include "src/allocator/cpu_candidate_pool_preparation_internal.h"
+#include "src/allocator/multi_net_workload_internal.h"
 #include "src/allocator/multi_world_internal.h"
 #include "src/allocator/negotiated_prices_internal.h"
 #include "src/allocator/one_world_internal.h"
@@ -435,7 +437,7 @@ std::uint64_t internal::ComputeCpuCandidateAllocationRejectionManifestChecksumV1
   return hash.Finish();
 }
 
-std::uint64_t internal::ComputeCpuCandidateAllocationSessionChecksumV2(
+std::uint64_t internal::ComputeCpuCandidateAllocationSessionChecksumV3(
     const CpuCandidateAllocationSessionConfig& config, std::uint64_t board_content_hash,
     std::uint64_t workload_checksum, std::uint64_t capacity_model_checksum,
     std::uint64_t preparation_checksum, CpuCandidateAllocationTerminalReason terminal_reason,
@@ -445,7 +447,7 @@ std::uint64_t internal::ComputeCpuCandidateAllocationSessionChecksumV2(
     std::uint64_t final_price_state_checksum, std::uint64_t final_single_world_checksum,
     std::uint64_t final_multi_world_checksum) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-CPU-CANDIDATE-ALLOCATION-SESSION-V2");
+  hash.AddString("APGAR-CPU-CANDIDATE-ALLOCATION-SESSION-V3");
   AddSessionConfig(hash, config);
   hash.AddU64(board_content_hash);
   hash.AddU64(workload_checksum);
@@ -575,6 +577,247 @@ std::uint64_t internal::ComputeCpuCandidateAllocationEpochAssociationChecksumV1(
 
 namespace {
 
+[[nodiscard]] bool PoolsMatchLiveWorkload(std::span<const CandidatePool> pools,
+                                          const MultiNetWorkload& workload) noexcept {
+  if (pools.size() != workload.nets().size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < pools.size(); ++index) {
+    const CandidatePool& pool = pools[index];
+    const PreparedNetRoutingContext& context = workload.nets()[index];
+    if (pool.net != context.request.net ||
+        std::ranges::any_of(
+            pool.candidates, [&context](const candidates::StoredCandidate& candidate) {
+              return !internal::CandidateHasAuthenticLivePayloadV1(candidate, context);
+            })) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool WorldMatchesLivePools(const OneWorldAllocation& world,
+                                         std::span<const CandidatePool> pools,
+                                         const MultiNetWorkload& workload,
+                                         const AllocationAssociations& associations) noexcept {
+  if (world.associations != associations ||
+      world.workload_checksum != workload.workload_checksum() ||
+      world.selections.size() != pools.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < pools.size(); ++index) {
+    const CandidatePool& pool = pools[index];
+    const NetSelection& selection = world.selections[index];
+    if (selection.net != pool.net) {
+      return false;
+    }
+    if (selection.status == NetSelectionStatus::kSelected) {
+      if (selection.candidate == nullptr || !selection.candidate_id.has_value() ||
+          !selection.candidate_payload_checksum.has_value() ||
+          *selection.candidate_id != selection.candidate->id() ||
+          *selection.candidate_payload_checksum != selection.candidate->data().payload_checksum ||
+          std::ranges::none_of(pool.candidates,
+                               [&selection](const candidates::StoredCandidate& candidate) {
+                                 return candidate == selection.candidate;
+                               })) {
+        return false;
+      }
+    } else if (selection.status != NetSelectionStatus::kNoAdmissibleCandidate ||
+               selection.candidate != nullptr || selection.candidate_id.has_value() ||
+               selection.candidate_payload_checksum.has_value() || !pool.candidates.empty()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] std::optional<std::uint64_t> RecomputeFinalMultiWorldChecksumFromLive(
+    const CpuCandidateAllocationSession& session, std::uint64_t workload_checksum,
+    std::uint64_t capacity_checksum, std::uint64_t pool_manifest_checksum,
+    std::uint64_t branch_price_checksum, const AllocationAssociations& associations) {
+  const MultiWorldExecution& execution = session.final_multi_world();
+  MultiWorldExecutionConfig expected_config = session.config().multi_world_config;
+  expected_config.known_unmapped_exact_conflict_count =
+      session.config().known_unmapped_exact_conflict_count;
+  if (execution.schema_version() != kMultiWorldExecutionSchemaVersion ||
+      execution.config() != expected_config ||
+      execution.branch_state_checksum() != branch_price_checksum) {
+    return std::nullopt;
+  }
+
+  UWide candidate_count = 0;
+  for (const CandidatePool& pool : session.final_pools()) {
+    candidate_count += pool.candidates.size();
+  }
+  if (candidate_count > std::numeric_limits<std::uint64_t>::max()) {
+    return std::nullopt;
+  }
+  const std::uint64_t source_snapshot_checksum = internal::ComputeMultiWorldPoolSnapshotChecksumV1(
+      internal::MultiWorldPoolSnapshotChecksumHeaderV1{
+          .schema_version = kMultiWorldExecutionSchemaVersion,
+          .associations = associations,
+          .workload_checksum = workload_checksum,
+          .capacity_model_checksum = capacity_checksum,
+          .allocator_limits = session.config().allocator_limits,
+          .candidate_pool_manifest_checksum = pool_manifest_checksum,
+          .source_pool_count = session.final_pools().size(),
+          .source_candidate_count = static_cast<std::uint64_t>(candidate_count),
+      });
+  if (source_snapshot_checksum == 0 ||
+      source_snapshot_checksum != execution.source_snapshot_checksum()) {
+    return std::nullopt;
+  }
+
+  std::vector<MultiWorldSchedule> canonical_schedules = session.config().schedules;
+  std::ranges::sort(canonical_schedules, {}, &MultiWorldSchedule::schedule_key);
+  std::vector<internal::MultiWorldRetainedReplayV1> retained_replay;
+  retained_replay.reserve(execution.retained_worlds().size());
+  for (const RetainedMultiWorld& retained : execution.retained_worlds()) {
+    const std::uint64_t price_checksum =
+        internal::RecomputeNegotiatedPriceStateChecksumV1(retained.price_state);
+    const std::uint64_t world_checksum = internal::ComputeOneWorldChecksumV2(retained.world);
+    if (retained.price_state.associations() != associations ||
+        retained.price_state.workload_checksum() != workload_checksum ||
+        retained.price_state.capacity_model_checksum() != capacity_checksum ||
+        retained.price_state.config() != session.config().price_config || price_checksum == 0 ||
+        price_checksum != retained.price_state.state_checksum() || world_checksum == 0 ||
+        world_checksum != retained.world.world_checksum ||
+        !WorldMatchesLivePools(retained.world, session.final_pools(), session.workload(),
+                               associations) ||
+        internal::ComputeMultiWorldIdentityV1(source_snapshot_checksum, branch_price_checksum,
+                                              retained.schedule) != retained.world_identity) {
+      return std::nullopt;
+    }
+    const auto summary = std::ranges::find(execution.summaries(), retained.world_identity,
+                                           &MultiWorldSummary::world_identity);
+    if (summary == execution.summaries().end() || !summary->pareto_retained ||
+        summary->schedule != retained.schedule ||
+        summary->selected_net_count != retained.world.selected_net_count ||
+        summary->no_candidate_net_count != retained.world.no_candidate_net_count ||
+        summary->overused_resource_count != retained.world.overused_resource_count ||
+        summary->total_overuse_units != retained.world.total_overuse_units ||
+        summary->total_intrinsic_cost != retained.world.total_intrinsic_cost) {
+      return std::nullopt;
+    }
+    retained_replay.push_back(internal::MultiWorldRetainedReplayV1{
+        .world_identity = retained.world_identity,
+        .price_state_checksum = price_checksum,
+        .world_checksum = world_checksum,
+    });
+  }
+  if (execution.preferred_world_identity().has_value() &&
+      std::ranges::none_of(
+          execution.retained_worlds(), [&execution](const RetainedMultiWorld& retained) {
+            return retained.world_identity == *execution.preferred_world_identity();
+          })) {
+    return std::nullopt;
+  }
+
+  const std::uint64_t rebuilt = internal::ComputeMultiWorldExecutionChecksumV1(
+      internal::MultiWorldExecutionChecksumHeaderV1{
+          .schema_version = execution.schema_version(),
+          .source_snapshot_checksum = source_snapshot_checksum,
+          .branch_state_checksum = branch_price_checksum,
+          .config = expected_config,
+          .disposition = execution.disposition(),
+          .counters = execution.counters(),
+          .preferred_world_identity = execution.preferred_world_identity(),
+      },
+      canonical_schedules, execution.summaries(), retained_replay);
+  if (rebuilt == 0 || rebuilt != execution.execution_checksum()) {
+    return std::nullopt;
+  }
+  return rebuilt;
+}
+
+}  // namespace
+
+std::optional<CpuCandidateAllocationSessionReplayWitnessV1>
+internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(
+    const CpuCandidateAllocationSession& session) {
+  const AllocationAssociations associations{
+      .board_content_hash = session.workload().board_content_hash(),
+      .compiler_profile_fingerprint = session.workload().compiler_profile_fingerprint(),
+      .geometry_compiler_version = session.workload().geometry_compiler_version(),
+  };
+  const std::uint64_t workload_checksum =
+      internal::RecomputeMultiNetWorkloadChecksumV1(session.workload());
+  const std::uint64_t capacity_checksum =
+      internal::RecomputeResourceCapacityModelChecksumV1(session.capacities());
+  const std::optional<std::uint64_t> preparation_checksum =
+      internal::RecomputeCpuCandidatePoolPreparationChecksumV2(session.preparation());
+  const std::uint64_t preparation_batch_identity = internal::ComputeCpuCandidatePoolBatchIdentityV2(
+      session.board().content_hash(), workload_checksum, session.preparation().config());
+  const std::uint64_t pool_manifest_checksum =
+      internal::RecomputeOneWorldPoolManifestChecksumV1(session.final_pools());
+  const std::vector<candidates::CandidateRejection> final_rejections =
+      session.preparation().candidate_store().Rejections();
+  const std::uint64_t rejection_manifest_checksum =
+      internal::ComputeCpuCandidateAllocationRejectionManifestChecksumV1(final_rejections);
+  const std::uint64_t price_checksum =
+      internal::RecomputeNegotiatedPriceStateChecksumV1(session.final_price_state());
+  const std::uint64_t single_world_checksum =
+      internal::ComputeOneWorldChecksumV2(session.final_single_world());
+  const std::optional<std::uint64_t> multi_world_checksum =
+      RecomputeFinalMultiWorldChecksumFromLive(session, workload_checksum, capacity_checksum,
+                                               pool_manifest_checksum, price_checksum,
+                                               associations);
+
+  if (session.board().content_hash() != session.workload().board_content_hash() ||
+      workload_checksum == 0 || workload_checksum != session.workload().workload_checksum() ||
+      session.capacities().associations() != associations || capacity_checksum == 0 ||
+      session.final_price_state().associations() != associations ||
+      session.final_price_state().workload_checksum() != workload_checksum ||
+      session.final_price_state().capacity_model_checksum() != capacity_checksum ||
+      session.final_price_state().config() != session.config().price_config ||
+      price_checksum == 0 || price_checksum != session.final_price_state().state_checksum() ||
+      !preparation_checksum.has_value() || *preparation_checksum == 0 ||
+      *preparation_checksum != session.preparation().preparation_checksum() ||
+      preparation_batch_identity == 0 ||
+      preparation_batch_identity != session.preparation().batch_identity() ||
+      !PoolsMatchLiveWorkload(session.preparation().pools(), session.workload()) ||
+      !PoolsMatchLiveWorkload(session.final_pools(), session.workload()) ||
+      pool_manifest_checksum == 0 ||
+      pool_manifest_checksum != session.final_pool_manifest_checksum() ||
+      rejection_manifest_checksum == 0 ||
+      rejection_manifest_checksum != session.final_rejection_manifest_checksum() ||
+      single_world_checksum == 0 ||
+      single_world_checksum != session.final_single_world().world_checksum ||
+      !WorldMatchesLivePools(session.final_single_world(), session.final_pools(),
+                             session.workload(), associations) ||
+      !multi_world_checksum.has_value()) {
+    return std::nullopt;
+  }
+
+  const std::uint64_t rebuilt_session_checksum =
+      internal::ComputeCpuCandidateAllocationSessionChecksumV3(
+          session.config(), session.board().content_hash(), workload_checksum, capacity_checksum,
+          *preparation_checksum, session.terminal_reason(), session.counters(), session.epochs(),
+          pool_manifest_checksum, rejection_manifest_checksum, price_checksum,
+          single_world_checksum, *multi_world_checksum);
+  if (rebuilt_session_checksum == 0 || rebuilt_session_checksum != session.session_checksum()) {
+    return std::nullopt;
+  }
+  return CpuCandidateAllocationSessionReplayWitnessV1{
+      .session_checksum = rebuilt_session_checksum,
+      .board_content_hash = session.board().content_hash(),
+      .workload_checksum = workload_checksum,
+      .capacity_model_checksum = capacity_checksum,
+      .preparation_checksum = *preparation_checksum,
+      .maximum_regeneration_epochs = session.config().maximum_regeneration_epochs,
+      .terminal_reason = session.terminal_reason(),
+      .counters = session.counters(),
+      .epoch_record_count = session.epochs().size(),
+      .epoch_association_checksum =
+          internal::ComputeCpuCandidateAllocationEpochAssociationChecksumV1(
+              session.epochs(), session.counters().planning_expanded_resource_visits),
+      .final_pool_manifest_checksum = pool_manifest_checksum,
+      .final_rejection_manifest_checksum = rejection_manifest_checksum,
+  };
+}
+
+namespace {
+
 struct SessionSourceShape {
   std::uint64_t pool_count = 0;
   std::uint64_t candidate_count = 0;
@@ -593,7 +836,7 @@ struct SessionSourceCounts {
   if (schema_version != kCpuCandidateAllocationSessionSchemaVersion ||
       config.schema_version != kCpuCandidateAllocationSessionSchemaVersion) {
     return Error(CpuCandidateAllocationSessionErrorCode::kUnsupportedSchema,
-                 "allocator.cpu_candidate_session.schema.v2",
+                 "allocator.cpu_candidate_session.schema.v3",
                  "CPU candidate-allocation session schema is unsupported");
   }
   if (config.intrinsic_cost_weight == 0 || config.maximum_regeneration_epochs == 0 ||
@@ -604,7 +847,7 @@ struct SessionSourceCounts {
       !internal::NegotiatedPriceConfigIsValidV1(config.price_config) ||
       !internal::OneWorldAllocatorLimitsAreValidV1(config.allocator_limits) ||
       !internal::TargetedRegenerationConfigIsValidV1(config.regeneration_plan_config) ||
-      !internal::TargetedRegenerationExecutionConfigIsValidV3(
+      !internal::TargetedRegenerationExecutionConfigIsValidV4(
           config.regeneration_execution_config) ||
       !internal::MultiWorldExecutionConfigIsValidV1(config.multi_world_config) ||
       config.schedules.empty() ||
@@ -613,7 +856,7 @@ struct SessionSourceCounts {
       config.regeneration_execution_config.known_unmapped_exact_conflict_count != 0 ||
       config.multi_world_config.known_unmapped_exact_conflict_count != 0) {
     return Error(CpuCandidateAllocationSessionErrorCode::kInvalidConfiguration,
-                 "allocator.cpu_candidate_session.configuration.v2",
+                 "allocator.cpu_candidate_session.configuration.v3",
                  "CPU candidate-allocation session configuration is inconsistent or unbounded");
   }
 
@@ -1434,7 +1677,7 @@ CpuCandidateAllocationSessionResult ExecuteCpuCandidateAllocationSessionImpl(
         prepared.candidate_store().Rejections();
     const std::uint64_t rejection_manifest =
         internal::ComputeCpuCandidateAllocationRejectionManifestChecksumV1(final_rejections);
-    const std::uint64_t session_checksum = internal::ComputeCpuCandidateAllocationSessionChecksumV2(
+    const std::uint64_t session_checksum = internal::ComputeCpuCandidateAllocationSessionChecksumV3(
         config, board.content_hash(), workload.workload_checksum(),
         current_state.capacity_model_checksum(), prepared.preparation_checksum(), terminal_reason,
         counters, epochs, final_pool_manifest, rejection_manifest, current_state.state_checksum(),

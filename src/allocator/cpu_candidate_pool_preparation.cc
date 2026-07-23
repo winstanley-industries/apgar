@@ -673,6 +673,19 @@ std::uint64_t internal::ComputeCpuCandidatePoolPreparationChecksumV2(
   return ComputePreparationChecksumEncoding(config, batch_identity, counters, columns, pools);
 }
 
+std::optional<std::uint64_t> internal::RecomputeCpuCandidatePoolPreparationChecksumV2(
+    const PreparedCpuCandidatePools& preparation) {
+  for (const CandidatePool& pool : preparation.pools()) {
+    if (std::ranges::any_of(pool.candidates, [](const candidates::StoredCandidate& candidate) {
+          return candidate == nullptr;
+        })) {
+      return std::nullopt;
+    }
+  }
+  return PreparationChecksum(preparation.config(), preparation.batch_identity(),
+                             preparation.counters(), preparation.columns(), preparation.pools());
+}
+
 std::uint64_t internal::ComputeCpuCandidatePoolFailedPreparationChecksumV2(
     std::uint64_t board_content_hash, std::uint64_t workload_checksum,
     const CpuCandidatePoolPreparationConfig& config, std::uint64_t batch_identity,

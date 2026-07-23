@@ -137,7 +137,8 @@ void MaybeFailAfterPublicationForTesting() {
          config.maximum_policy_projection_visits <=
              kMaximumTargetedRegenerationPolicyProjectionVisitsV2 &&
          config.maximum_policy_resource_entries > 0 &&
-         config.maximum_policy_resource_entries <= 100'000'000 &&
+         config.maximum_policy_resource_entries <=
+             kMaximumTargetedRegenerationPolicyResourceEntriesV4 &&
          config.maximum_candidate_draft_bytes > 0 && config.maximum_generated_candidate_bytes > 0 &&
          config.maximum_rejection_bytes > 0 && config.maximum_transient_result_bytes > 0;
 }
@@ -183,7 +184,7 @@ void AddStoreConfig(board_ir::StableHashBuilder& hash,
     const TargetedRegenerationExecutionConfig& config,
     const candidates::CandidateStoreConfig& store_config) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-TARGETED-REGENERATION-CPU-BATCH-V3");
+  hash.AddString("APGAR-TARGETED-REGENERATION-CPU-BATCH-V4");
   hash.AddU64(plan_checksum);
   hash.AddU64(net.id);
   hash.AddU32(net.generation);
@@ -435,7 +436,7 @@ void AddColumns(board_ir::StableHashBuilder& hash,
       .columns = std::move(columns),
   };
   observation.observation_checksum =
-      internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
+      internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
           plan_checksum, config, store_config, candidate_store_publication_committed, code,
           counters, observation.columns);
   return TargetedRegenerationExecutionError{
@@ -495,20 +496,20 @@ struct FailedExecutionState {
     if (failure_state.query_started) {
       return ErrorWithFailedExecution(
           TargetedRegenerationExecutionErrorCode::kInternalInvariant,
-          "allocator.targeted_regeneration_execution.unexpected_exception.v3",
+          "allocator.targeted_regeneration_execution.unexpected_exception.v4",
           "An unexpected exception escaped after targeted-regeneration query execution began",
           plan_checksum, config, store_config, failure_state.candidate_store_publication_committed,
           failure_state.counters, std::move(failure_state.columns));
     }
     return Error(TargetedRegenerationExecutionErrorCode::kInternalInvariant,
-                 "allocator.targeted_regeneration_execution.unexpected_exception.v3",
+                 "allocator.targeted_regeneration_execution.unexpected_exception.v4",
                  "An unexpected exception escaped before targeted-regeneration query execution");
   }
 }
 
 }  // namespace
 
-bool internal::TargetedRegenerationExecutionConfigIsValidV3(
+bool internal::TargetedRegenerationExecutionConfigIsValidV4(
     const TargetedRegenerationExecutionConfig& config) noexcept {
   return ConfigIsValid(config);
 }
@@ -647,11 +648,11 @@ void internal::SetTargetedRegenerationSuccessorLeaseFailureForTesting(bool enabl
   g_successor_lease_failure_for_testing = enabled;
 }
 
-std::uint64_t internal::ComputeTargetedRegenerationExecutionChecksumV3(
-    const TargetedRegenerationExecutionChecksumHeaderV3& header,
+std::uint64_t internal::ComputeTargetedRegenerationExecutionChecksumV4(
+    const TargetedRegenerationExecutionChecksumHeaderV4& header,
     std::span<const TargetedRegenerationColumnRecord> columns) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-TARGETED-REGENERATION-EXECUTION-V3");
+  hash.AddString("APGAR-TARGETED-REGENERATION-EXECUTION-V4");
   hash.AddU32(header.schema_version);
   hash.AddU64(header.plan_checksum);
   AddExecutionConfig(hash, header.config);
@@ -667,14 +668,14 @@ std::uint64_t internal::ComputeTargetedRegenerationExecutionChecksumV3(
   return hash.Finish();
 }
 
-std::uint64_t internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
+std::uint64_t internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
     std::uint64_t plan_checksum, const TargetedRegenerationExecutionConfig& config,
     const candidates::CandidateStoreConfig& store_config,
     bool candidate_store_publication_committed, TargetedRegenerationExecutionErrorCode error_code,
     const TargetedRegenerationExecutionCounters& counters,
     std::span<const TargetedRegenerationColumnRecord> columns) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-TARGETED-REGENERATION-FAILED-EXECUTION-V3");
+  hash.AddString("APGAR-TARGETED-REGENERATION-FAILED-EXECUTION-V4");
   hash.AddU32(kTargetedRegenerationExecutionSchemaVersion);
   hash.AddU64(plan_checksum);
   AddExecutionConfig(hash, config);
@@ -716,13 +717,13 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
   g_source_resource_span_visits = 0;
   if (schema_version != kTargetedRegenerationExecutionSchemaVersion) {
     return Error(TargetedRegenerationExecutionErrorCode::kUnsupportedSchema,
-                 "allocator.targeted_regeneration_execution.schema.v3",
+                 "allocator.targeted_regeneration_execution.schema.v4",
                  "Targeted-regeneration execution schema is unsupported");
   }
   if (!ConfigIsValid(config)) {
     return Error(TargetedRegenerationExecutionErrorCode::kInvalidConfiguration,
-                 "allocator.targeted_regeneration_execution.configuration.v3",
-                 "Targeted-regeneration execution configuration is outside schema-v3 bounds");
+                 "allocator.targeted_regeneration_execution.configuration.v4",
+                 "Targeted-regeneration execution configuration is outside schema-v4 bounds");
   }
   if (!plan.has_active_pin_lease()) {
     return Error(TargetedRegenerationExecutionErrorCode::kInactivePlanLease,
@@ -1710,7 +1711,7 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
           final_start =
               ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
         }
-        const internal::TargetedRegenerationExecutionChecksumHeaderV3 checksum_header{
+        const internal::TargetedRegenerationExecutionChecksumHeaderV4 checksum_header{
             .schema_version = schema_version,
             .plan_checksum = plan.plan_checksum(),
             .config = config,
@@ -1725,7 +1726,7 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
             .counters = counters,
         };
         const std::uint64_t checksum =
-            internal::ComputeTargetedRegenerationExecutionChecksumV3(checksum_header, columns);
+            internal::ComputeTargetedRegenerationExecutionChecksumV4(checksum_header, columns);
         TargetedRegenerationExecution result(
             schema_version, std::move(plan), config, candidate_store.config(), disposition,
             terminal_reason, counters, std::move(columns), std::move(refreshed_pools),

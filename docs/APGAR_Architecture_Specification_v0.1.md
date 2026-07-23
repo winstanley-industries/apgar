@@ -996,6 +996,16 @@ acceleration.
   are versioned by `schemas/benchmark/phase4_representative_corpus_v1.md`.
   Calibration and held-out seeds, exact cases, fixed-query controls, and the
   thousands-net stress ladder are frozen before canonical allocation evidence.
+- Canonical executable-success cells MUST use the corpus-derived bound envelope
+  in `schemas/benchmark/phase4_paired_trial_v1.md`: reconstruction states are
+  `32` times the descriptor's largest declared pool, selected occupancy and
+  price records are derived from net count times that route bound, and every
+  candidate, policy, retained-state, and transaction byte cap is a widened,
+  checksum-bound projection of the same envelope. Generic standalone allocator
+  defaults MUST NOT make a frozen success cell fail before routing. The
+  manifest budget roster MUST be refreshed before observation when this
+  envelope changes; descriptor identity, cells, and decision thresholds remain
+  unchanged.
 - Candidate pools MUST include realistic small per-net schedules such as 4, 8,
   and 16 requested alternatives. Larger pools MAY characterize scaling but
   MUST NOT be the only regime used to claim Phase 4 success.
@@ -1129,7 +1139,7 @@ acceleration.
   retention. Known exact conflicts absent from the current resource vocabulary
   MUST produce resource-refinement-required rather than convergence or stall.
 - Production targeted regeneration is versioned by
-  `schemas/allocator/targeted_regeneration_execution_v3.md`. It MUST use bounded
+  `schemas/allocator/targeted_regeneration_execution_v4.md`. It MUST use bounded
   CPU A*, preflight aggregate route work, all complete price-roster projection
   passes, candidate-draft/rejection/transient bytes, and CandidateStore
   input/exact work before the first query. The same preflight MUST prove the
@@ -1154,7 +1164,7 @@ acceleration.
   into each derived target batch and policy identity; the root seed is part of
   execution and composed-session replay identity.
 - The reusable CPU contender is versioned by
-  `schemas/allocator/cpu_candidate_allocation_session_v2.md`. It MUST own the
+  `schemas/allocator/cpu_candidate_allocation_session_v3.md`. It MUST own the
   prepared CandidateStore and every lease-bearing terminal result on success,
   retain caller ownership of all inputs on failure, and preserve that
   authoritative store when a failed targeted observation says publication
@@ -1307,6 +1317,34 @@ acceleration.
   complete joined Raw-v2/same-run authority, binds every same-run pair and arm
   capture plus the observed rejection-guardrail result, and preserves the same
   incomplete telemetry and non-decision flags.
+  Operational Measurement Publication v1 is separately versioned by
+  `schemas/benchmark/phase4_operational_measurement_publication_v1.md`. It MUST
+  preserve Raw v1/v2 and both operational projections unchanged. For each
+  successful cell it uses four distinct diagnostic execs: measured baseline,
+  measured candidate, unmeasured baseline authority, and unmeasured candidate
+  authority. Exact-child `wait4` owns measured CPU/RSS, controller monotonic
+  fork-to-reap owns outer wall time, and authority replays MUST NOT publish
+  numeric process-resource measurements. The controller MUST establish
+  temporary child-subreaper authority from an empty child roster and reject,
+  pidfd-terminate, and exactly reap every adopted descendant before restoring
+  that authority; session/process-group escape and closed capture pipes MUST
+  NOT evade containment. If an empty child roster cannot be proven, the
+  subreaper MUST remain enabled and the controller MUST fail without another
+  dispatch or publication. Controller affinity and namespace-visible cgroup
+  identity/controls MUST match before and after every dispatch, and exact-child
+  affinity/cgroup path MUST match after fork and before reap. Cgroup provenance
+  MUST bind namespace/mount identity and MUST NOT claim ancestry visibility
+  above the namespace root. Each authority MUST recompute its
+  session checksum from the complete live result preimage before destruction;
+  candidate publication additionally requires exact equality between the
+  separately measured and authority compact witnesses. The final join MUST
+  validate the frozen cell's version-appropriate Raw/same-run authority and
+  legacy operational projection, then bind exact source, config, process,
+  worker, replay, provenance, and capture identities. CPU-only unavailable
+  fields MUST use typed applicability. One complete cell is eligible only for
+  later matrix aggregation and remains non-standalone, non-statistical,
+  and incomplete coverage. Durable output MUST be installed atomically without
+  replacement.
   Every optimization claim MUST bind the versioned corpus, configuration,
   hardware, toolchains, exact clean commit, and comparison baseline.
   The pre-observation Phase 4 matrix, lexicographic comparison, family-level
@@ -1326,7 +1364,14 @@ acceleration.
   the three exact cells from Oracle Artifact v1 to the sidecar-binding Oracle
   Artifact v2; its expanded cells, evidence dispositions, thresholds,
   inference, timing, guardrails, and completion requirements MUST remain
-  identical to protocol v2.
+  identical to protocol v2. The final pre-observation authority-only
+  supersession in
+  `schemas/benchmark/phase4_statistical_decision_protocol_v4.md` replaces the
+  legacy Operational Projection authority with Operational Measurement
+  Publication v1 on all 100 success cells and authenticates the exact 102-entry
+  canonical algorithm-budget roster. Its logical cells, evidence
+  dispositions, decision rules, thresholds, and completion requirements MUST
+  remain identical to protocol v3.
 
 This Phase 4 gate establishes resource-feasible candidate allocation, not final
 board legality. Exact combined-geometry legalization, APGAR DRC, host-CAD

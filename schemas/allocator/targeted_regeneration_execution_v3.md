@@ -1,5 +1,10 @@
 # Targeted Regeneration Execution v3
 
+> Superseded for production execution by Targeted Regeneration Execution v4.
+> This frozen document preserves the version-3 seeded replay encoding. Current
+> production callers reject versions `1`, `2`, and `3` and must use schema
+> version `4`.
+
 Targeted Regeneration Execution v3 preserves the immutable-plan, conditional
 CAN-004 publication, refreshed-world, lease, and terminal semantics of version
 1 while making every CPU query and all unpublished candidate work suitable for
@@ -7,7 +12,7 @@ a composed allocation session.
 
 ## Version and inputs
 
-Production accepts schema version `3`; versions `1` and `2` are rejected. One synchronous
+The historical contract accepts schema version `3`; versions `1` and `2` are rejected. One synchronous
 invocation receives the exact version-1 plan, Board Snapshot, complete source
 One-World request, CandidateStore named by the plan lease, and this semantic
 configuration in declaration order:

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <span>
 
+#include "apgar/allocator/multi_net_workload.h"
 #include "apgar/board_ir/board.h"
 
 namespace apgar::allocator::internal {
@@ -32,6 +33,11 @@ struct MultiNetWorkloadChecksumRecordV1 {
     std::uint32_t schema_version, std::uint64_t board_content_hash,
     std::uint64_t compiler_profile_fingerprint, std::uint32_t compiler_version,
     std::span<const MultiNetWorkloadChecksumRecordV1> nets) noexcept;
+
+// Rebuilds the production workload checksum from the retained live routing
+// contexts instead of trusting MultiNetWorkload::workload_checksum().
+[[nodiscard]] std::uint64_t RecomputeMultiNetWorkloadChecksumV1(
+    const MultiNetWorkload& workload) noexcept;
 
 }  // namespace apgar::allocator::internal
 

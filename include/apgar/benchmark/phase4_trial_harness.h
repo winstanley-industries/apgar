@@ -20,6 +20,14 @@ inline constexpr std::uint32_t kPhase4IsolatedSameRunTelemetrySchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4CanonicalRepetitionsV1 = 20;
 inline constexpr std::uint32_t kPhase4CanonicalPreparationWorkersV1 = 4;
 inline constexpr std::uint64_t kPhase4CanonicalRouteWorkUnitsPerQueryV1 = 1'000'000'000ULL;
+inline constexpr std::uint64_t kPhase4CanonicalReconstructionStatesPerDeclaredPoolV1 = 32;
+inline constexpr std::uint64_t kPhase4CanonicalCandidateDraftFixedBytesV1 = 4'096;
+inline constexpr std::uint64_t kPhase4CanonicalCandidateDraftBytesPerStateV1 = 512;
+inline constexpr std::uint64_t kPhase4CanonicalCandidateDraftBytesPerPolicyEntryV1 = 128;
+inline constexpr std::uint64_t kPhase4CanonicalPreparationBytesPerBaseResourceV1 = 40;
+inline constexpr std::uint64_t kPhase4CanonicalAdmissionFixedPolicyBytesV1 = 57;
+inline constexpr std::uint64_t kPhase4CanonicalAdmissionBytesPerPolicyEntryV1 = 29;
+inline constexpr std::uint64_t kPhase4CanonicalMaximumAggregatePolicyEntriesV1 = 250'000'000;
 inline constexpr std::uint64_t kPhase4MaximumWatchdogNanosecondsV1 =
     24ULL * 60ULL * 60ULL * 1'000'000'000ULL;
 

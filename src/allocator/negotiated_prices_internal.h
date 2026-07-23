@@ -37,6 +37,9 @@ struct NegotiatedPriceChecksumHeaderV1 {
     const NegotiatedPriceChecksumHeaderV1& header,
     std::span<const NegotiatedResourcePrice> prices) noexcept;
 
+[[nodiscard]] std::uint64_t RecomputeNegotiatedPriceStateChecksumV1(
+    const NegotiatedPriceState& state) noexcept;
+
 // Pure bound helper shared by the update path and boundary regression tests.
 [[nodiscard]] bool NegotiatedPriceRosterFitsV1(std::uint64_t capacity_records,
                                                std::uint64_t price_records,
@@ -46,6 +49,9 @@ struct NegotiatedPriceChecksumHeaderV1 {
 [[nodiscard]] std::uint64_t ComputeResourceCapacityModelChecksumV1(
     const ResourceCapacityChecksumHeaderV1& header,
     std::span<const ResourceCapacityOverride> overrides) noexcept;
+
+[[nodiscard]] std::uint64_t RecomputeResourceCapacityModelChecksumV1(
+    const ResourceCapacityModel& capacities) noexcept;
 
 // Nested allocator factories already consume allocation exceptions. Preserve
 // that classification instead of relabeling exhaustion as corrupt input.

@@ -102,6 +102,14 @@ std::uint64_t internal::ComputeMultiNetWorkloadChecksumV1(
   return hash.Finish();
 }
 
+std::uint64_t internal::RecomputeMultiNetWorkloadChecksumV1(
+    const MultiNetWorkload& workload) noexcept {
+  return ComputeWorkloadChecksumForContexts(workload.schema_version(),
+                                            workload.board_content_hash(),
+                                            workload.compiler_profile_fingerprint(),
+                                            workload.geometry_compiler_version(), workload.nets());
+}
+
 const PreparedNetRoutingContext* MultiNetWorkload::FindNet(board_ir::EntityRef net) const noexcept {
   const std::pair key{net.id, net.generation};
   const auto found = std::ranges::lower_bound(nets_, key, {}, [](const auto& context) {

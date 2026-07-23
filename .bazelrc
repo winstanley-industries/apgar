@@ -12,6 +12,7 @@ build:debug --compilation_mode=dbg
 build:release --compilation_mode=opt
 
 build:asan --@llvm//config:asan=True
+test:asan --test_tag_filters=-exact-address-space-envelope
 
 build:ubsan --@llvm//config:ubsan=True
 

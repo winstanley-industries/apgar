@@ -9,14 +9,14 @@
 
 namespace apgar::allocator::internal {
 
-[[nodiscard]] bool TargetedRegenerationExecutionConfigIsValidV3(
+[[nodiscard]] bool TargetedRegenerationExecutionConfigIsValidV4(
     const TargetedRegenerationExecutionConfig& config) noexcept;
 
 [[nodiscard]] routing::PlanarRouteRequest BuildTargetedRegenerationRouteRequestV1(
     const routing::PlanarRouteRequest& source,
     const routing::CandidateGenerationPolicy& candidate_policy);
 
-struct TargetedRegenerationExecutionChecksumHeaderV3 {
+struct TargetedRegenerationExecutionChecksumHeaderV4 {
   std::uint32_t schema_version = 0;
   std::uint64_t plan_checksum = 0;
   TargetedRegenerationExecutionConfig config;
@@ -32,8 +32,8 @@ struct TargetedRegenerationExecutionChecksumHeaderV3 {
   TargetedRegenerationExecutionCounters counters;
 };
 
-[[nodiscard]] std::uint64_t ComputeTargetedRegenerationExecutionChecksumV3(
-    const TargetedRegenerationExecutionChecksumHeaderV3& header,
+[[nodiscard]] std::uint64_t ComputeTargetedRegenerationExecutionChecksumV4(
+    const TargetedRegenerationExecutionChecksumHeaderV4& header,
     std::span<const TargetedRegenerationColumnRecord> columns) noexcept;
 
 [[nodiscard]] std::optional<std::uint64_t> ComputeTargetedRegenerationMaximumDraftBytesV2(
@@ -64,7 +64,7 @@ struct TargetedRegenerationExecutionChecksumHeaderV3 {
 [[nodiscard]] std::optional<std::uint64_t> ComputeTargetedRegenerationColumnLogicalBytesV2(
     const TargetedRegenerationColumnRecord& column) noexcept;
 
-[[nodiscard]] std::uint64_t ComputeTargetedRegenerationFailedObservationChecksumV3(
+[[nodiscard]] std::uint64_t ComputeTargetedRegenerationFailedObservationChecksumV4(
     std::uint64_t plan_checksum, const TargetedRegenerationExecutionConfig& config,
     const candidates::CandidateStoreConfig& store_config,
     bool candidate_store_publication_committed, TargetedRegenerationExecutionErrorCode error_code,

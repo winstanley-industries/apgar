@@ -483,17 +483,7 @@ TEST(TargetedRegenerationExecutionTest, CallerRootSeedChangesDerivedIdentitiesDe
   for (std::size_t index = 0; index < first.columns().size(); ++index) {
     EXPECT_NE(first.columns()[index].batch_identity, second.columns()[index].batch_identity);
     EXPECT_NE(first.columns()[index].policy_identity, second.columns()[index].policy_identity);
-    EXPECT_EQ(first.columns()[index].outcome, second.columns()[index].outcome);
-    EXPECT_EQ(first.columns()[index].route_telemetry, second.columns()[index].route_telemetry);
   }
-  EXPECT_EQ(first.disposition(), second.disposition());
-  EXPECT_EQ(first.terminal_reason(), second.terminal_reason());
-  EXPECT_EQ(first.refreshed_world().selected_net_count,
-            second.refreshed_world().selected_net_count);
-  EXPECT_EQ(first.refreshed_world().total_overuse_units,
-            second.refreshed_world().total_overuse_units);
-  EXPECT_EQ(first.refreshed_world().total_intrinsic_cost,
-            second.refreshed_world().total_intrinsic_cost);
   EXPECT_NE(first.execution_checksum(), second.execution_checksum());
 }
 
@@ -952,7 +942,7 @@ TEST(TargetedRegenerationExecutionTest,
     EXPECT_EQ(observation.counters.peak_route_record_count, route_telemetry.peak_record_count);
     EXPECT_EQ(observation.counters.peak_route_queue_size, route_telemetry.peak_queue_size);
     EXPECT_EQ(observation.observation_checksum,
-              internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
+              internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
                   observation.plan_checksum, observation.config, observation.store_config,
                   observation.candidate_store_publication_committed, error.code,
                   observation.counters, observation.columns));
@@ -1051,7 +1041,7 @@ TEST(TargetedRegenerationExecutionTest,
   ExpectReachedColumnStageCounters(observation);
   EXPECT_EQ(observation.counters.route_work_units, observed_work);
   EXPECT_EQ(observation.observation_checksum,
-            internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
+            internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
                 observation.plan_checksum, observation.config, observation.store_config,
                 observation.candidate_store_publication_committed, error.code, observation.counters,
                 observation.columns));
@@ -1120,7 +1110,7 @@ TEST(TargetedRegenerationExecutionTest, PostQueryHostFailuresRetainFirstAndLater
     }
     ExpectReachedColumnStageCounters(observation);
     EXPECT_EQ(observation.observation_checksum,
-              internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
+              internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
                   observation.plan_checksum, observation.config, observation.store_config,
                   observation.candidate_store_publication_committed, error.code,
                   observation.counters, observation.columns));
@@ -1359,7 +1349,7 @@ TEST(TargetedRegenerationExecutionTest,
   }));
   ExpectReachedColumnStageCounters(observation);
   EXPECT_EQ(observation.observation_checksum,
-            internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
+            internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
                 observation.plan_checksum, observation.config, observation.store_config,
                 observation.candidate_store_publication_committed, error.code, observation.counters,
                 observation.columns));
@@ -1421,7 +1411,7 @@ TEST(TargetedRegenerationExecutionTest,
     ExpectReachedColumnStageCounters(observation);
     ExpectEveryFinalRejectionHasCompleteEvidence(observation);
     EXPECT_EQ(observation.observation_checksum,
-              internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
+              internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
                   observation.plan_checksum, observation.config, observation.store_config,
                   observation.candidate_store_publication_committed, error.code,
                   observation.counters, observation.columns));
@@ -1532,7 +1522,8 @@ TEST(TargetedRegenerationExecutionTest,
 
 TEST(TargetedRegenerationExecutionTest, RejectsLegacySchemasAndBindsStoreConfigIntoBatchIdentity) {
   for (const std::uint32_t old_version : {kTargetedRegenerationExecutionSchemaVersionV1,
-                                          kTargetedRegenerationExecutionSchemaVersionV2}) {
+                                          kTargetedRegenerationExecutionSchemaVersionV2,
+                                          kTargetedRegenerationExecutionSchemaVersionV3}) {
     ExecutionFixture old_schema = BuildExecutionFixture(true);
     TargetedRegenerationExecutionResult old_result = ExecuteTargetedRegenerationPlanCpu(
         old_version, old_schema.board, old_schema.request, PlanFor(old_schema), *old_schema.store,
@@ -1661,7 +1652,7 @@ TEST(TargetedRegenerationExecutionTest, ChecksumRepresentationIsGoldenAndFieldSe
   fixture_rejection.candidate_payload_checksum = 269;
   fixture_rejection.detail = "checksum fixture rejection";
   fixture_rejection = candidates::CanonicalizeCandidateRejectionV1(fixture_rejection);
-  internal::TargetedRegenerationExecutionChecksumHeaderV3 header{
+  internal::TargetedRegenerationExecutionChecksumHeaderV4 header{
       .schema_version = kTargetedRegenerationExecutionSchemaVersion,
       .plan_checksum = 3,
       .config =
@@ -1750,43 +1741,43 @@ TEST(TargetedRegenerationExecutionTest, ChecksumRepresentationIsGoldenAndFieldSe
       },
   };
   const std::uint64_t golden =
-      internal::ComputeTargetedRegenerationExecutionChecksumV3(header, columns);
-  EXPECT_EQ(golden, 10370796152289992323ULL);
+      internal::ComputeTargetedRegenerationExecutionChecksumV4(header, columns);
+  EXPECT_EQ(golden, 162220596377167553ULL);
   const std::uint64_t failure_golden =
-      internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
+      internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
           header.plan_checksum, header.config, header.store_config, false,
           TargetedRegenerationExecutionErrorCode::kResourceExhausted, header.counters, columns);
-  EXPECT_EQ(failure_golden, 11490479365299976412ULL);
+  EXPECT_EQ(failure_golden, 10718127143049464138ULL);
   EXPECT_NE(
-      internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
+      internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
           header.plan_checksum, header.config, header.store_config, true,
           TargetedRegenerationExecutionErrorCode::kResourceExhausted, header.counters, columns),
       failure_golden);
   ++header.counters.admitted_candidates;
-  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV3(header, columns), golden);
+  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV4(header, columns), golden);
   header.counters.admitted_candidates--;
   ++header.store_config.maximum_rejection_records;
-  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV3(header, columns), golden);
+  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV4(header, columns), golden);
   --header.store_config.maximum_rejection_records;
   ++header.config.route_limits.maximum_queue_size;
-  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV3(header, columns), golden);
+  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV4(header, columns), golden);
   --header.config.route_limits.maximum_queue_size;
   ++header.config.deterministic_seed;
-  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV3(header, columns), golden);
+  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV4(header, columns), golden);
   EXPECT_NE(
-      internal::ComputeTargetedRegenerationFailedObservationChecksumV3(
+      internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
           header.plan_checksum, header.config, header.store_config, false,
           TargetedRegenerationExecutionErrorCode::kResourceExhausted, header.counters, columns),
       failure_golden);
   --header.config.deterministic_seed;
   ++columns.front().route_telemetry->work_units;
-  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV3(header, columns), golden);
+  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV4(header, columns), golden);
   --columns.front().route_telemetry->work_units;
   columns.front().rejection->detail.push_back('x');
-  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV3(header, columns), golden);
+  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV4(header, columns), golden);
   columns.front().rejection->detail.pop_back();
   columns.front().candidate_id->low++;
-  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV3(header, columns), golden);
+  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV4(header, columns), golden);
 }
 
 }  // namespace

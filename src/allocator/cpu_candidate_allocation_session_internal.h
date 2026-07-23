@@ -58,7 +58,7 @@ ProjectCpuCandidateAllocationSessionEnvelopeV1(
 [[nodiscard]] std::uint64_t ComputeCpuCandidateAllocationRejectionManifestChecksumV1(
     std::span<const candidates::CandidateRejection> rejections) noexcept;
 
-[[nodiscard]] std::uint64_t ComputeCpuCandidateAllocationSessionChecksumV2(
+[[nodiscard]] std::uint64_t ComputeCpuCandidateAllocationSessionChecksumV3(
     const CpuCandidateAllocationSessionConfig& config, std::uint64_t board_content_hash,
     std::uint64_t workload_checksum, std::uint64_t capacity_model_checksum,
     std::uint64_t preparation_checksum, CpuCandidateAllocationTerminalReason terminal_reason,
@@ -71,6 +71,13 @@ ProjectCpuCandidateAllocationSessionEnvelopeV1(
 [[nodiscard]] std::uint64_t ComputeCpuCandidateAllocationEpochAssociationChecksumV1(
     std::span<const CpuCandidateAllocationEpochRecord> epochs,
     std::uint64_t planning_expanded_resource_visits) noexcept;
+
+// Distills the compact publication witness from a complete live session. The
+// session checksum itself authenticates the full config, epoch preimages,
+// price/world state, pools, and rejection roster; the additional fields make
+// the measured-profile join explicit and independently checkable.
+[[nodiscard]] std::optional<CpuCandidateAllocationSessionReplayWitnessV1>
+BuildCpuCandidateAllocationSessionReplayWitnessV1(const CpuCandidateAllocationSession& session);
 
 // Produces the timed component profile and compact same-run association without
 // retaining contender storage. Publication supplies the independent

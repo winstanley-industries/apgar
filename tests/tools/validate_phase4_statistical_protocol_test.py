@@ -3,7 +3,9 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from fractions import Fraction
@@ -11,9 +13,84 @@ from fractions import Fraction
 from tools import validate_phase4_statistical_protocol as protocol
 from tools import validate_phase4_statistical_protocol_v2 as protocol_v2
 from tools import validate_phase4_statistical_protocol_v3 as protocol_v3
+from tools import validate_phase4_statistical_protocol_v4 as protocol_v4
+
+
+def _runfile(relative: str) -> pathlib.Path:
+    return pathlib.Path(os.environ["TEST_SRCDIR"]) / os.environ["TEST_WORKSPACE"] / relative
 
 
 class Phase4StatisticalProtocolTest(unittest.TestCase):
+    def test_v4_binds_complete_operational_authority_and_budget_roster(self) -> None:
+        document = protocol_v4.read_protocol()
+        self.assertEqual(document, protocol_v4.expected_protocol())
+        self.assertEqual(
+            document["supersedes"]["artifact_checksum"],
+            protocol_v3.read_protocol()["artifact_checksum"],
+        )
+        v3_groups = protocol_v3.effective_cell_groups()
+        v4_groups = protocol_v4.effective_cell_groups()
+        success_cells = 0
+        for prior, current in zip(v3_groups, v4_groups, strict=True):
+            if current["evidence_requirement"] in {"raw_success", "same_run_raw_success"}:
+                success_cells += len(protocol._expand_groups([current]))
+                self.assertIn(
+                    "phase4_operational_measurement_publication_v1",
+                    current["required_artifacts"],
+                )
+                self.assertNotIn("phase4_operational_projection_v1", current["required_artifacts"])
+                self.assertNotIn("phase4_operational_projection_v2", current["required_artifacts"])
+                expected = copy.deepcopy(prior)
+                expected["required_artifacts"] = [
+                    (
+                        "phase4_operational_measurement_publication_v1"
+                        if artifact
+                        in {
+                            "phase4_operational_projection_v1",
+                            "phase4_operational_projection_v2",
+                        }
+                        else artifact
+                    )
+                    for artifact in expected["required_artifacts"]
+                ]
+                self.assertEqual(current, expected)
+            else:
+                self.assertEqual(current, prior)
+        self.assertEqual(success_cells, 100)
+        self.assertEqual(protocol_v4.expanded_cells(), protocol_v3.expanded_cells())
+        self.assertEqual(document["artifact_checksum"], 10222448264116898730)
+
+        corpus_checksum, _, budgets = protocol_v4.raw_validator._representative_manifest()
+        self.assertEqual(
+            protocol_v4._compute_budget_roster_checksum(budgets, corpus_checksum),
+            protocol_v4._CANONICAL_BUDGET_ROSTER_CHECKSUM,
+        )
+        mutated_budgets = dict(budgets)
+        mutated_budgets[(100, 4)] ^= 1
+        self.assertNotEqual(
+            protocol_v4._compute_budget_roster_checksum(mutated_budgets, corpus_checksum),
+            protocol_v4._CANONICAL_BUDGET_ROSTER_CHECKSUM,
+        )
+
+        run = subprocess.run(
+            [str(_runfile("phase4_canonical_budget_roster"))],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        executable_budgets: dict[tuple[int, int], int] = {}
+        for line in run.stdout.splitlines():
+            case_id, pool, checksum = (int(field) for field in line.split())
+            self.assertNotIn((case_id, pool), executable_budgets)
+            executable_budgets[(case_id, pool)] = checksum
+        self.assertEqual(executable_budgets, budgets)
+
+        mutated = copy.deepcopy(document)
+        mutated["canonical_algorithm_budget_authority"]["roster_checksum"] ^= 1
+        mutated["artifact_checksum"] = protocol_v4._artifact_checksum(mutated)
+        with self.assertRaisesRegex(protocol_v4.ProtocolV4Error, "exactly reconstruct"):
+            protocol_v4.validate_document(mutated)
+
     def test_v3_supersedes_only_exact_oracle_authority(self) -> None:
         document = protocol_v3.read_protocol()
         self.assertEqual(document, protocol_v3.expected_protocol())

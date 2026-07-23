@@ -59,6 +59,13 @@ using OneWorldSelectionEvidenceResult = std::variant<OneWorldSelectionEvidence, 
     const candidates::RouteCandidate& candidate,
     const PreparedNetRoutingContext& workload_context) noexcept;
 
+// Re-derive every cached identity, signature, checksum, and logical-size field
+// from the retained immutable payload before it is admitted to a replay
+// authority preimage.
+[[nodiscard]] bool CandidateHasAuthenticLivePayloadV1(
+    const candidates::StoredCandidate& candidate,
+    const PreparedNetRoutingContext& workload_context) noexcept;
+
 [[nodiscard]] OneWorldSelectionEvidenceResult SelectOneWorldWithoutAccounting(
     const OneWorldAllocationRequest& request);
 
@@ -101,6 +108,11 @@ using ResourceSpanStream = std::span<const candidates::PhysicalEdgeSpan>;
 // adjacent encoded field.
 [[nodiscard]] std::uint64_t ComputeOneWorldChecksumV1(const OneWorldAllocation& world) noexcept;
 [[nodiscard]] std::uint64_t ComputeOneWorldChecksumV2(const OneWorldAllocation& world) noexcept;
+
+// Rebuilds the canonical production pool-manifest checksum directly from live
+// immutable candidate handles. Zero denotes a structurally invalid roster.
+[[nodiscard]] std::uint64_t RecomputeOneWorldPoolManifestChecksumV1(
+    std::span<const CandidatePool> pools) noexcept;
 
 template <typename Operation>
 [[nodiscard]] auto RunWithAllocationFailureEnvelope(Operation&& operation)

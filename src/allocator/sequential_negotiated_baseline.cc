@@ -20,6 +20,8 @@
 #include "apgar/candidates/candidate_store.h"
 #include "apgar/candidates/route_candidate.h"
 #include "apgar/routing/candidate_policy.h"
+#include "src/allocator/multi_net_workload_internal.h"
+#include "src/allocator/negotiated_prices_internal.h"
 #include "src/allocator/one_world_internal.h"
 #include "src/allocator/sequential_negotiated_baseline_internal.h"
 #include "src/operational_timestamp.h"
@@ -1069,6 +1071,80 @@ std::uint64_t internal::ComputeSequentialNegotiatedSessionChecksumV1(
   hash.AddU64(final_world.world_checksum);
   hash.AddU64(successor_price_state.state_checksum());
   return hash.Finish();
+}
+
+std::optional<std::uint64_t> internal::RecomputeSequentialNegotiatedSessionChecksumFromLiveV1(
+    const SequentialNegotiatedBaselineResult& result, const board_ir::BoardSnapshot& board,
+    const MultiNetWorkload& workload, const ResourceCapacityModel& capacities) noexcept {
+  const AllocationAssociations expected{
+      .board_content_hash = workload.board_content_hash(),
+      .compiler_profile_fingerprint = workload.compiler_profile_fingerprint(),
+      .geometry_compiler_version = workload.geometry_compiler_version(),
+  };
+  const std::uint64_t workload_checksum = internal::RecomputeMultiNetWorkloadChecksumV1(workload);
+  const std::uint64_t capacity_checksum =
+      internal::RecomputeResourceCapacityModelChecksumV1(capacities);
+  const std::uint64_t world_checksum = internal::ComputeOneWorldChecksumV2(result.final_world());
+  const std::uint64_t price_checksum =
+      internal::RecomputeNegotiatedPriceStateChecksumV1(result.successor_price_state());
+  const std::uint64_t batch_identity = internal::ComputeSequentialNegotiatedBatchIdentityV1(
+      board.content_hash(), workload_checksum, capacity_checksum, result.config());
+
+  if (workload_checksum == 0 || workload_checksum != workload.workload_checksum() ||
+      workload_checksum != result.workload_checksum() ||
+      board.content_hash() != workload.board_content_hash() ||
+      capacities.associations() != expected || capacity_checksum == 0 ||
+      capacity_checksum != result.capacity_model_checksum() ||
+      result.successor_price_state().associations() != expected ||
+      result.successor_price_state().workload_checksum() != workload_checksum ||
+      result.successor_price_state().capacity_model_checksum() != capacity_checksum ||
+      price_checksum == 0 || price_checksum != result.successor_price_state().state_checksum() ||
+      result.final_world().associations != expected ||
+      result.final_world().workload_checksum != workload_checksum || world_checksum == 0 ||
+      world_checksum != result.final_world().world_checksum ||
+      result.successor_price_state().source_world_checksum() != world_checksum ||
+      batch_identity == 0 || batch_identity != result.batch_identity() ||
+      result.final_pools().size() != workload.nets().size() ||
+      result.final_world().selections.size() != result.final_pools().size()) {
+    return std::nullopt;
+  }
+
+  for (std::size_t index = 0; index < result.final_pools().size(); ++index) {
+    const CandidatePool& pool = result.final_pools()[index];
+    const NetSelection& selection = result.final_world().selections[index];
+    if (pool.net != workload.nets()[index].request.net || selection.net != pool.net) {
+      return std::nullopt;
+    }
+    for (const candidates::StoredCandidate& candidate : pool.candidates) {
+      if (!internal::CandidateHasAuthenticLivePayloadV1(candidate, workload.nets()[index])) {
+        return std::nullopt;
+      }
+    }
+    if (selection.status == NetSelectionStatus::kSelected) {
+      if (selection.candidate == nullptr || !selection.candidate_id.has_value() ||
+          !selection.candidate_payload_checksum.has_value() ||
+          *selection.candidate_id != selection.candidate->id() ||
+          *selection.candidate_payload_checksum != selection.candidate->data().payload_checksum ||
+          std::ranges::none_of(pool.candidates,
+                               [&selection](const candidates::StoredCandidate& candidate) {
+                                 return candidate == selection.candidate;
+                               })) {
+        return std::nullopt;
+      }
+    } else if (selection.candidate != nullptr || selection.candidate_id.has_value() ||
+               selection.candidate_payload_checksum.has_value()) {
+      return std::nullopt;
+    }
+  }
+
+  const std::uint64_t rebuilt = internal::ComputeSequentialNegotiatedSessionChecksumV1(
+      result.config(), batch_identity, workload_checksum, capacity_checksum,
+      result.terminal_reason(), result.counters(), result.columns(), result.sweeps(),
+      result.final_pools(), result.final_world(), result.successor_price_state());
+  if (rebuilt == 0 || rebuilt != result.session_checksum()) {
+    return std::nullopt;
+  }
+  return rebuilt;
 }
 
 SequentialNegotiatedBaselineResult::SequentialNegotiatedBaselineResult(

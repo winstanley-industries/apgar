@@ -1,5 +1,10 @@
 # CPU Candidate-Allocation Session v2
 
+> Superseded for production allocation by CPU Candidate-Allocation Session v3.
+> This frozen document preserves the version-2 replay encoding. Current
+> production callers reject versions `1` and `2` and must use schema version
+> `3`.
+
 CPU Candidate-Allocation Session v2 composes persistent CPU candidate-pool
 preparation, the One-World and negotiated-price CPU references, bounded
 targeted regeneration, and one terminal fixed-pool Multi-World search into a
@@ -7,7 +12,7 @@ self-contained Phase 4 contender result.
 
 ## Version, inputs, and ownership
 
-Production accepts schema version `2`; version `1` is rejected before any input
+The historical contract accepts schema version `2`; version `1` is rejected before any input
 is consumed. One synchronous invocation receives
 rvalue references to one exact Board Snapshot, its authentic
 `MultiNetWorkload`, an associated `ResourceCapacityModel`, one

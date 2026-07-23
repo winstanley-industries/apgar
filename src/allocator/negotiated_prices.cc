@@ -424,6 +424,11 @@ std::uint64_t internal::ComputeNegotiatedPriceStateChecksumV1(
   return hash.Finish();
 }
 
+std::uint64_t internal::RecomputeNegotiatedPriceStateChecksumV1(
+    const NegotiatedPriceState& state) noexcept {
+  return internal::ComputeNegotiatedPriceStateChecksumV1(ChecksumHeader(state), state.prices());
+}
+
 std::uint64_t internal::ComputeResourceCapacityModelChecksumV1(
     const ResourceCapacityChecksumHeaderV1& header,
     std::span<const ResourceCapacityOverride> overrides) noexcept {
@@ -440,6 +445,11 @@ std::uint64_t internal::ComputeResourceCapacityModelChecksumV1(
     hash.AddU32(capacity.capacity_units);
   }
   return hash.Finish();
+}
+
+std::uint64_t internal::RecomputeResourceCapacityModelChecksumV1(
+    const ResourceCapacityModel& capacities) noexcept {
+  return ComputeCapacityModelChecksumV1(capacities);
 }
 
 NegotiatedPriceError internal::TranslateNestedAllocationError(

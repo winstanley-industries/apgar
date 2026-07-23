@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 #include "apgar/allocator/cpu_candidate_pool_preparation.h"
@@ -42,6 +43,11 @@ ExtractCpuCandidatePoolAlternativeResourcesV1(const routing::CpuRoute& route,
     const CpuCandidatePoolPreparationCounters& counters,
     std::span<const CpuCandidatePoolColumnRecord> columns,
     std::span<const CpuCandidatePoolChecksumPoolV1> pools) noexcept;
+
+// Rebuilds the production checksum from the retained live pool handles and
+// rejects structurally invalid null handles before dereferencing them.
+[[nodiscard]] std::optional<std::uint64_t> RecomputeCpuCandidatePoolPreparationChecksumV2(
+    const PreparedCpuCandidatePools& preparation);
 
 [[nodiscard]] std::uint64_t ComputeCpuCandidatePoolFailedPreparationChecksumV2(
     std::uint64_t board_content_hash, std::uint64_t workload_checksum,

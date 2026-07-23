@@ -18,14 +18,14 @@ repeats regeneration deterministically, freezes a final pool, and exposes the
 board-level contender outcome required by the evidence runner.
 
 The composed owner must also close a transactional failure gap. Targeted
-Regeneration Execution v3 can report a failure after its atomic CandidateStore
+Regeneration Execution v4 can report a failure after its atomic CandidateStore
 publication committed. A factory that consumes and destroys the sole store on
 that error would erase authoritative state while claiming only an observation.
 
 ## Decision
 
 - Preserve `schemas/allocator/cpu_candidate_allocation_session_v1.md` and adopt
-  `schemas/allocator/cpu_candidate_allocation_session_v2.md` for production.
+  `schemas/allocator/cpu_candidate_allocation_session_v3.md` for production.
 - Accept the Board, workload, capacities, and prepared pools by rvalue
   reference, but move them into the session only after every composed step
   succeeds. On error they remain caller-owned. A post-publication failed
@@ -37,7 +37,7 @@ that error would erase authoritative state while claiming only an observation.
   before store destruction.
 - Build one initial negotiated-price state and One-World allocation from the
   authentic prepared pools. If infeasible, repeat bounded Targeted
-  Regeneration Execution v3 epochs on one common One-World lineage. Replace
+  Regeneration Execution v4 epochs on one common One-World lineage. Replace
   the full pools, state, request, and world only after one successful atomic
   epoch, and retain compact immutable evidence rather than lease-bearing prior
   executions.

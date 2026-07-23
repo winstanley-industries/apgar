@@ -25,7 +25,7 @@ resource vocabulary cannot represent.
   original replay boundary and
   `schemas/allocator/targeted_regeneration_execution_v2.md` for the bounded
   seedless boundary. Adopt
-  `schemas/allocator/targeted_regeneration_execution_v3.md` for production.
+  `schemas/allocator/targeted_regeneration_execution_v4.md` for production.
 - Execute a plan only while its CandidateStore-issued source lease is active
   and belongs to the exact store supplied to execution.
 - Reproduce the complete source manifest, next negotiated-price snapshot, and

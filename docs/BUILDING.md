@@ -46,6 +46,12 @@ bazel test --config=ubsan //...
 ```
 
 The ASan and UBSan configurations instrument the pinned LLVM CPU toolchain.
+ASan excludes tests tagged `exact-address-space-envelope`: those subprocess
+tests must enforce the canonical 64 GiB `RLIMIT_AS`, while the pinned ASan
+runtime reserves roughly 14 TiB of virtual shadow address space before
+`main`. The ordinary and UBSan gates run those exact-envelope tests without
+weakening their resource contract; the ASan gate continues to run all
+compatible CPU targets.
 CUDA targets are explicitly incompatible with either sanitizer configuration:
 the pinned CUDA compiler and NVIDIA driver boundary cannot currently be
 instrumented end-to-end by those runtimes. Bazel therefore rejects commands

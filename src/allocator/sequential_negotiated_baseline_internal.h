@@ -49,6 +49,13 @@ MergeSequentialNegotiatedPenaltiesV1(std::span<const routing::ResourcePenalty> b
     std::span<const CandidatePool> final_pools, const OneWorldAllocation& final_world,
     const NegotiatedPriceState& successor_price_state) noexcept;
 
+// Deep replay authority for a retained baseline result. Every retained nested
+// checksum is rebuilt from its live preimage before the top-level checksum is
+// accepted.
+[[nodiscard]] std::optional<std::uint64_t> RecomputeSequentialNegotiatedSessionChecksumFromLiveV1(
+    const SequentialNegotiatedBaselineResult& result, const board_ir::BoardSnapshot& board,
+    const MultiNetWorkload& workload, const ResourceCapacityModel& capacities) noexcept;
+
 // Defined only by the fault-test variant. It lowers the selected query's
 // ephemeral CandidateStore work budget after production preflight.
 void SetSequentialNegotiatedAdmissionBudgetFaultForTesting(std::uint64_t query_identity) noexcept;

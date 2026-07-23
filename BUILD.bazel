@@ -643,6 +643,19 @@ cc_library(
 )
 
 cc_library(
+    name = "phase4_operational_artifact",
+    srcs = ["src/benchmark/phase4_operational_artifact.cc"],
+    hdrs = ["include/apgar/benchmark/phase4_operational_artifact.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":phase4_paired_trial",
+    ],
+)
+
+cc_library(
     name = "phase4_trial_harness",
     srcs = [
         "src/benchmark/phase4_same_run_decision_telemetry.cc",
@@ -664,6 +677,17 @@ cc_library(
         ":board_ir",
         ":negotiated_prices",
         ":phase4_paired_trial",
+    ],
+)
+
+cc_binary(
+    name = "phase4_canonical_budget_roster",
+    srcs = ["tools/phase4_canonical_budget_roster.cc"],
+    copts = APGAR_COPTS,
+    deps = [
+        ":phase4_paired_trial",
+        ":phase4_representative_corpus",
+        ":phase4_trial_harness",
     ],
 )
 
@@ -1228,6 +1252,41 @@ py_library(
 )
 
 py_binary(
+    name = "phase4_statistical_protocol_v4_validator",
+    srcs = ["tools/validate_phase4_statistical_protocol_v4.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v4.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_statistical_protocol_v4.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_statistical_protocol_v2_validator_lib",
+        ":phase4_statistical_protocol_v3_validator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_statistical_protocol_v4_validator_lib",
+    srcs = ["tools/validate_phase4_statistical_protocol_v4.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v4.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_statistical_protocol_v2_validator_lib",
+        ":phase4_statistical_protocol_v3_validator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+    ],
+)
+
+py_binary(
     name = "phase4_same_run_decision_telemetry_validator",
     srcs = ["tools/validate_phase4_same_run_decision_telemetry.py"],
     data = [
@@ -1271,7 +1330,9 @@ py_test(
         "schemas/benchmark/phase4_statistical_decision_protocol_v1.json",
         "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
         "schemas/benchmark/phase4_statistical_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v4.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        ":phase4_canonical_budget_roster",
     ],
     legacy_create_init = 0,
     main = "tests/tools/validate_phase4_statistical_protocol_test.py",
@@ -1279,6 +1340,7 @@ py_test(
     deps = [
         ":phase4_statistical_protocol_v2_validator_lib",
         ":phase4_statistical_protocol_v3_validator_lib",
+        ":phase4_statistical_protocol_v4_validator_lib",
         ":phase4_statistical_protocol_validator_lib",
         ":phase4_workload_net_roster_manifest_validator_lib",
     ],
@@ -1299,6 +1361,7 @@ py_test(
     legacy_create_init = 0,
     main = "tests/tools/validate_phase4_same_run_decision_telemetry_test.py",
     python_version = "3.13",
+    tags = ["exact-address-space-envelope"],
     deps = [
         ":phase4_same_run_decision_telemetry_validator_lib",
     ],
@@ -1531,6 +1594,7 @@ py_test(
     legacy_create_init = 0,
     main = "tests/tools/validate_phase4_exact_small_oracle_test.py",
     python_version = "3.13",
+    tags = ["exact-address-space-envelope"],
     deps = [
         ":phase4_exact_small_oracle_validator_lib",
         ":phase4_raw_evidence_validator_lib",
@@ -1554,6 +1618,7 @@ py_test(
     legacy_create_init = 0,
     main = "tests/benchmark/phase4_exact_small_oracle_v2_test.py",
     python_version = "3.13",
+    tags = ["exact-address-space-envelope"],
     deps = [
         ":phase4_exact_small_oracle_v2_validator_lib",
         ":phase4_exact_small_oracle_validator_lib",
@@ -1872,6 +1937,127 @@ cc_binary(
     ],
 )
 
+cc_binary(
+    name = "phase4_operational_replay_worker",
+    srcs = ["tools/phase4_operational_replay_worker.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    linkopts = ["-pthread"],
+    tags = ["manual"],
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_operational_artifact",
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+py_binary(
+    name = "phase4_operational_capture",
+    srcs = ["tools/capture_phase4_operational_measurement.py"],
+    data = [
+        ".bazelrc",
+        ".bazelversion",
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
+        ":phase4_operational_replay_worker",
+    ],
+    legacy_create_init = 0,
+    main = "tools/capture_phase4_operational_measurement.py",
+    python_version = "3.13",
+    deps = [":phase4_raw_evidence_validator_lib"],
+)
+
+py_library(
+    name = "phase4_operational_capture_lib",
+    srcs = ["tools/capture_phase4_operational_measurement.py"],
+    data = [
+        ".bazelrc",
+        ".bazelversion",
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
+        ":phase4_operational_replay_worker",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [":phase4_raw_evidence_validator_lib"],
+)
+
+py_binary(
+    name = "phase4_operational_measurement_validator",
+    srcs = ["tools/validate_phase4_operational_measurement.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v4.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_operational_measurement.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_operational_capture_lib",
+        ":phase4_operational_projection_lib",
+        ":phase4_operational_projection_v2_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+        ":phase4_statistical_protocol_v4_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_operational_measurement_validator_lib",
+    srcs = ["tools/validate_phase4_operational_measurement.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v4.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_operational_capture_lib",
+        ":phase4_operational_projection_lib",
+        ":phase4_operational_projection_v2_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+        ":phase4_statistical_protocol_v4_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_operational_measurement_test",
+    size = "large",
+    srcs = ["tests/tools/validate_phase4_operational_measurement_test.py"],
+    data = [
+        "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
+        ":phase4_evidence_runner",
+        ":phase4_operational_capture",
+        ":phase4_operational_measurement_validator",
+        ":phase4_operational_replay_worker",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_operational_measurement_test.py",
+    python_version = "3.13",
+    tags = ["exact-address-space-envelope"],
+    deps = [
+        ":phase4_operational_capture_lib",
+        ":phase4_operational_measurement_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
 py_test(
     name = "phase4_trial_process_test",
     size = "medium",
@@ -1898,6 +2084,7 @@ py_test(
     ],
     legacy_create_init = 0,
     python_version = "3.13",
+    tags = ["exact-address-space-envelope"],
     deps = [
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
@@ -1920,6 +2107,7 @@ py_test(
     ],
     legacy_create_init = 0,
     python_version = "3.13",
+    tags = ["exact-address-space-envelope"],
     deps = [
         ":phase4_operational_projection_v2_lib",
         ":phase4_per_net_report_v2_validator_lib",
@@ -1941,6 +2129,7 @@ py_test(
     ],
     legacy_create_init = 0,
     python_version = "3.13",
+    tags = ["exact-address-space-envelope"],
     deps = [":phase4_raw_evidence_validator_lib"],
 )
 
@@ -2697,6 +2886,7 @@ cc_test(
     size = "medium",
     srcs = [
         "src/allocator/cpu_candidate_allocation_session_internal.h",
+        "src/allocator/sequential_negotiated_baseline_internal.h",
         "src/benchmark/phase4_paired_trial_internal.h",
         "tests/benchmark/phase4_paired_trial_test.cc",
         "tests/support/google_test.h",
@@ -2706,6 +2896,7 @@ cc_test(
     deps = [
         ":cpu_candidate_allocation_session",
         ":cpu_candidate_pool_preparation",
+        ":phase4_operational_artifact",
         ":phase4_paired_trial",
         ":tool_runfiles",
         "@googletest//:gtest_main",

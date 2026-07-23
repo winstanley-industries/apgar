@@ -105,6 +105,91 @@ TEST(Phase4TrialHarnessTest, BuildsExactEqualOpportunityMathForEveryCanonicalPoo
   }
 }
 
+TEST(Phase4TrialHarnessTest, DerivesClosedCorpusEnvelopeForEveryExecutableDescriptorCell) {
+  std::uint64_t executable_cells = 0;
+  for (const Phase4CaseDescriptor& descriptor : Phase4CaseDescriptorsV1()) {
+    const std::uint64_t maximum_declared_pool = *std::max_element(
+        descriptor.requested_pool_sizes.begin(),
+        descriptor.requested_pool_sizes.begin() + descriptor.requested_pool_size_count);
+    for (std::uint8_t pool_index = 0; pool_index < descriptor.requested_pool_size_count;
+         ++pool_index) {
+      const std::uint64_t pool = descriptor.requested_pool_sizes[pool_index];
+      if (pool != 4 && pool != 8 && pool != 16) {
+        continue;
+      }
+      SCOPED_TRACE("case=" + std::to_string(descriptor.case_id) + " pool=" + std::to_string(pool));
+      ++executable_cells;
+      const std::uint64_t nets = descriptor.requested_net_count;
+      const std::uint64_t reconstruction =
+          maximum_declared_pool * kPhase4CanonicalReconstructionStatesPerDeclaredPoolV1;
+      const std::uint64_t selected_resources = nets * reconstruction;
+      const std::uint64_t baseline_roster = 2 * selected_resources + nets;
+      const std::uint64_t baseline_draft =
+          kPhase4CanonicalCandidateDraftFixedBytesV1 +
+          kPhase4CanonicalCandidateDraftBytesPerStateV1 * reconstruction +
+          kPhase4CanonicalCandidateDraftBytesPerPolicyEntryV1 * baseline_roster;
+      const std::uint64_t preparation_draft =
+          kPhase4CanonicalCandidateDraftFixedBytesV1 +
+          kPhase4CanonicalCandidateDraftBytesPerStateV1 * reconstruction +
+          kPhase4CanonicalCandidateDraftBytesPerPolicyEntryV1;
+      const std::uint64_t regeneration_draft =
+          kPhase4CanonicalCandidateDraftFixedBytesV1 +
+          kPhase4CanonicalCandidateDraftBytesPerStateV1 * reconstruction +
+          kPhase4CanonicalCandidateDraftBytesPerPolicyEntryV1 * selected_resources;
+      const std::uint64_t initial_queries = nets * pool;
+      const std::uint64_t regeneration_policy_entries = std::min(
+          nets * (selected_resources + 1), kPhase4CanonicalMaximumAggregatePolicyEntriesV1);
+      const std::uint64_t initial_input =
+          initial_queries * (preparation_draft + kPhase4CanonicalAdmissionFixedPolicyBytesV1) +
+          kPhase4CanonicalAdmissionBytesPerPolicyEntryV1 * nets * (pool - 1);
+      const std::uint64_t regeneration_input =
+          nets * (regeneration_draft + kPhase4CanonicalAdmissionFixedPolicyBytesV1) +
+          kPhase4CanonicalAdmissionBytesPerPolicyEntryV1 * regeneration_policy_entries;
+      const Phase4PairedTrialSpec spec = Built(BuildPhase4CanonicalTrialSpecV1(
+          Cell(descriptor.case_id, static_cast<std::uint32_t>(pool)), 0,
+          Phase4TrialOrder::kBaselineFirst));
+
+      EXPECT_EQ(spec.baseline_config.route_limits.maximum_reconstruction_states, reconstruction);
+      EXPECT_EQ(spec.baseline_config.price_config.maximum_price_records, selected_resources);
+      EXPECT_EQ(spec.baseline_config.limits.maximum_occupancy_resource_records, selected_resources);
+      EXPECT_EQ(spec.baseline_config.limits.maximum_candidate_draft_bytes, baseline_draft);
+      EXPECT_EQ(spec.baseline_config.limits.maximum_retained_candidate_bytes,
+                nets * baseline_draft);
+      EXPECT_EQ(spec.preparation_config.limits.maximum_candidate_draft_bytes, preparation_draft);
+      EXPECT_EQ(spec.preparation_config.limits.maximum_generated_candidate_bytes,
+                initial_queries * preparation_draft +
+                    nets * reconstruction * kPhase4CanonicalPreparationBytesPerBaseResourceV1);
+      EXPECT_EQ(
+          spec.candidate_session_config.regeneration_execution_config.maximum_candidate_draft_bytes,
+          regeneration_draft);
+      EXPECT_EQ(spec.candidate_session_config.regeneration_execution_config
+                    .maximum_generated_candidate_bytes,
+                nets * regeneration_draft);
+      EXPECT_EQ(spec.candidate_session_config.regeneration_execution_config
+                    .maximum_policy_resource_entries,
+                regeneration_policy_entries);
+      EXPECT_EQ(spec.preparation_config.store_config.maximum_admission_input_bytes_per_transaction,
+                std::max(initial_input, regeneration_input));
+      EXPECT_EQ(spec.baseline_config.allocator_limits.maximum_candidates, nets * (pool + 2));
+      EXPECT_EQ(spec.baseline_config.allocator_limits.maximum_resource_records,
+                std::min(baseline_roster, allocator::kMaximumAllocatorResourceRecordsV1));
+      EXPECT_EQ(spec.baseline_config.allocator_limits.maximum_expanded_resource_uses,
+                nets * (pool + 2) * reconstruction);
+      if (descriptor.case_id != 3'001 && descriptor.case_id != 3'002) {
+        EXPECT_LE(baseline_roster, allocator::kMaximumAllocatorResourceRecordsV1);
+        EXPECT_LE(regeneration_draft,
+                  spec.preparation_config.store_config.maximum_candidate_bytes_per_net);
+        EXPECT_EQ(regeneration_policy_entries, nets * (selected_resources + 1));
+      } else {
+        EXPECT_EQ(regeneration_policy_entries, kPhase4CanonicalMaximumAggregatePolicyEntriesV1);
+      }
+      EXPECT_LE(nets * (pool + 2) * reconstruction,
+                allocator::kMaximumAllocatorExpandedResourceUsesV1);
+    }
+  }
+  EXPECT_EQ(executable_cells, 102U);
+}
+
 TEST(Phase4TrialHarnessTest, RootSeedIsCellScopedAndIndependentOfOrderAndRepetition) {
   const Phase4CanonicalCellConfig cell = Cell(200, 4);
   const Phase4PairedTrialSpec first =
@@ -126,12 +211,12 @@ TEST(Phase4TrialHarnessTest, FrozenManifestPinsCanonicalAlgorithmBudgetChecksums
   const Phase4PairedTrialSpec exact =
       Built(BuildPhase4CanonicalTrialSpecV1(Cell(100, 4), 0, Phase4TrialOrder::kBaselineFirst));
   EXPECT_EQ(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(exact),
-            5'568'679'732'527'683'289ULL);
+            5'410'605'065'288'423'733ULL);
 
   const Phase4PairedTrialSpec held_out = Built(
       BuildPhase4CanonicalTrialSpecV1(Cell(1'200, 16), 19, Phase4TrialOrder::kCandidateFirst));
   EXPECT_EQ(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(held_out),
-            17'882'871'627'995'708'506ULL);
+            184'770'070'709'091'276ULL);
 }
 
 TEST(Phase4TrialHarnessTest, RejectsEveryInvalidCellAxisBeforeBuildingWork) {

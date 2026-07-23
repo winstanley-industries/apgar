@@ -1015,6 +1015,23 @@ bool internal::CandidateMatchesWorkloadRequestV1(
          last->centerline.end == workload_context.request.goal;
 }
 
+bool internal::CandidateHasAuthenticLivePayloadV1(
+    const candidates::StoredCandidate& candidate,
+    const PreparedNetRoutingContext& workload_context) noexcept {
+  if (candidate == nullptr) {
+    return false;
+  }
+  const candidates::GeneratedRouteCandidate& data = candidate->data();
+  const std::optional<std::uint64_t> logical_bytes = candidates::ComputeCandidateLogicalBytes(data);
+  return data.id == candidates::DeriveCandidateId(data.net, data.associations, data.policy_identity,
+                                                  data.provenance) &&
+         data.geometry_signature == candidates::ComputeGeometrySignature(data.geometry) &&
+         data.resource_signature == candidates::ComputeResourceSignature(data.resources) &&
+         data.payload_checksum == candidates::ComputeCandidatePayloadChecksum(data) &&
+         logical_bytes.has_value() && data.logical_bytes == *logical_bytes &&
+         CandidateMatchesWorkloadRequestV1(*candidate, workload_context);
+}
+
 ResourceCapacityModelResult BuildResourceCapacityModel(
     std::uint32_t schema_version, const board_ir::BoardSnapshot& board,
     const geometry_compiler::CompiledBoard& compiled_board, std::uint32_t default_capacity_units,
@@ -1191,6 +1208,32 @@ std::uint64_t internal::ComputeOneWorldChecksumV1(const OneWorldAllocation& worl
 
 std::uint64_t internal::ComputeOneWorldChecksumV2(const OneWorldAllocation& world) noexcept {
   return ComputeWorldChecksumImpl(world, true);
+}
+
+std::uint64_t internal::RecomputeOneWorldPoolManifestChecksumV1(
+    std::span<const CandidatePool> pools) noexcept {
+  board_ir::StableHashBuilder manifest;
+  manifest.AddString("APGAR-ONE-WORLD-POOLS-MANIFEST-V1");
+  manifest.AddU64(static_cast<std::uint64_t>(pools.size()));
+  for (const CandidatePool& pool : pools) {
+    board_ir::StableHashBuilder pool_hash;
+    pool_hash.AddString("APGAR-ONE-WORLD-POOL-MANIFEST-V1");
+    pool_hash.AddU64(pool.net.id);
+    pool_hash.AddU32(pool.net.generation);
+    pool_hash.AddU64(static_cast<std::uint64_t>(pool.candidates.size()));
+    for (const candidates::StoredCandidate& candidate : pool.candidates) {
+      if (candidate == nullptr) {
+        return 0;
+      }
+      pool_hash.AddU64(candidate->id().high);
+      pool_hash.AddU64(candidate->id().low);
+      pool_hash.AddU64(candidate->data().payload_checksum);
+    }
+    manifest.AddU64(pool.net.id);
+    manifest.AddU32(pool.net.generation);
+    manifest.AddU64(pool_hash.Finish());
+  }
+  return manifest.Finish();
 }
 
 OneWorldAllocationResult AllocateOneWorld(const OneWorldAllocationRequest& request) {

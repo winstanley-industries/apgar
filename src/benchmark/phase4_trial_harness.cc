@@ -295,6 +295,9 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     const std::uint64_t net_count = descriptor->requested_net_count;
     const std::uint64_t pool_size = cell.requested_pool_size;
     constexpr std::uint64_t epochs = 2;
+    const std::uint64_t maximum_declared_pool = *std::max_element(
+        descriptor->requested_pool_sizes.begin(),
+        descriptor->requested_pool_sizes.begin() + descriptor->requested_pool_size_count);
     const std::uint64_t columns_per_epoch = net_count;
     const std::uint64_t terminal_rounds = pool_size + 1;
     const std::uint64_t sweeps = pool_size + epochs;
@@ -304,8 +307,89 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     const Wide retained_capacity = static_cast<Wide>(net_count) * (pool_size + epochs);
     const Wide initial_queries = static_cast<Wide>(net_count) * pool_size;
     const Wide regeneration_queries = static_cast<Wide>(epochs) * columns_per_epoch;
+    const Wide reconstruction_states = static_cast<Wide>(maximum_declared_pool) *
+                                       kPhase4CanonicalReconstructionStatesPerDeclaredPoolV1;
+    const Wide selected_resource_bound = static_cast<Wide>(net_count) * reconstruction_states;
+    const Wide baseline_policy_roster = 2U * selected_resource_bound + static_cast<Wide>(net_count);
+    const Wide baseline_draft_bytes =
+        kPhase4CanonicalCandidateDraftFixedBytesV1 +
+        kPhase4CanonicalCandidateDraftBytesPerStateV1 * reconstruction_states +
+        kPhase4CanonicalCandidateDraftBytesPerPolicyEntryV1 * baseline_policy_roster;
+    const Wide baseline_retained_bytes = static_cast<Wide>(net_count) * baseline_draft_bytes;
+    const Wide baseline_policy_projection_visits =
+        static_cast<Wide>(sweeps) * 2U * net_count * baseline_policy_roster;
+    const Wide baseline_policy_entries =
+        static_cast<Wide>(sweeps) * net_count * baseline_policy_roster;
+    const Wide baseline_expanded_visits = route_queries * reconstruction_states * 2U;
+    const Wide baseline_admission_input =
+        baseline_draft_bytes + kPhase4CanonicalAdmissionFixedPolicyBytesV1 +
+        kPhase4CanonicalAdmissionBytesPerPolicyEntryV1 * baseline_policy_roster;
+    const Wide preparation_draft_bytes =
+        kPhase4CanonicalCandidateDraftFixedBytesV1 +
+        kPhase4CanonicalCandidateDraftBytesPerStateV1 * reconstruction_states +
+        kPhase4CanonicalCandidateDraftBytesPerPolicyEntryV1;
+    const Wide initial_policy_entries = static_cast<Wide>(net_count) * (pool_size - 1U);
+    const Wide preparation_generated_bytes = initial_queries * preparation_draft_bytes +
+                                             static_cast<Wide>(net_count) * reconstruction_states *
+                                                 kPhase4CanonicalPreparationBytesPerBaseResourceV1;
+    constexpr std::uint64_t kCandidateBytesPerNet = 64ULL * 1024ULL * 1024ULL;
+    const Wide preparation_retained_bytes = static_cast<Wide>(net_count) * kCandidateBytesPerNet;
+    const Wide regeneration_draft_bytes =
+        kPhase4CanonicalCandidateDraftFixedBytesV1 +
+        kPhase4CanonicalCandidateDraftBytesPerStateV1 * reconstruction_states +
+        kPhase4CanonicalCandidateDraftBytesPerPolicyEntryV1 * selected_resource_bound;
+    const Wide regeneration_generated_bytes =
+        static_cast<Wide>(columns_per_epoch) * regeneration_draft_bytes;
+    const Wide regeneration_policy_projection_visits =
+        static_cast<Wide>(allocator::kTargetedRegenerationPolicyProjectionPassesV2) * net_count *
+        selected_resource_bound;
+    const Wide regeneration_policy_entries_projection =
+        static_cast<Wide>(net_count) * (selected_resource_bound + 1U);
+    const bool compiled_work_bound_case =
+        descriptor->case_id == 3'001 || descriptor->case_id == 3'002;
+    if (!compiled_work_bound_case &&
+        regeneration_policy_entries_projection > kPhase4CanonicalMaximumAggregatePolicyEntriesV1) {
+      return HarnessError("P4HARNESS-SPEC-003",
+                          "successful canonical cell exceeds the public policy-entry bound");
+    }
+    const Wide regeneration_policy_entries = std::min<Wide>(
+        regeneration_policy_entries_projection, kPhase4CanonicalMaximumAggregatePolicyEntriesV1);
+    const Wide initial_admission_input =
+        initial_queries * (preparation_draft_bytes + kPhase4CanonicalAdmissionFixedPolicyBytesV1) +
+        kPhase4CanonicalAdmissionBytesPerPolicyEntryV1 * initial_policy_entries;
+    const Wide regeneration_admission_input =
+        static_cast<Wide>(columns_per_epoch) *
+            (regeneration_draft_bytes + kPhase4CanonicalAdmissionFixedPolicyBytesV1) +
+        kPhase4CanonicalAdmissionBytesPerPolicyEntryV1 * regeneration_policy_entries;
+    const Wide maximum_admission_input =
+        std::max(initial_admission_input, regeneration_admission_input);
+    const Wide regeneration_rejection_bytes =
+        static_cast<Wide>(columns_per_epoch) *
+        allocator::kMaximumTargetedRegenerationRejectionLogicalBytesV2;
+    const Wide regeneration_transient_bytes =
+        static_cast<Wide>(columns_per_epoch) *
+        (allocator::kTargetedRegenerationColumnBaseLogicalBytesV2 +
+         2U * allocator::kMaximumTargetedRegenerationRejectionLogicalBytesV2);
+    const Wide final_expanded_resource_uses = retained_capacity * reconstruction_states;
     if (!FitsU64(route_queries) || !FitsU64(route_work) || !FitsU64(retained_capacity) ||
-        !FitsU64(initial_queries) || !FitsU64(regeneration_queries)) {
+        !FitsU64(initial_queries) || !FitsU64(regeneration_queries) ||
+        !FitsU64(reconstruction_states) || !FitsU64(selected_resource_bound) ||
+        !FitsU64(baseline_policy_roster) || !FitsU64(baseline_draft_bytes) ||
+        !FitsU64(baseline_retained_bytes) || !FitsU64(baseline_policy_projection_visits) ||
+        !FitsU64(baseline_policy_entries) || !FitsU64(baseline_expanded_visits) ||
+        !FitsU64(baseline_admission_input) || !FitsU64(preparation_draft_bytes) ||
+        !FitsU64(initial_policy_entries) || !FitsU64(preparation_generated_bytes) ||
+        !FitsU64(preparation_retained_bytes) || !FitsU64(regeneration_draft_bytes) ||
+        !FitsU64(regeneration_generated_bytes) || !FitsU64(regeneration_policy_projection_visits) ||
+        !FitsU64(regeneration_policy_entries) || !FitsU64(maximum_admission_input) ||
+        !FitsU64(regeneration_rejection_bytes) || !FitsU64(regeneration_transient_bytes) ||
+        !FitsU64(final_expanded_resource_uses) ||
+        !FitsU64(static_cast<Wide>(epochs) * regeneration_policy_projection_visits) ||
+        !FitsU64(static_cast<Wide>(epochs) * regeneration_generated_bytes) ||
+        !FitsU64(static_cast<Wide>(epochs) * regeneration_rejection_bytes) ||
+        !FitsU64(static_cast<Wide>(epochs) * regeneration_transient_bytes) ||
+        final_expanded_resource_uses > allocator::kMaximumAllocatorExpandedResourceUsesV1 ||
+        retained_capacity > allocator::kMaximumAllocatorCandidatesV1) {
       return HarnessError("P4HARNESS-SPEC-003", "canonical spec arithmetic exceeds uint64");
     }
 
@@ -322,11 +406,30 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     spec.baseline_config.deterministic_seed = root_seed;
     spec.baseline_config.maximum_sweeps = static_cast<std::uint32_t>(sweeps);
     spec.baseline_config.route_limits.maximum_work_units = kPhase4CanonicalRouteWorkUnitsPerQueryV1;
+    spec.baseline_config.route_limits.maximum_reconstruction_states = ToU64(reconstruction_states);
     spec.baseline_config.price_config.maximum_iterations =
         static_cast<std::uint32_t>(sweeps + terminal_rounds + epochs + 4);
+    spec.baseline_config.price_config.maximum_price_records = ToU64(selected_resource_bound);
+    spec.baseline_config.allocator_limits.maximum_nets = net_count;
+    spec.baseline_config.allocator_limits.maximum_candidates = ToU64(retained_capacity);
+    spec.baseline_config.allocator_limits.maximum_resource_records = ToU64(
+        std::min<Wide>(baseline_policy_roster, allocator::kMaximumAllocatorResourceRecordsV1));
+    spec.baseline_config.allocator_limits.maximum_expanded_resource_uses =
+        ToU64(final_expanded_resource_uses);
     spec.baseline_config.limits.maximum_nets = net_count;
     spec.baseline_config.limits.maximum_route_queries = ToU64(route_queries);
     spec.baseline_config.limits.maximum_total_route_work_units = ToU64(route_work);
+    spec.baseline_config.limits.maximum_policy_projection_visits =
+        ToU64(baseline_policy_projection_visits);
+    spec.baseline_config.limits.maximum_policy_resource_entries = ToU64(baseline_policy_entries);
+    spec.baseline_config.limits.maximum_expanded_resource_visits = ToU64(baseline_expanded_visits);
+    spec.baseline_config.limits.maximum_occupancy_resource_records = ToU64(selected_resource_bound);
+    spec.baseline_config.limits.maximum_candidate_draft_bytes = ToU64(baseline_draft_bytes);
+    spec.baseline_config.limits.maximum_retained_candidate_bytes = ToU64(baseline_retained_bytes);
+    spec.baseline_config.admission_store_config.maximum_candidate_bytes_per_net =
+        ToU64(baseline_draft_bytes);
+    spec.baseline_config.admission_store_config.maximum_admission_input_bytes_per_transaction =
+        ToU64(baseline_admission_input);
 
     spec.preparation_config.requested_candidates_per_net = cell.requested_pool_size;
     spec.preparation_config.deterministic_seed = root_seed;
@@ -335,15 +438,21 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     spec.preparation_config.limits.maximum_route_queries = ToU64(initial_queries);
     spec.preparation_config.limits.maximum_total_route_work_units =
         ToU64(initial_queries * spec.baseline_config.route_limits.maximum_work_units);
+    spec.preparation_config.limits.maximum_concurrent_reconstruction_states =
+        spec.preparation_worker_count * ToU64(reconstruction_states);
+    spec.preparation_config.limits.maximum_policy_resource_entries = ToU64(initial_policy_entries);
+    spec.preparation_config.limits.maximum_retained_candidate_bytes =
+        ToU64(preparation_retained_bytes);
+    spec.preparation_config.limits.maximum_candidate_draft_bytes = ToU64(preparation_draft_bytes);
     spec.preparation_config.limits.maximum_generated_candidate_bytes =
-        64ULL * 1024ULL * 1024ULL * 1024ULL;
+        ToU64(preparation_generated_bytes);
     spec.preparation_config.store_config = candidates::CandidateStoreConfig{
         .maximum_candidates_per_net = pool_size + epochs,
-        .maximum_candidate_bytes_per_net = 64ULL * 1024ULL * 1024ULL,
+        .maximum_candidate_bytes_per_net = kCandidateBytesPerNet,
         .maximum_rejection_records = ToU64(retained_capacity * 4 + net_count * 2),
         .maximum_rejection_items_per_transaction = ToU64(retained_capacity),
         .maximum_admission_items_per_transaction = ToU64(retained_capacity),
-        .maximum_admission_input_bytes_per_transaction = 8ULL * 1024ULL * 1024ULL * 1024ULL,
+        .maximum_admission_input_bytes_per_transaction = ToU64(maximum_admission_input),
         .maximum_admission_work_units_per_transaction = 1'000'000'000'000ULL,
         .maximum_pin_lease_items_per_transaction = ToU64(retained_capacity),
         .maximum_expected_pools_per_invocation = net_count,
@@ -365,6 +474,18 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     session.regeneration_execution_config.route_limits = spec.baseline_config.route_limits;
     session.regeneration_execution_config.maximum_total_route_work_units =
         columns_per_epoch * spec.baseline_config.route_limits.maximum_work_units;
+    session.regeneration_execution_config.maximum_policy_projection_visits =
+        ToU64(regeneration_policy_projection_visits);
+    session.regeneration_execution_config.maximum_policy_resource_entries =
+        ToU64(regeneration_policy_entries);
+    session.regeneration_execution_config.maximum_candidate_draft_bytes =
+        ToU64(regeneration_draft_bytes);
+    session.regeneration_execution_config.maximum_generated_candidate_bytes =
+        ToU64(regeneration_generated_bytes);
+    session.regeneration_execution_config.maximum_rejection_bytes =
+        ToU64(regeneration_rejection_bytes);
+    session.regeneration_execution_config.maximum_transient_result_bytes =
+        ToU64(regeneration_transient_bytes);
     session.schedules = {
         allocator::MultiWorldSchedule{
             .schedule_key = 1,
@@ -385,6 +506,16 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     session.limits.maximum_total_route_queries = ToU64(regeneration_queries);
     session.limits.maximum_total_route_work_units =
         ToU64(regeneration_queries * spec.baseline_config.route_limits.maximum_work_units);
+    session.limits.maximum_total_planning_expanded_resource_visits =
+        epochs * session.regeneration_plan_config.maximum_expanded_resource_visits;
+    session.limits.maximum_total_policy_projection_visits =
+        ToU64(static_cast<Wide>(epochs) * regeneration_policy_projection_visits);
+    session.limits.maximum_total_generated_candidate_bytes =
+        ToU64(static_cast<Wide>(epochs) * regeneration_generated_bytes);
+    session.limits.maximum_total_rejection_bytes =
+        ToU64(static_cast<Wide>(epochs) * regeneration_rejection_bytes);
+    session.limits.maximum_total_transient_result_bytes =
+        ToU64(static_cast<Wide>(epochs) * regeneration_transient_bytes);
     return spec;
   } catch (const std::bad_alloc&) {
     return HarnessError("P4HARNESS-SPEC-004", "host allocation failed building canonical spec");

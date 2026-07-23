@@ -19,6 +19,13 @@ Stress entries `3001` and `3002` instead pin their
 deterministic compiled-work-bound totals and carry zero built-object identities;
 they cannot be accepted as successful raw cells.
 
+The parallel budget roster uses the corpus-specific route envelope from Paired
+Trial v1. For each descriptor it binds the maximum declared pool, not only the
+active cell pool, so sensitivity cells share one geometry-safe reconstruction
+bound. Refreshing those checksums before observation is an explicit contract
+change; it does not alter descriptor identity, the frozen cell roster, or any
+statistical threshold.
+
 The corpus declaration is metadata only. A builder materializes exactly one
 requested case, Board snapshot, Multi-Net Workload, binary physical-edge
 capacity model, and contested-resource roster. Large cases are never

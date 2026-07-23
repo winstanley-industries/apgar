@@ -20,6 +20,7 @@ inline constexpr std::uint32_t kPhase4PerNetReportSchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4ArmReportTelemetrySchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4SameRunArmDecisionTelemetrySchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4TrialArmOperationalProfileSchemaVersion = 1;
+inline constexpr std::uint32_t kPhase4TrialArmReplayAuthoritySchemaVersion = 1;
 inline constexpr std::uint64_t kPhase4OverlapPartsPerMillion = 1'000'000;
 
 enum class Phase4TrialArm : std::uint8_t {
@@ -189,6 +190,23 @@ struct Phase4TrialArmOperationalProfileV1 {
 
   friend bool operator==(const Phase4TrialArmOperationalProfileV1&,
                          const Phase4TrialArmOperationalProfileV1&) = default;
+};
+
+// Independently replays one contender with all operational clocks compiled
+// out. Candidate authority is distilled from the live, complete allocation
+// session before its full config, epoch columns, pools, price state, and worlds
+// are destroyed. Publication compares this authority with the compact witness
+// returned by the separately measured operational replay.
+struct Phase4TrialArmReplayAuthorityV1 {
+  std::uint32_t schema_version = kPhase4TrialArmReplayAuthoritySchemaVersion;
+  Phase4TrialArmSemantics semantics;
+  Phase4PreparerLifecycleObservation preparer_lifecycle;
+  std::uint64_t recomputed_full_preimage_session_checksum = 0;
+  std::optional<allocator::CpuCandidateAllocationSessionReplayWitnessV1> candidate_session_witness;
+  std::uint64_t authority_checksum = 0;
+
+  friend bool operator==(const Phase4TrialArmReplayAuthorityV1&,
+                         const Phase4TrialArmReplayAuthorityV1&) = default;
 };
 
 // One closed partition of every column requested for one net. Executed route
@@ -419,6 +437,8 @@ using Phase4TrialArmWithSameRunTelemetryExecutionResultV1 =
     std::variant<Phase4TrialArmWithSameRunTelemetryExecutionV1, Phase4TrialArmFailure>;
 using Phase4TrialArmOperationalProfileResultV1 =
     std::variant<Phase4TrialArmOperationalProfileV1, Phase4TrialArmFailure>;
+using Phase4TrialArmReplayAuthorityResultV1 =
+    std::variant<Phase4TrialArmReplayAuthorityV1, Phase4TrialArmFailure>;
 using Phase4CandidatePoolSnapshotExecutionResultV1 =
     std::variant<Phase4CandidatePoolSnapshotExecutionV1, Phase4TrialArmFailure>;
 using Phase4TrialArmRecordResult = std::variant<Phase4TrialArmRecord, Phase4PairedTrialError>;
@@ -454,6 +474,13 @@ ExecutePhase4TrialArmWithSameRunTelemetryV1(
 // in the later publication layer. This timing is operational context only and
 // is never substituted for Raw decision timing.
 [[nodiscard]] Phase4TrialArmOperationalProfileResultV1 ExecutePhase4TrialArmOperationalProfileV1(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+// Executes the independent unmeasured replay used to authenticate an
+// operational profile. It is a distinct invocation and must never be relabeled
+// as the measured replay or as a Raw evidence attempt.
+[[nodiscard]] Phase4TrialArmReplayAuthorityResultV1 ExecutePhase4TrialArmReplayAuthorityV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
 

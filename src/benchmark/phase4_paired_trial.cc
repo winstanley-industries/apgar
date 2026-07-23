@@ -18,6 +18,7 @@
 #include "apgar/board_ir/stable_hash.h"
 #include "apgar/candidates/candidate_store.h"
 #include "src/allocator/cpu_candidate_allocation_session_internal.h"
+#include "src/allocator/sequential_negotiated_baseline_internal.h"
 #include "src/benchmark/phase4_paired_trial_internal.h"
 #include "src/operational_timestamp.h"
 
@@ -811,13 +812,13 @@ using SameRunTelemetryBuildResult =
 
 using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmFailure>;
 
-template <bool CaptureOperationalProfile>
+template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
 [[nodiscard]] ArmSemanticsResult ExecuteBaseline(
     const Phase4PairedTrialSpec& spec, Phase4RepresentativeCase corpus,
     const ValidatedTrialSpec& validated, Phase4ArmReportTelemetryV1* telemetry,
     Phase4SameRunArmDecisionTelemetryV1* same_run_telemetry,
     allocator::SequentialNegotiatedBaselineOperationalProfileV1* operational_profile,
-    Clock::time_point* release_tail_start) {
+    std::uint64_t* replay_full_preimage_checksum, Clock::time_point* release_tail_start) {
   Phase4TrialArmSemantics semantics =
       CommonSemantics(Phase4TrialArm::kSequentialBaseline, spec, corpus, validated);
   allocator::SequentialNegotiatedBaselineExecution execution = [&]() {
@@ -885,13 +886,26 @@ template <bool CaptureOperationalProfile>
     }
     *same_run_telemetry = std::get<Phase4SameRunArmDecisionTelemetryV1>(std::move(built));
   }
+  if constexpr (CaptureReplayAuthority) {
+    const std::optional<std::uint64_t> rebuilt =
+        allocator::internal::RecomputeSequentialNegotiatedSessionChecksumFromLiveV1(
+            result, corpus.board, corpus.workload, corpus.capacities);
+    if (!rebuilt.has_value()) {
+      return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                              "P4OP-AUTHORITY-BASELINE-FULL-PREIMAGE-001",
+                              "unmeasured baseline replay did not reproduce its complete "
+                              "session checksum",
+                              Phase4TrialArm::kSequentialBaseline));
+    }
+    *replay_full_preimage_checksum = *rebuilt;
+  }
   if constexpr (CaptureOperationalProfile) {
     *release_tail_start = ::apgar::internal::OperationalNow<CaptureOperationalProfile, Clock>();
   }
   return semantics;
 }
 
-template <bool CaptureOperationalProfile>
+template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
 [[nodiscard]] ArmSemanticsResult ExecuteCandidate(
     const Phase4PairedTrialSpec& spec, Phase4RepresentativeCase corpus,
     const ValidatedTrialSpec& validated, allocator::PersistentCpuCandidatePoolPreparer& preparer,
@@ -899,6 +913,7 @@ template <bool CaptureOperationalProfile>
     Phase4CandidatePoolSnapshotExecutionV1* snapshot,
     allocator::CpuCandidatePoolPreparationOperationalProfileV1* preparation_profile,
     allocator::CpuCandidateAllocationSessionOperationalProfileV1* session_profile,
+    allocator::CpuCandidateAllocationSessionReplayWitnessV1* replay_witness,
     Clock::time_point* release_tail_start) {
   Phase4TrialArmSemantics semantics =
       CommonSemantics(Phase4TrialArm::kReusableCandidateAllocation, spec, corpus, validated);
@@ -1052,6 +1067,17 @@ template <bool CaptureOperationalProfile>
     snapshot->capacity_overrides = session.capacities().overrides();
     snapshot->final_pools = session.final_pools();
     snapshot->production_world = *chosen_world;
+  }
+  if constexpr (CaptureReplayAuthority) {
+    std::optional<allocator::CpuCandidateAllocationSessionReplayWitnessV1> built_witness =
+        allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session);
+    if (!built_witness.has_value()) {
+      return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                              "P4OP-AUTHORITY-FULL-PREIMAGE-001",
+                              "unmeasured replay did not reproduce its complete session checksum",
+                              Phase4TrialArm::kReusableCandidateAllocation));
+    }
+    *replay_witness = *built_witness;
   }
   if constexpr (CaptureOperationalProfile) {
     *release_tail_start = ::apgar::internal::OperationalNow<CaptureOperationalProfile, Clock>();
@@ -1710,6 +1736,125 @@ std::uint64_t ComputePhase4TrialArmOperationalProfileChecksumV1(
     hash.AddU64(witness.final_rejection_manifest_checksum);
   }
   return hash.Finish();
+}
+
+std::uint64_t ComputePhase4TrialArmReplayAuthorityChecksumV1(
+    const Phase4TrialArmReplayAuthorityV1& authority) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-PHASE4-TRIAL-ARM-REPLAY-AUTHORITY-V1");
+  hash.AddU32(authority.schema_version);
+  hash.AddU64(ComputePhase4TrialArmSemanticChecksumV1(authority.semantics));
+  hash.AddU64(authority.semantics.semantic_checksum);
+  const Phase4PreparerLifecycleObservation& lifecycle = authority.preparer_lifecycle;
+  hash.AddU64(lifecycle.workers_started_before);
+  hash.AddU64(lifecycle.workers_started_after);
+  hash.AddU64(lifecycle.invocations_started_before);
+  hash.AddU64(lifecycle.invocations_started_after);
+  hash.AddU64(lifecycle.invocations_completed_before);
+  hash.AddU64(lifecycle.invocations_completed_after);
+  hash.AddU64(authority.recomputed_full_preimage_session_checksum);
+  hash.AddBool(authority.candidate_session_witness.has_value());
+  if (authority.candidate_session_witness.has_value()) {
+    const allocator::CpuCandidateAllocationSessionReplayWitnessV1& witness =
+        *authority.candidate_session_witness;
+    hash.AddU64(witness.session_checksum);
+    hash.AddU64(witness.board_content_hash);
+    hash.AddU64(witness.workload_checksum);
+    hash.AddU64(witness.capacity_model_checksum);
+    hash.AddU64(witness.preparation_checksum);
+    hash.AddU32(witness.maximum_regeneration_epochs);
+    hash.AddByte(static_cast<std::uint8_t>(witness.terminal_reason));
+    hash.AddU64(witness.counters.completed_regeneration_epochs);
+    hash.AddU64(witness.counters.planning_expanded_resource_visits);
+    hash.AddU64(witness.counters.requested_columns);
+    hash.AddU64(witness.counters.route_queries);
+    hash.AddU64(witness.counters.route_work_units);
+    hash.AddU64(witness.counters.policy_projection_visits);
+    hash.AddU64(witness.counters.generated_candidate_bytes);
+    hash.AddU64(witness.counters.rejection_record_bytes);
+    hash.AddU64(witness.counters.transient_result_bytes);
+    hash.AddU64(witness.counters.admitted_candidates);
+    hash.AddU64(witness.counters.duplicate_candidates);
+    hash.AddU64(witness.counters.rejected_columns);
+    hash.AddU64(witness.counters.novel_retained_candidates);
+    hash.AddU64(witness.counters.changed_selections);
+    hash.AddU64(witness.epoch_record_count);
+    hash.AddU64(witness.epoch_association_checksum);
+    hash.AddU64(witness.final_pool_manifest_checksum);
+    hash.AddU64(witness.final_rejection_manifest_checksum);
+  }
+  return hash.Finish();
+}
+
+std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmReplayAuthorityV1(
+    const Phase4TrialArmReplayAuthorityV1& authority) noexcept {
+  const Phase4TrialArm arm = authority.semantics.arm;
+  const auto invalid = [arm](std::string_view invariant_id,
+                             std::string_view detail) -> std::optional<Phase4PairedTrialError> {
+    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, invariant_id, detail, arm);
+  };
+  if (std::optional<Phase4PairedTrialError> error =
+          ValidatePhase4TrialArmSemanticsV1(authority.semantics);
+      error.has_value()) {
+    return error;
+  }
+  if (authority.schema_version != kPhase4TrialArmReplayAuthoritySchemaVersion ||
+      authority.authority_checksum == 0 ||
+      authority.authority_checksum != ComputePhase4TrialArmReplayAuthorityChecksumV1(authority)) {
+    return invalid("P4OP-AUTHORITY-CHECKSUM-001",
+                   "operational replay authority schema or checksum is invalid");
+  }
+  if (authority.recomputed_full_preimage_session_checksum == 0 ||
+      authority.recomputed_full_preimage_session_checksum !=
+          authority.semantics.algorithm_session_checksum) {
+    return invalid("P4OP-AUTHORITY-FULL-PREIMAGE-001",
+                   "recomputed full-preimage checksum does not bind the replay semantics");
+  }
+  const bool candidate = arm == Phase4TrialArm::kReusableCandidateAllocation;
+  const Phase4PreparerLifecycleObservation& lifecycle = authority.preparer_lifecycle;
+  const Wide started_after = static_cast<Wide>(lifecycle.invocations_started_before) + 1U;
+  const Wide completed_after = static_cast<Wide>(lifecycle.invocations_completed_before) + 1U;
+  const bool candidate_lifecycle =
+      lifecycle.workers_started_before == authority.semantics.preparation_worker_count &&
+      lifecycle.workers_started_after == authority.semantics.preparation_worker_count &&
+      lifecycle.invocations_started_before == lifecycle.invocations_completed_before &&
+      lifecycle.invocations_completed_before > 0 && FitsU64(started_after) &&
+      FitsU64(completed_after) && lifecycle.invocations_started_after == ToU64(started_after) &&
+      lifecycle.invocations_completed_after == ToU64(completed_after);
+  if ((candidate && (!authority.candidate_session_witness.has_value() || !candidate_lifecycle)) ||
+      (!candidate && (authority.candidate_session_witness.has_value() ||
+                      lifecycle != Phase4PreparerLifecycleObservation{}))) {
+    return invalid("P4OP-AUTHORITY-SHAPE-001",
+                   "operational replay authority shape or preparer lifecycle is invalid");
+  }
+  if (!candidate) {
+    return std::nullopt;
+  }
+  const allocator::CpuCandidateAllocationSessionReplayWitnessV1& witness =
+      *authority.candidate_session_witness;
+  if (static_cast<std::uint8_t>(witness.terminal_reason) >
+          static_cast<std::uint8_t>(
+              allocator::CpuCandidateAllocationTerminalReason::kResourceRefinementRequired) ||
+      witness.session_checksum != authority.semantics.algorithm_session_checksum ||
+      witness.session_checksum != authority.recomputed_full_preimage_session_checksum ||
+      witness.board_content_hash != authority.semantics.board_content_hash ||
+      witness.workload_checksum != authority.semantics.workload_checksum ||
+      witness.capacity_model_checksum != authority.semantics.capacity_model_checksum ||
+      witness.preparation_checksum != authority.semantics.preparation_checksum ||
+      witness.maximum_regeneration_epochs != authority.semantics.candidate_regeneration_epochs ||
+      Normalize(witness.terminal_reason) != authority.semantics.terminal_reason ||
+      witness.counters.route_queries != authority.semantics.regeneration_route_queries ||
+      witness.counters.route_work_units != authority.semantics.regeneration_route_work_units ||
+      witness.counters.completed_regeneration_epochs != witness.epoch_record_count ||
+      witness.epoch_record_count > witness.maximum_regeneration_epochs ||
+      witness.epoch_association_checksum == 0 ||
+      witness.final_pool_manifest_checksum != authority.semantics.final_pool_manifest_checksum ||
+      witness.final_rejection_manifest_checksum !=
+          authority.semantics.final_rejection_manifest_checksum) {
+    return invalid("P4OP-AUTHORITY-WITNESS-001",
+                   "full-preimage replay witness does not bind the replay semantics");
+  }
+  return std::nullopt;
 }
 
 std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmOperationalProfileV1(
@@ -2524,6 +2669,7 @@ struct ArmExecutionWithOptionalTelemetry {
   std::optional<Phase4SameRunArmDecisionTelemetryV1> same_run_telemetry;
   std::optional<Phase4CandidatePoolSnapshotExecutionV1> snapshot;
   std::optional<Phase4TrialArmOperationalProfileV1> operational_profile;
+  std::optional<Phase4TrialArmReplayAuthorityV1> replay_authority;
 };
 
 using ArmExecutionWithOptionalTelemetryResult =
@@ -2542,7 +2688,16 @@ struct OperationalArmCaptureState<true> {
   std::uint64_t contender_release_tail_elapsed = 0;
 };
 
-template <bool CaptureOperationalProfile>
+template <bool CaptureReplayAuthority>
+struct ReplayAuthorityCaptureState {};
+
+template <>
+struct ReplayAuthorityCaptureState<true> {
+  std::uint64_t full_preimage_session_checksum = 0;
+  allocator::CpuCandidateAllocationSessionReplayWitnessV1 candidate_session_witness;
+};
+
+template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
 [[nodiscard]] ArmExecutionWithOptionalTelemetryResult ExecutePhase4TrialArmImpl(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer, bool capture_telemetry,
@@ -2585,6 +2740,20 @@ template <bool CaptureOperationalProfile>
     Phase4SameRunArmDecisionTelemetryV1 same_run_telemetry;
     Phase4CandidatePoolSnapshotExecutionV1 snapshot;
     OperationalArmCaptureState<CaptureOperationalProfile> operational;
+    ReplayAuthorityCaptureState<CaptureReplayAuthority> replay;
+    allocator::CpuCandidateAllocationSessionReplayWitnessV1* replay_witness =
+        [&]() -> allocator::CpuCandidateAllocationSessionReplayWitnessV1* {
+      if constexpr (CaptureReplayAuthority) {
+        return &replay.candidate_session_witness;
+      }
+      return nullptr;
+    }();
+    std::uint64_t* replay_full_preimage_checksum = [&]() -> std::uint64_t* {
+      if constexpr (CaptureReplayAuthority) {
+        return &replay.full_preimage_session_checksum;
+      }
+      return nullptr;
+    }();
     std::uint64_t case_build_elapsed = 0;
     std::uint64_t prepared_elapsed = 0;
     {
@@ -2618,29 +2787,30 @@ template <bool CaptureOperationalProfile>
       ArmSemanticsResult arm_result = [&]() {
         if (arm == Phase4TrialArm::kSequentialBaseline) {
           if constexpr (CaptureOperationalProfile) {
-            return ExecuteBaseline<true>(spec, std::move(corpus), validated,
-                                         capture_telemetry ? &telemetry : nullptr,
-                                         capture_same_run_telemetry ? &same_run_telemetry : nullptr,
-                                         &operational.baseline, &operational.release_tail_start);
-          } else {
-            return ExecuteBaseline<false>(
+            return ExecuteBaseline<true, CaptureReplayAuthority>(
                 spec, std::move(corpus), validated, capture_telemetry ? &telemetry : nullptr,
-                capture_same_run_telemetry ? &same_run_telemetry : nullptr, nullptr, nullptr);
+                capture_same_run_telemetry ? &same_run_telemetry : nullptr, &operational.baseline,
+                replay_full_preimage_checksum, &operational.release_tail_start);
+          } else {
+            return ExecuteBaseline<false, CaptureReplayAuthority>(
+                spec, std::move(corpus), validated, capture_telemetry ? &telemetry : nullptr,
+                capture_same_run_telemetry ? &same_run_telemetry : nullptr, nullptr,
+                replay_full_preimage_checksum, nullptr);
           }
         }
         if constexpr (CaptureOperationalProfile) {
-          return ExecuteCandidate<true>(spec, std::move(corpus), validated, *candidate_preparer,
-                                        capture_telemetry ? &telemetry : nullptr,
-                                        capture_same_run_telemetry ? &same_run_telemetry : nullptr,
-                                        capture_snapshot ? &snapshot : nullptr,
-                                        &operational.preparation, &operational.session,
-                                        &operational.release_tail_start);
+          return ExecuteCandidate<true, CaptureReplayAuthority>(
+              spec, std::move(corpus), validated, *candidate_preparer,
+              capture_telemetry ? &telemetry : nullptr,
+              capture_same_run_telemetry ? &same_run_telemetry : nullptr,
+              capture_snapshot ? &snapshot : nullptr, &operational.preparation,
+              &operational.session, replay_witness, &operational.release_tail_start);
         } else {
-          return ExecuteCandidate<false>(spec, std::move(corpus), validated, *candidate_preparer,
-                                         capture_telemetry ? &telemetry : nullptr,
-                                         capture_same_run_telemetry ? &same_run_telemetry : nullptr,
-                                         capture_snapshot ? &snapshot : nullptr, nullptr, nullptr,
-                                         nullptr);
+          return ExecuteCandidate<false, CaptureReplayAuthority>(
+              spec, std::move(corpus), validated, *candidate_preparer,
+              capture_telemetry ? &telemetry : nullptr,
+              capture_same_run_telemetry ? &same_run_telemetry : nullptr,
+              capture_snapshot ? &snapshot : nullptr, nullptr, nullptr, replay_witness, nullptr);
         }
       }();
       if constexpr (CaptureOperationalProfile) {
@@ -2673,6 +2843,7 @@ template <bool CaptureOperationalProfile>
         .same_run_telemetry = std::nullopt,
         .snapshot = std::nullopt,
         .operational_profile = std::nullopt,
+        .replay_authority = std::nullopt,
     };
     if (capture_telemetry) {
       output.telemetry = std::move(telemetry);
@@ -2776,6 +2947,30 @@ template <bool CaptureOperationalProfile>
       }
       output.operational_profile = std::move(profile);
     }
+    if constexpr (CaptureReplayAuthority) {
+      if (arm == Phase4TrialArm::kReusableCandidateAllocation) {
+        replay.full_preimage_session_checksum = replay.candidate_session_witness.session_checksum;
+      }
+      Phase4TrialArmReplayAuthorityV1 authority{
+          .schema_version = kPhase4TrialArmReplayAuthoritySchemaVersion,
+          .semantics = output.execution.semantics,
+          .preparer_lifecycle = output.execution.preparer_lifecycle,
+          .recomputed_full_preimage_session_checksum = replay.full_preimage_session_checksum,
+          .candidate_session_witness = std::nullopt,
+          .authority_checksum = 0,
+      };
+      if (arm == Phase4TrialArm::kReusableCandidateAllocation) {
+        authority.candidate_session_witness = replay.candidate_session_witness;
+      }
+      authority.authority_checksum =
+          internal::ComputePhase4TrialArmReplayAuthorityChecksumV1(authority);
+      if (std::optional<Phase4PairedTrialError> error =
+              internal::ValidatePhase4TrialArmReplayAuthorityV1(authority);
+          error.has_value()) {
+        return ArmFailure(*error);
+      }
+      output.replay_authority = std::move(authority);
+    }
     return output;
   } catch (const std::bad_alloc&) {
     return ArmFailure(Error(Phase4PairedTrialErrorCode::kResourceExhausted, "P4PAIR-HOST-001",
@@ -2797,7 +2992,7 @@ template <bool CaptureOperationalProfile>
 Phase4TrialArmExecutionResult ExecutePhase4TrialArmV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
-  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false>(
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
       arm, spec, imported_fixture, candidate_preparer, false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
@@ -2808,7 +3003,7 @@ Phase4TrialArmExecutionResult ExecutePhase4TrialArmV1(
 Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
-  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false>(
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
       arm, spec, imported_fixture, candidate_preparer, true, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
@@ -2828,7 +3023,7 @@ Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
 Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4TrialArmWithSameRunTelemetryV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
-  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false>(
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
       arm, spec, imported_fixture, candidate_preparer, false, true, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
@@ -2849,7 +3044,7 @@ Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4TrialArmWithSam
 Phase4TrialArmOperationalProfileResultV1 ExecutePhase4TrialArmOperationalProfileV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
-  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<true>(
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<true, false>(
       arm, spec, imported_fixture, candidate_preparer, false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
@@ -2863,12 +3058,30 @@ Phase4TrialArmOperationalProfileResultV1 ExecutePhase4TrialArmOperationalProfile
   return std::move(*output.operational_profile);
 }
 
+Phase4TrialArmReplayAuthorityResultV1 ExecutePhase4TrialArmReplayAuthorityV1(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, true>(
+      arm, spec, imported_fixture, candidate_preparer, false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.replay_authority.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                            "P4OP-AUTHORITY-INTERNAL-001",
+                            "unmeasured replay completed without full-preimage authority", arm));
+  }
+  return std::move(*output.replay_authority);
+}
+
 Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotV1(
     const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
-  ArmExecutionWithOptionalTelemetryResult result =
-      ExecutePhase4TrialArmImpl<false>(Phase4TrialArm::kReusableCandidateAllocation, spec,
-                                       imported_fixture, candidate_preparer, true, false, true);
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
+      Phase4TrialArm::kReusableCandidateAllocation, spec, imported_fixture, candidate_preparer,
+      true, false, true);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }

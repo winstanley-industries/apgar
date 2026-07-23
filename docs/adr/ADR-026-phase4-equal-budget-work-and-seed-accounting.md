@@ -33,7 +33,9 @@ these replay records does not invalidate prior evidence.
   failed execution observations and the composed session checksum.
 - Preserve the version-2 seedless targeted-execution replay contract and the
   version-1 composed-session contract. Production rejects those legacy
-  versions and uses Candidate-Allocation Session v2 with Targeted Execution v3.
+  versions and uses Candidate-Allocation Session v3 with Targeted Execution
+  v4. These child-authority supersessions preserve this ADR's equal-budget work
+  and seed-accounting decision.
 - Return a checksum-covered failed Preparation v2 observation whenever a
   failure follows at least one started route query. It retains all actually
   attempted columns in canonical order and their available work. It hashes a

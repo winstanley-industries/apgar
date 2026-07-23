@@ -12,8 +12,10 @@
 #include <variant>
 
 #include "apgar/allocator/cpu_candidate_pool_preparation.h"
+#include "apgar/benchmark/phase4_operational_artifact.h"
 #include "apgar/tooling/runfiles.h"
 #include "src/allocator/cpu_candidate_allocation_session_internal.h"
+#include "src/allocator/sequential_negotiated_baseline_internal.h"
 #include "src/benchmark/phase4_paired_trial_internal.h"
 #include "tests/support/google_test.h"
 
@@ -547,7 +549,7 @@ TEST(Phase4PairedTrialTest, ExecutesAndAuthenticatesEqualOpportunityPair) {
   EXPECT_EQ(result.candidate.semantics.root_seed, spec.root_seed);
   EXPECT_NE(result.semantic_checksum, 0U);
   EXPECT_NE(result.artifact_checksum, 0U);
-  EXPECT_EQ(result.semantic_checksum, 6'850'076'695'171'498'078ULL);
+  EXPECT_EQ(result.semantic_checksum, 17'059'476'489'352'091'847ULL);
 }
 
 TEST(Phase4PairedTrialTest, RejectsOneUnitQueryOpportunityMismatchBeforeExecution) {
@@ -759,6 +761,14 @@ TEST(Phase4PairedTrialTest, CanonicalAlgorithmBudgetChecksumBindsHiddenConfigs) 
 
   changed = canonical;
   ++changed.candidate_session_config.multi_world_config.maximum_pareto_comparisons;
+  EXPECT_NE(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(changed), expected);
+
+  changed = canonical;
+  --changed.candidate_session_config.schema_version;
+  EXPECT_NE(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(changed), expected);
+
+  changed = canonical;
+  --changed.candidate_session_config.regeneration_execution_config.maximum_policy_resource_entries;
   EXPECT_NE(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(changed), expected);
 
   changed = canonical;
@@ -1581,6 +1591,209 @@ TEST(Phase4PairedTrialTest, OperationalValidatorRejectsReauthenticatedAuthorityD
     ASSERT_TRUE(error.has_value());
     EXPECT_EQ(error->invariant_id, "P4OP-EPOCH-ASSOCIATION-001");
   }
+}
+
+TEST(Phase4PairedTrialTest, UnmeasuredReplayAuthoritiesBindCompleteLiveSessionPreimages) {
+  const Phase4PairedTrialSpec spec = Spec();
+  const Phase4TrialArmOperationalProfileV1 measured_baseline =
+      ValueOf<Phase4TrialArmOperationalProfileV1>(
+          ExecutePhase4TrialArmOperationalProfileV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  const Phase4TrialArmReplayAuthorityV1 baseline = ValueOf<Phase4TrialArmReplayAuthorityV1>(
+      ExecutePhase4TrialArmReplayAuthorityV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  EXPECT_EQ(baseline.semantics, measured_baseline.execution.semantics);
+  EXPECT_EQ(baseline.recomputed_full_preimage_session_checksum,
+            baseline.semantics.algorithm_session_checksum);
+  EXPECT_FALSE(baseline.candidate_session_witness.has_value());
+  EXPECT_EQ(baseline.preparer_lifecycle, Phase4PreparerLifecycleObservation{});
+  EXPECT_FALSE(internal::ValidatePhase4TrialArmReplayAuthorityV1(baseline).has_value());
+
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> measured_preparer = Preparer();
+  static_cast<void>(ValueOf<Phase4TrialArmExecution>(ExecutePhase4TrialArmV1(
+      Phase4TrialArm::kReusableCandidateAllocation, spec, {}, measured_preparer.get())));
+  const Phase4TrialArmOperationalProfileV1 measured_candidate =
+      ValueOf<Phase4TrialArmOperationalProfileV1>(ExecutePhase4TrialArmOperationalProfileV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, measured_preparer.get()));
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> authority_preparer = Preparer();
+  static_cast<void>(ValueOf<Phase4TrialArmExecution>(ExecutePhase4TrialArmV1(
+      Phase4TrialArm::kReusableCandidateAllocation, spec, {}, authority_preparer.get())));
+  const Phase4TrialArmReplayAuthorityV1 candidate =
+      ValueOf<Phase4TrialArmReplayAuthorityV1>(ExecutePhase4TrialArmReplayAuthorityV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, authority_preparer.get()));
+  ASSERT_TRUE(measured_candidate.candidate_session.has_value());
+  ASSERT_TRUE(candidate.candidate_session_witness.has_value());
+  EXPECT_EQ(candidate.semantics, measured_candidate.execution.semantics);
+  EXPECT_EQ(candidate.recomputed_full_preimage_session_checksum,
+            candidate.semantics.algorithm_session_checksum);
+  EXPECT_EQ(*candidate.candidate_session_witness,
+            measured_candidate.candidate_session->replay_witness);
+  EXPECT_FALSE(internal::ValidatePhase4TrialArmReplayAuthorityV1(candidate).has_value());
+
+  Phase4TrialArmReplayAuthorityV1 changed = candidate;
+  ++changed.candidate_session_witness->final_pool_manifest_checksum;
+  changed.authority_checksum = internal::ComputePhase4TrialArmReplayAuthorityChecksumV1(changed);
+  const auto error = internal::ValidatePhase4TrialArmReplayAuthorityV1(changed);
+  ASSERT_TRUE(error.has_value());
+  EXPECT_EQ(error->invariant_id, "P4OP-AUTHORITY-WITNESS-001");
+
+  for (const std::uint8_t terminal_reason : {std::uint8_t{4}, std::uint8_t{255}}) {
+    changed = candidate;
+    changed.candidate_session_witness->terminal_reason =
+        static_cast<allocator::CpuCandidateAllocationTerminalReason>(terminal_reason);
+    changed.authority_checksum = internal::ComputePhase4TrialArmReplayAuthorityChecksumV1(changed);
+    const auto terminal_error = internal::ValidatePhase4TrialArmReplayAuthorityV1(changed);
+    ASSERT_TRUE(terminal_error.has_value());
+    EXPECT_EQ(terminal_error->invariant_id, "P4OP-AUTHORITY-WITNESS-001");
+  }
+}
+
+TEST(Phase4PairedTrialTest, CandidateReplayAuthorityRejectsStaleNestedLiveChecksums) {
+  const Phase4PairedTrialSpec spec = Spec();
+  allocator::CpuCandidateAllocationSession session = ExecuteCandidateSessionForSources(spec);
+  ASSERT_TRUE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+
+  auto& workload_nets =
+      const_cast<std::vector<allocator::PreparedNetRoutingContext>&>(session.workload().nets());
+  ASSERT_FALSE(workload_nets.empty());
+  ++workload_nets.front().request.start.x;
+  EXPECT_FALSE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+  --workload_nets.front().request.start.x;
+
+  allocator::AllocationAssociations& capacity_associations =
+      const_cast<allocator::AllocationAssociations&>(session.capacities().associations());
+  ++capacity_associations.board_content_hash;
+  EXPECT_FALSE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+  --capacity_associations.board_content_hash;
+
+  auto& preparation_columns = const_cast<std::vector<allocator::CpuCandidatePoolColumnRecord>&>(
+      session.preparation().columns());
+  ASSERT_FALSE(preparation_columns.empty());
+  ++preparation_columns.front().route_work_units;
+  EXPECT_FALSE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+  --preparation_columns.front().route_work_units;
+
+  auto& final_pools = const_cast<std::vector<allocator::CandidatePool>&>(session.final_pools());
+  ASSERT_FALSE(final_pools.empty());
+  ASSERT_FALSE(final_pools.front().candidates.empty());
+  candidates::GeneratedRouteCandidate& candidate = const_cast<candidates::GeneratedRouteCandidate&>(
+      final_pools.front().candidates.front()->data());
+  ++candidate.metrics.intrinsic_base_cost;
+  EXPECT_FALSE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+  --candidate.metrics.intrinsic_base_cost;
+
+  allocator::NegotiatedPriceConfig& final_price_config =
+      const_cast<allocator::NegotiatedPriceConfig&>(session.final_price_state().config());
+  ++final_price_config.maximum_price_per_resource;
+  EXPECT_FALSE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+  --final_price_config.maximum_price_per_resource;
+
+  allocator::OneWorldAllocation& single_world =
+      const_cast<allocator::OneWorldAllocation&>(session.final_single_world());
+  ++single_world.total_intrinsic_cost;
+  EXPECT_FALSE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+  --single_world.total_intrinsic_cost;
+
+  auto& retained_worlds = const_cast<std::vector<allocator::RetainedMultiWorld>&>(
+      session.final_multi_world().retained_worlds());
+  ASSERT_FALSE(retained_worlds.empty());
+  ++retained_worlds.front().world.total_intrinsic_cost;
+  EXPECT_FALSE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+  --retained_worlds.front().world.total_intrinsic_cost;
+
+  allocator::NegotiatedPriceConfig& retained_price_config =
+      const_cast<allocator::NegotiatedPriceConfig&>(retained_worlds.front().price_state.config());
+  ++retained_price_config.maximum_price_per_resource;
+  EXPECT_FALSE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+  --retained_price_config.maximum_price_per_resource;
+
+  ASSERT_TRUE(
+      allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
+}
+
+TEST(Phase4PairedTrialTest, BaselineReplayAuthorityRejectsStaleNestedLiveChecksums) {
+  const Phase4PairedTrialSpec spec = Spec();
+  Phase4RepresentativeCase corpus = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV1(spec.case_id, {}, spec.corpus_limits));
+  allocator::SequentialNegotiatedBaselineResult result =
+      ValueOf<allocator::SequentialNegotiatedBaselineResult>(
+          allocator::ExecuteSequentialNegotiatedBaseline(corpus.board, corpus.workload,
+                                                         corpus.capacities, spec.baseline_config));
+  const auto rebuild = [&]() {
+    return allocator::internal::RecomputeSequentialNegotiatedSessionChecksumFromLiveV1(
+        result, corpus.board, corpus.workload, corpus.capacities);
+  };
+  ASSERT_TRUE(rebuild().has_value());
+
+  auto& workload_nets =
+      const_cast<std::vector<allocator::PreparedNetRoutingContext>&>(corpus.workload.nets());
+  ASSERT_FALSE(workload_nets.empty());
+  ++workload_nets.front().request.goal.y;
+  EXPECT_FALSE(rebuild().has_value());
+  --workload_nets.front().request.goal.y;
+
+  allocator::OneWorldAllocation& final_world =
+      const_cast<allocator::OneWorldAllocation&>(result.final_world());
+  ++final_world.total_selection_score;
+  EXPECT_FALSE(rebuild().has_value());
+  --final_world.total_selection_score;
+
+  allocator::NegotiatedPriceConfig& price_config =
+      const_cast<allocator::NegotiatedPriceConfig&>(result.successor_price_state().config());
+  ++price_config.maximum_price_per_resource;
+  EXPECT_FALSE(rebuild().has_value());
+  --price_config.maximum_price_per_resource;
+
+  auto& final_pools = const_cast<std::vector<allocator::CandidatePool>&>(result.final_pools());
+  ASSERT_FALSE(final_pools.empty());
+  ASSERT_FALSE(final_pools.front().candidates.empty());
+  candidates::GeneratedRouteCandidate& candidate = const_cast<candidates::GeneratedRouteCandidate&>(
+      final_pools.front().candidates.front()->data());
+  ++candidate.policy_identity;
+  EXPECT_FALSE(rebuild().has_value());
+  --candidate.policy_identity;
+  ++candidate.provenance.deterministic_seed;
+  EXPECT_FALSE(rebuild().has_value());
+  --candidate.provenance.deterministic_seed;
+  ++candidate.geometry_signature.low;
+  EXPECT_FALSE(rebuild().has_value());
+  --candidate.geometry_signature.low;
+  ++candidate.resource_signature.high;
+  EXPECT_FALSE(rebuild().has_value());
+  --candidate.resource_signature.high;
+
+  ASSERT_TRUE(rebuild().has_value());
+}
+
+TEST(Phase4PairedTrialTest, OperationalWorkerSerializationRejectsInvalidAuthorityInputs) {
+  const Phase4PairedTrialSpec spec = Spec();
+  Phase4TrialArmReplayAuthorityV1 authority = ValueOf<Phase4TrialArmReplayAuthorityV1>(
+      ExecutePhase4TrialArmReplayAuthorityV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  constexpr std::string_view commit = "0123456789abcdef0123456789abcdef01234567";
+  const std::optional<std::string> serialized =
+      SerializePhase4ReplayAuthorityWorkerJsonV1(authority, commit, true, false);
+  ASSERT_TRUE(serialized.has_value());
+  EXPECT_TRUE(serialized->ends_with('\n'));
+  EXPECT_NE(serialized->find("\"kind\":1"), std::string::npos);
+  EXPECT_NE(serialized->find("\"candidate_session_witness\":null"), std::string::npos);
+  EXPECT_FALSE(
+      SerializePhase4ReplayAuthorityWorkerJsonV1(authority, "short", true, false).has_value());
+  EXPECT_FALSE(SerializePhase4ReplayAuthorityWorkerJsonV1(
+                   authority, "gggggggggggggggggggggggggggggggggggggggg", true, false)
+                   .has_value());
+
+  authority.recomputed_full_preimage_session_checksum ^= 1;
+  authority.authority_checksum =
+      internal::ComputePhase4TrialArmReplayAuthorityChecksumV1(authority);
+  EXPECT_FALSE(
+      SerializePhase4ReplayAuthorityWorkerJsonV1(authority, commit, true, false).has_value());
 }
 
 }  // namespace
