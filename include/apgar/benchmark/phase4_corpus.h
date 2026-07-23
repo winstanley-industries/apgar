@@ -22,6 +22,16 @@ struct Phase4ImportedMultiNetCorpus {
   allocator::MultiNetWorkload workload;
 };
 
+struct Phase4ImportedCorpusOperationalProfileV1 {
+  std::uint64_t component_wall_nanoseconds = 0;
+  std::uint64_t fixture_identity_and_import_wall_nanoseconds = 0;
+  std::uint64_t workload_geometry_compilation_wall_nanoseconds = 0;
+  std::uint64_t unclassified_and_release_wall_nanoseconds = 0;
+
+  friend bool operator==(const Phase4ImportedCorpusOperationalProfileV1&,
+                         const Phase4ImportedCorpusOperationalProfileV1&) = default;
+};
+
 enum class Phase4CorpusErrorCode : std::uint8_t {
   kFixtureIdentityMismatch,
   kFixtureImportFailed,
@@ -45,6 +55,10 @@ using Phase4ImportedMultiNetCorpusResult =
 // Bazel runfile or another explicitly authenticated source, never a host path.
 [[nodiscard]] Phase4ImportedMultiNetCorpusResult BuildPhase4ImportedMultiNetCorpusV1(
     std::string_view kicad_fixture);
+
+[[nodiscard]] Phase4ImportedMultiNetCorpusResult
+BuildPhase4ImportedMultiNetCorpusWithOperationalProfileV1(
+    std::string_view kicad_fixture, Phase4ImportedCorpusOperationalProfileV1& operational_profile);
 
 }  // namespace apgar::benchmark
 

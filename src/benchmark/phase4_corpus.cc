@@ -1,6 +1,7 @@
 #include "apgar/benchmark/phase4_corpus.h"
 
 #include <array>
+#include <chrono>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -12,9 +13,18 @@
 #include "apgar/board_ir/stable_hash.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "src/benchmark/phase4_corpus_internal.h"
+#include "src/operational_timestamp.h"
 
 namespace apgar::benchmark {
 namespace {
+
+using OperationalClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t OperationalElapsed(OperationalClock::time_point start) noexcept {
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(OperationalClock::now() - start).count();
+  return elapsed <= 0 ? 0 : static_cast<std::uint64_t>(elapsed);
+}
 
 using board_ir::AxisAlignedBox64;
 using board_ir::BoardSnapshot;
@@ -82,8 +92,18 @@ void MaybeFailPhase4CorpusBuildForTesting() {
 
 }  // namespace
 
-Phase4ImportedMultiNetCorpusResult BuildPhase4ImportedMultiNetCorpusV1(
-    std::string_view kicad_fixture) {
+template <bool CaptureOperationalProfile>
+Phase4ImportedMultiNetCorpusResult BuildPhase4ImportedMultiNetCorpusImpl(
+    std::string_view kicad_fixture, Phase4ImportedCorpusOperationalProfileV1* operational_profile) {
+  ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+      component_start;
+  ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock> import_start;
+  if constexpr (CaptureOperationalProfile) {
+    *operational_profile = {};
+    component_start =
+        ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    import_start = component_start;
+  }
   try {
     if (kicad_fixture.size() != kPhase4ImportedMultiNetFixtureBytesV1 ||
         board_ir::StableHashString(kicad_fixture) != kPhase4ImportedMultiNetFixtureFnv1a64V1) {
@@ -130,6 +150,16 @@ Phase4ImportedMultiNetCorpusResult BuildPhase4ImportedMultiNetCorpusV1(
     };
     specs[1].routing_profile.net = route_b->ref;
 
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->fixture_identity_and_import_wall_nanoseconds =
+          OperationalElapsed(import_start);
+    }
+    ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+        compilation_start;
+    if constexpr (CaptureOperationalProfile) {
+      compilation_start =
+          ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    }
     const allocator::MultiNetWorkloadLimits limits{
         .maximum_nets = specs.size(),
         .maximum_compiled_nodes = kCorpusCompiledNodeLimit,
@@ -146,15 +176,53 @@ Phase4ImportedMultiNetCorpusResult BuildPhase4ImportedMultiNetCorpusV1(
       return Error(Phase4CorpusErrorCode::kWorkloadBuildFailed,
                    "Phase 4 imported workload failed: " + std::string(workload_error->detail));
     }
-    return Phase4ImportedMultiNetCorpus{
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->workload_geometry_compilation_wall_nanoseconds =
+          OperationalElapsed(compilation_start);
+    }
+    Phase4ImportedMultiNetCorpus result{
         .board = std::move(board),
         .workload = std::get<allocator::MultiNetWorkload>(std::move(workload_result)),
     };
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->component_wall_nanoseconds = OperationalElapsed(component_start);
+      const __uint128_t classified =
+          static_cast<__uint128_t>(
+              operational_profile->fixture_identity_and_import_wall_nanoseconds) +
+          operational_profile->workload_geometry_compilation_wall_nanoseconds;
+      operational_profile->unclassified_and_release_wall_nanoseconds =
+          classified <= operational_profile->component_wall_nanoseconds
+              ? operational_profile->component_wall_nanoseconds -
+                    static_cast<std::uint64_t>(classified)
+              : 0;
+    }
+    return result;
   } catch (const std::bad_alloc&) {
     return ResourceError("benchmark.phase4_corpus.host_memory.v1");
   } catch (const std::length_error&) {
     return ResourceError("benchmark.phase4_corpus.host_container.v1");
   }
+}
+
+Phase4ImportedMultiNetCorpusResult BuildPhase4ImportedMultiNetCorpusV1(
+    std::string_view kicad_fixture) {
+  return BuildPhase4ImportedMultiNetCorpusImpl<false>(kicad_fixture, nullptr);
+}
+
+Phase4ImportedMultiNetCorpusResult BuildPhase4ImportedMultiNetCorpusWithOperationalProfileV1(
+    std::string_view kicad_fixture, Phase4ImportedCorpusOperationalProfileV1& operational_profile) {
+  const OperationalClock::time_point component_start = OperationalClock::now();
+  Phase4ImportedMultiNetCorpusResult result =
+      BuildPhase4ImportedMultiNetCorpusImpl<true>(kicad_fixture, &operational_profile);
+  operational_profile.component_wall_nanoseconds = OperationalElapsed(component_start);
+  const __uint128_t classified =
+      static_cast<__uint128_t>(operational_profile.fixture_identity_and_import_wall_nanoseconds) +
+      operational_profile.workload_geometry_compilation_wall_nanoseconds;
+  operational_profile.unclassified_and_release_wall_nanoseconds =
+      classified <= operational_profile.component_wall_nanoseconds
+          ? operational_profile.component_wall_nanoseconds - static_cast<std::uint64_t>(classified)
+          : 0;
+  return result;
 }
 
 namespace internal {

@@ -1,6 +1,7 @@
 #include "apgar/allocator/multi_world.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -20,13 +21,26 @@
 #include "src/allocator/multi_world_internal.h"
 #include "src/allocator/negotiated_prices_internal.h"
 #include "src/allocator/one_world_internal.h"
+#include "src/operational_timestamp.h"
 
 namespace apgar::allocator {
 namespace {
 
 using UWide = __uint128_t;
+using OperationalClock = std::chrono::steady_clock;
 
 thread_local std::uint64_t g_preflight_span_inspections = 0;
+
+[[nodiscard]] std::uint64_t OperationalElapsed(OperationalClock::time_point start) noexcept {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(OperationalClock::now() - start)
+          .count());
+}
+
+void AccumulateOperationalElapsed(std::uint64_t& destination,
+                                  OperationalClock::time_point start) noexcept {
+  destination += OperationalElapsed(start);
+}
 
 [[nodiscard]] MultiWorldExecutionError Error(MultiWorldExecutionErrorCode code,
                                              std::string_view invariant_id,
@@ -469,12 +483,22 @@ std::uint64_t internal::ComputeMultiWorldExecutionChecksumV1(
   return hash.Finish();
 }
 
-MultiWorldExecutionResult ExecuteMultiWorldCpu(std::uint32_t schema_version,
-                                               const MultiWorldPoolSnapshot& source,
-                                               const NegotiatedPriceState& branch_state,
-                                               std::span<const MultiWorldSchedule> schedules,
-                                               candidates::CandidateStore& candidate_store,
-                                               const MultiWorldExecutionConfig& config) {
+template <bool CaptureOperationalProfile>
+MultiWorldExecutionResult ExecuteMultiWorldCpuImpl(
+    std::uint32_t schema_version, const MultiWorldPoolSnapshot& source,
+    const NegotiatedPriceState& branch_state, std::span<const MultiWorldSchedule> schedules,
+    candidates::CandidateStore& candidate_store, const MultiWorldExecutionConfig& config,
+    MultiWorldOperationalProfileV1* operational_profile) {
+  ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+      component_start;
+  ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+      preflight_start;
+  if constexpr (CaptureOperationalProfile) {
+    *operational_profile = {};
+    component_start =
+        ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    preflight_start = component_start;
+  }
   g_preflight_span_inspections = 0;
   if (schema_version != kMultiWorldExecutionSchemaVersion) {
     return Error(MultiWorldExecutionErrorCode::kUnsupportedSchema,
@@ -680,6 +704,10 @@ MultiWorldExecutionResult ExecuteMultiWorldCpu(std::uint32_t schema_version,
                  "Known multi-world work exceeds a configured aggregate bound");
   }
 
+  if constexpr (CaptureOperationalProfile) {
+    operational_profile->validation_and_source_preflight_wall_nanoseconds =
+        OperationalElapsed(preflight_start);
+  }
   return WithFailureEnvelope([&]() -> MultiWorldExecutionResult {
     std::vector<MultiWorldSchedule> canonical_schedules(schedules.begin(), schedules.end());
     std::ranges::sort(canonical_schedules, {}, &MultiWorldSchedule::schedule_key);
@@ -806,6 +834,12 @@ MultiWorldExecutionResult ExecuteMultiWorldCpu(std::uint32_t schema_version,
             std::optional<std::uint64_t> preferred_world_identity,
             std::vector<candidates::CandidatePinRequest> winner_requests,
             MultiWorldExecutionCounters final_counters) -> MultiWorldExecutionResult {
+      ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+          retention_start;
+      if constexpr (CaptureOperationalProfile) {
+        retention_start =
+            ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+      }
       auto successor_expected_result = BuildExpectedPools(source);
       if (const auto* failure = std::get_if<MultiWorldExecutionError>(&successor_expected_result);
           failure != nullptr) {
@@ -845,11 +879,28 @@ MultiWorldExecutionResult ExecuteMultiWorldCpu(std::uint32_t schema_version,
               .preferred_world_identity = preferred_world_identity,
           },
           canonical_schedules, summaries, retained_replay);
-      return MultiWorldExecution(kMultiWorldExecutionSchemaVersion, config,
+      MultiWorldExecution result(kMultiWorldExecutionSchemaVersion, config,
                                  source_snapshot_checksum, branch_state.state_checksum(),
                                  disposition, final_counters, std::move(summaries),
                                  std::move(retained_worlds), preferred_world_identity,
                                  execution_checksum, std::move(successor_lease));
+      if constexpr (CaptureOperationalProfile) {
+        AccumulateOperationalElapsed(
+            operational_profile->terminal_retention_and_assembly_wall_nanoseconds, retention_start);
+        operational_profile->component_wall_nanoseconds = OperationalElapsed(component_start);
+        const UWide classified =
+            static_cast<UWide>(
+                operational_profile->validation_and_source_preflight_wall_nanoseconds) +
+            operational_profile->selection_and_resource_accumulation_wall_nanoseconds +
+            operational_profile->price_update_and_snapshot_wall_nanoseconds +
+            operational_profile->terminal_retention_and_assembly_wall_nanoseconds;
+        operational_profile->unclassified_serial_wall_nanoseconds =
+            classified <= operational_profile->component_wall_nanoseconds
+                ? operational_profile->component_wall_nanoseconds -
+                      static_cast<std::uint64_t>(classified)
+                : 0;
+      }
+      return result;
     };
 
     if (config.known_unmapped_exact_conflict_count != 0) {
@@ -875,6 +926,12 @@ MultiWorldExecutionResult ExecuteMultiWorldCpu(std::uint32_t schema_version,
       summary.trace.reserve(schedule.maximum_selection_rounds);
       std::optional<OneWorldAllocation> final_world;
       for (std::uint32_t round = 0; round < schedule.maximum_selection_rounds; ++round) {
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            selection_start;
+        if constexpr (CaptureOperationalProfile) {
+          selection_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         OneWorldAllocationResult world_result = AllocateOneWorld(request);
         if (const auto* failure = std::get_if<AllocationError>(&world_result); failure != nullptr) {
           return TranslateAllocationError(
@@ -882,6 +939,11 @@ MultiWorldExecutionResult ExecuteMultiWorldCpu(std::uint32_t schema_version,
               "A canonical multi-world branch failed One-World allocation");
         }
         OneWorldAllocation world = std::get<OneWorldAllocation>(std::move(world_result));
+        if constexpr (CaptureOperationalProfile) {
+          AccumulateOperationalElapsed(
+              operational_profile->selection_and_resource_accumulation_wall_nanoseconds,
+              selection_start);
+        }
         summary.trace.push_back(MultiWorldRoundTrace{
             .round_index = round,
             .price_state_checksum = price_state.state_checksum(),
@@ -913,6 +975,12 @@ MultiWorldExecutionResult ExecuteMultiWorldCpu(std::uint32_t schema_version,
           break;
         }
 
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            price_update_start;
+        if constexpr (CaptureOperationalProfile) {
+          price_update_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         NegotiatedPriceStateResult update = UpdateNegotiatedPrices(price_state, request, world);
         if (const auto* failure = std::get_if<NegotiatedPriceError>(&update); failure != nullptr) {
           return TranslatePriceError(*failure, "allocator.multi_world.price_update.v1",
@@ -931,6 +999,10 @@ MultiWorldExecutionResult ExecuteMultiWorldCpu(std::uint32_t schema_version,
                                      "A branch state failed to produce its next price snapshot");
         }
         request.prices = std::get<PriceSnapshot>(std::move(next_snapshot));
+        if constexpr (CaptureOperationalProfile) {
+          AccumulateOperationalElapsed(
+              operational_profile->price_update_and_snapshot_wall_nanoseconds, price_update_start);
+        }
         ++counters.price_updates;
       }
       if (!final_world.has_value()) {
@@ -1090,6 +1162,25 @@ MultiWorldExecutionResult ExecuteMultiWorldCpu(std::uint32_t schema_version,
     return finalize(disposition, std::move(summaries), std::move(retained_worlds),
                     preferred_world_identity, std::move(winner_requests), counters);
   });
+}
+
+MultiWorldExecutionResult ExecuteMultiWorldCpu(std::uint32_t schema_version,
+                                               const MultiWorldPoolSnapshot& source,
+                                               const NegotiatedPriceState& branch_state,
+                                               std::span<const MultiWorldSchedule> schedules,
+                                               candidates::CandidateStore& candidate_store,
+                                               const MultiWorldExecutionConfig& config) {
+  return ExecuteMultiWorldCpuImpl<false>(schema_version, source, branch_state, schedules,
+                                         candidate_store, config, nullptr);
+}
+
+MultiWorldExecutionResult ExecuteMultiWorldCpuWithOperationalProfileV1(
+    std::uint32_t schema_version, const MultiWorldPoolSnapshot& source,
+    const NegotiatedPriceState& branch_state, std::span<const MultiWorldSchedule> schedules,
+    candidates::CandidateStore& candidate_store, const MultiWorldExecutionConfig& config,
+    MultiWorldOperationalProfileV1& operational_profile) {
+  return ExecuteMultiWorldCpuImpl<true>(schema_version, source, branch_state, schedules,
+                                        candidate_store, config, &operational_profile);
 }
 
 }  // namespace apgar::allocator

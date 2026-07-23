@@ -150,6 +150,25 @@ struct SequentialNegotiatedBaselineCounters {
                          const SequentialNegotiatedBaselineCounters&) = default;
 };
 
+// Diagnostic-only wall intervals for one separately instrumented traditional
+// baseline execution. The ordinary Raw path supplies no profile pointer and
+// therefore executes no profiling clocks.
+struct SequentialNegotiatedBaselineOperationalProfileV1 {
+  std::uint64_t component_wall_nanoseconds = 0;
+  std::uint64_t validation_and_initialization_wall_nanoseconds = 0;
+  std::uint64_t scheduling_and_policy_projection_wall_nanoseconds = 0;
+  std::uint64_t candidate_generation_wall_nanoseconds = 0;
+  std::uint64_t exact_admission_and_store_publication_wall_nanoseconds = 0;
+  std::uint64_t incremental_resource_accumulation_wall_nanoseconds = 0;
+  std::uint64_t sweep_selection_and_resource_replay_wall_nanoseconds = 0;
+  std::uint64_t price_update_wall_nanoseconds = 0;
+  std::uint64_t final_assembly_wall_nanoseconds = 0;
+  std::uint64_t unclassified_serial_wall_nanoseconds = 0;
+
+  friend bool operator==(const SequentialNegotiatedBaselineOperationalProfileV1&,
+                         const SequentialNegotiatedBaselineOperationalProfileV1&) = default;
+};
+
 enum class SequentialNegotiatedBaselineErrorCode : std::uint8_t {
   kUnsupportedSchema = 0,
   kInvalidConfiguration = 1,
@@ -247,6 +266,12 @@ class SequentialNegotiatedBaselineResult {
   ExecuteSequentialNegotiatedBaseline(const board_ir::BoardSnapshot&, const MultiNetWorkload&,
                                       const ResourceCapacityModel&,
                                       const SequentialNegotiatedBaselineConfig&);
+  template <bool>
+  friend std::variant<SequentialNegotiatedBaselineResult, SequentialNegotiatedBaselineError>
+  ExecuteSequentialNegotiatedBaselineImpl(const board_ir::BoardSnapshot&, const MultiNetWorkload&,
+                                          const ResourceCapacityModel&,
+                                          const SequentialNegotiatedBaselineConfig&,
+                                          SequentialNegotiatedBaselineOperationalProfileV1*);
 };
 
 using SequentialNegotiatedBaselineExecution =
@@ -259,6 +284,12 @@ using SequentialNegotiatedBaselineExecution =
 [[nodiscard]] SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
     const board_ir::BoardSnapshot& board, const MultiNetWorkload& workload,
     const ResourceCapacityModel& capacities, const SequentialNegotiatedBaselineConfig& config);
+
+[[nodiscard]] SequentialNegotiatedBaselineExecution
+ExecuteSequentialNegotiatedBaselineWithOperationalProfileV1(
+    const board_ir::BoardSnapshot& board, const MultiNetWorkload& workload,
+    const ResourceCapacityModel& capacities, const SequentialNegotiatedBaselineConfig& config,
+    SequentialNegotiatedBaselineOperationalProfileV1& operational_profile);
 
 }  // namespace apgar::allocator
 

@@ -12,6 +12,7 @@
 #include <variant>
 
 #include "apgar/allocator/cpu_candidate_pool_preparation.h"
+#include "apgar/tooling/runfiles.h"
 #include "src/allocator/cpu_candidate_allocation_session_internal.h"
 #include "src/benchmark/phase4_paired_trial_internal.h"
 #include "tests/support/google_test.h"
@@ -149,6 +150,11 @@ template <typename Value, typename Error>
     std::uint32_t workers = 1) {
   return ValueOf<std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer>>(
       allocator::CreatePersistentCpuCandidatePoolPreparer({.worker_count = workers}));
+}
+
+[[nodiscard]] std::string ReadImportedFixture() {
+  return tooling::ReadRunfile("tests/fixtures/phase4_supported_multinet_v1.kicad_pcb")
+      .value_or(std::string{});
 }
 
 [[nodiscard]] Phase4PerNetColumnOutcomesV1 BaselineColumnsFor(
@@ -1329,6 +1335,251 @@ TEST(Phase4PairedTrialTest, SameRunDecisionValidatorRejectsReauthenticatedAssoci
                                                               corpus.workload, changed);
     ASSERT_TRUE(error.has_value());
     EXPECT_EQ(error->invariant_id, "P4SAMERUN-CLOSURE-001");
+  }
+}
+
+TEST(Phase4PairedTrialTest, OperationalProfilesAreSeparateChecksumBoundAuthenticReplays) {
+  const Phase4PairedTrialSpec spec = Spec();
+  const Phase4TrialArmExecution ordinary_baseline = ValueOf<Phase4TrialArmExecution>(
+      ExecutePhase4TrialArmV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  Phase4TrialArmOperationalProfileV1 baseline = ValueOf<Phase4TrialArmOperationalProfileV1>(
+      ExecutePhase4TrialArmOperationalProfileV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  EXPECT_EQ(baseline.execution.semantics, ordinary_baseline.semantics);
+  EXPECT_TRUE(baseline.baseline.has_value());
+  EXPECT_FALSE(baseline.preparation.has_value());
+  EXPECT_FALSE(baseline.candidate_session.has_value());
+  EXPECT_EQ(baseline.profile_checksum,
+            internal::ComputePhase4TrialArmOperationalProfileChecksumV1(baseline));
+  EXPECT_NE(baseline.profile_checksum, 0U);
+  EXPECT_FALSE(internal::ValidatePhase4TrialArmOperationalProfileV1(baseline).has_value());
+  EXPECT_LE(baseline.unclassified_cold_scope_exit_wall_nanoseconds,
+            baseline.execution.cold_elapsed_nanoseconds);
+  EXPECT_EQ(baseline.case_build.fixture_import_applicability.status,
+            Phase4OperationalMeasurementStatus::kNotApplicable);
+
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  const Phase4TrialArmExecution ordinary_candidate =
+      ValueOf<Phase4TrialArmExecution>(ExecutePhase4TrialArmV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  Phase4TrialArmOperationalProfileV1 candidate =
+      ValueOf<Phase4TrialArmOperationalProfileV1>(ExecutePhase4TrialArmOperationalProfileV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  EXPECT_EQ(candidate.execution.semantics, ordinary_candidate.semantics);
+  EXPECT_FALSE(candidate.baseline.has_value());
+  ASSERT_TRUE(candidate.preparation.has_value());
+  ASSERT_TRUE(candidate.candidate_session.has_value());
+  EXPECT_EQ(candidate.profile_checksum,
+            internal::ComputePhase4TrialArmOperationalProfileChecksumV1(candidate));
+  EXPECT_NE(candidate.profile_checksum, 0U);
+  EXPECT_EQ(candidate.preparation->base_jobs_dispatched,
+            candidate.execution.semantics.workload_net_count);
+  EXPECT_FALSE(internal::ValidatePhase4TrialArmOperationalProfileV1(candidate).has_value());
+  EXPECT_LE(candidate.candidate_session->regeneration_epochs.size(),
+            spec.candidate_session_config.maximum_regeneration_epochs);
+}
+
+TEST(Phase4PairedTrialTest, ImportedOperationalReplayCarriesEndToEndSourceAuthority) {
+  const std::string fixture = ReadImportedFixture();
+  ASSERT_FALSE(fixture.empty());
+  const Phase4PairedTrialSpec spec = Spec(Phase4TrialOrder::kBaselineFirst, 4'000, 2);
+  const Phase4TrialArmOperationalProfileV1 profile =
+      ValueOf<Phase4TrialArmOperationalProfileV1>(ExecutePhase4TrialArmOperationalProfileV1(
+          Phase4TrialArm::kSequentialBaseline, spec, fixture));
+  EXPECT_EQ(profile.case_build.case_source, Phase4CaseSource::kImportedFixture);
+  EXPECT_EQ(profile.case_build.fixture_import_applicability.status,
+            Phase4OperationalMeasurementStatus::kMeasured);
+  EXPECT_EQ(profile.case_build.synthetic_materialization_applicability.status,
+            Phase4OperationalMeasurementStatus::kNotApplicable);
+  EXPECT_FALSE(internal::ValidatePhase4TrialArmOperationalProfileV1(profile).has_value());
+
+  Phase4TrialArmOperationalProfileV1 changed = profile;
+  changed.case_build.fixture_import_applicability.reason =
+      Phase4OperationalMeasurementReason::kSyntheticCaseHasNoFixtureImport;
+  changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+  const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+  ASSERT_TRUE(error.has_value());
+  EXPECT_EQ(error->invariant_id, "P4OP-CASE-APPLICABILITY-001");
+
+  changed = profile;
+  ++changed.case_build.synthetic_geometry_and_board_materialization_wall_nanoseconds;
+  changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+  const auto zero_field_error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+  ASSERT_TRUE(zero_field_error.has_value());
+  EXPECT_EQ(zero_field_error->invariant_id, "P4OP-CASE-APPLICABILITY-001");
+}
+
+TEST(Phase4PairedTrialTest, OperationalValidatorRejectsReauthenticatedAuthorityDrift) {
+  const Phase4PairedTrialSpec spec = Spec();
+  const Phase4TrialArmOperationalProfileV1 baseline = ValueOf<Phase4TrialArmOperationalProfileV1>(
+      ExecutePhase4TrialArmOperationalProfileV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  EXPECT_FALSE(internal::ValidatePhase4TrialArmOperationalProfileV1(baseline).has_value());
+  {
+    Phase4TrialArmOperationalProfileV1 changed = baseline;
+    changed.process_cpu.reason = Phase4OperationalMeasurementReason::kNone;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-APPLICABILITY-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = baseline;
+    changed.preparation.emplace();
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-ARM-SHAPE-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = baseline;
+    changed.case_build.case_source = Phase4CaseSource::kImportedFixture;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-CASE-SOURCE-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = baseline;
+    ++changed.case_build.unclassified_and_release_wall_nanoseconds;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-TIMING-CLOSURE-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = baseline;
+    changed.contender_transient_release_tail_wall_nanoseconds =
+        changed.execution.prepared_elapsed_nanoseconds + 1U;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-TIMING-CLOSURE-001");
+  }
+
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  static_cast<void>(ValueOf<Phase4TrialArmExecution>(ExecutePhase4TrialArmV1(
+      Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get())));
+  const Phase4TrialArmOperationalProfileV1 candidate =
+      ValueOf<Phase4TrialArmOperationalProfileV1>(ExecutePhase4TrialArmOperationalProfileV1(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  ASSERT_TRUE(candidate.candidate_session.has_value());
+  ASSERT_FALSE(candidate.candidate_session->regeneration_plans.empty());
+  ASSERT_EQ(candidate.candidate_session->regeneration_plans.size(),
+            candidate.candidate_session->regeneration_epochs.size());
+  EXPECT_EQ(candidate.candidate_session->regeneration_plans.front().price_update_operations, 1U);
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.execution.preparer_lifecycle.invocations_completed_before;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-LIFECYCLE-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.preparation->alternative_jobs_dispatched;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-CANDIDATE-CLOSURE-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    const std::uint64_t wave_wall = changed.preparation->base_worker_wave_wall_nanoseconds +
+                                    changed.preparation->alternative_worker_wave_wall_nanoseconds;
+    changed.preparation->route_and_candidate_build_worker_sum_nanoseconds =
+        wave_wall * changed.execution.semantics.preparation_worker_count + 1U;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-CANDIDATE-CLOSURE-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.candidate_session->regeneration_plans.front().plan_checksum;
+    ++changed.candidate_session->regeneration_epochs.front().plan_checksum;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-SESSION-WITNESS-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.candidate_session->regeneration_epochs.front().execution_checksum;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-SESSION-WITNESS-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.candidate_session->regeneration_plans.front().plan_checksum;
+    ++changed.candidate_session->regeneration_epochs.front().plan_checksum;
+    ++changed.candidate_session->replay_witness.epoch_association_checksum;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-SESSION-WITNESS-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.candidate_session->regeneration_epochs.front().execution_checksum;
+    ++changed.candidate_session->replay_witness.epoch_association_checksum;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-SESSION-WITNESS-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    changed.candidate_session->regeneration_plans.clear();
+    changed.candidate_session->regeneration_epochs.clear();
+    changed.candidate_session->targeted_regeneration_price_update_wall_nanoseconds = 0;
+    changed.candidate_session
+        ->targeted_regeneration_selection_and_target_planning_wall_nanoseconds = 0;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-SESSION-WITNESS-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.candidate_session->replay_witness.counters.admitted_candidates;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-NESTED-CLOSURE-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.candidate_session->regeneration_epochs.front().counters.successful_routes;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-SESSION-WITNESS-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.contender_transient_release_tail_wall_nanoseconds;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-CANDIDATE-CLOSURE-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.candidate_session->regeneration_epochs.front().epoch_index;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-SESSION-WITNESS-001");
+  }
+  {
+    Phase4TrialArmOperationalProfileV1 changed = candidate;
+    ++changed.candidate_session->regeneration_plans.front().plan_checksum;
+    changed.profile_checksum = internal::ComputePhase4TrialArmOperationalProfileChecksumV1(changed);
+    const auto error = internal::ValidatePhase4TrialArmOperationalProfileV1(changed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, "P4OP-EPOCH-ASSOCIATION-001");
   }
 }
 

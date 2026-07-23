@@ -177,6 +177,8 @@ struct TargetedRegenerationExecutionError {
                          const TargetedRegenerationExecutionError&) = default;
 };
 
+struct TargetedRegenerationOperationalProfileV1;
+
 class TargetedRegenerationExecution {
  public:
   TargetedRegenerationExecution(const TargetedRegenerationExecution&) = delete;
@@ -266,10 +268,40 @@ class TargetedRegenerationExecution {
                                      const OneWorldAllocationRequest&, TargetedRegenerationPlan&&,
                                      candidates::CandidateStore&,
                                      const TargetedRegenerationExecutionConfig&);
+  template <bool>
+  friend std::variant<TargetedRegenerationExecution, TargetedRegenerationExecutionError>
+  ExecuteTargetedRegenerationPlanCpuImpl(std::uint32_t, const board_ir::BoardSnapshot&,
+                                         const OneWorldAllocationRequest&,
+                                         TargetedRegenerationPlan&&, candidates::CandidateStore&,
+                                         const TargetedRegenerationExecutionConfig&,
+                                         TargetedRegenerationOperationalProfileV1*);
 };
 
 using TargetedRegenerationExecutionResult =
     std::variant<TargetedRegenerationExecution, TargetedRegenerationExecutionError>;
+
+// Diagnostic-only wall intervals for one separately instrumented targeted
+// regeneration. These values never participate in semantic or replay
+// checksums, and the ordinary execution path supplies no profile pointer.
+struct TargetedRegenerationOperationalProfileV1 {
+  std::uint32_t epoch_index = 0;
+  std::uint64_t plan_checksum = 0;
+  std::uint64_t execution_checksum = 0;
+  TargetedRegenerationExecutionCounters counters;
+  std::uint64_t component_wall_nanoseconds = 0;
+  std::uint64_t validation_and_preflight_wall_nanoseconds = 0;
+  std::uint64_t baseline_selection_and_source_store_preflight_wall_nanoseconds = 0;
+  std::uint64_t policy_projection_and_candidate_generation_wall_nanoseconds = 0;
+  std::uint64_t exact_admission_and_store_publication_wall_nanoseconds = 0;
+  std::uint64_t publication_correlation_wall_nanoseconds = 0;
+  std::uint64_t refreshed_selection_and_resource_accumulation_wall_nanoseconds = 0;
+  std::uint64_t successor_retention_wall_nanoseconds = 0;
+  std::uint64_t final_assembly_wall_nanoseconds = 0;
+  std::uint64_t unclassified_serial_wall_nanoseconds = 0;
+
+  friend bool operator==(const TargetedRegenerationOperationalProfileV1&,
+                         const TargetedRegenerationOperationalProfileV1&) = default;
+};
 
 // Executes one immutable plan against its exact source request. The workload,
 // board, and CandidateStore must outlive the call and the returned execution;
@@ -278,6 +310,13 @@ using TargetedRegenerationExecutionResult =
     std::uint32_t schema_version, const board_ir::BoardSnapshot& board,
     const OneWorldAllocationRequest& source_request, TargetedRegenerationPlan&& plan,
     candidates::CandidateStore& candidate_store, const TargetedRegenerationExecutionConfig& config);
+
+[[nodiscard]] TargetedRegenerationExecutionResult
+ExecuteTargetedRegenerationPlanCpuWithOperationalProfileV1(
+    std::uint32_t schema_version, const board_ir::BoardSnapshot& board,
+    const OneWorldAllocationRequest& source_request, TargetedRegenerationPlan&& plan,
+    candidates::CandidateStore& candidate_store, const TargetedRegenerationExecutionConfig& config,
+    TargetedRegenerationOperationalProfileV1& operational_profile);
 
 }  // namespace apgar::allocator
 

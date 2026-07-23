@@ -136,6 +136,21 @@ struct MultiWorldExecutionCounters {
                          const MultiWorldExecutionCounters&) = default;
 };
 
+// Diagnostic-only wall intervals for one separately instrumented fixed-pool
+// multi-world execution. The ordinary execution entry point never observes
+// or mutates this profile.
+struct MultiWorldOperationalProfileV1 {
+  std::uint64_t component_wall_nanoseconds = 0;
+  std::uint64_t validation_and_source_preflight_wall_nanoseconds = 0;
+  std::uint64_t selection_and_resource_accumulation_wall_nanoseconds = 0;
+  std::uint64_t price_update_and_snapshot_wall_nanoseconds = 0;
+  std::uint64_t terminal_retention_and_assembly_wall_nanoseconds = 0;
+  std::uint64_t unclassified_serial_wall_nanoseconds = 0;
+
+  friend bool operator==(const MultiWorldOperationalProfileV1&,
+                         const MultiWorldOperationalProfileV1&) = default;
+};
+
 enum class MultiWorldExecutionErrorCode : std::uint8_t {
   kUnsupportedSchema = 0,
   kInvalidConfiguration = 1,
@@ -234,6 +249,11 @@ class MultiWorldExecution {
       std::uint32_t, const MultiWorldPoolSnapshot&, const NegotiatedPriceState&,
       std::span<const MultiWorldSchedule>, candidates::CandidateStore&,
       const MultiWorldExecutionConfig&);
+  template <bool>
+  friend std::variant<MultiWorldExecution, MultiWorldExecutionError> ExecuteMultiWorldCpuImpl(
+      std::uint32_t, const MultiWorldPoolSnapshot&, const NegotiatedPriceState&,
+      std::span<const MultiWorldSchedule>, candidates::CandidateStore&,
+      const MultiWorldExecutionConfig&, MultiWorldOperationalProfileV1*);
 };
 
 using MultiWorldExecutionResult = std::variant<MultiWorldExecution, MultiWorldExecutionError>;
@@ -245,6 +265,12 @@ using MultiWorldExecutionResult = std::variant<MultiWorldExecution, MultiWorldEx
     std::uint32_t schema_version, const MultiWorldPoolSnapshot& source,
     const NegotiatedPriceState& branch_state, std::span<const MultiWorldSchedule> schedules,
     candidates::CandidateStore& candidate_store, const MultiWorldExecutionConfig& config);
+
+[[nodiscard]] MultiWorldExecutionResult ExecuteMultiWorldCpuWithOperationalProfileV1(
+    std::uint32_t schema_version, const MultiWorldPoolSnapshot& source,
+    const NegotiatedPriceState& branch_state, std::span<const MultiWorldSchedule> schedules,
+    candidates::CandidateStore& candidate_store, const MultiWorldExecutionConfig& config,
+    MultiWorldOperationalProfileV1& operational_profile);
 
 }  // namespace apgar::allocator
 

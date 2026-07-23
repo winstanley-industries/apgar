@@ -12,6 +12,7 @@
 #include "apgar/allocator/multi_net_workload.h"
 #include "apgar/allocator/one_world.h"
 #include "apgar/benchmark/phase4_corpus.h"
+#include "apgar/benchmark/phase4_operational_types.h"
 #include "apgar/board_ir/board.h"
 #include "apgar/routing/candidate_policy.h"
 
@@ -142,6 +143,24 @@ struct Phase4RepresentativeCorpusError {
 using Phase4RepresentativeCaseResult =
     std::variant<Phase4RepresentativeCase, Phase4RepresentativeCorpusError>;
 
+struct Phase4RepresentativeCaseOperationalProfileV1 {
+  Phase4CaseSource case_source = Phase4CaseSource::kSynthetic;
+  Phase4OperationalApplicabilityV1 fixture_import_applicability;
+  Phase4OperationalApplicabilityV1 synthetic_materialization_applicability;
+  Phase4OperationalApplicabilityV1 compile_probe_applicability;
+  std::uint64_t descriptor_validation_and_bound_preflight_wall_nanoseconds = 0;
+  std::uint64_t fixture_identity_and_import_wall_nanoseconds = 0;
+  std::uint64_t synthetic_geometry_and_board_materialization_wall_nanoseconds = 0;
+  std::uint64_t geometry_compilation_probe_wall_nanoseconds = 0;
+  std::uint64_t workload_geometry_compilation_wall_nanoseconds = 0;
+  std::uint64_t capacity_and_case_assembly_wall_nanoseconds = 0;
+  std::uint64_t component_wall_nanoseconds = 0;
+  std::uint64_t unclassified_and_release_wall_nanoseconds = 0;
+
+  friend bool operator==(const Phase4RepresentativeCaseOperationalProfileV1&,
+                         const Phase4RepresentativeCaseOperationalProfileV1&) = default;
+};
+
 // The returned roster is static and descriptor-only. Building one case never
 // materializes any other case, which keeps the thousands-net ladder honest and
 // bounded by the caller's explicit limits.
@@ -158,6 +177,11 @@ using Phase4RepresentativeCaseResult =
 [[nodiscard]] Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
     std::uint32_t case_id, std::string_view imported_fixture,
     const Phase4RepresentativeCorpusLimits& limits = {});
+
+[[nodiscard]] Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseWithOperationalProfileV1(
+    std::uint32_t case_id, std::string_view imported_fixture,
+    const Phase4RepresentativeCorpusLimits& limits,
+    Phase4RepresentativeCaseOperationalProfileV1& operational_profile);
 
 }  // namespace apgar::benchmark
 

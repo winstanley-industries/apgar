@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <limits>
 #include <new>
 #include <optional>
@@ -13,6 +14,7 @@
 #include "apgar/board_ir/stable_hash.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "src/benchmark/phase4_representative_corpus_internal.h"
+#include "src/operational_timestamp.h"
 
 namespace apgar::benchmark {
 namespace {
@@ -31,6 +33,13 @@ using board_ir::Terminal;
 using geometry_compiler::ActiveRegion;
 using geometry_compiler::CompilerProfile;
 using geometry_compiler::DeterministicCosts;
+using OperationalClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t OperationalElapsed(OperationalClock::time_point start) noexcept {
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(OperationalClock::now() - start).count();
+  return elapsed <= 0 ? 0 : static_cast<std::uint64_t>(elapsed);
+}
 
 constexpr std::size_t kDescriptorCountV1 = 42;
 constexpr std::array<std::uint32_t, 3> kPrimaryPools = {4, 8, 16};
@@ -814,9 +823,18 @@ std::uint64_t Phase4RepresentativeCorpusChecksumV1() noexcept {
   return hash.Finish();
 }
 
-Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
+template <bool CaptureOperationalProfile>
+Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
     std::uint32_t case_id, std::string_view imported_fixture,
-    const Phase4RepresentativeCorpusLimits& limits) {
+    const Phase4RepresentativeCorpusLimits& limits,
+    Phase4RepresentativeCaseOperationalProfileV1* operational_profile) {
+  ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+      descriptor_start;
+  if constexpr (CaptureOperationalProfile) {
+    *operational_profile = {};
+    descriptor_start =
+        ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+  }
   const Phase4CaseDescriptor* descriptor = FindPhase4CaseDescriptorV1(case_id);
   if (descriptor == nullptr) {
     return Error(Phase4RepresentativeCorpusErrorCode::kUnknownCase,
@@ -838,6 +856,42 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
                  "benchmark.phase4_representative.input_bound.v1",
                  "Representative case exceeds the caller's net or Board-entity bound", case_id);
   }
+  if constexpr (CaptureOperationalProfile) {
+    operational_profile->case_source = descriptor->source;
+    if (descriptor->source == Phase4CaseSource::kImportedFixture) {
+      operational_profile->fixture_import_applicability = Phase4OperationalApplicabilityV1{
+          .status = Phase4OperationalMeasurementStatus::kMeasured,
+          .reason = Phase4OperationalMeasurementReason::kNone,
+      };
+      operational_profile->synthetic_materialization_applicability =
+          Phase4OperationalApplicabilityV1{
+              .status = Phase4OperationalMeasurementStatus::kNotApplicable,
+              .reason =
+                  Phase4OperationalMeasurementReason::kImportedCaseHasNoSyntheticMaterialization,
+          };
+      operational_profile->compile_probe_applicability = Phase4OperationalApplicabilityV1{
+          .status = Phase4OperationalMeasurementStatus::kNotApplicable,
+          .reason = Phase4OperationalMeasurementReason::
+              kImportedWorkloadHasNoSeparateSyntheticCompileProbe,
+      };
+    } else {
+      operational_profile->fixture_import_applicability = Phase4OperationalApplicabilityV1{
+          .status = Phase4OperationalMeasurementStatus::kNotApplicable,
+          .reason = Phase4OperationalMeasurementReason::kSyntheticCaseHasNoFixtureImport,
+      };
+      operational_profile->synthetic_materialization_applicability =
+          Phase4OperationalApplicabilityV1{
+              .status = Phase4OperationalMeasurementStatus::kMeasured,
+              .reason = Phase4OperationalMeasurementReason::kNone,
+          };
+      operational_profile->compile_probe_applicability = Phase4OperationalApplicabilityV1{
+          .status = Phase4OperationalMeasurementStatus::kMeasured,
+          .reason = Phase4OperationalMeasurementReason::kNone,
+      };
+    }
+    operational_profile->descriptor_validation_and_bound_preflight_wall_nanoseconds =
+        OperationalElapsed(descriptor_start);
+  }
 
   try {
     MaybeThrowRepresentativeCorpusFaultForTesting();
@@ -847,8 +901,15 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
                      "benchmark.phase4_representative.imported_fixture.v1",
                      "Imported guardrail case requires the authenticated fixture bytes", case_id);
       }
-      Phase4ImportedMultiNetCorpusResult imported_result =
-          BuildPhase4ImportedMultiNetCorpusV1(imported_fixture);
+      Phase4ImportedCorpusOperationalProfileV1 imported_profile;
+      Phase4ImportedMultiNetCorpusResult imported_result = [&]() {
+        if constexpr (CaptureOperationalProfile) {
+          return BuildPhase4ImportedMultiNetCorpusWithOperationalProfileV1(imported_fixture,
+                                                                           imported_profile);
+        } else {
+          return BuildPhase4ImportedMultiNetCorpusV1(imported_fixture);
+        }
+      }();
       if (!std::holds_alternative<Phase4ImportedMultiNetCorpus>(imported_result)) {
         const Phase4CorpusError& imported_error = std::get<Phase4CorpusError>(imported_result);
         const std::string_view invariant_id =
@@ -866,6 +927,18 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
       }
       Phase4ImportedMultiNetCorpus imported =
           std::get<Phase4ImportedMultiNetCorpus>(std::move(imported_result));
+      if constexpr (CaptureOperationalProfile) {
+        operational_profile->fixture_identity_and_import_wall_nanoseconds =
+            imported_profile.fixture_identity_and_import_wall_nanoseconds;
+        operational_profile->workload_geometry_compilation_wall_nanoseconds =
+            imported_profile.workload_geometry_compilation_wall_nanoseconds;
+      }
+      ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+          assembly_start;
+      if constexpr (CaptureOperationalProfile) {
+        assembly_start =
+            ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+      }
       if (const auto work_bound = PreparedWorkBoundError(case_id, imported.workload, limits);
           work_bound.has_value()) {
         return *work_bound;
@@ -878,7 +951,7 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
           std::get<allocator::ResourceCapacityModel>(std::move(capacity_result));
       const std::uint64_t checksum =
           ComputeCaseChecksum(*descriptor, imported.board, imported.workload, capacities, {});
-      return Phase4RepresentativeCase{
+      Phase4RepresentativeCase result{
           .descriptor = *descriptor,
           .board = std::move(imported.board),
           .workload = std::move(imported.workload),
@@ -886,8 +959,19 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
           .declared_contested_resources = {},
           .case_checksum = checksum,
       };
+      if constexpr (CaptureOperationalProfile) {
+        operational_profile->capacity_and_case_assembly_wall_nanoseconds =
+            OperationalElapsed(assembly_start);
+      }
+      return result;
     }
 
+    ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+        materialization_start;
+    if constexpr (CaptureOperationalProfile) {
+      materialization_start =
+          ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    }
     std::optional<SyntheticGeometry> geometry = BuildSyntheticGeometry(*descriptor, limits);
     if (!geometry.has_value()) {
       return Error(Phase4RepresentativeCorpusErrorCode::kInputBoundExceeded,
@@ -912,9 +996,19 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
           .goal_layer = 0,
       });
     }
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->synthetic_geometry_and_board_materialization_wall_nanoseconds =
+          OperationalElapsed(materialization_start);
+    }
     std::uint64_t expected_compiled_nodes = 0;
     std::uint64_t expected_compiled_host_bytes = 0;
     {
+      ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+          probe_start;
+      if constexpr (CaptureOperationalProfile) {
+        probe_start =
+            ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+      }
       geometry_compiler::CompileResult probe_result =
           geometry_compiler::CompileBoard(board, geometry->profile, specs.front().routing_profile);
       if (!std::holds_alternative<geometry_compiler::CompiledBoard>(probe_result)) {
@@ -932,6 +1026,16 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
           work_bound.has_value()) {
         return *work_bound;
       }
+      if constexpr (CaptureOperationalProfile) {
+        operational_profile->geometry_compilation_probe_wall_nanoseconds =
+            OperationalElapsed(probe_start);
+      }
+    }
+    ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+        workload_start;
+    if constexpr (CaptureOperationalProfile) {
+      workload_start =
+          ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
     }
     allocator::MultiNetWorkloadResult workload_result = allocator::BuildMultiNetWorkload(
         allocator::kMultiNetWorkloadSchemaVersion, board, geometry->profile, specs,
@@ -966,6 +1070,10 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
     }
     allocator::MultiNetWorkload workload =
         std::get<allocator::MultiNetWorkload>(std::move(workload_result));
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->workload_geometry_compilation_wall_nanoseconds =
+          OperationalElapsed(workload_start);
+    }
     if (workload.compiled_node_count() != expected_compiled_nodes ||
         workload.compiled_host_bytes() != expected_compiled_host_bytes) {
       return Error(Phase4RepresentativeCorpusErrorCode::kInternalInvariant,
@@ -979,6 +1087,12 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
                      "Declared contested resource is absent from the compiled lattice", case_id);
       }
     }
+    ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+        assembly_start;
+    if constexpr (CaptureOperationalProfile) {
+      assembly_start =
+          ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    }
     auto capacity_result = BuildCapacities(case_id, board, workload);
     if (std::holds_alternative<Phase4RepresentativeCorpusError>(capacity_result)) {
       return std::get<Phase4RepresentativeCorpusError>(capacity_result);
@@ -987,7 +1101,7 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
         std::get<allocator::ResourceCapacityModel>(std::move(capacity_result));
     const std::uint64_t checksum = ComputeCaseChecksum(*descriptor, board, workload, capacities,
                                                        geometry->contested_resources);
-    return Phase4RepresentativeCase{
+    Phase4RepresentativeCase result{
         .descriptor = *descriptor,
         .board = std::move(board),
         .workload = std::move(workload),
@@ -995,6 +1109,11 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
         .declared_contested_resources = std::move(geometry->contested_resources),
         .case_checksum = checksum,
     };
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->capacity_and_case_assembly_wall_nanoseconds =
+          OperationalElapsed(assembly_start);
+    }
+    return result;
   } catch (const std::bad_alloc&) {
     return Error(Phase4RepresentativeCorpusErrorCode::kResourceExhausted,
                  "benchmark.phase4_representative.host_memory.v1",
@@ -1004,6 +1123,35 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
                  "benchmark.phase4_representative.host_container.v1",
                  "Representative corpus host container bound was exhausted", case_id);
   }
+}
+
+Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
+    std::uint32_t case_id, std::string_view imported_fixture,
+    const Phase4RepresentativeCorpusLimits& limits) {
+  return BuildPhase4RepresentativeCaseImpl<false>(case_id, imported_fixture, limits, nullptr);
+}
+
+Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseWithOperationalProfileV1(
+    std::uint32_t case_id, std::string_view imported_fixture,
+    const Phase4RepresentativeCorpusLimits& limits,
+    Phase4RepresentativeCaseOperationalProfileV1& operational_profile) {
+  const OperationalClock::time_point component_start = OperationalClock::now();
+  Phase4RepresentativeCaseResult result = BuildPhase4RepresentativeCaseImpl<true>(
+      case_id, imported_fixture, limits, &operational_profile);
+  operational_profile.component_wall_nanoseconds = OperationalElapsed(component_start);
+  const __uint128_t classified =
+      static_cast<__uint128_t>(
+          operational_profile.descriptor_validation_and_bound_preflight_wall_nanoseconds) +
+      operational_profile.fixture_identity_and_import_wall_nanoseconds +
+      operational_profile.synthetic_geometry_and_board_materialization_wall_nanoseconds +
+      operational_profile.geometry_compilation_probe_wall_nanoseconds +
+      operational_profile.workload_geometry_compilation_wall_nanoseconds +
+      operational_profile.capacity_and_case_assembly_wall_nanoseconds;
+  operational_profile.unclassified_and_release_wall_nanoseconds =
+      classified <= operational_profile.component_wall_nanoseconds
+          ? operational_profile.component_wall_nanoseconds - static_cast<std::uint64_t>(classified)
+          : 0;
+  return result;
 }
 
 }  // namespace apgar::benchmark

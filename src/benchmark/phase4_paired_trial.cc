@@ -17,7 +17,9 @@
 
 #include "apgar/board_ir/stable_hash.h"
 #include "apgar/candidates/candidate_store.h"
+#include "src/allocator/cpu_candidate_allocation_session_internal.h"
 #include "src/benchmark/phase4_paired_trial_internal.h"
+#include "src/operational_timestamp.h"
 
 namespace apgar::benchmark {
 namespace {
@@ -809,15 +811,25 @@ using SameRunTelemetryBuildResult =
 
 using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmFailure>;
 
+template <bool CaptureOperationalProfile>
 [[nodiscard]] ArmSemanticsResult ExecuteBaseline(
     const Phase4PairedTrialSpec& spec, Phase4RepresentativeCase corpus,
     const ValidatedTrialSpec& validated, Phase4ArmReportTelemetryV1* telemetry,
-    Phase4SameRunArmDecisionTelemetryV1* same_run_telemetry) {
+    Phase4SameRunArmDecisionTelemetryV1* same_run_telemetry,
+    allocator::SequentialNegotiatedBaselineOperationalProfileV1* operational_profile,
+    Clock::time_point* release_tail_start) {
   Phase4TrialArmSemantics semantics =
       CommonSemantics(Phase4TrialArm::kSequentialBaseline, spec, corpus, validated);
-  allocator::SequentialNegotiatedBaselineExecution execution =
-      allocator::ExecuteSequentialNegotiatedBaseline(corpus.board, corpus.workload,
-                                                     corpus.capacities, spec.baseline_config);
+  allocator::SequentialNegotiatedBaselineExecution execution = [&]() {
+    if constexpr (CaptureOperationalProfile) {
+      return allocator::ExecuteSequentialNegotiatedBaselineWithOperationalProfileV1(
+          corpus.board, corpus.workload, corpus.capacities, spec.baseline_config,
+          *operational_profile);
+    } else {
+      return allocator::ExecuteSequentialNegotiatedBaseline(
+          corpus.board, corpus.workload, corpus.capacities, spec.baseline_config);
+    }
+  }();
   if (std::holds_alternative<allocator::SequentialNegotiatedBaselineError>(execution)) {
     allocator::SequentialNegotiatedBaselineError child =
         std::get<allocator::SequentialNegotiatedBaselineError>(std::move(execution));
@@ -873,19 +885,32 @@ using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmF
     }
     *same_run_telemetry = std::get<Phase4SameRunArmDecisionTelemetryV1>(std::move(built));
   }
+  if constexpr (CaptureOperationalProfile) {
+    *release_tail_start = ::apgar::internal::OperationalNow<CaptureOperationalProfile, Clock>();
+  }
   return semantics;
 }
 
+template <bool CaptureOperationalProfile>
 [[nodiscard]] ArmSemanticsResult ExecuteCandidate(
     const Phase4PairedTrialSpec& spec, Phase4RepresentativeCase corpus,
     const ValidatedTrialSpec& validated, allocator::PersistentCpuCandidatePoolPreparer& preparer,
     Phase4ArmReportTelemetryV1* telemetry, Phase4SameRunArmDecisionTelemetryV1* same_run_telemetry,
-    Phase4CandidatePoolSnapshotExecutionV1* snapshot) {
+    Phase4CandidatePoolSnapshotExecutionV1* snapshot,
+    allocator::CpuCandidatePoolPreparationOperationalProfileV1* preparation_profile,
+    allocator::CpuCandidateAllocationSessionOperationalProfileV1* session_profile,
+    Clock::time_point* release_tail_start) {
   Phase4TrialArmSemantics semantics =
       CommonSemantics(Phase4TrialArm::kReusableCandidateAllocation, spec, corpus, validated);
-  allocator::PreparedCpuCandidatePoolsResult preparation =
-      allocator::PrepareInitialCpuCandidatePools(preparer, corpus.board, corpus.workload,
-                                                 spec.preparation_config);
+  allocator::PreparedCpuCandidatePoolsResult preparation = [&]() {
+    if constexpr (CaptureOperationalProfile) {
+      return allocator::PrepareInitialCpuCandidatePoolsWithOperationalProfileV1(
+          preparer, corpus.board, corpus.workload, spec.preparation_config, *preparation_profile);
+    } else {
+      return allocator::PrepareInitialCpuCandidatePools(preparer, corpus.board, corpus.workload,
+                                                        spec.preparation_config);
+    }
+  }();
   if (std::holds_alternative<allocator::CpuCandidatePoolPreparationError>(preparation)) {
     allocator::CpuCandidatePoolPreparationError child =
         std::get<allocator::CpuCandidatePoolPreparationError>(std::move(preparation));
@@ -901,11 +926,19 @@ using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmF
       std::get<allocator::PreparedCpuCandidatePools>(std::move(preparation));
   const allocator::CpuCandidatePoolPreparationCounters preparation_counters = prepared.counters();
   const std::uint64_t preparation_checksum = prepared.preparation_checksum();
-  allocator::CpuCandidateAllocationSessionResult execution =
-      allocator::ExecuteCpuCandidateAllocationSession(
+  allocator::CpuCandidateAllocationSessionResult execution = [&]() {
+    if constexpr (CaptureOperationalProfile) {
+      return allocator::internal::ExecuteCpuCandidateAllocationSessionWithOperationalProfileV1(
+          allocator::kCpuCandidateAllocationSessionSchemaVersion, std::move(corpus.board),
+          std::move(corpus.workload), std::move(corpus.capacities), std::move(prepared),
+          spec.candidate_session_config, *session_profile);
+    } else {
+      return allocator::ExecuteCpuCandidateAllocationSession(
           allocator::kCpuCandidateAllocationSessionSchemaVersion, std::move(corpus.board),
           std::move(corpus.workload), std::move(corpus.capacities), std::move(prepared),
           spec.candidate_session_config);
+    }
+  }();
   if (std::holds_alternative<allocator::CpuCandidateAllocationSessionError>(execution)) {
     allocator::CpuCandidateAllocationSessionError child =
         std::get<allocator::CpuCandidateAllocationSessionError>(std::move(execution));
@@ -1019,6 +1052,9 @@ using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmF
     snapshot->capacity_overrides = session.capacities().overrides();
     snapshot->final_pools = session.final_pools();
     snapshot->production_world = *chosen_world;
+  }
+  if constexpr (CaptureOperationalProfile) {
+    *release_tail_start = ::apgar::internal::OperationalNow<CaptureOperationalProfile, Clock>();
   }
   return semantics;
 }
@@ -1465,6 +1501,561 @@ std::uint64_t ComputePhase4SameRunArmDecisionTelemetryChecksumV1(
     hash.AddU64(row.columns.other_rejections);
   }
   return hash.Finish();
+}
+
+[[nodiscard]] std::uint64_t ComputeOperationalEpochAssociationChecksumV1(
+    const allocator::CpuCandidateAllocationSessionOperationalProfileV1& profile) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-CPU-CANDIDATE-ALLOCATION-EPOCH-ASSOCIATION-V1");
+  hash.AddU64(profile.regeneration_epochs.size());
+  for (const allocator::TargetedRegenerationOperationalProfileV1& epoch :
+       profile.regeneration_epochs) {
+    hash.AddU32(epoch.epoch_index);
+    hash.AddU64(epoch.plan_checksum);
+    hash.AddU64(epoch.execution_checksum);
+    hash.AddU64(epoch.counters.requested_columns);
+    hash.AddU64(epoch.counters.route_queries);
+    hash.AddU64(epoch.counters.route_work_units);
+    hash.AddU64(epoch.counters.policy_projection_visits);
+    hash.AddU64(epoch.counters.peak_route_record_count);
+    hash.AddU64(epoch.counters.peak_route_queue_size);
+    hash.AddU64(epoch.counters.generated_candidate_bytes);
+    hash.AddU64(epoch.counters.rejection_record_bytes);
+    hash.AddU64(epoch.counters.transient_result_bytes);
+    hash.AddU64(epoch.counters.successful_routes);
+    hash.AddU64(epoch.counters.built_candidates);
+    hash.AddU64(epoch.counters.admitted_candidates);
+    hash.AddU64(epoch.counters.duplicate_candidates);
+    hash.AddU64(epoch.counters.rejected_columns);
+    hash.AddU64(epoch.counters.novel_retained_candidates);
+    hash.AddU64(epoch.counters.changed_selections);
+    hash.AddU64(epoch.counters.successor_pinned_candidates);
+  }
+  hash.AddU64(profile.planning_expanded_resource_visits);
+  return hash.Finish();
+}
+
+std::uint64_t ComputePhase4TrialArmOperationalProfileChecksumV1(
+    const Phase4TrialArmOperationalProfileV1& profile) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-PHASE4-TRIAL-ARM-OPERATIONAL-PROFILE-V1");
+  hash.AddU32(profile.schema_version);
+  hash.AddU64(ComputePhase4TrialArmSemanticChecksumV1(profile.execution.semantics));
+  hash.AddU64(profile.execution.semantics.semantic_checksum);
+  hash.AddByte(static_cast<std::uint8_t>(profile.execution.semantics.execution_order));
+  hash.AddU32(profile.execution.semantics.preparation_worker_count);
+  hash.AddU64(profile.execution.case_build_elapsed_nanoseconds);
+  hash.AddU64(profile.execution.prepared_elapsed_nanoseconds);
+  hash.AddU64(profile.execution.cold_elapsed_nanoseconds);
+  const Phase4PreparerLifecycleObservation& lifecycle = profile.execution.preparer_lifecycle;
+  hash.AddU64(lifecycle.workers_started_before);
+  hash.AddU64(lifecycle.workers_started_after);
+  hash.AddU64(lifecycle.invocations_started_before);
+  hash.AddU64(lifecycle.invocations_started_after);
+  hash.AddU64(lifecycle.invocations_completed_before);
+  hash.AddU64(lifecycle.invocations_completed_after);
+  const Phase4RepresentativeCaseOperationalProfileV1& built = profile.case_build;
+  const auto add_applicability = [&hash](const Phase4OperationalApplicabilityV1& value) {
+    hash.AddByte(static_cast<std::uint8_t>(value.status));
+    hash.AddByte(static_cast<std::uint8_t>(value.reason));
+  };
+  hash.AddByte(static_cast<std::uint8_t>(built.case_source));
+  add_applicability(built.fixture_import_applicability);
+  add_applicability(built.synthetic_materialization_applicability);
+  add_applicability(built.compile_probe_applicability);
+  hash.AddU64(built.descriptor_validation_and_bound_preflight_wall_nanoseconds);
+  hash.AddU64(built.fixture_identity_and_import_wall_nanoseconds);
+  hash.AddU64(built.synthetic_geometry_and_board_materialization_wall_nanoseconds);
+  hash.AddU64(built.geometry_compilation_probe_wall_nanoseconds);
+  hash.AddU64(built.workload_geometry_compilation_wall_nanoseconds);
+  hash.AddU64(built.capacity_and_case_assembly_wall_nanoseconds);
+  hash.AddU64(built.component_wall_nanoseconds);
+  hash.AddU64(built.unclassified_and_release_wall_nanoseconds);
+  add_applicability(profile.process_cpu);
+  add_applicability(profile.peak_host_memory);
+  add_applicability(profile.compatible_batch_formation_and_fill);
+  add_applicability(profile.compact_readback);
+  add_applicability(profile.prepared_view_cache_and_cache_misses);
+  add_applicability(profile.initial_device_upload);
+  add_applicability(profile.gpu_utilization);
+  add_applicability(profile.peak_device_memory);
+  hash.AddU64(profile.contender_transient_release_tail_wall_nanoseconds);
+  hash.AddU64(profile.unclassified_prepared_scope_wall_nanoseconds);
+  hash.AddU64(profile.unclassified_cold_scope_exit_wall_nanoseconds);
+  hash.AddBool(profile.baseline.has_value());
+  if (profile.baseline.has_value()) {
+    const auto& value = *profile.baseline;
+    hash.AddU64(value.component_wall_nanoseconds);
+    hash.AddU64(value.validation_and_initialization_wall_nanoseconds);
+    hash.AddU64(value.scheduling_and_policy_projection_wall_nanoseconds);
+    hash.AddU64(value.candidate_generation_wall_nanoseconds);
+    hash.AddU64(value.exact_admission_and_store_publication_wall_nanoseconds);
+    hash.AddU64(value.incremental_resource_accumulation_wall_nanoseconds);
+    hash.AddU64(value.sweep_selection_and_resource_replay_wall_nanoseconds);
+    hash.AddU64(value.price_update_wall_nanoseconds);
+    hash.AddU64(value.final_assembly_wall_nanoseconds);
+    hash.AddU64(value.unclassified_serial_wall_nanoseconds);
+  }
+  hash.AddBool(profile.preparation.has_value());
+  if (profile.preparation.has_value()) {
+    const auto& value = *profile.preparation;
+    hash.AddU64(value.component_wall_nanoseconds);
+    hash.AddU64(value.validation_and_scheduling_wall_nanoseconds);
+    hash.AddU64(value.base_worker_wave_wall_nanoseconds);
+    hash.AddU64(value.alternative_policy_wall_nanoseconds);
+    hash.AddU64(value.alternative_worker_wave_wall_nanoseconds);
+    hash.AddU64(value.route_and_candidate_build_worker_sum_nanoseconds);
+    hash.AddU64(value.exact_admission_and_store_publication_wall_nanoseconds);
+    hash.AddU64(value.publication_correlation_and_pool_materialization_wall_nanoseconds);
+    hash.AddU64(value.unclassified_serial_wall_nanoseconds);
+    hash.AddU64(value.base_jobs_dispatched);
+    hash.AddU64(value.alternative_jobs_dispatched);
+  }
+  hash.AddBool(profile.candidate_session.has_value());
+  if (profile.candidate_session.has_value()) {
+    const auto& value = *profile.candidate_session;
+    hash.AddU64(value.component_wall_nanoseconds);
+    hash.AddU64(value.validation_and_source_inspection_wall_nanoseconds);
+    hash.AddU64(value.initial_price_state_wall_nanoseconds);
+    hash.AddU64(value.initial_selection_and_resource_accumulation_wall_nanoseconds);
+    hash.AddU64(value.targeted_regeneration_planning_wall_nanoseconds);
+    hash.AddU64(value.targeted_regeneration_price_update_wall_nanoseconds);
+    hash.AddU64(value.targeted_regeneration_selection_and_target_planning_wall_nanoseconds);
+    hash.AddU64(value.targeted_regeneration_execution_wall_nanoseconds);
+    hash.AddU64(value.successor_correlation_wall_nanoseconds);
+    hash.AddU64(value.terminal_multi_world_component_wall_nanoseconds);
+    hash.AddU64(value.terminal_multi_world_price_update_wall_nanoseconds);
+    hash.AddU64(value.final_manifest_and_assembly_wall_nanoseconds);
+    hash.AddU64(value.unclassified_serial_wall_nanoseconds);
+    hash.AddU64(value.regeneration_plans.size());
+    for (const allocator::TargetedRegenerationPlanningOperationalProfileV1& plan :
+         value.regeneration_plans) {
+      hash.AddU32(plan.epoch_index);
+      hash.AddU64(plan.plan_checksum);
+      hash.AddU64(plan.component_wall_nanoseconds);
+      hash.AddU64(plan.source_selection_and_resource_accumulation_wall_nanoseconds);
+      hash.AddU64(plan.price_update_wall_nanoseconds);
+      hash.AddU64(plan.next_price_selection_and_resource_accumulation_wall_nanoseconds);
+      hash.AddU64(plan.target_ranking_retention_and_assembly_wall_nanoseconds);
+      hash.AddU64(plan.unclassified_serial_wall_nanoseconds);
+      hash.AddU64(plan.price_update_operations);
+    }
+    hash.AddU64(value.regeneration_epochs.size());
+    for (const allocator::TargetedRegenerationOperationalProfileV1& epoch :
+         value.regeneration_epochs) {
+      hash.AddU32(epoch.epoch_index);
+      hash.AddU64(epoch.plan_checksum);
+      hash.AddU64(epoch.execution_checksum);
+      hash.AddU64(epoch.counters.requested_columns);
+      hash.AddU64(epoch.counters.route_queries);
+      hash.AddU64(epoch.counters.route_work_units);
+      hash.AddU64(epoch.counters.policy_projection_visits);
+      hash.AddU64(epoch.counters.peak_route_record_count);
+      hash.AddU64(epoch.counters.peak_route_queue_size);
+      hash.AddU64(epoch.counters.generated_candidate_bytes);
+      hash.AddU64(epoch.counters.rejection_record_bytes);
+      hash.AddU64(epoch.counters.transient_result_bytes);
+      hash.AddU64(epoch.counters.successful_routes);
+      hash.AddU64(epoch.counters.built_candidates);
+      hash.AddU64(epoch.counters.admitted_candidates);
+      hash.AddU64(epoch.counters.duplicate_candidates);
+      hash.AddU64(epoch.counters.rejected_columns);
+      hash.AddU64(epoch.counters.novel_retained_candidates);
+      hash.AddU64(epoch.counters.changed_selections);
+      hash.AddU64(epoch.counters.successor_pinned_candidates);
+      hash.AddU64(epoch.component_wall_nanoseconds);
+      hash.AddU64(epoch.validation_and_preflight_wall_nanoseconds);
+      hash.AddU64(epoch.baseline_selection_and_source_store_preflight_wall_nanoseconds);
+      hash.AddU64(epoch.policy_projection_and_candidate_generation_wall_nanoseconds);
+      hash.AddU64(epoch.exact_admission_and_store_publication_wall_nanoseconds);
+      hash.AddU64(epoch.publication_correlation_wall_nanoseconds);
+      hash.AddU64(epoch.refreshed_selection_and_resource_accumulation_wall_nanoseconds);
+      hash.AddU64(epoch.successor_retention_wall_nanoseconds);
+      hash.AddU64(epoch.final_assembly_wall_nanoseconds);
+      hash.AddU64(epoch.unclassified_serial_wall_nanoseconds);
+    }
+    const allocator::MultiWorldOperationalProfileV1& worlds = value.terminal_multi_world;
+    hash.AddU64(worlds.component_wall_nanoseconds);
+    hash.AddU64(worlds.validation_and_source_preflight_wall_nanoseconds);
+    hash.AddU64(worlds.selection_and_resource_accumulation_wall_nanoseconds);
+    hash.AddU64(worlds.price_update_and_snapshot_wall_nanoseconds);
+    hash.AddU64(worlds.terminal_retention_and_assembly_wall_nanoseconds);
+    hash.AddU64(worlds.unclassified_serial_wall_nanoseconds);
+    hash.AddU64(value.planning_expanded_resource_visits);
+    const allocator::CpuCandidateAllocationSessionReplayWitnessV1& witness = value.replay_witness;
+    hash.AddU64(witness.session_checksum);
+    hash.AddU64(witness.board_content_hash);
+    hash.AddU64(witness.workload_checksum);
+    hash.AddU64(witness.capacity_model_checksum);
+    hash.AddU64(witness.preparation_checksum);
+    hash.AddU32(witness.maximum_regeneration_epochs);
+    hash.AddByte(static_cast<std::uint8_t>(witness.terminal_reason));
+    hash.AddU64(witness.counters.completed_regeneration_epochs);
+    hash.AddU64(witness.counters.planning_expanded_resource_visits);
+    hash.AddU64(witness.counters.requested_columns);
+    hash.AddU64(witness.counters.route_queries);
+    hash.AddU64(witness.counters.route_work_units);
+    hash.AddU64(witness.counters.policy_projection_visits);
+    hash.AddU64(witness.counters.generated_candidate_bytes);
+    hash.AddU64(witness.counters.rejection_record_bytes);
+    hash.AddU64(witness.counters.transient_result_bytes);
+    hash.AddU64(witness.counters.admitted_candidates);
+    hash.AddU64(witness.counters.duplicate_candidates);
+    hash.AddU64(witness.counters.rejected_columns);
+    hash.AddU64(witness.counters.novel_retained_candidates);
+    hash.AddU64(witness.counters.changed_selections);
+    hash.AddU64(witness.epoch_record_count);
+    hash.AddU64(witness.epoch_association_checksum);
+    hash.AddU64(witness.final_pool_manifest_checksum);
+    hash.AddU64(witness.final_rejection_manifest_checksum);
+  }
+  return hash.Finish();
+}
+
+std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmOperationalProfileV1(
+    const Phase4TrialArmOperationalProfileV1& profile) noexcept {
+  const Phase4TrialArm arm = profile.execution.semantics.arm;
+  const auto invalid = [arm](std::string_view invariant_id,
+                             std::string_view detail) -> std::optional<Phase4PairedTrialError> {
+    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, invariant_id, detail, arm);
+  };
+  if (std::optional<Phase4PairedTrialError> error =
+          ValidatePhase4TrialArmSemanticsV1(profile.execution.semantics);
+      error.has_value()) {
+    return error;
+  }
+  if (profile.schema_version != kPhase4TrialArmOperationalProfileSchemaVersion ||
+      profile.profile_checksum == 0 ||
+      profile.profile_checksum != ComputePhase4TrialArmOperationalProfileChecksumV1(profile)) {
+    return invalid("P4OP-CHECKSUM-002",
+                   "operational profile schema or rebuilt checksum is invalid");
+  }
+  const auto is = [](const Phase4OperationalApplicabilityV1& value,
+                     Phase4OperationalMeasurementStatus status,
+                     Phase4OperationalMeasurementReason reason) noexcept {
+    return value.status == status && value.reason == reason;
+  };
+  if (!is(profile.process_cpu, Phase4OperationalMeasurementStatus::kRequiresParentProcessAuthority,
+          Phase4OperationalMeasurementReason::kProcessCpuRequiresIsolatedParentWait4) ||
+      !is(profile.peak_host_memory,
+          Phase4OperationalMeasurementStatus::kRequiresParentProcessAuthority,
+          Phase4OperationalMeasurementReason::kPeakHostMemoryRequiresIsolatedParentWait4) ||
+      !is(profile.compatible_batch_formation_and_fill,
+          Phase4OperationalMeasurementStatus::kNotApplicable,
+          Phase4OperationalMeasurementReason::kCpuDirectJobsNotCompatibilityBatches) ||
+      !is(profile.compact_readback, Phase4OperationalMeasurementStatus::kNotApplicable,
+          Phase4OperationalMeasurementReason::kCpuExecutionHasNoCompactDeviceReadback) ||
+      !is(profile.prepared_view_cache_and_cache_misses,
+          Phase4OperationalMeasurementStatus::kNotApplicable,
+          Phase4OperationalMeasurementReason::
+              kPrecompiledCaseOwnedViewsHaveNoRuntimePreparedViewCache) ||
+      !is(profile.initial_device_upload, Phase4OperationalMeasurementStatus::kNotApplicable,
+          Phase4OperationalMeasurementReason::kCpuExecutionHasNoDeviceUpload) ||
+      !is(profile.gpu_utilization, Phase4OperationalMeasurementStatus::kNotApplicable,
+          Phase4OperationalMeasurementReason::kCpuExecutionHasNoGpuDispatch) ||
+      !is(profile.peak_device_memory, Phase4OperationalMeasurementStatus::kNotApplicable,
+          Phase4OperationalMeasurementReason::kCpuExecutionHasNoDeviceMemory)) {
+    return invalid("P4OP-APPLICABILITY-001",
+                   "CPU-only operational applicability tags are not the frozen typed values");
+  }
+
+  const Phase4CaseDescriptor* descriptor =
+      FindPhase4CaseDescriptorV1(profile.execution.semantics.case_id);
+  if (descriptor == nullptr || profile.case_build.case_source != descriptor->source) {
+    return invalid("P4OP-CASE-SOURCE-001",
+                   "operational case source does not match the frozen descriptor");
+  }
+  const bool imported = descriptor->source == Phase4CaseSource::kImportedFixture;
+  if (imported
+          ? (!is(profile.case_build.fixture_import_applicability,
+                 Phase4OperationalMeasurementStatus::kMeasured,
+                 Phase4OperationalMeasurementReason::kNone) ||
+             !is(profile.case_build.synthetic_materialization_applicability,
+                 Phase4OperationalMeasurementStatus::kNotApplicable,
+                 Phase4OperationalMeasurementReason::kImportedCaseHasNoSyntheticMaterialization) ||
+             !is(profile.case_build.compile_probe_applicability,
+                 Phase4OperationalMeasurementStatus::kNotApplicable,
+                 Phase4OperationalMeasurementReason::
+                     kImportedWorkloadHasNoSeparateSyntheticCompileProbe) ||
+             profile.case_build.synthetic_geometry_and_board_materialization_wall_nanoseconds !=
+                 0 ||
+             profile.case_build.geometry_compilation_probe_wall_nanoseconds != 0)
+          : (!is(profile.case_build.fixture_import_applicability,
+                 Phase4OperationalMeasurementStatus::kNotApplicable,
+                 Phase4OperationalMeasurementReason::kSyntheticCaseHasNoFixtureImport) ||
+             !is(profile.case_build.synthetic_materialization_applicability,
+                 Phase4OperationalMeasurementStatus::kMeasured,
+                 Phase4OperationalMeasurementReason::kNone) ||
+             !is(profile.case_build.compile_probe_applicability,
+                 Phase4OperationalMeasurementStatus::kMeasured,
+                 Phase4OperationalMeasurementReason::kNone) ||
+             profile.case_build.fixture_identity_and_import_wall_nanoseconds != 0)) {
+    return invalid("P4OP-CASE-APPLICABILITY-001",
+                   "case-source timing applicability or not-applicable values are invalid");
+  }
+
+  const auto closes = [](std::uint64_t component, Wide classified,
+                         std::uint64_t residual) noexcept {
+    const Wide total = classified + residual;
+    return FitsU64(total) && ToU64(total) == component;
+  };
+  const auto& built = profile.case_build;
+  const Wide case_classified =
+      static_cast<Wide>(built.descriptor_validation_and_bound_preflight_wall_nanoseconds) +
+      built.fixture_identity_and_import_wall_nanoseconds +
+      built.synthetic_geometry_and_board_materialization_wall_nanoseconds +
+      built.geometry_compilation_probe_wall_nanoseconds +
+      built.workload_geometry_compilation_wall_nanoseconds +
+      built.capacity_and_case_assembly_wall_nanoseconds;
+  const Wide nested_cold = static_cast<Wide>(profile.execution.case_build_elapsed_nanoseconds) +
+                           profile.execution.prepared_elapsed_nanoseconds;
+  const Phase4ExternalBudget& budget = profile.execution.semantics.external_budget;
+  if (!closes(built.component_wall_nanoseconds, case_classified,
+              built.unclassified_and_release_wall_nanoseconds) ||
+      built.component_wall_nanoseconds > profile.execution.case_build_elapsed_nanoseconds ||
+      !FitsU64(nested_cold) || ToU64(nested_cold) > profile.execution.cold_elapsed_nanoseconds ||
+      profile.execution.prepared_elapsed_nanoseconds >
+          budget.maximum_prepared_elapsed_nanoseconds ||
+      profile.execution.cold_elapsed_nanoseconds > budget.maximum_cold_elapsed_nanoseconds ||
+      profile.unclassified_cold_scope_exit_wall_nanoseconds !=
+          profile.execution.cold_elapsed_nanoseconds - ToU64(nested_cold) ||
+      profile.contender_transient_release_tail_wall_nanoseconds >
+          profile.execution.prepared_elapsed_nanoseconds) {
+    return invalid("P4OP-TIMING-CLOSURE-001",
+                   "case, prepared, release, or cold operational intervals do not close");
+  }
+
+  const bool baseline_arm = arm == Phase4TrialArm::kSequentialBaseline;
+  const Phase4PreparerLifecycleObservation& lifecycle = profile.execution.preparer_lifecycle;
+  const Wide started_after_expected = static_cast<Wide>(lifecycle.invocations_started_before) + 1U;
+  const Wide completed_after_expected =
+      static_cast<Wide>(lifecycle.invocations_completed_before) + 1U;
+  const bool valid_candidate_lifecycle =
+      lifecycle.workers_started_before == profile.execution.semantics.preparation_worker_count &&
+      lifecycle.workers_started_after == profile.execution.semantics.preparation_worker_count &&
+      lifecycle.invocations_started_before == lifecycle.invocations_completed_before &&
+      lifecycle.invocations_completed_before > 0 && FitsU64(started_after_expected) &&
+      FitsU64(completed_after_expected) &&
+      lifecycle.invocations_started_after == ToU64(started_after_expected) &&
+      lifecycle.invocations_completed_after == ToU64(completed_after_expected);
+  if ((baseline_arm && lifecycle != Phase4PreparerLifecycleObservation{}) ||
+      (!baseline_arm && !valid_candidate_lifecycle)) {
+    return invalid("P4OP-LIFECYCLE-001",
+                   "operational execution does not prove candidate-only persistent reuse");
+  }
+  if (baseline_arm ? (!profile.baseline.has_value() || profile.preparation.has_value() ||
+                      profile.candidate_session.has_value())
+                   : (profile.baseline.has_value() || !profile.preparation.has_value() ||
+                      !profile.candidate_session.has_value())) {
+    return invalid("P4OP-ARM-SHAPE-001",
+                   "operational component optionals do not match the contender arm");
+  }
+  if (baseline_arm) {
+    const auto& value = *profile.baseline;
+    const Wide classified =
+        static_cast<Wide>(value.validation_and_initialization_wall_nanoseconds) +
+        value.scheduling_and_policy_projection_wall_nanoseconds +
+        value.candidate_generation_wall_nanoseconds +
+        value.exact_admission_and_store_publication_wall_nanoseconds +
+        value.incremental_resource_accumulation_wall_nanoseconds +
+        value.sweep_selection_and_resource_replay_wall_nanoseconds +
+        value.price_update_wall_nanoseconds + value.final_assembly_wall_nanoseconds;
+    const Wide prepared_classified = static_cast<Wide>(value.component_wall_nanoseconds) +
+                                     profile.contender_transient_release_tail_wall_nanoseconds;
+    if (!closes(value.component_wall_nanoseconds, classified,
+                value.unclassified_serial_wall_nanoseconds) ||
+        !closes(profile.execution.prepared_elapsed_nanoseconds, prepared_classified,
+                profile.unclassified_prepared_scope_wall_nanoseconds)) {
+      return invalid("P4OP-BASELINE-CLOSURE-001",
+                     "baseline operational intervals do not close inside prepared time");
+    }
+    return std::nullopt;
+  }
+
+  const auto& preparation = *profile.preparation;
+  const Wide preparation_classified =
+      static_cast<Wide>(preparation.validation_and_scheduling_wall_nanoseconds) +
+      preparation.base_worker_wave_wall_nanoseconds +
+      preparation.alternative_policy_wall_nanoseconds +
+      preparation.alternative_worker_wave_wall_nanoseconds +
+      preparation.exact_admission_and_store_publication_wall_nanoseconds +
+      preparation.publication_correlation_and_pool_materialization_wall_nanoseconds;
+  const auto& session = *profile.candidate_session;
+  const Wide session_classified =
+      static_cast<Wide>(session.validation_and_source_inspection_wall_nanoseconds) +
+      session.initial_price_state_wall_nanoseconds +
+      session.initial_selection_and_resource_accumulation_wall_nanoseconds +
+      session.targeted_regeneration_planning_wall_nanoseconds +
+      session.targeted_regeneration_execution_wall_nanoseconds +
+      session.successor_correlation_wall_nanoseconds +
+      session.terminal_multi_world_component_wall_nanoseconds +
+      session.final_manifest_and_assembly_wall_nanoseconds;
+  const Wide dispatched_jobs =
+      static_cast<Wide>(preparation.base_jobs_dispatched) + preparation.alternative_jobs_dispatched;
+  const Wide maximum_alternative_jobs =
+      static_cast<Wide>(profile.execution.semantics.workload_net_count) *
+      (profile.execution.semantics.requested_pool_size - 1U);
+  const Wide worker_wave_wall = static_cast<Wide>(preparation.base_worker_wave_wall_nanoseconds) +
+                                preparation.alternative_worker_wave_wall_nanoseconds;
+  const Wide maximum_worker_sum =
+      static_cast<Wide>(profile.execution.semantics.preparation_worker_count) * worker_wave_wall;
+  const Wide prepared_classified = static_cast<Wide>(preparation.component_wall_nanoseconds) +
+                                   session.component_wall_nanoseconds +
+                                   profile.contender_transient_release_tail_wall_nanoseconds;
+  if (!closes(preparation.component_wall_nanoseconds, preparation_classified,
+              preparation.unclassified_serial_wall_nanoseconds) ||
+      !closes(session.component_wall_nanoseconds, session_classified,
+              session.unclassified_serial_wall_nanoseconds) ||
+      !closes(profile.execution.prepared_elapsed_nanoseconds, prepared_classified,
+              profile.unclassified_prepared_scope_wall_nanoseconds) ||
+      preparation.base_jobs_dispatched != profile.execution.semantics.workload_net_count ||
+      !FitsU64(dispatched_jobs) ||
+      ToU64(dispatched_jobs) != profile.execution.semantics.preparation_route_queries ||
+      preparation.alternative_jobs_dispatched > maximum_alternative_jobs ||
+      preparation.route_and_candidate_build_worker_sum_nanoseconds > maximum_worker_sum ||
+      session.regeneration_plans.size() != session.regeneration_epochs.size()) {
+    return invalid("P4OP-CANDIDATE-CLOSURE-001",
+                   "candidate preparation/session shape, jobs, or timing does not close");
+  }
+
+  Wide planning_price = 0;
+  Wide planning_selection = 0;
+  Wide planning_components = 0;
+  Wide execution_components = 0;
+  Wide requested_columns = 0;
+  Wide route_queries = 0;
+  Wide route_work_units = 0;
+  Wide policy_projection_visits = 0;
+  Wide generated_candidate_bytes = 0;
+  Wide rejection_record_bytes = 0;
+  Wide transient_result_bytes = 0;
+  Wide admitted_candidates = 0;
+  Wide duplicate_candidates = 0;
+  Wide rejected_columns = 0;
+  Wide novel_retained_candidates = 0;
+  Wide changed_selections = 0;
+  const allocator::CpuCandidateAllocationSessionReplayWitnessV1& witness = session.replay_witness;
+  // This capture validator proves same-run internal association and bounded
+  // closure. Publication must independently join the compact association to an
+  // unmeasured full-preimage authority replay before treating it as evidence.
+  if (witness.session_checksum != profile.execution.semantics.algorithm_session_checksum ||
+      witness.board_content_hash != profile.execution.semantics.board_content_hash ||
+      witness.workload_checksum != profile.execution.semantics.workload_checksum ||
+      witness.capacity_model_checksum != profile.execution.semantics.capacity_model_checksum ||
+      witness.preparation_checksum != profile.execution.semantics.preparation_checksum ||
+      witness.maximum_regeneration_epochs !=
+          profile.execution.semantics.candidate_regeneration_epochs ||
+      Normalize(witness.terminal_reason) != profile.execution.semantics.terminal_reason ||
+      session.planning_expanded_resource_visits !=
+          witness.counters.planning_expanded_resource_visits ||
+      witness.counters.route_queries != profile.execution.semantics.regeneration_route_queries ||
+      witness.counters.route_work_units !=
+          profile.execution.semantics.regeneration_route_work_units ||
+      witness.final_pool_manifest_checksum !=
+          profile.execution.semantics.final_pool_manifest_checksum ||
+      witness.final_rejection_manifest_checksum !=
+          profile.execution.semantics.final_rejection_manifest_checksum ||
+      witness.counters.completed_regeneration_epochs != witness.epoch_record_count ||
+      witness.epoch_record_count != session.regeneration_epochs.size() ||
+      witness.epoch_record_count > witness.maximum_regeneration_epochs ||
+      witness.epoch_association_checksum == 0 ||
+      witness.epoch_association_checksum != ComputeOperationalEpochAssociationChecksumV1(session)) {
+    return invalid("P4OP-SESSION-WITNESS-001",
+                   "candidate capture association does not bind its same-run semantics and epochs");
+  }
+  for (std::size_t index = 0; index < session.regeneration_plans.size(); ++index) {
+    const auto& plan = session.regeneration_plans[index];
+    const Wide classified =
+        static_cast<Wide>(plan.source_selection_and_resource_accumulation_wall_nanoseconds) +
+        plan.price_update_wall_nanoseconds +
+        plan.next_price_selection_and_resource_accumulation_wall_nanoseconds +
+        plan.target_ranking_retention_and_assembly_wall_nanoseconds;
+    if (plan.epoch_index != index || plan.plan_checksum == 0 || plan.price_update_operations != 1 ||
+        !closes(plan.component_wall_nanoseconds, classified,
+                plan.unclassified_serial_wall_nanoseconds)) {
+      return invalid("P4OP-PLAN-CLOSURE-001",
+                     "targeted-regeneration planning intervals do not close");
+    }
+    planning_price += plan.price_update_wall_nanoseconds;
+    planning_selection +=
+        static_cast<Wide>(plan.source_selection_and_resource_accumulation_wall_nanoseconds) +
+        plan.next_price_selection_and_resource_accumulation_wall_nanoseconds +
+        plan.target_ranking_retention_and_assembly_wall_nanoseconds;
+    planning_components += plan.component_wall_nanoseconds;
+
+    const auto& epoch = session.regeneration_epochs[index];
+    const Wide epoch_classified =
+        static_cast<Wide>(epoch.validation_and_preflight_wall_nanoseconds) +
+        epoch.baseline_selection_and_source_store_preflight_wall_nanoseconds +
+        epoch.policy_projection_and_candidate_generation_wall_nanoseconds +
+        epoch.exact_admission_and_store_publication_wall_nanoseconds +
+        epoch.publication_correlation_wall_nanoseconds +
+        epoch.refreshed_selection_and_resource_accumulation_wall_nanoseconds +
+        epoch.successor_retention_wall_nanoseconds + epoch.final_assembly_wall_nanoseconds;
+    if (epoch.epoch_index != index || epoch.plan_checksum == 0 ||
+        epoch.plan_checksum != plan.plan_checksum || epoch.execution_checksum == 0 ||
+        !closes(epoch.component_wall_nanoseconds, epoch_classified,
+                epoch.unclassified_serial_wall_nanoseconds)) {
+      return invalid("P4OP-EPOCH-ASSOCIATION-001",
+                     "targeted-regeneration epoch identity or intervals are invalid");
+    }
+    execution_components += epoch.component_wall_nanoseconds;
+    requested_columns += epoch.counters.requested_columns;
+    route_queries += epoch.counters.route_queries;
+    route_work_units += epoch.counters.route_work_units;
+    policy_projection_visits += epoch.counters.policy_projection_visits;
+    generated_candidate_bytes += epoch.counters.generated_candidate_bytes;
+    rejection_record_bytes += epoch.counters.rejection_record_bytes;
+    transient_result_bytes += epoch.counters.transient_result_bytes;
+    admitted_candidates += epoch.counters.admitted_candidates;
+    duplicate_candidates += epoch.counters.duplicate_candidates;
+    rejected_columns += epoch.counters.rejected_columns;
+    novel_retained_candidates += epoch.counters.novel_retained_candidates;
+    changed_selections += epoch.counters.changed_selections;
+  }
+  const auto& worlds = session.terminal_multi_world;
+  const Wide world_classified =
+      static_cast<Wide>(worlds.validation_and_source_preflight_wall_nanoseconds) +
+      worlds.selection_and_resource_accumulation_wall_nanoseconds +
+      worlds.price_update_and_snapshot_wall_nanoseconds +
+      worlds.terminal_retention_and_assembly_wall_nanoseconds;
+  if (!FitsU64(planning_price) ||
+      ToU64(planning_price) != session.targeted_regeneration_price_update_wall_nanoseconds ||
+      !FitsU64(requested_columns) ||
+      ToU64(requested_columns) != witness.counters.requested_columns || !FitsU64(route_queries) ||
+      ToU64(route_queries) != witness.counters.route_queries || !FitsU64(route_work_units) ||
+      ToU64(route_work_units) != witness.counters.route_work_units ||
+      !FitsU64(policy_projection_visits) ||
+      ToU64(policy_projection_visits) != witness.counters.policy_projection_visits ||
+      !FitsU64(generated_candidate_bytes) ||
+      ToU64(generated_candidate_bytes) != witness.counters.generated_candidate_bytes ||
+      !FitsU64(rejection_record_bytes) ||
+      ToU64(rejection_record_bytes) != witness.counters.rejection_record_bytes ||
+      !FitsU64(transient_result_bytes) ||
+      ToU64(transient_result_bytes) != witness.counters.transient_result_bytes ||
+      !FitsU64(admitted_candidates) ||
+      ToU64(admitted_candidates) != witness.counters.admitted_candidates ||
+      !FitsU64(duplicate_candidates) ||
+      ToU64(duplicate_candidates) != witness.counters.duplicate_candidates ||
+      !FitsU64(rejected_columns) || ToU64(rejected_columns) != witness.counters.rejected_columns ||
+      !FitsU64(novel_retained_candidates) ||
+      ToU64(novel_retained_candidates) != witness.counters.novel_retained_candidates ||
+      !FitsU64(changed_selections) ||
+      ToU64(changed_selections) != witness.counters.changed_selections ||
+      !FitsU64(planning_selection) ||
+      ToU64(planning_selection) !=
+          session.targeted_regeneration_selection_and_target_planning_wall_nanoseconds ||
+      planning_components > session.targeted_regeneration_planning_wall_nanoseconds ||
+      execution_components > session.targeted_regeneration_execution_wall_nanoseconds ||
+      !closes(worlds.component_wall_nanoseconds, world_classified,
+              worlds.unclassified_serial_wall_nanoseconds) ||
+      worlds.component_wall_nanoseconds > session.terminal_multi_world_component_wall_nanoseconds ||
+      session.terminal_multi_world_price_update_wall_nanoseconds !=
+          worlds.price_update_and_snapshot_wall_nanoseconds) {
+    return invalid("P4OP-NESTED-CLOSURE-001",
+                   "nested planning, regeneration, or multi-world intervals do not close");
+  }
+  return std::nullopt;
 }
 
 std::optional<Phase4PairedTrialError> ValidatePhase4SameRunArmDecisionTelemetryV1(
@@ -1932,11 +2523,26 @@ struct ArmExecutionWithOptionalTelemetry {
   std::optional<Phase4ArmReportTelemetryV1> telemetry;
   std::optional<Phase4SameRunArmDecisionTelemetryV1> same_run_telemetry;
   std::optional<Phase4CandidatePoolSnapshotExecutionV1> snapshot;
+  std::optional<Phase4TrialArmOperationalProfileV1> operational_profile;
 };
 
 using ArmExecutionWithOptionalTelemetryResult =
     std::variant<ArmExecutionWithOptionalTelemetry, Phase4TrialArmFailure>;
 
+template <bool CaptureOperationalProfile>
+struct OperationalArmCaptureState {};
+
+template <>
+struct OperationalArmCaptureState<true> {
+  Phase4RepresentativeCaseOperationalProfileV1 case_build;
+  allocator::SequentialNegotiatedBaselineOperationalProfileV1 baseline;
+  allocator::CpuCandidatePoolPreparationOperationalProfileV1 preparation;
+  allocator::CpuCandidateAllocationSessionOperationalProfileV1 session;
+  Clock::time_point release_tail_start{};
+  std::uint64_t contender_release_tail_elapsed = 0;
+};
+
+template <bool CaptureOperationalProfile>
 [[nodiscard]] ArmExecutionWithOptionalTelemetryResult ExecutePhase4TrialArmImpl(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer, bool capture_telemetry,
@@ -1978,12 +2584,20 @@ using ArmExecutionWithOptionalTelemetryResult =
     Phase4ArmReportTelemetryV1 telemetry;
     Phase4SameRunArmDecisionTelemetryV1 same_run_telemetry;
     Phase4CandidatePoolSnapshotExecutionV1 snapshot;
+    OperationalArmCaptureState<CaptureOperationalProfile> operational;
     std::uint64_t case_build_elapsed = 0;
     std::uint64_t prepared_elapsed = 0;
     {
       const Clock::time_point case_start = Clock::now();
-      Phase4RepresentativeCaseResult case_result =
-          BuildPhase4RepresentativeCaseV1(spec.case_id, imported_fixture, spec.corpus_limits);
+      Phase4RepresentativeCaseResult case_result = [&]() {
+        if constexpr (CaptureOperationalProfile) {
+          return BuildPhase4RepresentativeCaseWithOperationalProfileV1(
+              spec.case_id, imported_fixture, spec.corpus_limits, operational.case_build);
+        } else {
+          return BuildPhase4RepresentativeCaseV1(spec.case_id, imported_fixture,
+                                                 spec.corpus_limits);
+        }
+      }();
       case_build_elapsed = ElapsedNanoseconds(case_start, Clock::now());
       if (std::holds_alternative<Phase4RepresentativeCorpusError>(case_result)) {
         Phase4RepresentativeCorpusError child =
@@ -2001,15 +2615,40 @@ using ArmExecutionWithOptionalTelemetryResult =
             "the built case does not match its descriptor or Board/workload association", arm));
       }
       const Clock::time_point prepared_start = Clock::now();
-      auto arm_result =
-          arm == Phase4TrialArm::kSequentialBaseline
-              ? ExecuteBaseline(spec, std::move(corpus), validated,
-                                capture_telemetry ? &telemetry : nullptr,
-                                capture_same_run_telemetry ? &same_run_telemetry : nullptr)
-              : ExecuteCandidate(spec, std::move(corpus), validated, *candidate_preparer,
-                                 capture_telemetry ? &telemetry : nullptr,
-                                 capture_same_run_telemetry ? &same_run_telemetry : nullptr,
-                                 capture_snapshot ? &snapshot : nullptr);
+      ArmSemanticsResult arm_result = [&]() {
+        if (arm == Phase4TrialArm::kSequentialBaseline) {
+          if constexpr (CaptureOperationalProfile) {
+            return ExecuteBaseline<true>(spec, std::move(corpus), validated,
+                                         capture_telemetry ? &telemetry : nullptr,
+                                         capture_same_run_telemetry ? &same_run_telemetry : nullptr,
+                                         &operational.baseline, &operational.release_tail_start);
+          } else {
+            return ExecuteBaseline<false>(
+                spec, std::move(corpus), validated, capture_telemetry ? &telemetry : nullptr,
+                capture_same_run_telemetry ? &same_run_telemetry : nullptr, nullptr, nullptr);
+          }
+        }
+        if constexpr (CaptureOperationalProfile) {
+          return ExecuteCandidate<true>(spec, std::move(corpus), validated, *candidate_preparer,
+                                        capture_telemetry ? &telemetry : nullptr,
+                                        capture_same_run_telemetry ? &same_run_telemetry : nullptr,
+                                        capture_snapshot ? &snapshot : nullptr,
+                                        &operational.preparation, &operational.session,
+                                        &operational.release_tail_start);
+        } else {
+          return ExecuteCandidate<false>(spec, std::move(corpus), validated, *candidate_preparer,
+                                         capture_telemetry ? &telemetry : nullptr,
+                                         capture_same_run_telemetry ? &same_run_telemetry : nullptr,
+                                         capture_snapshot ? &snapshot : nullptr, nullptr, nullptr,
+                                         nullptr);
+        }
+      }();
+      if constexpr (CaptureOperationalProfile) {
+        if (operational.release_tail_start != Clock::time_point{}) {
+          operational.contender_release_tail_elapsed =
+              ElapsedNanoseconds(operational.release_tail_start, Clock::now());
+        }
+      }
       prepared_elapsed = ElapsedNanoseconds(prepared_start, Clock::now());
       if (std::holds_alternative<Phase4TrialArmFailure>(arm_result)) {
         return std::get<Phase4TrialArmFailure>(std::move(arm_result));
@@ -2033,6 +2672,7 @@ using ArmExecutionWithOptionalTelemetryResult =
         .telemetry = std::nullopt,
         .same_run_telemetry = std::nullopt,
         .snapshot = std::nullopt,
+        .operational_profile = std::nullopt,
     };
     if (capture_telemetry) {
       output.telemetry = std::move(telemetry);
@@ -2042,6 +2682,99 @@ using ArmExecutionWithOptionalTelemetryResult =
     }
     if (capture_snapshot) {
       output.snapshot = std::move(snapshot);
+    }
+    if constexpr (CaptureOperationalProfile) {
+      const Wide nested = static_cast<Wide>(case_build_elapsed) + prepared_elapsed;
+      if (!FitsU64(nested) || ToU64(nested) > cold_elapsed) {
+        return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4OP-NESTING-001",
+                                "operational capture intervals do not nest inside cold time", arm));
+      }
+      Phase4TrialArmOperationalProfileV1 profile{
+          .schema_version = kPhase4TrialArmOperationalProfileSchemaVersion,
+          .execution = std::move(output.execution),
+          .case_build = std::move(operational.case_build),
+          .process_cpu =
+              Phase4OperationalApplicabilityV1{
+                  .status = Phase4OperationalMeasurementStatus::kRequiresParentProcessAuthority,
+                  .reason =
+                      Phase4OperationalMeasurementReason::kProcessCpuRequiresIsolatedParentWait4,
+              },
+          .peak_host_memory =
+              Phase4OperationalApplicabilityV1{
+                  .status = Phase4OperationalMeasurementStatus::kRequiresParentProcessAuthority,
+                  .reason = Phase4OperationalMeasurementReason::
+                      kPeakHostMemoryRequiresIsolatedParentWait4,
+              },
+          .compatible_batch_formation_and_fill =
+              Phase4OperationalApplicabilityV1{
+                  .status = Phase4OperationalMeasurementStatus::kNotApplicable,
+                  .reason =
+                      Phase4OperationalMeasurementReason::kCpuDirectJobsNotCompatibilityBatches,
+              },
+          .compact_readback =
+              Phase4OperationalApplicabilityV1{
+                  .status = Phase4OperationalMeasurementStatus::kNotApplicable,
+                  .reason =
+                      Phase4OperationalMeasurementReason::kCpuExecutionHasNoCompactDeviceReadback,
+              },
+          .prepared_view_cache_and_cache_misses =
+              Phase4OperationalApplicabilityV1{
+                  .status = Phase4OperationalMeasurementStatus::kNotApplicable,
+                  .reason = Phase4OperationalMeasurementReason::
+                      kPrecompiledCaseOwnedViewsHaveNoRuntimePreparedViewCache,
+              },
+          .initial_device_upload =
+              Phase4OperationalApplicabilityV1{
+                  .status = Phase4OperationalMeasurementStatus::kNotApplicable,
+                  .reason = Phase4OperationalMeasurementReason::kCpuExecutionHasNoDeviceUpload,
+              },
+          .gpu_utilization =
+              Phase4OperationalApplicabilityV1{
+                  .status = Phase4OperationalMeasurementStatus::kNotApplicable,
+                  .reason = Phase4OperationalMeasurementReason::kCpuExecutionHasNoGpuDispatch,
+              },
+          .peak_device_memory =
+              Phase4OperationalApplicabilityV1{
+                  .status = Phase4OperationalMeasurementStatus::kNotApplicable,
+                  .reason = Phase4OperationalMeasurementReason::kCpuExecutionHasNoDeviceMemory,
+              },
+          .contender_transient_release_tail_wall_nanoseconds =
+              operational.contender_release_tail_elapsed,
+          .unclassified_prepared_scope_wall_nanoseconds = 0,
+          .unclassified_cold_scope_exit_wall_nanoseconds = cold_elapsed - ToU64(nested),
+          .baseline = std::nullopt,
+          .preparation = std::nullopt,
+          .candidate_session = std::nullopt,
+          .profile_checksum = 0,
+      };
+      if (arm == Phase4TrialArm::kSequentialBaseline) {
+        profile.baseline = std::move(operational.baseline);
+      } else {
+        profile.preparation = std::move(operational.preparation);
+        profile.candidate_session = std::move(operational.session);
+      }
+      Wide prepared_classified = profile.contender_transient_release_tail_wall_nanoseconds;
+      if (profile.baseline.has_value()) {
+        prepared_classified += profile.baseline->component_wall_nanoseconds;
+      } else {
+        prepared_classified += profile.preparation->component_wall_nanoseconds;
+        prepared_classified += profile.candidate_session->component_wall_nanoseconds;
+      }
+      if (!FitsU64(prepared_classified) || ToU64(prepared_classified) > prepared_elapsed) {
+        return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                                "P4OP-PREPARED-NESTING-001",
+                                "operational components do not nest inside prepared time", arm));
+      }
+      profile.unclassified_prepared_scope_wall_nanoseconds =
+          prepared_elapsed - ToU64(prepared_classified);
+      profile.profile_checksum =
+          internal::ComputePhase4TrialArmOperationalProfileChecksumV1(profile);
+      if (std::optional<Phase4PairedTrialError> error =
+              internal::ValidatePhase4TrialArmOperationalProfileV1(profile);
+          error.has_value()) {
+        return ArmFailure(*error);
+      }
+      output.operational_profile = std::move(profile);
     }
     return output;
   } catch (const std::bad_alloc&) {
@@ -2064,7 +2797,7 @@ using ArmExecutionWithOptionalTelemetryResult =
 Phase4TrialArmExecutionResult ExecutePhase4TrialArmV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
-  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl(
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false>(
       arm, spec, imported_fixture, candidate_preparer, false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
@@ -2075,7 +2808,7 @@ Phase4TrialArmExecutionResult ExecutePhase4TrialArmV1(
 Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
-  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl(
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false>(
       arm, spec, imported_fixture, candidate_preparer, true, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
@@ -2095,7 +2828,7 @@ Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
 Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4TrialArmWithSameRunTelemetryV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
-  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl(
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false>(
       arm, spec, imported_fixture, candidate_preparer, false, true, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
@@ -2113,12 +2846,29 @@ Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4TrialArmWithSam
   };
 }
 
+Phase4TrialArmOperationalProfileResultV1 ExecutePhase4TrialArmOperationalProfileV1(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<true>(
+      arm, spec, imported_fixture, candidate_preparer, false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.operational_profile.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4OP-INTERNAL-001",
+                            "operational execution completed without its profile", arm));
+  }
+  return std::move(*output.operational_profile);
+}
+
 Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotV1(
     const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result =
-      ExecutePhase4TrialArmImpl(Phase4TrialArm::kReusableCandidateAllocation, spec,
-                                imported_fixture, candidate_preparer, true, false, true);
+      ExecutePhase4TrialArmImpl<false>(Phase4TrialArm::kReusableCandidateAllocation, spec,
+                                       imported_fixture, candidate_preparer, true, false, true);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }

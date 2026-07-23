@@ -121,6 +121,27 @@ struct PersistentCpuCandidatePoolTelemetry {
                          const PersistentCpuCandidatePoolTelemetry&) = default;
 };
 
+// Diagnostic-only wall intervals for one separately instrumented preparation.
+// Ordinary callers pass no profile pointer and execute no profile clocks.
+// Worker-sum intervals can exceed their enclosing wave wall interval because
+// persistent CPU workers execute concurrently.
+struct CpuCandidatePoolPreparationOperationalProfileV1 {
+  std::uint64_t component_wall_nanoseconds = 0;
+  std::uint64_t validation_and_scheduling_wall_nanoseconds = 0;
+  std::uint64_t base_worker_wave_wall_nanoseconds = 0;
+  std::uint64_t alternative_policy_wall_nanoseconds = 0;
+  std::uint64_t alternative_worker_wave_wall_nanoseconds = 0;
+  std::uint64_t route_and_candidate_build_worker_sum_nanoseconds = 0;
+  std::uint64_t exact_admission_and_store_publication_wall_nanoseconds = 0;
+  std::uint64_t publication_correlation_and_pool_materialization_wall_nanoseconds = 0;
+  std::uint64_t unclassified_serial_wall_nanoseconds = 0;
+  std::uint64_t base_jobs_dispatched = 0;
+  std::uint64_t alternative_jobs_dispatched = 0;
+
+  friend bool operator==(const CpuCandidatePoolPreparationOperationalProfileV1&,
+                         const CpuCandidatePoolPreparationOperationalProfileV1&) = default;
+};
+
 enum class CpuCandidatePoolPreparationErrorCode : std::uint8_t {
   kUnsupportedSchema = 0,
   kInvalidConfiguration = 1,
@@ -259,6 +280,12 @@ class PreparedCpuCandidatePools {
   PrepareInitialCpuCandidatePools(PersistentCpuCandidatePoolPreparer&,
                                   const board_ir::BoardSnapshot&, const MultiNetWorkload&,
                                   const CpuCandidatePoolPreparationConfig&);
+  template <bool>
+  friend std::variant<PreparedCpuCandidatePools, CpuCandidatePoolPreparationError>
+  PrepareInitialCpuCandidatePoolsImpl(PersistentCpuCandidatePoolPreparer&,
+                                      const board_ir::BoardSnapshot&, const MultiNetWorkload&,
+                                      const CpuCandidatePoolPreparationConfig&,
+                                      CpuCandidatePoolPreparationOperationalProfileV1*);
 };
 
 using PreparedCpuCandidatePoolsResult =
@@ -292,6 +319,10 @@ class PersistentCpuCandidatePoolPreparer {
   friend PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
       PersistentCpuCandidatePoolPreparer&, const board_ir::BoardSnapshot&, const MultiNetWorkload&,
       const CpuCandidatePoolPreparationConfig&);
+  template <bool>
+  friend PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePoolsImpl(
+      PersistentCpuCandidatePoolPreparer&, const board_ir::BoardSnapshot&, const MultiNetWorkload&,
+      const CpuCandidatePoolPreparationConfig&, CpuCandidatePoolPreparationOperationalProfileV1*);
 };
 
 using PersistentCpuCandidatePoolPreparerResult =
@@ -309,6 +340,12 @@ using PersistentCpuCandidatePoolPreparerResult =
 [[nodiscard]] PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
     PersistentCpuCandidatePoolPreparer& preparer, const board_ir::BoardSnapshot& board,
     const MultiNetWorkload& workload, const CpuCandidatePoolPreparationConfig& config);
+
+[[nodiscard]] PreparedCpuCandidatePoolsResult
+PrepareInitialCpuCandidatePoolsWithOperationalProfileV1(
+    PersistentCpuCandidatePoolPreparer& preparer, const board_ir::BoardSnapshot& board,
+    const MultiNetWorkload& workload, const CpuCandidatePoolPreparationConfig& config,
+    CpuCandidatePoolPreparationOperationalProfileV1& operational_profile);
 
 }  // namespace apgar::allocator
 

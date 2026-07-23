@@ -25,6 +25,7 @@ namespace {
 
 static_assert(std::is_move_constructible_v<CpuCandidateAllocationSession>);
 static_assert(!std::is_move_assignable_v<CpuCandidateAllocationSession>);
+static_assert(std::is_trivially_copyable_v<CpuCandidateAllocationSessionReplayWitnessV1>);
 
 struct Fixture {
   board_ir::BoardSnapshot board;

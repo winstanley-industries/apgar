@@ -39,6 +39,12 @@ namespace apgar::benchmark::internal {
 [[nodiscard]] std::uint64_t ComputePhase4SameRunArmDecisionTelemetryChecksumV1(
     const Phase4SameRunArmDecisionTelemetryV1& telemetry) noexcept;
 
+[[nodiscard]] std::uint64_t ComputePhase4TrialArmOperationalProfileChecksumV1(
+    const Phase4TrialArmOperationalProfileV1& profile) noexcept;
+
+[[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmOperationalProfileV1(
+    const Phase4TrialArmOperationalProfileV1& profile) noexcept;
+
 [[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4SameRunArmDecisionTelemetryV1(
     const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
     const Phase4SameRunArmDecisionTelemetryV1& telemetry) noexcept;

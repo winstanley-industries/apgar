@@ -68,6 +68,20 @@ ProjectCpuCandidateAllocationSessionEnvelopeV1(
     std::uint64_t final_price_state_checksum, std::uint64_t final_single_world_checksum,
     std::uint64_t final_multi_world_checksum) noexcept;
 
+[[nodiscard]] std::uint64_t ComputeCpuCandidateAllocationEpochAssociationChecksumV1(
+    std::span<const CpuCandidateAllocationEpochRecord> epochs,
+    std::uint64_t planning_expanded_resource_visits) noexcept;
+
+// Produces the timed component profile and compact same-run association without
+// retaining contender storage. Publication supplies the independent
+// full-preimage authority join.
+[[nodiscard]] CpuCandidateAllocationSessionResult
+ExecuteCpuCandidateAllocationSessionWithOperationalProfileV1(
+    std::uint32_t schema_version, board_ir::BoardSnapshot&& board, MultiNetWorkload&& workload,
+    ResourceCapacityModel&& capacities, PreparedCpuCandidatePools&& prepared,
+    const CpuCandidateAllocationSessionConfig& config,
+    CpuCandidateAllocationSessionOperationalProfileV1& operational_profile);
+
 }  // namespace apgar::allocator::internal
 
 #endif  // APGAR_SRC_ALLOCATOR_CPU_CANDIDATE_ALLOCATION_SESSION_INTERNAL_H_

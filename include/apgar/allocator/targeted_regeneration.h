@@ -77,6 +77,21 @@ struct TargetedRegenerationError {
                          const TargetedRegenerationError&) = default;
 };
 
+struct TargetedRegenerationPlanningOperationalProfileV1 {
+  std::uint32_t epoch_index = 0;
+  std::uint64_t plan_checksum = 0;
+  std::uint64_t component_wall_nanoseconds = 0;
+  std::uint64_t source_selection_and_resource_accumulation_wall_nanoseconds = 0;
+  std::uint64_t price_update_wall_nanoseconds = 0;
+  std::uint64_t next_price_selection_and_resource_accumulation_wall_nanoseconds = 0;
+  std::uint64_t target_ranking_retention_and_assembly_wall_nanoseconds = 0;
+  std::uint64_t unclassified_serial_wall_nanoseconds = 0;
+  std::uint64_t price_update_operations = 0;
+
+  friend bool operator==(const TargetedRegenerationPlanningOperationalProfileV1&,
+                         const TargetedRegenerationPlanningOperationalProfileV1&) = default;
+};
+
 class TargetedRegenerationPlan {
  public:
   TargetedRegenerationPlan(const TargetedRegenerationPlan&) = delete;
@@ -204,6 +219,12 @@ class TargetedRegenerationPlan {
   BuildTargetedRegenerationPlan(std::uint32_t, const NegotiatedPriceState&,
                                 const OneWorldAllocationRequest&, const OneWorldAllocation&,
                                 candidates::CandidateStore&, const TargetedRegenerationConfig&);
+  template <bool>
+  friend std::variant<TargetedRegenerationPlan, TargetedRegenerationError>
+  BuildTargetedRegenerationPlanImpl(std::uint32_t, const NegotiatedPriceState&,
+                                    const OneWorldAllocationRequest&, const OneWorldAllocation&,
+                                    candidates::CandidateStore&, const TargetedRegenerationConfig&,
+                                    TargetedRegenerationPlanningOperationalProfileV1*);
 };
 
 using TargetedRegenerationPlanResult =
@@ -227,6 +248,12 @@ using TargetedRegenerationPolicyResult =
     std::uint32_t schema_version, const NegotiatedPriceState& previous_price_state,
     const OneWorldAllocationRequest& source_request, const OneWorldAllocation& world,
     candidates::CandidateStore& candidate_store, const TargetedRegenerationConfig& config);
+
+[[nodiscard]] TargetedRegenerationPlanResult BuildTargetedRegenerationPlanWithOperationalProfileV1(
+    std::uint32_t schema_version, const NegotiatedPriceState& previous_price_state,
+    const OneWorldAllocationRequest& source_request, const OneWorldAllocation& world,
+    candidates::CandidateStore& candidate_store, const TargetedRegenerationConfig& config,
+    TargetedRegenerationPlanningOperationalProfileV1& operational_profile);
 
 }  // namespace apgar::allocator
 

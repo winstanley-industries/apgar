@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -21,6 +22,7 @@
 #include "apgar/routing/candidate_policy.h"
 #include "src/allocator/one_world_internal.h"
 #include "src/allocator/sequential_negotiated_baseline_internal.h"
+#include "src/operational_timestamp.h"
 
 namespace apgar::allocator {
 namespace {
@@ -28,6 +30,24 @@ namespace {
 using UWide = unsigned __int128;
 using SWide = __int128;
 using Occupancy = std::map<routing::EdgeResourceKey, std::uint64_t>;
+using OperationalClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t OperationalElapsed(OperationalClock::time_point start) noexcept {
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(OperationalClock::now() - start).count();
+  return elapsed <= 0 ? 0 : static_cast<std::uint64_t>(elapsed);
+}
+
+void AccumulateOperationalElapsed(std::uint64_t* target,
+                                  OperationalClock::time_point start) noexcept {
+  if (target == nullptr) {
+    return;
+  }
+  const std::uint64_t value = OperationalElapsed(start);
+  *target = value > std::numeric_limits<std::uint64_t>::max() - *target
+                ? std::numeric_limits<std::uint64_t>::max()
+                : *target + value;
+}
 
 #ifdef APGAR_SEQUENTIAL_NEGOTIATED_BASELINE_FAULT_TEST_VARIANT
 std::atomic<std::uint64_t> g_admission_budget_fault_query{0};
@@ -1073,9 +1093,18 @@ SequentialNegotiatedBaselineResult::SequentialNegotiatedBaselineResult(
       successor_price_state_(std::move(successor_price_state)),
       session_checksum_(session_checksum) {}
 
-SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
+template <bool CaptureOperationalProfile>
+SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaselineImpl(
     const board_ir::BoardSnapshot& board, const MultiNetWorkload& workload,
-    const ResourceCapacityModel& capacities, const SequentialNegotiatedBaselineConfig& config) {
+    const ResourceCapacityModel& capacities, const SequentialNegotiatedBaselineConfig& config,
+    SequentialNegotiatedBaselineOperationalProfileV1* operational_profile) {
+  ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+      initialization_start;
+  if constexpr (CaptureOperationalProfile) {
+    *operational_profile = {};
+    initialization_start =
+        ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+  }
   return WithFailureEnvelope([&]() -> SequentialNegotiatedBaselineExecution {
     if (const std::optional<SequentialNegotiatedBaselineError> failure =
             ValidateConfigAndBounds(board, workload, capacities, config);
@@ -1112,6 +1141,10 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
         SequentialNegotiatedTerminalReason::kSweepBudgetExhausted;
     std::uint64_t retained_candidate_bytes = 0;
 
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->validation_and_initialization_wall_nanoseconds =
+          OperationalElapsed(initialization_start);
+    }
     for (std::uint32_t sweep_index = 0; sweep_index < config.maximum_sweeps; ++sweep_index) {
       if (sweep_index != 0) {
         final_pools.clear();
@@ -1123,12 +1156,29 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
         const PreparedNetRoutingContext& context = workload.nets()[net_index];
         const candidates::StoredCandidate prior = winners[net_index];
         if (prior != nullptr) {
+          ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+              resource_start;
+          if constexpr (CaptureOperationalProfile) {
+            resource_start =
+                ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+          }
           if (const auto failure = ApplyCandidateUsage(prior, false, occupancy, config, counters);
               failure.has_value()) {
             return *failure;
           }
+          if constexpr (CaptureOperationalProfile) {
+            AccumulateOperationalElapsed(
+                &operational_profile->incremental_resource_accumulation_wall_nanoseconds,
+                resource_start);
+          }
         }
 
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            scheduling_start;
+        if constexpr (CaptureOperationalProfile) {
+          scheduling_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         auto policy_result = BuildQueryPolicy(context, capacities, price_state, occupancy, config,
                                               sweep_index, counters);
         if (const auto* failure = std::get_if<SequentialNegotiatedBaselineError>(&policy_result);
@@ -1140,6 +1190,11 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
         routing::NormalizedCandidateGenerationPolicy normalized = std::move(synthesized.normalized);
         routing::PlanarRouteRequest request = context.request;
         request.candidate_policy = normalized.policy;
+        if constexpr (CaptureOperationalProfile) {
+          AccumulateOperationalElapsed(
+              &operational_profile->scheduling_and_policy_projection_wall_nanoseconds,
+              scheduling_start);
+        }
         const std::uint64_t query_identity = ++counters.route_queries;
         SequentialNegotiatedColumnRecord column;
         column.sweep_index = sweep_index;
@@ -1155,9 +1210,20 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
             winners[net_index].reset();
             return std::nullopt;
           }
+          ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+              resource_start;
+          if constexpr (CaptureOperationalProfile) {
+            resource_start =
+                ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+          }
           if (const auto failure = ApplyCandidateUsage(prior, true, occupancy, config, counters);
               failure.has_value()) {
             return failure;
+          }
+          if constexpr (CaptureOperationalProfile) {
+            AccumulateOperationalElapsed(
+                &operational_profile->incremental_resource_accumulation_wall_nanoseconds,
+                resource_start);
           }
           winners[net_index] = prior;
           column.retained_prior_candidate = true;
@@ -1165,8 +1231,18 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
           return std::nullopt;
         };
 
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            route_start;
+        if constexpr (CaptureOperationalProfile) {
+          route_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         routing::CpuRouteResult route_result =
             routing::RouteWithCpuAStar(board, context.compiled_board, request, config.route_limits);
+        if constexpr (CaptureOperationalProfile) {
+          AccumulateOperationalElapsed(&operational_profile->candidate_generation_wall_nanoseconds,
+                                       route_start);
+        }
         if (auto* failure = std::get_if<routing::RouteFailure>(&route_result); failure != nullptr) {
           column.route_work_units = RouteWork(*failure);
           if (const auto work_failure =
@@ -1212,11 +1288,21 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
           return *work_failure;
         }
         ++counters.successful_routes;
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            draft_start;
+        if constexpr (CaptureOperationalProfile) {
+          draft_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         candidates::CandidateDraftBuildResult draft_result =
             candidates::BuildGeneratedCandidateFromCpuRoute(
                 board, context.compiled_board, request, normalized, route,
                 candidates::CandidateSchedulingIdentity{.batch_identity = batch_identity,
                                                         .query_identity = query_identity});
+        if constexpr (CaptureOperationalProfile) {
+          AccumulateOperationalElapsed(&operational_profile->candidate_generation_wall_nanoseconds,
+                                       draft_start);
+        }
         if (auto* rejection = std::get_if<candidates::CandidateRejection>(&draft_result);
             rejection != nullptr) {
           column.outcome = SequentialNegotiatedColumnOutcome::kBuildRejected;
@@ -1246,6 +1332,12 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
                        config.limits.maximum_candidate_draft_bytes);
         }
 
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            admission_start;
+        if constexpr (CaptureOperationalProfile) {
+          admission_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         candidates::CandidateStoreConfig admission_config = config.admission_store_config;
 #ifdef APGAR_SEQUENTIAL_NEGOTIATED_BASELINE_FAULT_TEST_VARIANT
         if (g_admission_budget_fault_query.load() == query_identity) {
@@ -1264,6 +1356,11 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
             .board = board, .compiled_board = context.compiled_board, .request = request};
         candidates::CandidateStoreAdmissionResult admission =
             admission_store.Admit(admission_context, std::move(generated));
+        if constexpr (CaptureOperationalProfile) {
+          AccumulateOperationalElapsed(
+              &operational_profile->exact_admission_and_store_publication_wall_nanoseconds,
+              admission_start);
+        }
         if (auto* rejection = std::get_if<candidates::CandidateRejection>(&admission);
             rejection != nullptr) {
           column.outcome = SequentialNegotiatedColumnOutcome::kAdmissionRejected;
@@ -1309,15 +1406,32 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
         retained_candidate_bytes = static_cast<std::uint64_t>(next_retained);
         counters.peak_retained_candidate_bytes =
             std::max(counters.peak_retained_candidate_bytes, retained_candidate_bytes);
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            resource_start;
+        if constexpr (CaptureOperationalProfile) {
+          resource_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         if (const auto failure = ApplyCandidateUsage(admitted, true, occupancy, config, counters);
             failure.has_value()) {
           return *failure;
+        }
+        if constexpr (CaptureOperationalProfile) {
+          AccumulateOperationalElapsed(
+              &operational_profile->incremental_resource_accumulation_wall_nanoseconds,
+              resource_start);
         }
         winners[net_index] = std::move(admitted);
         ++counters.admitted_candidates;
         columns.push_back(std::move(column));
       }
 
+      ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+          selection_start;
+      if constexpr (CaptureOperationalProfile) {
+        selection_start =
+            ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+      }
       final_pools = PoolsFor(workload, winners);
       NegotiatedPriceSnapshotResult snapshot_result =
           BuildPriceSnapshotForState(capacities, price_state);
@@ -1353,6 +1467,17 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
                      "allocator.sequential_negotiated.occupancy_oracle.v1",
                      "Baseline-local occupancy differs from independent one-world accounting");
       }
+      if constexpr (CaptureOperationalProfile) {
+        AccumulateOperationalElapsed(
+            &operational_profile->sweep_selection_and_resource_replay_wall_nanoseconds,
+            selection_start);
+      }
+      ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+          price_start;
+      if constexpr (CaptureOperationalProfile) {
+        price_start =
+            ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+      }
       NegotiatedPriceStateResult update_result =
           UpdateNegotiatedPrices(price_state, request, final_world);
       if (const auto* failure = std::get_if<NegotiatedPriceError>(&update_result);
@@ -1364,6 +1489,10 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
                      "Completed sweep cannot update negotiated prices");
       }
       NegotiatedPriceState successor = std::get<NegotiatedPriceState>(std::move(update_result));
+      if constexpr (CaptureOperationalProfile) {
+        AccumulateOperationalElapsed(&operational_profile->price_update_wall_nanoseconds,
+                                     price_start);
+      }
       ++counters.completed_sweeps;
       ++counters.price_updates;
       const bool prices_unchanged = PricesHaveSameValues(price_state, successor);
@@ -1399,14 +1528,57 @@ SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
       }
     }
 
+    ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+        final_start;
+    if constexpr (CaptureOperationalProfile) {
+      final_start =
+          ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    }
     const std::uint64_t session_checksum = internal::ComputeSequentialNegotiatedSessionChecksumV1(
         config, batch_identity, workload.workload_checksum(), price_state.capacity_model_checksum(),
         terminal_reason, counters, columns, sweeps, final_pools, final_world, price_state);
-    return SequentialNegotiatedBaselineResult(
+    SequentialNegotiatedBaselineResult result(
         config, batch_identity, workload.workload_checksum(), price_state.capacity_model_checksum(),
         terminal_reason, counters, std::move(columns), std::move(sweeps), std::move(final_pools),
         std::move(final_world), std::move(price_state), session_checksum);
+    if constexpr (CaptureOperationalProfile) {
+      AccumulateOperationalElapsed(&operational_profile->final_assembly_wall_nanoseconds,
+                                   final_start);
+    }
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->component_wall_nanoseconds = OperationalElapsed(initialization_start);
+      const UWide classified =
+          static_cast<UWide>(operational_profile->validation_and_initialization_wall_nanoseconds) +
+          operational_profile->scheduling_and_policy_projection_wall_nanoseconds +
+          operational_profile->candidate_generation_wall_nanoseconds +
+          operational_profile->exact_admission_and_store_publication_wall_nanoseconds +
+          operational_profile->incremental_resource_accumulation_wall_nanoseconds +
+          operational_profile->sweep_selection_and_resource_replay_wall_nanoseconds +
+          operational_profile->price_update_wall_nanoseconds +
+          operational_profile->final_assembly_wall_nanoseconds;
+      operational_profile->unclassified_serial_wall_nanoseconds =
+          classified <= operational_profile->component_wall_nanoseconds
+              ? operational_profile->component_wall_nanoseconds -
+                    static_cast<std::uint64_t>(classified)
+              : 0;
+    }
+    return result;
   });
+}
+
+SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaseline(
+    const board_ir::BoardSnapshot& board, const MultiNetWorkload& workload,
+    const ResourceCapacityModel& capacities, const SequentialNegotiatedBaselineConfig& config) {
+  return ExecuteSequentialNegotiatedBaselineImpl<false>(board, workload, capacities, config,
+                                                        nullptr);
+}
+
+SequentialNegotiatedBaselineExecution ExecuteSequentialNegotiatedBaselineWithOperationalProfileV1(
+    const board_ir::BoardSnapshot& board, const MultiNetWorkload& workload,
+    const ResourceCapacityModel& capacities, const SequentialNegotiatedBaselineConfig& config,
+    SequentialNegotiatedBaselineOperationalProfileV1& operational_profile) {
+  return ExecuteSequentialNegotiatedBaselineImpl<true>(board, workload, capacities, config,
+                                                       &operational_profile);
 }
 
 }  // namespace apgar::allocator

@@ -1,6 +1,7 @@
 #include "apgar/allocator/targeted_regeneration.h"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <new>
 #include <queue>
@@ -12,12 +13,20 @@
 #include "apgar/board_ir/stable_hash.h"
 #include "src/allocator/one_world_internal.h"
 #include "src/allocator/targeted_regeneration_internal.h"
+#include "src/operational_timestamp.h"
 
 namespace apgar::allocator {
 namespace {
 
 using UWide = __uint128_t;
 using Wide = __int128_t;
+using OperationalClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t OperationalElapsed(OperationalClock::time_point start) noexcept {
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(OperationalClock::now() - start).count();
+  return elapsed <= 0 ? 0 : static_cast<std::uint64_t>(elapsed);
+}
 
 [[nodiscard]] TargetedRegenerationError Error(TargetedRegenerationErrorCode code,
                                               std::string_view invariant_id,
@@ -529,10 +538,19 @@ internal::TargetedRegenerationResourceScanResultV1 internal::ScanTargetedRegener
   };
 }
 
-TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
+template <bool CaptureOperationalProfile>
+TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
     std::uint32_t schema_version, const NegotiatedPriceState& previous_price_state,
     const OneWorldAllocationRequest& source_request, const OneWorldAllocation& world,
-    candidates::CandidateStore& candidate_store, const TargetedRegenerationConfig& config) {
+    candidates::CandidateStore& candidate_store, const TargetedRegenerationConfig& config,
+    TargetedRegenerationPlanningOperationalProfileV1* operational_profile) {
+  ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+      component_start;
+  if constexpr (CaptureOperationalProfile) {
+    *operational_profile = {};
+    component_start =
+        ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+  }
   if (schema_version != kTargetedRegenerationPlanSchemaVersion) {
     return Error(TargetedRegenerationErrorCode::kUnsupportedSchema,
                  "allocator.targeted_regeneration.schema.v1",
@@ -545,6 +563,12 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
   }
 
   return WithFailureEnvelope([&]() -> TargetedRegenerationPlanResult {
+    ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+        source_selection_start;
+    if constexpr (CaptureOperationalProfile) {
+      source_selection_start =
+          ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    }
     internal::OneWorldSelectionEvidenceResult source_selection_result =
         internal::SelectOneWorldWithoutAccounting(source_request);
     if (const auto* failure = std::get_if<AllocationError>(&source_selection_result);
@@ -574,6 +598,14 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
     const std::uint64_t candidate_headroom =
         source_request.limits.maximum_candidates - source_selection.source_candidate_count;
 
+    ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+        price_update_start;
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->source_selection_and_resource_accumulation_wall_nanoseconds =
+          OperationalElapsed(source_selection_start);
+      price_update_start =
+          ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    }
     NegotiatedPriceStateResult update =
         UpdateNegotiatedPrices(previous_price_state, source_request, world);
     if (const auto* failure = std::get_if<NegotiatedPriceError>(&update); failure != nullptr) {
@@ -584,6 +616,14 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
     }
     NegotiatedPriceState price_state = std::get<NegotiatedPriceState>(std::move(update));
 
+    ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+        next_selection_start;
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->price_update_wall_nanoseconds = OperationalElapsed(price_update_start);
+      operational_profile->price_update_operations = 1;
+      next_selection_start =
+          ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    }
     NegotiatedPriceSnapshotResult next_snapshot_result =
         BuildPriceSnapshotForState(source_request.capacities, price_state);
     if (const auto* failure = std::get_if<NegotiatedPriceError>(&next_snapshot_result);
@@ -621,6 +661,14 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
                    "Source and next-price selected footprints exceed the planning budget");
     }
 
+    ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+        assembly_start;
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->next_price_selection_and_resource_accumulation_wall_nanoseconds =
+          OperationalElapsed(next_selection_start);
+      assembly_start =
+          ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    }
     const std::uint64_t maximum_retained_targets =
         std::min({config.maximum_target_nets, config.maximum_total_columns,
                   config.maximum_total_resource_actions, candidate_headroom});
@@ -824,7 +872,7 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
     };
     const std::uint64_t checksum =
         internal::ComputeTargetedRegenerationPlanChecksumV1(checksum_header, targets);
-    return TargetedRegenerationPlan(
+    TargetedRegenerationPlan result(
         schema_version, price_state.associations(), price_state.workload_checksum(),
         source_selection.request_manifest_checksum,
         source_selection.candidate_pool_manifest_checksum, source_selection.source_pool_count,
@@ -833,7 +881,43 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
         static_cast<std::uint64_t>(total_columns), static_cast<std::uint64_t>(total_actions),
         static_cast<std::uint64_t>(total_conflicts), static_cast<std::uint64_t>(total_impact),
         static_cast<std::uint64_t>(expanded_visits), checksum, std::move(pin_lease));
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->target_ranking_retention_and_assembly_wall_nanoseconds =
+          OperationalElapsed(assembly_start);
+      operational_profile->component_wall_nanoseconds = OperationalElapsed(component_start);
+      const UWide classified =
+          static_cast<UWide>(
+              operational_profile->source_selection_and_resource_accumulation_wall_nanoseconds) +
+          operational_profile->price_update_wall_nanoseconds +
+          operational_profile->next_price_selection_and_resource_accumulation_wall_nanoseconds +
+          operational_profile->target_ranking_retention_and_assembly_wall_nanoseconds;
+      operational_profile->unclassified_serial_wall_nanoseconds =
+          classified <= operational_profile->component_wall_nanoseconds
+              ? operational_profile->component_wall_nanoseconds -
+                    static_cast<std::uint64_t>(classified)
+              : 0;
+    }
+    return result;
   });
+}
+
+TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
+    std::uint32_t schema_version, const NegotiatedPriceState& previous_price_state,
+    const OneWorldAllocationRequest& source_request, const OneWorldAllocation& world,
+    candidates::CandidateStore& candidate_store, const TargetedRegenerationConfig& config) {
+  return BuildTargetedRegenerationPlanImpl<false>(schema_version, previous_price_state,
+                                                  source_request, world, candidate_store, config,
+                                                  nullptr);
+}
+
+TargetedRegenerationPlanResult BuildTargetedRegenerationPlanWithOperationalProfileV1(
+    std::uint32_t schema_version, const NegotiatedPriceState& previous_price_state,
+    const OneWorldAllocationRequest& source_request, const OneWorldAllocation& world,
+    candidates::CandidateStore& candidate_store, const TargetedRegenerationConfig& config,
+    TargetedRegenerationPlanningOperationalProfileV1& operational_profile) {
+  return BuildTargetedRegenerationPlanImpl<true>(schema_version, previous_price_state,
+                                                 source_request, world, candidate_store, config,
+                                                 &operational_profile);
 }
 
 }  // namespace apgar::allocator

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +19,7 @@
 #include <system_error>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -26,11 +28,57 @@
 #include "apgar/candidates/route_candidate.h"
 #include "apgar/routing/candidate_policy.h"
 #include "src/allocator/cpu_candidate_pool_preparation_internal.h"
+#include "src/operational_timestamp.h"
 
 namespace apgar::allocator {
 namespace {
 
 using UWide = unsigned __int128;
+using OperationalClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t OperationalElapsed(OperationalClock::time_point start) noexcept {
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(OperationalClock::now() - start).count();
+  return elapsed <= 0 ? 0 : static_cast<std::uint64_t>(elapsed);
+}
+
+void AccumulateOperationalElapsed(std::uint64_t* target, std::uint64_t value) noexcept {
+  if (target == nullptr) {
+    return;
+  }
+  *target = value > std::numeric_limits<std::uint64_t>::max() - *target
+                ? std::numeric_limits<std::uint64_t>::max()
+                : *target + value;
+}
+
+template <bool CaptureOperationalProfile>
+class ScopedOperationalElapsed;
+
+template <>
+class ScopedOperationalElapsed<true> {
+ public:
+  ScopedOperationalElapsed(std::vector<std::uint64_t>& elapsed, std::size_t index) noexcept
+      : target_(&elapsed[index]) {
+    start_ = OperationalClock::now();
+  }
+  ~ScopedOperationalElapsed() { AccumulateOperationalElapsed(target_, OperationalElapsed(start_)); }
+
+ private:
+  std::uint64_t* target_;
+  OperationalClock::time_point start_{};
+};
+
+template <>
+class ScopedOperationalElapsed<false> {
+ public:
+  struct EmptyElapsed {};
+  constexpr ScopedOperationalElapsed(EmptyElapsed&, std::size_t) noexcept {}
+};
+
+template <bool CaptureOperationalProfile>
+using OperationalColumnElapsed =
+    std::conditional_t<CaptureOperationalProfile, std::vector<std::uint64_t>,
+                       ScopedOperationalElapsed<false>::EmptyElapsed>;
 
 [[nodiscard]] std::uint64_t NarrowWitness(UWide value) noexcept {
   return value > std::numeric_limits<std::uint64_t>::max()
@@ -826,9 +874,18 @@ PersistentCpuCandidatePoolPreparerResult CreatePersistentCpuCandidatePoolPrepare
   }
 }
 
-PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
+template <bool CaptureOperationalProfile>
+PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePoolsImpl(
     PersistentCpuCandidatePoolPreparer& preparer, const board_ir::BoardSnapshot& board,
-    const MultiNetWorkload& workload, const CpuCandidatePoolPreparationConfig& config) {
+    const MultiNetWorkload& workload, const CpuCandidatePoolPreparationConfig& config,
+    CpuCandidatePoolPreparationOperationalProfileV1* operational_profile) {
+  ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+      validation_start;
+  if constexpr (CaptureOperationalProfile) {
+    *operational_profile = {};
+    validation_start =
+        ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+  }
   std::unique_lock invocation(preparer.impl_->invocation_mutex, std::try_to_lock);
   if (!invocation.owns_lock()) {
     return Error(CpuCandidatePoolPreparationErrorCode::kBusy,
@@ -1004,6 +1061,10 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
     const std::uint64_t batch_identity = BatchIdentity(board, workload, config);
     const std::size_t column_count = static_cast<std::size_t>(requested_columns);
     std::vector<WorkColumn> work(column_count);
+    OperationalColumnElapsed<CaptureOperationalProfile> operational_column_elapsed;
+    if constexpr (CaptureOperationalProfile) {
+      operational_column_elapsed.resize(column_count);
+    }
     std::vector<CpuCandidatePoolColumnRecord> columns(column_count);
     std::vector<CpuCandidatePoolAttemptedColumnRecord> attempted_columns(column_count);
     for (std::size_t net_index = 0; net_index < net_count; ++net_index) {
@@ -1050,9 +1111,22 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
           std::get<routing::NormalizedCandidateGenerationPolicy>(std::move(normalized));
     }
 
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->validation_and_scheduling_wall_nanoseconds =
+          OperationalElapsed(validation_start);
+      operational_profile->base_jobs_dispatched = net_count;
+    }
+    ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+        base_wave_start;
+    if constexpr (CaptureOperationalProfile) {
+      base_wave_start =
+          ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+    }
     preparer.impl_->Run(net_count, [&](std::size_t net_index) {
       const std::size_t flat = net_index * config.requested_candidates_per_net;
       WorkColumn& column = work[flat];
+      ScopedOperationalElapsed<CaptureOperationalProfile> operational_timer(
+          operational_column_elapsed, flat);
       try {
 #ifdef APGAR_CPU_CANDIDATE_POOL_PREPARATION_FAULT_TEST_VARIANT
         MaybeInjectWorkerFault(net_index);
@@ -1154,6 +1228,9 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
                   "A base CPU worker raised an unexpected exception", column.context->request.net);
       }
     });
+    if constexpr (CaptureOperationalProfile) {
+      operational_profile->base_worker_wave_wall_nanoseconds = OperationalElapsed(base_wave_start);
+    }
     if (CpuCandidatePoolPreparationError* fatal = FirstFatal(work); fatal != nullptr) {
       return WithFailedPreparationObservation(std::move(*fatal), board, workload, config,
                                               batch_identity, work, std::move(attempted_columns));
@@ -1173,6 +1250,12 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
       MaybeInjectPreparationStageFault(
           internal::CpuCandidatePoolPreparationFaultForTesting::kPostBaseWaveUnexpectedException);
 #endif
+      ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+          alternative_policy_start;
+      if constexpr (CaptureOperationalProfile) {
+        alternative_policy_start =
+            ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+      }
       std::vector<std::size_t> alternative_columns;
       alternative_columns.reserve(column_count - net_count);
       for (std::size_t net_index = 0; net_index < net_count; ++net_index) {
@@ -1228,9 +1311,22 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
         }
       }
 
+      if constexpr (CaptureOperationalProfile) {
+        operational_profile->alternative_policy_wall_nanoseconds =
+            OperationalElapsed(alternative_policy_start);
+        operational_profile->alternative_jobs_dispatched = alternative_columns.size();
+      }
+      ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+          alternative_wave_start;
+      if constexpr (CaptureOperationalProfile) {
+        alternative_wave_start =
+            ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+      }
       preparer.impl_->Run(alternative_columns.size(), [&](std::size_t job_index) {
         const std::size_t flat = alternative_columns[job_index];
         WorkColumn& column = work[flat];
+        ScopedOperationalElapsed<CaptureOperationalProfile> operational_timer(
+            operational_column_elapsed, flat);
         try {
 #ifdef APGAR_CPU_CANDIDATE_POOL_PREPARATION_FAULT_TEST_VARIANT
           MaybeInjectWorkerFault(job_index);
@@ -1321,6 +1417,14 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
                                      column.context->request.net);
         }
       });
+      if constexpr (CaptureOperationalProfile) {
+        operational_profile->alternative_worker_wave_wall_nanoseconds =
+            OperationalElapsed(alternative_wave_start);
+        for (std::uint64_t elapsed : operational_column_elapsed) {
+          AccumulateOperationalElapsed(
+              &operational_profile->route_and_candidate_build_worker_sum_nanoseconds, elapsed);
+        }
+      }
       if (CpuCandidatePoolPreparationError* fatal = FirstFatal(work); fatal != nullptr) {
         return WithFailedPreparationObservation(std::move(*fatal), board, workload, config,
                                                 batch_identity, work, std::move(attempted_columns));
@@ -1369,9 +1473,19 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
                                           column.context->request.net));
         }
       }
+      ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+          publication_start;
+      if constexpr (CaptureOperationalProfile) {
+        publication_start =
+            ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+      }
       candidates::CandidateStoreInvocationAdmissionResult publication_result =
           candidate_store->AdmitInvocationIfSourcePoolsMatch(board, std::move(expected_pools),
                                                              std::move(invocation_items));
+      if constexpr (CaptureOperationalProfile) {
+        operational_profile->exact_admission_and_store_publication_wall_nanoseconds =
+            OperationalElapsed(publication_start);
+      }
       if (const auto* failure = std::get_if<candidates::CandidateStoreError>(&publication_result);
           failure != nullptr) {
         return fail_after_queries(
@@ -1388,6 +1502,12 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
       MaybeInjectPreparationStageFault(internal::CpuCandidatePoolPreparationFaultForTesting::
                                            kPostPublicationUnexpectedException);
 #endif
+      ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+          correlation_start;
+      if constexpr (CaptureOperationalProfile) {
+        correlation_start =
+            ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+      }
       std::vector<candidates::CandidateStoreAdmissionResult> publication =
           std::get<std::vector<candidates::CandidateStoreAdmissionResult>>(
               std::move(publication_result));
@@ -1489,6 +1609,23 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
       }
       const std::uint64_t checksum =
           PreparationChecksum(config, batch_identity, counters, columns, pools);
+      if constexpr (CaptureOperationalProfile) {
+        operational_profile->publication_correlation_and_pool_materialization_wall_nanoseconds =
+            OperationalElapsed(correlation_start);
+        operational_profile->component_wall_nanoseconds = OperationalElapsed(validation_start);
+        const UWide classified =
+            static_cast<UWide>(operational_profile->validation_and_scheduling_wall_nanoseconds) +
+            operational_profile->base_worker_wave_wall_nanoseconds +
+            operational_profile->alternative_policy_wall_nanoseconds +
+            operational_profile->alternative_worker_wave_wall_nanoseconds +
+            operational_profile->exact_admission_and_store_publication_wall_nanoseconds +
+            operational_profile->publication_correlation_and_pool_materialization_wall_nanoseconds;
+        operational_profile->unclassified_serial_wall_nanoseconds =
+            classified <= operational_profile->component_wall_nanoseconds
+                ? operational_profile->component_wall_nanoseconds -
+                      static_cast<std::uint64_t>(classified)
+                : 0;
+      }
       return PreparedCpuCandidatePools(config, batch_identity, counters, std::move(columns),
                                        std::move(pools), std::move(candidate_store), checksum);
     } catch (const std::bad_alloc&) {
@@ -1519,6 +1656,20 @@ PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
                  "allocator.cpu_candidate_pool.host_unexpected_exception.v2",
                  "An unexpected exception escaped before CPU routing work began");
   }
+}
+
+PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePools(
+    PersistentCpuCandidatePoolPreparer& preparer, const board_ir::BoardSnapshot& board,
+    const MultiNetWorkload& workload, const CpuCandidatePoolPreparationConfig& config) {
+  return PrepareInitialCpuCandidatePoolsImpl<false>(preparer, board, workload, config, nullptr);
+}
+
+PreparedCpuCandidatePoolsResult PrepareInitialCpuCandidatePoolsWithOperationalProfileV1(
+    PersistentCpuCandidatePoolPreparer& preparer, const board_ir::BoardSnapshot& board,
+    const MultiNetWorkload& workload, const CpuCandidatePoolPreparationConfig& config,
+    CpuCandidatePoolPreparationOperationalProfileV1& operational_profile) {
+  return PrepareInitialCpuCandidatePoolsImpl<true>(preparer, board, workload, config,
+                                                   &operational_profile);
 }
 
 }  // namespace apgar::allocator

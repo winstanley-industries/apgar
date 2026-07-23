@@ -456,6 +456,31 @@ TEST(MultiWorldTest, MatchesIndependentBranchesAndIsPermutationInvariant) {
   ExpectRetainedEqual(repeated, first);
 }
 
+TEST(MultiWorldTest, OperationalProfileSeparatesAuthenticPriceUpdatesAndCloses) {
+  MultiWorldFixture fixture = BuildFixture();
+  const std::array schedules = {
+      MultiWorldSchedule{
+          .schedule_key = 11, .search_intrinsic_cost_weight = 1, .maximum_selection_rounds = 1},
+      MultiWorldSchedule{
+          .schedule_key = 13, .search_intrinsic_cost_weight = 1, .maximum_selection_rounds = 2},
+      MultiWorldSchedule{
+          .schedule_key = 17, .search_intrinsic_cost_weight = 10, .maximum_selection_rounds = 2},
+  };
+  MultiWorldOperationalProfileV1 profile;
+  MultiWorldExecution execution = Executed(ExecuteMultiWorldCpuWithOperationalProfileV1(
+      kMultiWorldExecutionSchemaVersion, fixture.source, fixture.branch_state, schedules,
+      *fixture.store, ExecutionConfig(), profile));
+  EXPECT_EQ(execution.counters().price_updates, 2U);
+  const unsigned __int128 classified =
+      static_cast<unsigned __int128>(profile.validation_and_source_preflight_wall_nanoseconds) +
+      profile.selection_and_resource_accumulation_wall_nanoseconds +
+      profile.price_update_and_snapshot_wall_nanoseconds +
+      profile.terminal_retention_and_assembly_wall_nanoseconds +
+      profile.unclassified_serial_wall_nanoseconds;
+  ASSERT_LE(classified, std::numeric_limits<std::uint64_t>::max());
+  EXPECT_EQ(static_cast<std::uint64_t>(classified), profile.component_wall_nanoseconds);
+}
+
 TEST(MultiWorldTest, RetainsRawParetoEqualObjectivesAndPreferredLexicographicWorld) {
   MultiWorldFixture fixture = BuildFixture();
   const std::array schedules = {

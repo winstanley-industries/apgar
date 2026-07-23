@@ -125,6 +125,54 @@ struct CpuCandidateAllocationSessionCounters {
                          const CpuCandidateAllocationSessionCounters&) = default;
 };
 
+// Compact same-run association for one separately instrumented reusable
+// candidate-allocation session. It deliberately retains no config, column, or
+// contender storage so authentic destruction remains inside measured scope.
+// Publication must join it to an independent unmeasured full-preimage replay;
+// this capture is not standalone algorithm authority.
+struct CpuCandidateAllocationSessionReplayWitnessV1 {
+  std::uint64_t session_checksum = 0;
+  std::uint64_t board_content_hash = 0;
+  std::uint64_t workload_checksum = 0;
+  std::uint64_t capacity_model_checksum = 0;
+  std::uint64_t preparation_checksum = 0;
+  std::uint32_t maximum_regeneration_epochs = 0;
+  CpuCandidateAllocationTerminalReason terminal_reason =
+      CpuCandidateAllocationTerminalReason::kRegenerationEpochLimit;
+  CpuCandidateAllocationSessionCounters counters;
+  std::uint64_t epoch_record_count = 0;
+  std::uint64_t epoch_association_checksum = 0;
+  std::uint64_t final_pool_manifest_checksum = 0;
+  std::uint64_t final_rejection_manifest_checksum = 0;
+
+  friend bool operator==(const CpuCandidateAllocationSessionReplayWitnessV1&,
+                         const CpuCandidateAllocationSessionReplayWitnessV1&) = default;
+};
+
+struct CpuCandidateAllocationSessionOperationalProfileV1 {
+  std::uint64_t component_wall_nanoseconds = 0;
+  std::uint64_t validation_and_source_inspection_wall_nanoseconds = 0;
+  std::uint64_t initial_price_state_wall_nanoseconds = 0;
+  std::uint64_t initial_selection_and_resource_accumulation_wall_nanoseconds = 0;
+  std::uint64_t targeted_regeneration_planning_wall_nanoseconds = 0;
+  std::uint64_t targeted_regeneration_price_update_wall_nanoseconds = 0;
+  std::uint64_t targeted_regeneration_selection_and_target_planning_wall_nanoseconds = 0;
+  std::uint64_t targeted_regeneration_execution_wall_nanoseconds = 0;
+  std::uint64_t successor_correlation_wall_nanoseconds = 0;
+  std::uint64_t terminal_multi_world_component_wall_nanoseconds = 0;
+  std::uint64_t terminal_multi_world_price_update_wall_nanoseconds = 0;
+  std::uint64_t final_manifest_and_assembly_wall_nanoseconds = 0;
+  std::uint64_t unclassified_serial_wall_nanoseconds = 0;
+  std::uint64_t planning_expanded_resource_visits = 0;
+  std::vector<TargetedRegenerationPlanningOperationalProfileV1> regeneration_plans;
+  std::vector<TargetedRegenerationOperationalProfileV1> regeneration_epochs;
+  MultiWorldOperationalProfileV1 terminal_multi_world;
+  CpuCandidateAllocationSessionReplayWitnessV1 replay_witness;
+
+  friend bool operator==(const CpuCandidateAllocationSessionOperationalProfileV1&,
+                         const CpuCandidateAllocationSessionOperationalProfileV1&) = default;
+};
+
 enum class CpuCandidateAllocationSessionErrorCode : std::uint8_t {
   kUnsupportedSchema = 0,
   kInvalidConfiguration = 1,
@@ -246,6 +294,13 @@ class CpuCandidateAllocationSession {
   ExecuteCpuCandidateAllocationSession(std::uint32_t, board_ir::BoardSnapshot&&, MultiNetWorkload&&,
                                        ResourceCapacityModel&&, PreparedCpuCandidatePools&&,
                                        const CpuCandidateAllocationSessionConfig&);
+  template <bool>
+  friend std::variant<CpuCandidateAllocationSession, CpuCandidateAllocationSessionError>
+  ExecuteCpuCandidateAllocationSessionImpl(std::uint32_t, board_ir::BoardSnapshot&&,
+                                           MultiNetWorkload&&, ResourceCapacityModel&&,
+                                           PreparedCpuCandidatePools&&,
+                                           const CpuCandidateAllocationSessionConfig&,
+                                           CpuCandidateAllocationSessionOperationalProfileV1*);
 };
 
 using CpuCandidateAllocationSessionResult =

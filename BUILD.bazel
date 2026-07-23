@@ -235,6 +235,7 @@ cc_library(
     srcs = [
         "src/allocator/cpu_candidate_pool_preparation.cc",
         "src/allocator/cpu_candidate_pool_preparation_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/allocator/cpu_candidate_pool_preparation.h"],
     copts = APGAR_COPTS,
@@ -260,6 +261,7 @@ cc_library(
     srcs = [
         "src/allocator/cpu_candidate_pool_preparation.cc",
         "src/allocator/cpu_candidate_pool_preparation_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/allocator/cpu_candidate_pool_preparation.h"],
     copts = APGAR_COPTS,
@@ -302,6 +304,7 @@ cc_library(
     srcs = [
         "src/allocator/sequential_negotiated_baseline.cc",
         "src/allocator/sequential_negotiated_baseline_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/allocator/sequential_negotiated_baseline.h"],
     copts = APGAR_COPTS,
@@ -327,6 +330,7 @@ cc_library(
     srcs = [
         "src/allocator/sequential_negotiated_baseline.cc",
         "src/allocator/sequential_negotiated_baseline_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/allocator/sequential_negotiated_baseline.h"],
     copts = APGAR_COPTS,
@@ -351,6 +355,7 @@ cc_library(
     srcs = [
         "src/allocator/targeted_regeneration.cc",
         "src/allocator/targeted_regeneration_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/allocator/targeted_regeneration.h"],
     copts = APGAR_COPTS,
@@ -371,6 +376,7 @@ cc_library(
     srcs = [
         "src/allocator/targeted_regeneration_execution.cc",
         "src/allocator/targeted_regeneration_execution_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/allocator/targeted_regeneration_execution.h"],
     copts = APGAR_COPTS,
@@ -394,6 +400,7 @@ cc_library(
     srcs = [
         "src/allocator/multi_world.cc",
         "src/allocator/multi_world_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/allocator/multi_world.h"],
     copts = APGAR_COPTS,
@@ -414,6 +421,7 @@ cc_library(
     srcs = [
         "src/allocator/cpu_candidate_allocation_session.cc",
         "src/allocator/cpu_candidate_allocation_session_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/allocator/cpu_candidate_allocation_session.h"],
     copts = APGAR_COPTS,
@@ -530,6 +538,7 @@ cc_library(
     srcs = [
         "src/benchmark/phase4_corpus.cc",
         "src/benchmark/phase4_corpus_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/benchmark/phase4_corpus.h"],
     copts = APGAR_COPTS,
@@ -549,6 +558,7 @@ cc_library(
     srcs = [
         "src/benchmark/phase4_corpus.cc",
         "src/benchmark/phase4_corpus_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/benchmark/phase4_corpus.h"],
     copts = APGAR_COPTS,
@@ -567,8 +577,12 @@ cc_library(
     srcs = [
         "src/benchmark/phase4_representative_corpus.cc",
         "src/benchmark/phase4_representative_corpus_internal.h",
+        "src/operational_timestamp.h",
     ],
-    hdrs = ["include/apgar/benchmark/phase4_representative_corpus.h"],
+    hdrs = [
+        "include/apgar/benchmark/phase4_operational_types.h",
+        "include/apgar/benchmark/phase4_representative_corpus.h",
+    ],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",
     visibility = ["//visibility:public"],
@@ -588,8 +602,12 @@ cc_library(
     srcs = [
         "src/benchmark/phase4_representative_corpus.cc",
         "src/benchmark/phase4_representative_corpus_internal.h",
+        "src/operational_timestamp.h",
     ],
-    hdrs = ["include/apgar/benchmark/phase4_representative_corpus.h"],
+    hdrs = [
+        "include/apgar/benchmark/phase4_operational_types.h",
+        "include/apgar/benchmark/phase4_representative_corpus.h",
+    ],
     copts = APGAR_COPTS,
     defines = ["APGAR_PHASE4_REPRESENTATIVE_CORPUS_FAULT_TEST_VARIANT"],
     strip_include_prefix = "include",
@@ -608,6 +626,7 @@ cc_library(
     srcs = [
         "src/benchmark/phase4_paired_trial.cc",
         "src/benchmark/phase4_paired_trial_internal.h",
+        "src/operational_timestamp.h",
     ],
     hdrs = ["include/apgar/benchmark/phase4_paired_trial.h"],
     copts = APGAR_COPTS,
@@ -2683,10 +2702,12 @@ cc_test(
         "tests/support/google_test.h",
     ],
     copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
     deps = [
         ":cpu_candidate_allocation_session",
         ":cpu_candidate_pool_preparation",
         ":phase4_paired_trial",
+        ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
 )

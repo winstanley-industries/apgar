@@ -19,6 +19,7 @@ inline constexpr std::uint32_t kPhase4ExternalAuthoritySchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4PerNetReportSchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4ArmReportTelemetrySchemaVersion = 1;
 inline constexpr std::uint32_t kPhase4SameRunArmDecisionTelemetrySchemaVersion = 1;
+inline constexpr std::uint32_t kPhase4TrialArmOperationalProfileSchemaVersion = 1;
 inline constexpr std::uint64_t kPhase4OverlapPartsPerMillion = 1'000'000;
 
 enum class Phase4TrialArm : std::uint8_t {
@@ -158,6 +159,36 @@ struct Phase4TrialArmExecution {
   Phase4PreparerLifecycleObservation preparer_lifecycle;
 
   friend bool operator==(const Phase4TrialArmExecution&, const Phase4TrialArmExecution&) = default;
+};
+
+// A separately instrumented replay of one authentic contender. Raw decision
+// timing does not call this seam. Exactly one baseline profile or the pair of
+// candidate preparation/session profiles is present according to the arm.
+// This measured capture is not standalone publication authority; the
+// operational publication contract joins it to an independent unmeasured
+// full-preimage replay and parent-owned process observation.
+struct Phase4TrialArmOperationalProfileV1 {
+  std::uint32_t schema_version = kPhase4TrialArmOperationalProfileSchemaVersion;
+  Phase4TrialArmExecution execution;
+  Phase4RepresentativeCaseOperationalProfileV1 case_build;
+  Phase4OperationalApplicabilityV1 process_cpu;
+  Phase4OperationalApplicabilityV1 peak_host_memory;
+  Phase4OperationalApplicabilityV1 compatible_batch_formation_and_fill;
+  Phase4OperationalApplicabilityV1 compact_readback;
+  Phase4OperationalApplicabilityV1 prepared_view_cache_and_cache_misses;
+  Phase4OperationalApplicabilityV1 initial_device_upload;
+  Phase4OperationalApplicabilityV1 gpu_utilization;
+  Phase4OperationalApplicabilityV1 peak_device_memory;
+  std::uint64_t contender_transient_release_tail_wall_nanoseconds = 0;
+  std::uint64_t unclassified_prepared_scope_wall_nanoseconds = 0;
+  std::uint64_t unclassified_cold_scope_exit_wall_nanoseconds = 0;
+  std::optional<allocator::SequentialNegotiatedBaselineOperationalProfileV1> baseline;
+  std::optional<allocator::CpuCandidatePoolPreparationOperationalProfileV1> preparation;
+  std::optional<allocator::CpuCandidateAllocationSessionOperationalProfileV1> candidate_session;
+  std::uint64_t profile_checksum = 0;
+
+  friend bool operator==(const Phase4TrialArmOperationalProfileV1&,
+                         const Phase4TrialArmOperationalProfileV1&) = default;
 };
 
 // One closed partition of every column requested for one net. Executed route
@@ -386,6 +417,8 @@ using Phase4TrialArmDiagnosticExecutionResultV1 =
     std::variant<Phase4TrialArmDiagnosticExecutionV1, Phase4TrialArmFailure>;
 using Phase4TrialArmWithSameRunTelemetryExecutionResultV1 =
     std::variant<Phase4TrialArmWithSameRunTelemetryExecutionV1, Phase4TrialArmFailure>;
+using Phase4TrialArmOperationalProfileResultV1 =
+    std::variant<Phase4TrialArmOperationalProfileV1, Phase4TrialArmFailure>;
 using Phase4CandidatePoolSnapshotExecutionResultV1 =
     std::variant<Phase4CandidatePoolSnapshotExecutionV1, Phase4TrialArmFailure>;
 using Phase4TrialArmRecordResult = std::variant<Phase4TrialArmRecord, Phase4PairedTrialError>;
@@ -413,6 +446,14 @@ using Phase4PairedTrialAssemblyResult =
 // finalizing the measured arm.
 [[nodiscard]] Phase4TrialArmWithSameRunTelemetryExecutionResultV1
 ExecutePhase4TrialArmWithSameRunTelemetryV1(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+// Executes a separate diagnostic replay with allocator-stage clocks enabled.
+// Isolated parent wait4 authority supplies process CPU and peak-memory values
+// in the later publication layer. This timing is operational context only and
+// is never substituted for Raw decision timing.
+[[nodiscard]] Phase4TrialArmOperationalProfileResultV1 ExecutePhase4TrialArmOperationalProfileV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
 

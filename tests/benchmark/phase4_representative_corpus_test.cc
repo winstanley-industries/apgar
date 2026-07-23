@@ -368,6 +368,38 @@ TEST(Phase4RepresentativeCorpusTest, BuildsAuthenticatedImportedGuardrailThrough
   EXPECT_EQ(corpus.case_checksum, 7'603'876'739'078'231'632ULL);
 }
 
+TEST(Phase4RepresentativeCorpusTest, OperationalProfilesCarryTypedSourceApplicabilityAndClosure) {
+  Phase4RepresentativeCaseOperationalProfileV1 synthetic_profile;
+  static_cast<void>(
+      Built(BuildPhase4RepresentativeCaseWithOperationalProfileV1(100, {}, {}, synthetic_profile)));
+  EXPECT_EQ(synthetic_profile.case_source, Phase4CaseSource::kSynthetic);
+  EXPECT_EQ(synthetic_profile.fixture_import_applicability.status,
+            Phase4OperationalMeasurementStatus::kNotApplicable);
+  EXPECT_EQ(synthetic_profile.fixture_import_applicability.reason,
+            Phase4OperationalMeasurementReason::kSyntheticCaseHasNoFixtureImport);
+  EXPECT_EQ(synthetic_profile.synthetic_materialization_applicability.status,
+            Phase4OperationalMeasurementStatus::kMeasured);
+  EXPECT_EQ(synthetic_profile.compile_probe_applicability.status,
+            Phase4OperationalMeasurementStatus::kMeasured);
+  EXPECT_EQ(synthetic_profile.fixture_identity_and_import_wall_nanoseconds, 0U);
+
+  const std::string fixture = ReadImportedFixture();
+  ASSERT_FALSE(fixture.empty());
+  Phase4RepresentativeCaseOperationalProfileV1 imported_profile;
+  static_cast<void>(Built(
+      BuildPhase4RepresentativeCaseWithOperationalProfileV1(4'000, fixture, {}, imported_profile)));
+  EXPECT_EQ(imported_profile.case_source, Phase4CaseSource::kImportedFixture);
+  EXPECT_EQ(imported_profile.fixture_import_applicability.status,
+            Phase4OperationalMeasurementStatus::kMeasured);
+  EXPECT_EQ(imported_profile.synthetic_materialization_applicability.reason,
+            Phase4OperationalMeasurementReason::kImportedCaseHasNoSyntheticMaterialization);
+  EXPECT_EQ(
+      imported_profile.compile_probe_applicability.reason,
+      Phase4OperationalMeasurementReason::kImportedWorkloadHasNoSeparateSyntheticCompileProbe);
+  EXPECT_EQ(imported_profile.synthetic_geometry_and_board_materialization_wall_nanoseconds, 0U);
+  EXPECT_EQ(imported_profile.geometry_compilation_probe_wall_nanoseconds, 0U);
+}
+
 TEST(Phase4RepresentativeCorpusTest, RejectsUnknownMissingAndBoundedInputsBeforeMaterialization) {
   {
     const Phase4RepresentativeCaseResult result = BuildPhase4RepresentativeCaseV1(99'999, {});

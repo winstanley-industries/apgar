@@ -1,6 +1,7 @@
 #include "apgar/allocator/targeted_regeneration_execution.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -22,11 +23,19 @@
 #include "src/allocator/one_world_internal.h"
 #include "src/allocator/targeted_regeneration_execution_internal.h"
 #include "src/allocator/targeted_regeneration_internal.h"
+#include "src/operational_timestamp.h"
 
 namespace apgar::allocator {
 namespace {
 
 using UWide = unsigned __int128;
+using OperationalClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t OperationalElapsed(OperationalClock::time_point start) noexcept {
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(OperationalClock::now() - start).count();
+  return elapsed <= 0 ? 0 : static_cast<std::uint64_t>(elapsed);
+}
 
 thread_local std::uint64_t g_route_queries_started = 0;
 thread_local std::uint64_t g_source_resource_span_visits = 0;
@@ -690,11 +699,19 @@ routing::PlanarRouteRequest internal::BuildTargetedRegenerationRouteRequestV1(
   };
 }
 
-TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
+template <bool CaptureOperationalProfile>
+TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
     std::uint32_t schema_version, const board_ir::BoardSnapshot& board,
     const OneWorldAllocationRequest& source_request, TargetedRegenerationPlan&& plan,
-    candidates::CandidateStore& candidate_store,
-    const TargetedRegenerationExecutionConfig& config) {
+    candidates::CandidateStore& candidate_store, const TargetedRegenerationExecutionConfig& config,
+    TargetedRegenerationOperationalProfileV1* operational_profile) {
+  ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+      validation_start;
+  if constexpr (CaptureOperationalProfile) {
+    *operational_profile = {};
+    validation_start =
+        ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+  }
   g_route_queries_started = 0;
   g_source_resource_span_visits = 0;
   if (schema_version != kTargetedRegenerationExecutionSchemaVersion) {
@@ -988,6 +1005,14 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
               "The complete source request or candidate pools differ from the planned input");
         }
 
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            baseline_preflight_start;
+        if constexpr (CaptureOperationalProfile) {
+          operational_profile->validation_and_preflight_wall_nanoseconds =
+              OperationalElapsed(validation_start);
+          baseline_preflight_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         NegotiatedPriceSnapshotResult price_result =
             BuildPriceSnapshotForState(source_request.capacities, plan.price_state());
         if (!std::holds_alternative<PriceSnapshot>(price_result)) {
@@ -1061,6 +1086,14 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
                        "A source-only CandidateStore preflight returned publication outcomes");
         }
 
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            generation_start;
+        if constexpr (CaptureOperationalProfile) {
+          operational_profile->baseline_selection_and_source_store_preflight_wall_nanoseconds =
+              OperationalElapsed(baseline_preflight_start);
+          generation_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         UWide policy_entries = 0;
         std::uint64_t prepared_column_count = 0;
         std::vector<PreparedTargetExecution> prepared_targets;
@@ -1379,6 +1412,10 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
             ++global_column;
           }
         }
+        if constexpr (CaptureOperationalProfile) {
+          operational_profile->policy_projection_and_candidate_generation_wall_nanoseconds =
+              OperationalElapsed(generation_start);
+        }
         if (!resource_refinement_required &&
             (global_column != plan.total_requested_columns() || columns.size() != global_column)) {
           return ErrorWithFailedExecution(
@@ -1388,9 +1425,19 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
               config, candidate_store.config(), false, counters, std::move(columns));
         }
 
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            publication_start;
+        if constexpr (CaptureOperationalProfile) {
+          publication_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         candidates::CandidateStoreInvocationAdmissionResult publication_result =
             candidate_store.AdmitInvocationIfSourcePoolsMatch(board, std::move(expected_pools),
                                                               std::move(invocation_items));
+        if constexpr (CaptureOperationalProfile) {
+          operational_profile->exact_admission_and_store_publication_wall_nanoseconds =
+              OperationalElapsed(publication_start);
+        }
         if (const auto* failure = std::get_if<candidates::CandidateStoreError>(&publication_result);
             failure != nullptr) {
           return ErrorWithFailedExecution(
@@ -1415,6 +1462,12 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
         failure_state.candidate_store_publication_committed = true;
         MaybeFailAfterPublicationForTesting();
 
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            correlation_start;
+        if constexpr (CaptureOperationalProfile) {
+          correlation_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         std::vector<candidates::CandidateStoreAdmissionResult> publication =
             std::get<std::vector<candidates::CandidateStoreAdmissionResult>>(
                 std::move(publication_result));
@@ -1542,6 +1595,16 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
                             return NetBefore(left.net, right.net);
                           });
 
+        if constexpr (CaptureOperationalProfile) {
+          operational_profile->publication_correlation_wall_nanoseconds =
+              OperationalElapsed(correlation_start);
+        }
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            refreshed_selection_start;
+        if constexpr (CaptureOperationalProfile) {
+          refreshed_selection_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         OneWorldAllocationRequest refreshed_request = baseline_request;
         refreshed_request.pools = refreshed_pools;
         internal::OneWorldSelectionEvidenceResult refreshed_evidence_result =
@@ -1570,6 +1633,16 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
             std::get<OneWorldAllocation>(std::move(refreshed_world_result));
         counters.changed_selections = ChangedSelectionCount(baseline_world, refreshed_world);
 
+        if constexpr (CaptureOperationalProfile) {
+          operational_profile->refreshed_selection_and_resource_accumulation_wall_nanoseconds =
+              OperationalElapsed(refreshed_selection_start);
+        }
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            retention_start;
+        if constexpr (CaptureOperationalProfile) {
+          retention_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         std::optional<candidates::CandidateStorePinLease> successor_lease;
         std::vector<candidates::CandidatePinRequest> pin_requests =
             WinnerPinRequests(refreshed_world);
@@ -1599,6 +1672,10 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
           counters.successor_pinned_candidates = pin_requests.size();
         }
 
+        if constexpr (CaptureOperationalProfile) {
+          operational_profile->successor_retention_wall_nanoseconds =
+              OperationalElapsed(retention_start);
+        }
         TargetedRegenerationExecutionDisposition disposition;
         TargetedRegenerationTerminalReason terminal_reason;
         if (resource_refinement_required) {
@@ -1627,6 +1704,12 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
           }
         }
 
+        ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
+            final_start;
+        if constexpr (CaptureOperationalProfile) {
+          final_start =
+              ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
+        }
         const internal::TargetedRegenerationExecutionChecksumHeaderV3 checksum_header{
             .schema_version = schema_version,
             .plan_checksum = plan.plan_checksum(),
@@ -1643,13 +1726,54 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
         };
         const std::uint64_t checksum =
             internal::ComputeTargetedRegenerationExecutionChecksumV3(checksum_header, columns);
-        return TargetedRegenerationExecution(
+        TargetedRegenerationExecution result(
             schema_version, std::move(plan), config, candidate_store.config(), disposition,
             terminal_reason, counters, std::move(columns), std::move(refreshed_pools),
             std::move(baseline_world), std::move(refreshed_world), checksum,
             std::move(successor_lease));
+        if constexpr (CaptureOperationalProfile) {
+          operational_profile->final_assembly_wall_nanoseconds = OperationalElapsed(final_start);
+          operational_profile->plan_checksum = plan_checksum;
+          operational_profile->execution_checksum = checksum;
+          operational_profile->counters = result.counters();
+          operational_profile->component_wall_nanoseconds = OperationalElapsed(validation_start);
+          const UWide classified =
+              static_cast<UWide>(operational_profile->validation_and_preflight_wall_nanoseconds) +
+              operational_profile->baseline_selection_and_source_store_preflight_wall_nanoseconds +
+              operational_profile->policy_projection_and_candidate_generation_wall_nanoseconds +
+              operational_profile->exact_admission_and_store_publication_wall_nanoseconds +
+              operational_profile->publication_correlation_wall_nanoseconds +
+              operational_profile->refreshed_selection_and_resource_accumulation_wall_nanoseconds +
+              operational_profile->successor_retention_wall_nanoseconds +
+              operational_profile->final_assembly_wall_nanoseconds;
+          operational_profile->unclassified_serial_wall_nanoseconds =
+              classified <= operational_profile->component_wall_nanoseconds
+                  ? operational_profile->component_wall_nanoseconds -
+                        static_cast<std::uint64_t>(classified)
+                  : 0;
+        }
+        return result;
       },
       failure_state, plan_checksum, config, store_config);
+}
+
+TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpu(
+    std::uint32_t schema_version, const board_ir::BoardSnapshot& board,
+    const OneWorldAllocationRequest& source_request, TargetedRegenerationPlan&& plan,
+    candidates::CandidateStore& candidate_store,
+    const TargetedRegenerationExecutionConfig& config) {
+  return ExecuteTargetedRegenerationPlanCpuImpl<false>(
+      schema_version, board, source_request, std::move(plan), candidate_store, config, nullptr);
+}
+
+TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuWithOperationalProfileV1(
+    std::uint32_t schema_version, const board_ir::BoardSnapshot& board,
+    const OneWorldAllocationRequest& source_request, TargetedRegenerationPlan&& plan,
+    candidates::CandidateStore& candidate_store, const TargetedRegenerationExecutionConfig& config,
+    TargetedRegenerationOperationalProfileV1& operational_profile) {
+  return ExecuteTargetedRegenerationPlanCpuImpl<true>(schema_version, board, source_request,
+                                                      std::move(plan), candidate_store, config,
+                                                      &operational_profile);
 }
 
 }  // namespace apgar::allocator
