@@ -4,8 +4,8 @@ Status: diagnostic evidence schema. `decision_eligible` is always `false`.
 
 This artifact is emitted only for canonical exact-oracle cases 100, 101, and
 102 at requested pool size 4 and repetition 0 in baseline-first order. It is a
-fresh diagnostic rerun associated with, but never substituted for, the Raw v1
-cell and per-net report named by its checksum fields.
+fresh diagnostic rerun associated with, but never substituted for, the
+version-matched Raw cell and per-net report named by its checksum fields.
 
 ## Proof boundary
 
@@ -45,11 +45,13 @@ requested/admitted/rejected columns, final candidate count, terminal reason,
 outcome source, complete outcome, and semantic checksum. Projected top-level
 fields must exactly equal that structurally validated row.
 
-Raw v1 and per-net report checksum/envelope fields are claimed cross-artifact
-associations. This in-process producer checks their required nonzero and local
-source-envelope shape but does not possess either external artifact document;
-publication remains responsible for loading those documents and performing the
-full join.
+The producer accepts exactly a Raw-v1/Wire-v1 or Raw-v2/Wire-v2 carrier. Raw
+and per-net report checksum/envelope fields are claimed cross-artifact
+associations. This in-process producer checks their required nonzero and
+version-selected local source-envelope shape but does not possess either
+external artifact document; publication remains responsible for loading those
+documents and performing the full versioned join. The selector does not change
+the snapshot v1 shape or either snapshot checksum domain.
 
 The current capacity model is serialized as its schema and associations,
 default capacity, complete strict resource-key-ordered binary overrides, and

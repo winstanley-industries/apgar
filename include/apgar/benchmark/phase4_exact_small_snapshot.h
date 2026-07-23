@@ -176,7 +176,8 @@ PreflightPhase4ExactSmallCartesianProductV1(std::span<const std::uint64_t> pool_
     std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
     Phase4PerNetReportRawReferenceV1 raw_reference, std::uint64_t per_net_report_artifact_checksum,
     std::uint64_t per_net_report_source_envelope_checksum,
-    Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture);
+    Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture,
+    std::uint32_t raw_evidence_schema_version = 1);
 
 [[nodiscard]] std::variant<std::monostate, Phase4ExactSmallSnapshotError>
 ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifactV1& artifact,

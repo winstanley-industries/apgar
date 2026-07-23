@@ -10,9 +10,57 @@ from fractions import Fraction
 
 from tools import validate_phase4_statistical_protocol as protocol
 from tools import validate_phase4_statistical_protocol_v2 as protocol_v2
+from tools import validate_phase4_statistical_protocol_v3 as protocol_v3
 
 
 class Phase4StatisticalProtocolTest(unittest.TestCase):
+    def test_v3_supersedes_only_exact_oracle_authority(self) -> None:
+        document = protocol_v3.read_protocol()
+        self.assertEqual(document, protocol_v3.expected_protocol())
+        self.assertEqual(
+            document["supersedes"]["artifact_checksum"],
+            protocol_v2.read_protocol()["artifact_checksum"],
+        )
+        v2_groups = {group["group"]: group for group in protocol_v2.effective_cell_groups()}
+        v3_groups = {group["group"]: group for group in protocol_v3.effective_cell_groups()}
+        for name, group in v3_groups.items():
+            if name == "exact":
+                self.assertIn("phase4_exact_small_oracle_v2", group["required_artifacts"])
+                self.assertNotIn("phase4_exact_small_oracle_v1", group["required_artifacts"])
+                expected = copy.deepcopy(v2_groups[name])
+                expected["required_artifacts"] = [
+                    (
+                        "phase4_exact_small_oracle_v2"
+                        if artifact == "phase4_exact_small_oracle_v1"
+                        else artifact
+                    )
+                    for artifact in expected["required_artifacts"]
+                ]
+                self.assertEqual(group, expected)
+            else:
+                self.assertEqual(group, v2_groups[name])
+        self.assertEqual(protocol_v3.expanded_cells(), protocol_v2.expanded_cells())
+        self.assertEqual(len(protocol_v3.expanded_cells()), 104)
+        self.assertEqual(document["artifact_checksum"], 14444535493088350158)
+
+        mutated = copy.deepcopy(document)
+        mutated["authority_change"]["decision_group"] = "heldout"
+        mutated["artifact_checksum"] = protocol_v3._artifact_checksum(mutated)
+        with self.assertRaisesRegex(protocol_v3.ProtocolV3Error, "exactly reconstruct"):
+            protocol_v3.validate_document(mutated)
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "protocol-v3-bound.json"
+            with path.open("wb") as stream:
+                stream.seek(protocol_v3._MAX_BYTES - 1)
+                stream.write(b"\n")
+            with self.assertRaisesRegex(protocol_v3.ProtocolV3Error, "invalid protocol v3 JSON"):
+                protocol_v3.read_protocol(path)
+            with path.open("wb") as stream:
+                stream.seek(protocol_v3._MAX_BYTES)
+                stream.write(b"\n")
+            with self.assertRaisesRegex(protocol_v3.ProtocolV3Error, "64 KiB"):
+                protocol_v3.read_protocol(path)
+
     def test_v2_supersedes_only_decision_cell_authority(self) -> None:
         document = protocol_v2.read_protocol()
         self.assertEqual(document, protocol_v2.expected_protocol())

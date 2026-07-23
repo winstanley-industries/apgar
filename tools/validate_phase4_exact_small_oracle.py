@@ -1960,6 +1960,20 @@ def validate_publication(
     if _COMMIT.fullmatch(expected_commit) is None:
         raise EvidenceError("publication requires an independently supplied expected commit")
     report_validator.validate_join(raw_value, report_value, expected_commit=expected_commit)
+    return validate_publication_against_validated_authorities(
+        raw_value,
+        report_value,
+        snapshot_value,
+        expected_commit=expected_commit,
+    )
+
+
+def validate_publication_against_validated_authorities(
+    raw_value: Any, report_value: Any, snapshot_value: Any, *, expected_commit: str
+) -> Mapping[str, Any]:
+    """Build the oracle after the caller validates its versioned Raw/report authority."""
+    if _COMMIT.fullmatch(expected_commit) is None:
+        raise EvidenceError("publication requires an independently supplied expected commit")
     raw = _object(raw_value, "raw cell")
     report = _object(report_value, "per-net report")
     snapshot = _parse_snapshot(snapshot_value)

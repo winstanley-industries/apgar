@@ -57,6 +57,21 @@ class Phase4SameRunDecisionTelemetryTest(unittest.TestCase):
             expected_workers=4,
         )
 
+    def test_reader_enforces_the_32_mib_bound_with_a_bounded_read(self) -> None:
+        path = self.root / "sidecar-bound.json"
+        with path.open("wb") as stream:
+            stream.seek(validator._MAX_BYTES - 1)
+            stream.write(b"\n")
+        with self.assertRaisesRegex(raw_validator.EvidenceError, "cannot read same-run telemetry"):
+            validator.read_document(path)
+        with path.open("wb") as stream:
+            stream.seek(validator._MAX_BYTES)
+            stream.write(b"\n")
+        with self.assertRaisesRegex(
+            raw_validator.EvidenceError, f"exceeds {validator._MAX_BYTES} bytes"
+        ):
+            validator.read_document(path)
+
     def test_real_controller_emits_all_same_run_attempts(self) -> None:
         with self.assertRaisesRegex(raw_validator.EvidenceError, "fields differ"):
             raw_validator.validate_document(

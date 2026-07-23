@@ -1076,7 +1076,9 @@ acceleration.
   fixed-pool enumeration, never timing evidence or proof that the frozen pools
   are route-complete. Raw and per-net checksums in the snapshot are claimed
   associations until the publication validator loads and joins those external
-  documents.
+  documents. The v1 snapshot carrier MUST select exactly a Raw-v1/Wire-v1 or
+  Raw-v2/Wire-v2 source envelope before candidate work; this authority selector
+  does not change the frozen snapshot shape or checksum domains.
 - Exact-small publication MUST follow
   `schemas/benchmark/phase4_exact_small_oracle_publication_v1.md`. The
   independent validator MUST fully validate and structurally join Raw v1,
@@ -1094,6 +1096,15 @@ acceleration.
   the diagnostic artifact retains the optimum count and lowest ordered
   candidate-ID witness. This is fixed-pool evidence only and remains ineligible
   for timing or route-completeness claims.
+- Exact cells assigned to Same-Run Raw Evidence v2 MUST instead follow
+  `schemas/benchmark/phase4_exact_small_oracle_publication_v2.md`. The
+  validator MUST fail closed in authority order: fully join Raw v2 with its
+  Same-Run Decision Telemetry companion before reading the Wire-v2 report, and
+  fully join that report before reading the snapshot. Oracle Artifact v2 MUST
+  bind the artifact and source envelope of all four inputs while preserving
+  the independent reconstruction, replay, and exhaustive fixed-pool proof
+  boundary above. Negative exact-rejection telemetry remains valid evidence;
+  the diagnostic oracle MUST NOT reinterpret it as a failed publication.
 - Prices, histories, iteration counts, regeneration budgets, and world state
   MUST be bounded, versioned, and replayable. Identical board, configuration,
   seed, candidate pools, and supported backend/device class MUST produce the
@@ -1309,7 +1320,13 @@ acceleration.
   `schemas/benchmark/phase4_statistical_decision_protocol_v2.md` incorporates
   that exact v1 artifact and changes no decision rule: it assigns the 78 exact,
   held-out, and imported cells to Same-Run Raw v2 plus their v2 diagnostic
-  joins, while calibration, fixed-query, and stress retain Raw v1.
+  joins, while calibration, fixed-query, and stress retain Raw v1. The further
+  authority-only supersession in
+  `schemas/benchmark/phase4_statistical_decision_protocol_v3.md` changes only
+  the three exact cells from Oracle Artifact v1 to the sidecar-binding Oracle
+  Artifact v2; its expanded cells, evidence dispositions, thresholds,
+  inference, timing, guardrails, and completion requirements MUST remain
+  identical to protocol v2.
 
 This Phase 4 gate establishes resource-feasible candidate allocation, not final
 board legality. Exact combined-geometry legalization, APGAR DRC, host-CAD

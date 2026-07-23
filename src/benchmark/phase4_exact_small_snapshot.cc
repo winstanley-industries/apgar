@@ -776,11 +776,33 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
     std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
     Phase4PerNetReportRawReferenceV1 raw_reference, std::uint64_t per_net_report_artifact_checksum,
     std::uint64_t per_net_report_source_envelope_checksum,
-    Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture) try {
+    Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture,
+    std::uint32_t raw_evidence_schema_version) try {
   if (!IsLowerHexCommit(source_commit) || !source_stamped || source_tree_dirty) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
                  "P4EXACT-SNAPSHOT-SOURCE-001",
                  "a clean stamped 40-character lowercase source commit is required");
+  }
+  if ((raw_evidence_schema_version != 1 &&
+       raw_evidence_schema_version != kPhase4SameRunRawEvidenceSchemaVersion) ||
+      raw_cell_plan_checksum != ComputePhase4CanonicalCellPlanChecksumV1(config) ||
+      raw_cell_artifact_checksum == 0 ||
+      raw_source_envelope_checksum !=
+          (raw_evidence_schema_version == kPhase4SameRunRawEvidenceSchemaVersion
+               ? ComputePhase4SourceEnvelopeChecksumV2(
+                     kPhase4SameRunRawEvidenceSchemaVersion, kPhase4SameRunTrialWireSchemaVersion,
+                     source_commit, source_stamped, source_tree_dirty, raw_cell_artifact_checksum)
+               : ComputePhase4SourceEnvelopeChecksumV1(kPhase4TrialWireSchemaVersion, source_commit,
+                                                       source_stamped, source_tree_dirty,
+                                                       raw_cell_artifact_checksum)) ||
+      !NonzeroRawReference(raw_reference) || per_net_report_artifact_checksum == 0 ||
+      per_net_report_source_envelope_checksum !=
+          ComputePhase4PerNetReportSourceEnvelopeChecksumV1(
+              source_commit, source_stamped, source_tree_dirty, per_net_report_artifact_checksum)) {
+    return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
+                 "P4EXACT-SNAPSHOT-AUTHORITY-001",
+                 "Raw or per-net report claimed associations are absent or locally "
+                 "inconsistent; publication must perform the external artifact join");
   }
   const Phase4CaseDescriptor* descriptor = FindPhase4CaseDescriptorV1(config.case_id);
   if (descriptor == nullptr || descriptor->role != Phase4CaseRole::kExactOracle ||
@@ -890,21 +912,10 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
                  "P4EXACT-SNAPSHOT-TELEMETRY-001",
                  "the captured per-net telemetry is not associated with the candidate execution");
   }
-  if (raw_cell_plan_checksum != ComputePhase4CanonicalCellPlanChecksumV1(config) ||
-      raw_cell_artifact_checksum == 0 ||
-      raw_source_envelope_checksum !=
-          ComputePhase4SourceEnvelopeChecksumV1(kPhase4TrialWireSchemaVersion, source_commit,
-                                                source_stamped, source_tree_dirty,
-                                                raw_cell_artifact_checksum) ||
-      !NonzeroRawReference(raw_reference) ||
-      raw_reference.candidate_semantic_checksum != semantics.semantic_checksum ||
-      per_net_report_artifact_checksum == 0 ||
-      per_net_report_source_envelope_checksum !=
-          ComputePhase4PerNetReportSourceEnvelopeChecksumV1(
-              source_commit, source_stamped, source_tree_dirty, per_net_report_artifact_checksum)) {
+  if (raw_reference.candidate_semantic_checksum != semantics.semantic_checksum) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
                  "P4EXACT-SNAPSHOT-AUTHORITY-001",
-                 "Raw v1 or per-net report claimed associations are absent or locally "
+                 "Raw or per-net report claimed associations are absent or locally "
                  "inconsistent; publication must perform the external artifact join");
   }
   if (capture.capacity_schema_version != representative_case.capacities.schema_version() ||
@@ -1409,10 +1420,15 @@ ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifac
       artifact.production_outcome.world_checksum == 0 ||
       artifact.raw_cell_plan_checksum !=
           ComputePhase4CanonicalCellPlanChecksumV1(artifact.config) ||
-      artifact.raw_source_envelope_checksum !=
-          ComputePhase4SourceEnvelopeChecksumV1(
-              kPhase4TrialWireSchemaVersion, artifact.source_commit, artifact.source_stamped,
-              artifact.source_tree_dirty, artifact.raw_cell_artifact_checksum) ||
+      (artifact.raw_source_envelope_checksum !=
+           ComputePhase4SourceEnvelopeChecksumV1(
+               kPhase4TrialWireSchemaVersion, artifact.source_commit, artifact.source_stamped,
+               artifact.source_tree_dirty, artifact.raw_cell_artifact_checksum) &&
+       artifact.raw_source_envelope_checksum !=
+           ComputePhase4SourceEnvelopeChecksumV2(
+               kPhase4SameRunRawEvidenceSchemaVersion, kPhase4SameRunTrialWireSchemaVersion,
+               artifact.source_commit, artifact.source_stamped, artifact.source_tree_dirty,
+               artifact.raw_cell_artifact_checksum)) ||
       artifact.per_net_report_source_envelope_checksum !=
           ComputePhase4PerNetReportSourceEnvelopeChecksumV1(
               artifact.source_commit, artifact.source_stamped, artifact.source_tree_dirty,

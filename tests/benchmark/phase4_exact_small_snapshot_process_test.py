@@ -157,6 +157,27 @@ class Phase4ExactSmallSnapshotProcessTest(unittest.TestCase):
         self.assertEqual(bounded.stdout, "")
         self.assertIn("P4EXACT-SNAPSHOT-OUTPUT-BOUND-002", bounded.stderr)
 
+    def test_runner_rejects_raw_schema_envelope_mismatch_before_candidate_work(
+        self,
+    ) -> None:
+        _, report, common = prepare_authorities()
+        completed = subprocess.run(
+            [
+                str(runfile("phase4_exact_small_snapshot_test_runner")),
+                "--raw_evidence_schema_version=2",
+                *common,
+                f"--per_net_report_artifact_checksum={report['artifact_checksum']}",
+                f"--per_net_report_source_envelope_checksum={report['source_envelope_checksum']}",
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.stdout, "")
+        self.assertIn("claimed-association preflight failed", completed.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

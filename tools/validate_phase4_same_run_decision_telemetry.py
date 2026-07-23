@@ -189,7 +189,8 @@ def _reject_constant(value: str) -> None:
 
 def read_document(path: pathlib.Path) -> Mapping[str, Any]:
     try:
-        encoded = path.read_bytes()
+        with path.open("rb") as stream:
+            encoded = stream.read(_MAX_BYTES + 1)
         if len(encoded) > _MAX_BYTES:
             raise EvidenceError(f"same-run telemetry exceeds {_MAX_BYTES} bytes")
         if (
