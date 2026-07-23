@@ -49,7 +49,8 @@ template <typename Value, typename Error>
       .value_or(std::string{});
 }
 
-[[nodiscard]] Phase4PerNetReportArtifactV1 Artifact() {
+[[nodiscard]] Phase4PerNetReportArtifactV1 Artifact(
+    std::uint32_t raw_wire_schema_version = kPhase4TrialWireSchemaVersion) {
   const Phase4CanonicalCellConfig cell = Cell();
   const Phase4PairedTrialSpec spec = ValueOf<Phase4PairedTrialSpec>(
       BuildPhase4CanonicalTrialSpecV1(cell, 0, Phase4TrialOrder::kBaselineFirst));
@@ -76,9 +77,13 @@ template <typename Value, typename Error>
   return ValueOf<Phase4PerNetReportArtifactV1>(BuildPhase4PerNetReportArtifactV1(
       cell, kCommit, true, false, ComputePhase4CanonicalCellPlanChecksumV1(cell),
       raw_artifact_checksum,
-      ComputePhase4SourceEnvelopeChecksumV1(kPhase4TrialWireSchemaVersion, kCommit, true, false,
-                                            raw_artifact_checksum),
-      raw, {std::move(baseline), std::move(candidate)}, {}));
+      raw_wire_schema_version == kPhase4SameRunTrialWireSchemaVersion
+          ? ComputePhase4SourceEnvelopeChecksumV2(kPhase4SameRunRawEvidenceSchemaVersion,
+                                                  raw_wire_schema_version, kCommit, true, false,
+                                                  raw_artifact_checksum)
+          : ComputePhase4SourceEnvelopeChecksumV1(raw_wire_schema_version, kCommit, true, false,
+                                                  raw_artifact_checksum),
+      raw, {std::move(baseline), std::move(candidate)}, {}, raw_wire_schema_version));
 }
 
 void Reauthenticate(Phase4PerNetReportArtifactV1* artifact) {
@@ -186,6 +191,31 @@ TEST(Phase4PerNetReportArtifactTest, BuildsValidDiagnosticCompanionWithCanonical
   EXPECT_EQ(first.find("process_lifetime_peak_host_bytes"), std::string::npos);
   EXPECT_LT(first.find("\"raw_reference\":"), first.find("\"arms\":"));
   EXPECT_LT(first.find("\"arm\":0"), first.find("\"arm\":1"));
+}
+
+TEST(Phase4PerNetReportArtifactTest, BindsExactlyTheTwoVersionedRawWireCarriers) {
+  const Phase4PerNetReportArtifactV1 raw_v1 = Artifact(kPhase4TrialWireSchemaVersion);
+  const Phase4PerNetReportArtifactV1 raw_v2 = Artifact(kPhase4SameRunTrialWireSchemaVersion);
+  EXPECT_TRUE(
+      std::holds_alternative<std::monostate>(ValidatePhase4PerNetReportArtifactV1(raw_v1, {})));
+  EXPECT_TRUE(
+      std::holds_alternative<std::monostate>(ValidatePhase4PerNetReportArtifactV1(raw_v2, {})));
+  EXPECT_EQ(raw_v2.schema_version, kPhase4PerNetReportArtifactSchemaVersion);
+  EXPECT_EQ(raw_v2.raw_wire_schema_version, kPhase4SameRunTrialWireSchemaVersion);
+  EXPECT_NE(raw_v1.artifact_checksum, raw_v2.artifact_checksum);
+
+  Phase4PerNetReportArtifactV1 swapped = raw_v2;
+  swapped.raw_source_envelope_checksum = raw_v1.raw_source_envelope_checksum;
+  Reauthenticate(&swapped);
+  EXPECT_EQ(Rejected(swapped).invariant_id, "P4REPORT-RAW-REFERENCE-001");
+
+  Phase4PerNetReportArtifactV1 unknown = raw_v2;
+  unknown.raw_wire_schema_version = 3;
+  unknown.raw_source_envelope_checksum =
+      ComputePhase4SourceEnvelopeChecksumV1(unknown.raw_wire_schema_version, unknown.source_commit,
+                                            true, false, unknown.raw_cell_artifact_checksum);
+  Reauthenticate(&unknown);
+  EXPECT_EQ(Rejected(unknown).invariant_id, "P4REPORT-ARTIFACT-ENVELOPE-001");
 }
 
 TEST(Phase4PerNetReportArtifactTest, RejectsReauthenticatedComponentAndEnumDrift) {

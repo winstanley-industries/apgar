@@ -515,12 +515,15 @@ def validate_join(
         actual = _u64(document[field], field)
         if actual == 0 or actual != expected:
             raise EvidenceError(f"{field} differs from Raw")
-    protocol_validator.read_protocol()
-    cells = {
-        (case_id, pool): role
-        for case_id, pool, role, disposition in protocol_validator.expanded_cells()
-        if disposition == "same_run_raw_success" and role in {"exact", "heldout", "imported"}
-    }
+    try:
+        protocol_validator.read_protocol()
+        cells = {
+            (case_id, pool): role
+            for case_id, pool, role, disposition in protocol_validator.expanded_cells()
+            if disposition == "same_run_raw_success" and role in {"exact", "heldout", "imported"}
+        }
+    except ValueError as error:
+        raise EvidenceError(f"cannot authenticate the frozen decision protocol: {error}") from error
     config = raw_document["config"]
     if cells.get((config["case_id"], config["requested_pool_size"])) is None:
         raise EvidenceError("same-run telemetry cell is outside the frozen decision scope")

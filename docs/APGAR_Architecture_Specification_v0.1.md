@@ -1257,6 +1257,11 @@ acceleration.
   commit, then binds exact source/config/cell/pair/arm identities and compares
   both complete diagnostic semantics objects with the Raw repetition-zero
   baseline-first records.
+  The Raw-v2 counterpart is versioned by
+  `schemas/benchmark/phase4_per_net_report_publication_join_v2.md`; it first
+  validates the mandatory Same-Run Decision Telemetry companion, then requires
+  the unchanged report payload to carry the exact Wire-v2/Raw-v2 source
+  association before the same structural diagnostic comparison.
   Exact-validation rejection guardrails instead use
   `schemas/benchmark/phase4_same_run_decision_telemetry_v1.md`. A distinct
   telemetry-aware Wire v2 success response MUST carry the ordinary measured
@@ -1286,6 +1291,11 @@ acceleration.
   its projection is not standalone-decision-eligible, has incomplete matrix
   coverage and incomplete Phase 4 telemetry, and does not establish the
   Section 29.2 exit gate.
+  Operational Projection v2 is separately versioned by
+  `schemas/benchmark/phase4_operational_projection_v2.md`. It accepts only a
+  complete joined Raw-v2/same-run authority, binds every same-run pair and arm
+  capture plus the observed rejection-guardrail result, and preserves the same
+  incomplete telemetry and non-decision flags.
   Every optimization claim MUST bind the versioned corpus, configuration,
   hardware, toolchains, exact clean commit, and comparison baseline.
   The pre-observation Phase 4 matrix, lexicographic comparison, family-level

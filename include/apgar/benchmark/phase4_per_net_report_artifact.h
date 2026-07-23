@@ -135,14 +135,17 @@ FindPhase4WorkloadNetRosterManifestEntryV1(std::uint32_t case_id) noexcept;
     std::uint64_t artifact_checksum) noexcept;
 
 // Builds and authenticates one report companion. raw_reference names the exact
-// successful repetition-zero baseline-first pair in the separate Raw v1 cell.
+// successful repetition-zero baseline-first pair in the separate Raw cell.
+// The carrier is restricted to the versioned Raw-v1/Wire-v1 or Raw-v2/Wire-v2
+// publication paths.
 [[nodiscard]] Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactV1(
     const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
     std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
     Phase4PerNetReportRawReferenceV1 raw_reference,
     std::array<Phase4TrialArmDiagnosticExecutionV1, 2> diagnostics,
-    std::string_view imported_fixture);
+    std::string_view imported_fixture,
+    std::uint32_t raw_wire_schema_version = kPhase4TrialWireSchemaVersion);
 
 [[nodiscard]] std::variant<std::monostate, Phase4PerNetReportArtifactError>
 ValidatePhase4PerNetReportArtifactV1(const Phase4PerNetReportArtifactV1& artifact,

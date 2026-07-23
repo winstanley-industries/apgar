@@ -705,7 +705,8 @@ std::variant<std::monostate, Phase4PerNetReportArtifactError> ValidatePhase4PerN
     const Phase4PerNetReportArtifactV1& artifact, std::string_view imported_fixture) {
   try {
     if (artifact.schema_version != kPhase4PerNetReportArtifactSchemaVersion ||
-        artifact.raw_wire_schema_version != kPhase4TrialWireSchemaVersion ||
+        (artifact.raw_wire_schema_version != kPhase4TrialWireSchemaVersion &&
+         artifact.raw_wire_schema_version != kPhase4SameRunTrialWireSchemaVersion) ||
         !IsLowerHexCommit(artifact.source_commit) || !artifact.source_stamped ||
         artifact.source_tree_dirty || artifact.decision_eligible) {
       return Error("P4REPORT-ARTIFACT-ENVELOPE-001",
@@ -731,9 +732,15 @@ std::variant<std::monostate, Phase4PerNetReportArtifactError> ValidatePhase4PerN
         artifact.raw_cell_plan_checksum !=
             ComputePhase4CanonicalCellPlanChecksumV1(artifact.config) ||
         artifact.raw_source_envelope_checksum !=
-            ComputePhase4SourceEnvelopeChecksumV1(
-                artifact.raw_wire_schema_version, artifact.source_commit, artifact.source_stamped,
-                artifact.source_tree_dirty, artifact.raw_cell_artifact_checksum)) {
+            (artifact.raw_wire_schema_version == kPhase4SameRunTrialWireSchemaVersion
+                 ? ComputePhase4SourceEnvelopeChecksumV2(
+                       kPhase4SameRunRawEvidenceSchemaVersion, artifact.raw_wire_schema_version,
+                       artifact.source_commit, artifact.source_stamped, artifact.source_tree_dirty,
+                       artifact.raw_cell_artifact_checksum)
+                 : ComputePhase4SourceEnvelopeChecksumV1(
+                       artifact.raw_wire_schema_version, artifact.source_commit,
+                       artifact.source_stamped, artifact.source_tree_dirty,
+                       artifact.raw_cell_artifact_checksum))) {
       return Error("P4REPORT-RAW-REFERENCE-001",
                    "raw wire, cell-plan, artifact, or source-envelope association is invalid");
     }
@@ -846,7 +853,7 @@ Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactV1(
     std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
     Phase4PerNetReportRawReferenceV1 raw_reference,
     std::array<Phase4TrialArmDiagnosticExecutionV1, 2> diagnostics,
-    std::string_view imported_fixture) {
+    std::string_view imported_fixture, std::uint32_t raw_wire_schema_version) {
   if (!IsLowerHexCommit(source_commit)) {
     return Error("P4REPORT-BUILD-SOURCE-001",
                  "source commit must be exactly 40 lowercase hexadecimal characters");
@@ -856,6 +863,7 @@ Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactV1(
     artifact.source_commit = std::string(source_commit);
     artifact.source_stamped = source_stamped;
     artifact.source_tree_dirty = source_tree_dirty;
+    artifact.raw_wire_schema_version = raw_wire_schema_version;
     artifact.config = config;
     artifact.corpus_checksum = Phase4RepresentativeCorpusChecksumV1();
     artifact.raw_cell_plan_checksum = raw_cell_plan_checksum;

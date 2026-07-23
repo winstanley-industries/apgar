@@ -1,9 +1,10 @@
 # Phase 4 Per-Net Report Artifact v1
 
 Per-Net Report Artifact v1 is the canonical diagnostic companion to one
-successful Phase 4 Isolated Raw Evidence v1 cell. It carries no measured time,
-utilization, or memory observation and has the literal
-`decision_eligible=false`. Raw Evidence v1 and subprocess Wire v1 are unchanged.
+successful Phase 4 isolated Raw cell. It carries no measured time, utilization,
+or memory observation and has the literal `decision_eligible=false`. The
+`raw_wire_schema_version` carrier is exactly 1 for Raw Evidence v1 or exactly 2
+for Same-Run Raw Evidence v2; no other pairing is admitted.
 
 ## Source and raw association
 
@@ -16,11 +17,12 @@ which commit a caller intended.
 
 The report stores the complete `Phase4CanonicalCellConfig`, Raw Wire schema,
 raw cell-plan checksum, raw cell-artifact checksum, and raw source-envelope
-checksum. It independently reconstructs the cell-plan and Raw source-envelope
-checksums. It references exactly repetition zero in baseline-first order,
-including raw pair-attempt, paired semantic/artifact, and both arm
-semantic/artifact checksums. The later independent join validator MUST require
-those values to equal the separate raw JSON record.
+checksum. It independently reconstructs the cell-plan and the version-matched
+Raw-v1 or Raw-v2 source-envelope checksum. It references exactly repetition
+zero in baseline-first order, including raw pair-attempt, paired
+semantic/artifact, and both arm semantic/artifact checksums. The later
+independent join validator MUST require those values to equal the separate raw
+JSON record.
 
 The referenced cell has exactly 20 repetitions and four preparation workers.
 Both diagnostics have repetition zero, baseline-first order, and four workers,
@@ -83,5 +85,6 @@ lifecycle, utilization, or resource observations.
 This schema supplies the C++ DTO, serializer, frozen roster, and rebuilding
 validator. Diagnostic process execution and the external expected-commit
 Raw/report join are defined separately by
-`phase4_per_net_report_publication_join_v1.md`; they do not change this artifact
-or Raw/Wire v1. Neither schema publishes evidence statistics.
+`phase4_per_net_report_publication_join_v1.md` for Raw v1 and
+`phase4_per_net_report_publication_join_v2.md` for the Raw-v2/same-run
+authority. Neither schema publishes evidence statistics.

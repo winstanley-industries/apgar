@@ -972,6 +972,41 @@ py_test(
 )
 
 py_binary(
+    name = "phase4_operational_projection_v2",
+    srcs = ["tools/project_phase4_operational_evidence_v2.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/project_phase4_operational_evidence_v2.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_operational_projection_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_operational_projection_v2_lib",
+    srcs = ["tools/project_phase4_operational_evidence_v2.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_operational_projection_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_binary(
     name = "phase4_fixed_query_controls",
     srcs = ["tools/project_phase4_fixed_query_controls.py"],
     data = [
@@ -1285,6 +1320,41 @@ py_library(
     deps = [
         ":phase4_raw_evidence_validator_lib",
         ":phase4_workload_net_roster_manifest_validator_lib",
+    ],
+)
+
+py_binary(
+    name = "phase4_per_net_report_v2_validator",
+    srcs = ["tools/validate_phase4_per_net_report_v2.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_per_net_report_v2.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_per_net_report_v2_validator_lib",
+    srcs = ["tools/validate_phase4_per_net_report_v2.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
     ],
 )
 
@@ -1720,6 +1790,30 @@ py_test(
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_workload_net_roster_manifest_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_raw_v2_downstream_join_test",
+    size = "medium",
+    srcs = ["tests/benchmark/phase4_raw_v2_downstream_join_test.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        ":phase4_evidence_runner",
+        ":phase4_operational_projection_v2",
+        ":phase4_per_net_report_test_runner",
+        ":phase4_per_net_report_v2_validator",
+    ],
+    legacy_create_init = 0,
+    python_version = "3.13",
+    deps = [
+        ":phase4_operational_projection_v2_lib",
+        ":phase4_per_net_report_v2_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
     ],
 )
 

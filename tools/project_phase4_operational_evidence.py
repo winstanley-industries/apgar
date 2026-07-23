@@ -320,6 +320,11 @@ def _assert_exact(expected: Any, actual: Any, label: str = "operational projecti
         raise ProjectionError(f"{label} differs from the fully validated Raw v1 projection")
 
 
+def assert_exact_projection(expected: Any, actual: Any) -> None:
+    """Compare a rebuilt versioned projection with exact JSON types and order."""
+    _assert_exact(expected, actual)
+
+
 def validate_projection(raw: Mapping[str, Any], value: Mapping[str, Any]) -> None:
     expected = project_document(raw)
     _assert_exact(expected, value)

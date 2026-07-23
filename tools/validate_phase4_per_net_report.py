@@ -939,6 +939,15 @@ def validate_join(raw_value: Any, report_value: Any, *, expected_commit: str) ->
     _validate_join_documents(raw_value, report_value, expected_commit=expected_commit)
 
 
+def validate_report_against_validated_raw(
+    raw_value: Any, report_value: Any, *, expected_commit: str
+) -> None:
+    """Structurally join a report after its versioned Raw authority was validated."""
+    if _COMMIT.fullmatch(expected_commit) is None:
+        raise EvidenceError("publication requires an independently supplied expected commit")
+    _validate_join_documents(raw_value, report_value, expected_commit=expected_commit)
+
+
 def validate_config(value: Any) -> Mapping[str, Any]:
     """Validate one canonical report/snapshot cell configuration."""
     return _config(value)

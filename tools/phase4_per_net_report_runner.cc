@@ -27,6 +27,7 @@ using apgar::benchmark::Phase4CanonicalCellConfig;
 struct Options {
   bool testing_allow_unstamped = false;
   std::optional<std::string> runtime_commit;
+  std::uint32_t raw_wire_schema_version = apgar::benchmark::kPhase4TrialWireSchemaVersion;
   Phase4CanonicalCellConfig cell;
   std::uint64_t raw_cell_plan_checksum = 0;
   std::uint64_t raw_cell_artifact_checksum = 0;
@@ -53,7 +54,7 @@ struct Options {
 }
 
 [[nodiscard]] std::optional<Options> ParseOptions(int argc, char** argv) {
-  if (argc < 2 || argc > 27) {
+  if (argc < 2 || argc > 28) {
     return std::nullopt;
   }
   Options options;
@@ -95,6 +96,10 @@ struct Options {
         return std::nullopt;
       }
       options.runtime_commit = std::string(value);
+    } else if (key == "raw_wire_schema_version") {
+      if (!ParseU32(value, &options.raw_wire_schema_version)) {
+        return std::nullopt;
+      }
     } else if (key == "case_id") {
       if (!ParseU32(value, &options.cell.case_id)) {
         return std::nullopt;
@@ -271,6 +276,11 @@ int main(int argc, char** argv) try {
     PrintUsage();
     return 2;
   }
+  if (options.raw_wire_schema_version != apgar::benchmark::kPhase4TrialWireSchemaVersion &&
+      options.raw_wire_schema_version != apgar::benchmark::kPhase4SameRunTrialWireSchemaVersion) {
+    PrintUsage();
+    return 2;
+  }
   bool source_stamped = apgar::benchmark::kPhase3SourceStamped;
   bool source_tree_dirty = apgar::benchmark::kPhase3BuiltFromDirtyTree;
   const bool publishable = apgar::benchmark::IsPublishableBenchmarkSource(
@@ -289,9 +299,14 @@ int main(int argc, char** argv) try {
   if (options.raw_cell_plan_checksum !=
           apgar::benchmark::ComputePhase4CanonicalCellPlanChecksumV1(options.cell) ||
       options.raw_source_envelope_checksum !=
-          apgar::benchmark::ComputePhase4SourceEnvelopeChecksumV1(
-              apgar::benchmark::kPhase4TrialWireSchemaVersion, *options.runtime_commit,
-              source_stamped, source_tree_dirty, options.raw_cell_artifact_checksum)) {
+          (options.raw_wire_schema_version == apgar::benchmark::kPhase4SameRunTrialWireSchemaVersion
+               ? apgar::benchmark::ComputePhase4SourceEnvelopeChecksumV2(
+                     apgar::benchmark::kPhase4SameRunRawEvidenceSchemaVersion,
+                     options.raw_wire_schema_version, *options.runtime_commit, source_stamped,
+                     source_tree_dirty, options.raw_cell_artifact_checksum)
+               : apgar::benchmark::ComputePhase4SourceEnvelopeChecksumV1(
+                     options.raw_wire_schema_version, *options.runtime_commit, source_stamped,
+                     source_tree_dirty, options.raw_cell_artifact_checksum))) {
     std::cerr << "raw cell plan or source-envelope association failed before diagnostics\n";
     return 2;
   }
@@ -340,8 +355,8 @@ int main(int argc, char** argv) try {
   auto artifact_result = apgar::benchmark::BuildPhase4PerNetReportArtifactV1(
       options.cell, *options.runtime_commit, source_stamped, source_tree_dirty,
       options.raw_cell_plan_checksum, options.raw_cell_artifact_checksum,
-      options.raw_source_envelope_checksum, options.raw_reference, std::move(diagnostics),
-      *fixture);
+      options.raw_source_envelope_checksum, options.raw_reference, std::move(diagnostics), *fixture,
+      options.raw_wire_schema_version);
   if (std::holds_alternative<apgar::benchmark::Phase4PerNetReportArtifactError>(artifact_result)) {
     const auto& error =
         std::get<apgar::benchmark::Phase4PerNetReportArtifactError>(artifact_result);
