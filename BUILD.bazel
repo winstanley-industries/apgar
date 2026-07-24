@@ -691,6 +691,29 @@ cc_binary(
     ],
 )
 
+cc_binary(
+    name = "phase4_v2_representative_manifest",
+    srcs = ["tools/phase4_v2_representative_manifest.cc"],
+    copts = APGAR_COPTS,
+    deps = [
+        ":negotiated_prices",
+        ":phase4_paired_trial",
+        ":phase4_representative_corpus",
+        ":phase4_trial_harness",
+    ],
+)
+
+cc_binary(
+    name = "phase4_v2_canonical_budget_roster",
+    srcs = ["tools/phase4_v2_canonical_budget_roster.cc"],
+    copts = APGAR_COPTS,
+    deps = [
+        ":phase4_paired_trial",
+        ":phase4_representative_corpus",
+        ":phase4_trial_harness",
+    ],
+)
+
 cc_library(
     name = "phase4_per_net_report_artifact",
     srcs = ["src/benchmark/phase4_per_net_report_artifact.cc"],
@@ -1282,6 +1305,84 @@ py_library(
         ":phase4_raw_evidence_validator_lib",
         ":phase4_statistical_protocol_v2_validator_lib",
         ":phase4_statistical_protocol_v3_validator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+    ],
+)
+
+py_binary(
+    name = "phase4_representative_manifest_v2_validator",
+    srcs = ["tools/validate_phase4_representative_manifest_v2.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_representative_manifest_v2.py",
+    python_version = "3.13",
+    deps = [":phase4_raw_evidence_validator_lib"],
+)
+
+py_library(
+    name = "phase4_representative_manifest_v2_validator_lib",
+    srcs = ["tools/validate_phase4_representative_manifest_v2.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [":phase4_raw_evidence_validator_lib"],
+)
+
+py_binary(
+    name = "phase4_confirmatory_decision_protocol_validator",
+    srcs = ["tools/validate_phase4_confirmatory_decision_protocol.py"],
+    data = ["schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json"],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_decision_protocol.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_statistical_protocol_v2_validator_lib",
+        ":phase4_statistical_protocol_v3_validator_lib",
+        ":phase4_statistical_protocol_v4_validator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_decision_protocol_validator_lib",
+    srcs = ["tools/validate_phase4_confirmatory_decision_protocol.py"],
+    data = ["schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json"],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_statistical_protocol_v2_validator_lib",
+        ":phase4_statistical_protocol_v3_validator_lib",
+        ":phase4_statistical_protocol_v4_validator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_confirmatory_decision_protocol_validator_test",
+    size = "small",
+    srcs = ["tests/tools/validate_phase4_confirmatory_decision_protocol_test.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_v2_canonical_budget_roster",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_confirmatory_decision_protocol_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
         ":phase4_statistical_protocol_validator_lib",
     ],
 )

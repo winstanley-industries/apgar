@@ -1376,6 +1376,21 @@ acceleration.
   canonical algorithm-budget roster. Its logical cells, evidence
   dispositions, decision rules, thresholds, and completion requirements MUST
   remain identical to protocol v3.
+  Representative Corpus v2 begins a separate confirmatory campaign rather
+  than superseding or reinterpreting the authentic negative V1 publication.
+  `schemas/benchmark/phase4_representative_manifest_v2.md` freezes its 40
+  paired rows and 102 canonical algorithm budgets;
+  `schemas/benchmark/phase4_workload_net_roster_manifest_v2.md` independently
+  freezes 38 complete workload EntityRef rosters and four typed exclusions.
+  The pre-observation V2 matrix and evidence authority namespace are versioned
+  by `schemas/benchmark/phase4_confirmatory_decision_protocol_v1.md`. It
+  incorporates Protocol v4's outcome, inference, thresholds, timing, and
+  completion rules without change, preserves the V1 decision, and expands to
+  104 disjoint V2 logical cells. Corpus authority MUST remain trusted and
+  explicit; no case-ID fallback may select V1 or V2. At the authority freeze,
+  no V2 heldout allocation outcome has been observed. Heldout acquisition MUST
+  run from the clean commit containing the frozen V2 authorities, and any
+  earlier observation invalidates that heldout roster.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully
@@ -1389,6 +1404,10 @@ acceleration.
   diagnostic. `phase4_complete=true` requires complete 104-cell coverage, all
   guardrails, at least two Holm-qualified primary families including the
   globally coupled family, and all nine frozen completion authorities.
+  The V1 publication remains historical after a V2 campaign begins. Phase 4
+  may close from Corpus v2 only through a separately versioned confirmatory
+  decision publication that fully rebuilds its own frozen authority chain and
+  reports both `phase4_exit_status=passed` and `phase4_complete=true`.
 
 This Phase 4 gate establishes resource-feasible candidate allocation, not final
 board legality. Exact combined-geometry legalization, APGAR DRC, host-CAD

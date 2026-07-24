@@ -38,9 +38,11 @@ frozen before outcome observation. Executing or inspecting a v2 held-out
 allocation outcome before the confirmatory acquisition invalidates the held-out
 set and requires another fresh, versioned set.
 
-The forthcoming v2 representative and workload-roster manifests are separate
-authorities. Neither v1 manifest may be overwritten or treated as accepting
-this roster.
+The v2 representative and workload-roster manifests are separate authorities:
+`phase4_representative_manifest_v2.json` and
+`phase4_workload_net_roster_manifest_v2.json`. Confirmatory Decision Protocol
+v1 binds both plus the 102-entry budget roster before heldout observation.
+Neither v1 manifest may be overwritten or treated as accepting this roster.
 
 ## Exact-safe synthetic geometry
 
