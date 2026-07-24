@@ -12,6 +12,8 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from tools.phase4_bounded_json_input import read_regular_file
+
 _U32_MAX = (1 << 32) - 1
 _U64_MAX = (1 << 64) - 1
 _I32_MIN = -(1 << 31)
@@ -288,6 +290,58 @@ def _representative_manifest() -> tuple[
     int, Mapping[int, Mapping[str, Any]], Mapping[tuple[int, int], int]
 ]:
     return _frozen_representative_manifest()
+
+
+@functools.cache
+def _frozen_confirmatory_representative_manifest() -> tuple[
+    int, Mapping[int, Mapping[str, Any]], Mapping[tuple[int, int], int]
+]:
+    # Import lazily: the V2 authority validator reuses this module's stable
+    # hashing primitive, so a top-level import would create a cycle.
+    from tools import validate_phase4_representative_manifest_v2 as authority_validator
+
+    try:
+        representative, _ = authority_validator.validate_authorities()
+    except authority_validator.AuthorityError as error:
+        raise EvidenceError(
+            f"cannot authenticate frozen confirmatory authorities: {error}"
+        ) from error
+    cases = {
+        _u32(case["case_id"], "confirmatory representative case_id"): case
+        for case in _array(representative["cases"], "confirmatory representative cases")
+    }
+    budgets: dict[tuple[int, int], int] = {}
+    for raw_budget in _array(
+        representative["canonical_algorithm_budgets"],
+        "confirmatory representative canonical_algorithm_budgets",
+    ):
+        budget = _object(raw_budget, "confirmatory representative budget")
+        case_id = _u32(budget["case_id"], "confirmatory representative budget.case_id")
+        for raw_pool in _array(
+            budget["pool_checksums"], "confirmatory representative budget.pool_checksums"
+        ):
+            pool = _object(raw_pool, "confirmatory representative pool checksum")
+            budgets[
+                (
+                    case_id,
+                    _u32(pool["pool"], "confirmatory representative pool"),
+                )
+            ] = _u64(pool["checksum"], "confirmatory representative budget checksum")
+    return (
+        _u64(representative["corpus_checksum"], "confirmatory representative corpus_checksum"),
+        cases,
+        budgets,
+    )
+
+
+def _representative_manifest_for_corpus(
+    corpus_version: int,
+) -> tuple[int, Mapping[int, Mapping[str, Any]], Mapping[tuple[int, int], int]]:
+    if corpus_version == 1:
+        return _representative_manifest()
+    if corpus_version == 2:
+        return _frozen_confirmatory_representative_manifest()
+    raise EvidenceError(f"unsupported representative corpus version {corpus_version}")
 
 
 _BUDGET_FIELDS = (
@@ -581,14 +635,14 @@ def compute_semantic_checksum(value: Mapping[str, Any]) -> int:
     return hashed.finish()
 
 
-def _semantics(value: Any, label: str) -> Mapping[str, Any]:
+def _semantics(value: Any, label: str, *, expected_corpus_version: int = 1) -> Mapping[str, Any]:
     result = _object(value, label)
     _fields(result, _SEMANTICS_FIELDS, label)
     _version(result, label)
     _enum(result["arm"], {0, 1}, f"{label}.arm")
     _enum(result["execution_order"], {0, 1}, f"{label}.execution_order")
-    if _u32(result["corpus_version"], f"{label}.corpus_version") != 1:
-        raise EvidenceError(f"{label}.corpus_version must be 1")
+    if _u32(result["corpus_version"], f"{label}.corpus_version") != expected_corpus_version:
+        raise EvidenceError(f"{label}.corpus_version must be {expected_corpus_version}")
     for field in (
         "corpus_checksum",
         "descriptor_fingerprint",
@@ -847,10 +901,14 @@ def compute_record_checksum(value: Mapping[str, Any]) -> int:
     return hashed.finish()
 
 
-def _record(value: Any, label: str) -> Mapping[str, Any]:
+def _record(value: Any, label: str, *, expected_corpus_version: int = 1) -> Mapping[str, Any]:
     result = _object(value, label)
     _fields(result, _RECORD_FIELDS, label)
-    semantics = _semantics(result["semantics"], f"{label}.semantics")
+    semantics = _semantics(
+        result["semantics"],
+        f"{label}.semantics",
+        expected_corpus_version=expected_corpus_version,
+    )
     for field in (
         "case_build_elapsed_nanoseconds",
         "prepared_elapsed_nanoseconds",
@@ -973,12 +1031,22 @@ def _pair_identity(semantics: Mapping[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _paired_result(value: Any, label: str) -> Mapping[str, Any]:
+def _paired_result(
+    value: Any, label: str, *, expected_corpus_version: int = 1
+) -> Mapping[str, Any]:
     result = _object(value, label)
     _fields(result, _RESULT_FIELDS, label)
     _version(result, label)
-    baseline = _record(result["baseline"], f"{label}.baseline")
-    candidate = _record(result["candidate"], f"{label}.candidate")
+    baseline = _record(
+        result["baseline"],
+        f"{label}.baseline",
+        expected_corpus_version=expected_corpus_version,
+    )
+    candidate = _record(
+        result["candidate"],
+        f"{label}.candidate",
+        expected_corpus_version=expected_corpus_version,
+    )
     comparison = _enum(result["comparison"], {0, 1, 2}, f"{label}.comparison")
     _u64(result["semantic_checksum"], f"{label}.semantic_checksum")
     _u64(result["artifact_checksum"], f"{label}.artifact_checksum")
@@ -1424,6 +1492,7 @@ def _arm_attempt(
     expected_manifest_case: Mapping[str, Any] | None = None,
     requested_pool_size: int | None = None,
     require_success: bool = True,
+    expected_corpus_version: int = 1,
 ) -> Mapping[str, Any]:
     result = _object(value, label)
     _fields(result, _ATTEMPT_FIELDS, label)
@@ -1449,7 +1518,11 @@ def _arm_attempt(
     _string(result["controller_invariant_id"], f"{label}.controller_invariant_id")
     _string(result["controller_detail"], f"{label}.controller_detail")
     if result["record"] is not None:
-        _record(result["record"], f"{label}.record")
+        _record(
+            result["record"],
+            f"{label}.record",
+            expected_corpus_version=expected_corpus_version,
+        )
     if result["child_failure"] is not None:
         _failure(
             result["child_failure"],
@@ -1569,6 +1642,7 @@ def _pair_attempt(
     expected_manifest_case: Mapping[str, Any] | None = None,
     requested_pool_size: int | None = None,
     require_success: bool = True,
+    expected_corpus_version: int = 1,
 ) -> Mapping[str, Any]:
     result = _object(value, label)
     _fields(result, _PAIR_ATTEMPT_FIELDS, label)
@@ -1583,6 +1657,7 @@ def _pair_attempt(
         expected_manifest_case=expected_manifest_case,
         requested_pool_size=requested_pool_size,
         require_success=require_success,
+        expected_corpus_version=expected_corpus_version,
     )
     candidate = _arm_attempt(
         result["candidate"],
@@ -1590,6 +1665,7 @@ def _pair_attempt(
         expected_manifest_case=expected_manifest_case,
         requested_pool_size=requested_pool_size,
         require_success=require_success,
+        expected_corpus_version=expected_corpus_version,
     )
     if result["result"] is None:
         if require_success:
@@ -1597,7 +1673,11 @@ def _pair_attempt(
         if baseline["disposition"] == 0 and candidate["disposition"] == 0:
             raise EvidenceError(f"{label} omits a pair despite two successful arms")
     else:
-        paired = _paired_result(result["result"], f"{label}.result")
+        paired = _paired_result(
+            result["result"],
+            f"{label}.result",
+            expected_corpus_version=expected_corpus_version,
+        )
         if baseline["disposition"] != 0 or candidate["disposition"] != 0:
             raise EvidenceError(f"{label} failed arm cannot carry a completed pair")
         if baseline["record"] != paired["baseline"] or candidate["record"] != paired["candidate"]:
@@ -1630,10 +1710,16 @@ _SAME_RUN_RAW_EVIDENCE_SCHEMA_VERSION = 2
 _SAME_RUN_WIRE_SCHEMA_VERSION = 2
 
 
-def compute_cell_plan_checksum(document: Mapping[str, Any]) -> int:
+def compute_cell_plan_checksum(document: Mapping[str, Any], *, corpus_version: int = 1) -> int:
+    if corpus_version not in {1, 2}:
+        raise EvidenceError("cell-plan checksum corpus version must be 1 or 2")
     config = document["config"]
     hashed = StableHashBuilder()
-    hashed.string("APGAR-PHASE4-CANONICAL-CELL-PLAN-V1")
+    hashed.string(
+        "APGAR-PHASE4-CANONICAL-CELL-PLAN-V1"
+        if corpus_version == 1
+        else "APGAR-PHASE4-CANONICAL-CELL-PLAN-V2"
+    )
     hashed.u32(config["schema_version"])
     hashed.u64(document["corpus_checksum"])
     for field in ("case_id", "requested_pool_size", "preparation_worker_count", "repetitions"):
@@ -1681,7 +1767,11 @@ def compute_canonical_budget_checksum(
     document: Mapping[str, Any],
     manifest_case: Mapping[str, Any],
     canonical_algorithm_budget_checksum: int,
+    *,
+    corpus_version: int = 1,
 ) -> int:
+    if corpus_version not in {1, 2}:
+        raise EvidenceError("canonical budget checksum corpus version must be 1 or 2")
     config = document["config"]
     net_count = manifest_case["workload_net_count"]
     pool_size = config["requested_pool_size"]
@@ -1689,12 +1779,12 @@ def compute_canonical_budget_checksum(
     hashed = StableHashBuilder()
     hashed.string("APGAR-PHASE4-PAIRED-BUDGET-V1")
     hashed.u32(1)
-    hashed.u32(1)
+    hashed.u32(corpus_version)
     hashed.u64(document["corpus_checksum"])
     hashed.u32(config["case_id"])
     hashed.u64(manifest_case["descriptor_fingerprint"])
     hashed.u32(pool_size)
-    hashed.u64(compute_canonical_root_seed(document))
+    hashed.u64(compute_canonical_root_seed(document, corpus_version=corpus_version))
     for field in _LIMIT_FIELDS:
         hashed.u64(config["corpus_limits"][field])
     hashed.u32(net_count)
@@ -1723,10 +1813,16 @@ def compute_source_envelope_checksum(document: Mapping[str, Any]) -> int:
     return hashed.finish()
 
 
-def compute_canonical_root_seed(document: Mapping[str, Any]) -> int:
+def compute_canonical_root_seed(document: Mapping[str, Any], *, corpus_version: int = 1) -> int:
+    if corpus_version not in {1, 2}:
+        raise EvidenceError("canonical root corpus version must be 1 or 2")
     config = document["config"]
     hashed = StableHashBuilder()
-    hashed.string("APGAR-PHASE4-CANONICAL-ROOT-V1")
+    hashed.string(
+        "APGAR-PHASE4-CANONICAL-ROOT-V1"
+        if corpus_version == 1
+        else "APGAR-PHASE4-CANONICAL-ROOT-V2"
+    )
     hashed.u64(document["corpus_checksum"])
     hashed.u32(config["case_id"])
     hashed.u32(config["requested_pool_size"])
@@ -1845,10 +1941,14 @@ def _validate_total_attempts(
     config: Mapping[str, Any],
     manifest_case: Mapping[str, Any],
     expected_budget_checksum: int,
+    *,
+    expected_corpus_version: int,
 ) -> bool:
     """Authenticate every attempt before classifying cell completeness."""
     complete = True
-    expected_root_seed = compute_canonical_root_seed(document)
+    expected_root_seed = compute_canonical_root_seed(
+        document, corpus_version=expected_corpus_version
+    )
     ordered_arms: list[Mapping[str, Any]] = []
     process_states: list[tuple[int, int, int, int, int] | None] = [None, None]
     process_attempts: list[list[Mapping[str, Any]]] = [[], []]
@@ -1884,6 +1984,7 @@ def _validate_total_attempts(
             expected_manifest_case=manifest_case,
             requested_pool_size=config["requested_pool_size"],
             require_success=False,
+            expected_corpus_version=expected_corpus_version,
         )
         expected_order = repetition % 2
         if (
@@ -2089,6 +2190,7 @@ def validate_document(
     expected_workers: int = _CANONICAL_WORKERS,
     _expected_raw_evidence_schema_version: int | None = None,
     _total_attempt_mode: bool = False,
+    _expected_corpus_version: int = 1,
 ) -> None:
     """Validate one complete Raw-v1 cell; testing relaxations must be explicit."""
     if (
@@ -2098,6 +2200,8 @@ def validate_document(
         raise EvidenceError("expected repetitions must be between 1 and 20")
     if isinstance(expected_workers, bool) or not 1 <= expected_workers <= 64:
         raise EvidenceError("expected workers must be between 1 and 64")
+    if _expected_corpus_version not in {1, 2}:
+        raise EvidenceError("expected corpus version must be 1 or 2")
     document = _object(value, "raw cell")
     if _expected_raw_evidence_schema_version is None:
         _fields(document, _TOP_FIELDS, "raw cell")
@@ -2142,7 +2246,9 @@ def validate_document(
     ):
         if _u64(document[field], field) == 0:
             raise EvidenceError(f"{field} must be nonzero")
-    manifest_checksum, manifest_cases, manifest_budgets = _representative_manifest()
+    manifest_checksum, manifest_cases, manifest_budgets = _representative_manifest_for_corpus(
+        _expected_corpus_version
+    )
     if document["corpus_checksum"] != manifest_checksum:
         raise EvidenceError("corpus_checksum does not match the frozen representative manifest")
     manifest_case = manifest_cases.get(config["case_id"])
@@ -2170,9 +2276,14 @@ def validate_document(
     if canonical_algorithm_budget_checksum is None:
         raise EvidenceError("cell has no frozen canonical algorithm budget")
     expected_budget_checksum = compute_canonical_budget_checksum(
-        document, manifest_case, canonical_algorithm_budget_checksum
+        document,
+        manifest_case,
+        canonical_algorithm_budget_checksum,
+        corpus_version=_expected_corpus_version,
     )
-    if document["cell_plan_checksum"] != compute_cell_plan_checksum(document):
+    if document["cell_plan_checksum"] != compute_cell_plan_checksum(
+        document, corpus_version=_expected_corpus_version
+    ):
         raise EvidenceError("cell_plan_checksum does not authenticate the cell plan")
     attempts = _array(document["attempts"], "attempts")
     if len(attempts) != expected_repetitions:
@@ -2184,6 +2295,7 @@ def validate_document(
             config,
             manifest_case,
             expected_budget_checksum,
+            expected_corpus_version=_expected_corpus_version,
         )
         _validate_root_checksums(document, source_envelope_checksum)
         if not complete:
@@ -2198,7 +2310,9 @@ def validate_document(
     deterministic_semantics: list[Mapping[str, Any] | None] = [None, None]
     deterministic_comparison: int | None = None
     expected_dispatch = 1
-    expected_root_seed = compute_canonical_root_seed(document)
+    expected_root_seed = compute_canonical_root_seed(
+        document, corpus_version=_expected_corpus_version
+    )
     for repetition, raw_attempt in enumerate(attempts):
         label = f"attempts[{repetition}]"
         attempt = _pair_attempt(
@@ -2206,6 +2320,7 @@ def validate_document(
             label,
             expected_manifest_case=manifest_case,
             requested_pool_size=config["requested_pool_size"],
+            expected_corpus_version=_expected_corpus_version,
         )
         expected_order = repetition % 2
         if (
@@ -2419,6 +2534,105 @@ def validate_same_run_total_attempt_document_v2(
     )
 
 
+def validate_confirmatory_document(
+    value: Any,
+    *,
+    allow_unstamped: bool = False,
+    expected_commit: str | None = None,
+    expected_repetitions: int = _CANONICAL_REPETITIONS,
+    expected_workers: int = _CANONICAL_WORKERS,
+) -> None:
+    """Validate ordinary Raw-v1 wire output against frozen Corpus V2 authority."""
+    validate_document(
+        value,
+        allow_unstamped=allow_unstamped,
+        expected_commit=expected_commit,
+        expected_repetitions=expected_repetitions,
+        expected_workers=expected_workers,
+        _expected_corpus_version=2,
+    )
+    _validate_confirmatory_protocol_scope(value, same_run=False)
+
+
+def validate_confirmatory_same_run_document_v2(
+    value: Any,
+    *,
+    allow_unstamped: bool = False,
+    expected_commit: str | None = None,
+    expected_repetitions: int = _CANONICAL_REPETITIONS,
+    expected_workers: int = _CANONICAL_WORKERS,
+) -> None:
+    """Validate same-run Raw-v2 wire output against frozen Corpus V2 authority."""
+    validate_document(
+        value,
+        allow_unstamped=allow_unstamped,
+        expected_commit=expected_commit,
+        expected_repetitions=expected_repetitions,
+        expected_workers=expected_workers,
+        _expected_raw_evidence_schema_version=_SAME_RUN_RAW_EVIDENCE_SCHEMA_VERSION,
+        _expected_corpus_version=2,
+    )
+    _validate_confirmatory_protocol_scope(value, same_run=True)
+
+
+def validate_confirmatory_same_run_total_attempt_document_v2(
+    value: Any,
+    *,
+    allow_unstamped: bool = False,
+    expected_commit: str | None = None,
+    expected_repetitions: int = _CANONICAL_REPETITIONS,
+    expected_workers: int = _CANONICAL_WORKERS,
+) -> bool:
+    """Authenticate complete or incomplete confirmatory same-run Raw-v2 evidence."""
+    validate_document(
+        value,
+        allow_unstamped=allow_unstamped,
+        expected_commit=expected_commit,
+        expected_repetitions=expected_repetitions,
+        expected_workers=expected_workers,
+        _expected_raw_evidence_schema_version=_SAME_RUN_RAW_EVIDENCE_SCHEMA_VERSION,
+        _total_attempt_mode=True,
+        _expected_corpus_version=2,
+    )
+    _validate_confirmatory_protocol_scope(value, same_run=True)
+    document = _object(value, "confirmatory same-run total-attempt cell")
+    return all(
+        _object(attempt, "confirmatory same-run total-attempt pair")["result"] is not None
+        for attempt in _array(
+            document["attempts"], "confirmatory same-run total-attempt cell.attempts"
+        )
+    )
+
+
+def _validate_confirmatory_protocol_scope(value: Any, *, same_run: bool) -> None:
+    from tools import validate_phase4_confirmatory_decision_protocol as protocol_validator
+
+    try:
+        protocol_validator.read_protocol()
+        permitted_roles = (
+            {"exact", "heldout", "imported"}
+            if same_run
+            else {"calibration", "fixed_query", "stress"}
+        )
+        cells = {
+            (case_id, pool)
+            for case_id, pool, role, disposition in protocol_validator.expanded_cells()
+            if disposition == "confirmatory_raw_success" and role in permitted_roles
+        }
+    except ValueError as error:
+        raise EvidenceError(
+            f"cannot authenticate the frozen confirmatory protocol: {error}"
+        ) from error
+    document = _object(value, "confirmatory raw cell")
+    config = _object(document["config"], "confirmatory raw cell.config")
+    cell = (config["case_id"], config["requested_pool_size"])
+    if cell not in cells:
+        authority = "same-run" if same_run else "ordinary"
+        raise EvidenceError(
+            f"confirmatory cell is outside the protocol-assigned {authority} Raw authority"
+        )
+
+
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -2481,8 +2695,7 @@ def _reject_non_json_constant(value: str) -> Any:
 
 def read_document(path: pathlib.Path) -> Any:
     try:
-        with path.open("rb") as stream:
-            encoded = stream.read(_MAXIMUM_RAW_JSON_BYTES + 1)
+        encoded = read_regular_file(path, _MAXIMUM_RAW_JSON_BYTES, label="raw cell")
         if len(encoded) > _MAXIMUM_RAW_JSON_BYTES:
             raise EvidenceError(f"raw cell exceeds the {_MAXIMUM_RAW_JSON_BYTES}-byte input bound")
         raw = encoded.decode("utf-8")

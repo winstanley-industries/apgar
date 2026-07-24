@@ -26,6 +26,14 @@ namespace {
 
 using apgar::benchmark::Phase4CanonicalCellConfig;
 
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+constexpr apgar::benchmark::Phase4RepresentativeCorpusAuthority kCorpusAuthority =
+    apgar::benchmark::Phase4RepresentativeCorpusAuthority::kV2;
+#else
+constexpr apgar::benchmark::Phase4RepresentativeCorpusAuthority kCorpusAuthority =
+    apgar::benchmark::Phase4RepresentativeCorpusAuthority::kV1;
+#endif
+
 struct Options {
   bool worker_mode = false;
   bool same_run_worker_mode = false;
@@ -33,6 +41,7 @@ struct Options {
   std::optional<apgar::benchmark::Phase4TrialArm> arm;
   std::optional<std::string> runtime_commit;
   std::optional<std::string> same_run_telemetry_output;
+  bool corpus_version_seen = false;
   std::string fixture_path;
   int request_descriptor = -1;
   int response_descriptor = -1;
@@ -102,10 +111,22 @@ struct Options {
         return std::nullopt;
       }
     } else if (key == "testing_allow_unstamped") {
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER) && !defined(APGAR_PHASE4_CONFIRMATORY_RUNNER_TESTING)
+      return std::nullopt;
+#else
       options.testing_allow_unstamped = value == "1";
       if (!options.testing_allow_unstamped) {
         return std::nullopt;
       }
+#endif
+    } else if (key == "corpus_version") {
+      const std::string_view expected =
+          kCorpusAuthority == apgar::benchmark::Phase4RepresentativeCorpusAuthority::kV1 ? "1"
+                                                                                         : "2";
+      if (value != expected) {
+        return std::nullopt;
+      }
+      options.corpus_version_seen = true;
     } else if (key == "arm") {
       if (value == "baseline") {
         options.arm = apgar::benchmark::Phase4TrialArm::kSequentialBaseline;
@@ -195,6 +216,18 @@ struct Options {
       return std::nullopt;
     }
   }
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+  if (!options.corpus_version_seen) {
+    return std::nullopt;
+  }
+#if !defined(APGAR_PHASE4_CONFIRMATORY_RUNNER_TESTING)
+  if (options.cell.preparation_worker_count !=
+          apgar::benchmark::kPhase4CanonicalPreparationWorkersV1 ||
+      options.cell.repetitions != apgar::benchmark::kPhase4CanonicalRepetitionsV1) {
+    return std::nullopt;
+  }
+#endif
+#endif
   return options;
 }
 
@@ -209,9 +242,17 @@ struct Options {
 }
 
 void PrintUsage() {
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+  std::cerr
+      << "phase4_confirmatory_evidence_runner requires --corpus_version=2 --case_id=N "
+         "--pool_size=4|8|16 and a clean --apgar_commit=<40 lowercase hex>; optional same-run "
+         "capture requires --same_run_telemetry_output=<new path>; only exact/calibration "
+         "development cases are accepted.\n";
+#else
   std::cerr << "phase4_evidence_runner requires --case_id=N --pool_size=4|8|16 and a clean "
                "--apgar_commit=<40 lowercase hex>; optional same-run capture requires "
                "--same_run_telemetry_output=<new path>; all numeric options are strict decimal.\n";
+#endif
 }
 
 [[nodiscard]] bool WriteNewFile(std::string_view path, std::string_view contents) noexcept {
@@ -332,13 +373,25 @@ int main(int argc, char** argv) {
       return 2;
     }
     if (options.same_run_worker_mode) {
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+      return apgar::benchmark::RunPhase4TrialWorkerWithSameRunTelemetryForCorpusV2(
+          *options.arm, options.cell, *fixture, options.request_descriptor,
+          options.response_descriptor);
+#else
       return apgar::benchmark::RunPhase4TrialWorkerWithSameRunTelemetryV1(
           *options.arm, options.cell, *fixture, options.request_descriptor,
           options.response_descriptor);
+#endif
     }
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+    return apgar::benchmark::RunPhase4TrialWorkerForCorpusV2(*options.arm, options.cell, *fixture,
+                                                             options.request_descriptor,
+                                                             options.response_descriptor);
+#else
     return apgar::benchmark::RunPhase4TrialWorkerV1(*options.arm, options.cell, *fixture,
                                                     options.request_descriptor,
                                                     options.response_descriptor);
+#endif
   }
   if (options.arm.has_value() || options.request_descriptor >= 0 ||
       options.response_descriptor >= 0 || options.cell.case_id == 0 ||
@@ -355,12 +408,28 @@ int main(int argc, char** argv) {
     PrintUsage();
     return 2;
   }
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+  const apgar::benchmark::Phase4CaseDescriptor* descriptor =
+      apgar::benchmark::FindPhase4CaseDescriptorForAuthority(kCorpusAuthority,
+                                                             options.cell.case_id);
+  const bool same_run_mode = options.same_run_telemetry_output.has_value();
+  if ((!publishable && !options.testing_allow_unstamped) || descriptor == nullptr ||
+      (descriptor->role != apgar::benchmark::Phase4CaseRole::kExactOracle &&
+       descriptor->role != apgar::benchmark::Phase4CaseRole::kCalibration) ||
+      (descriptor->role == apgar::benchmark::Phase4CaseRole::kExactOracle && !same_run_mode) ||
+      (descriptor->role == apgar::benchmark::Phase4CaseRole::kCalibration && same_run_mode)) {
+    std::cerr << "confirmatory development acquisition is restricted to frozen exact and "
+                 "calibration cases using their protocol-assigned raw authority\n";
+    return 2;
+  }
+#else
   if (publishable) {
     std::cerr << "Phase 4 Raw-v1/Wire-v2 publication is frozen at the Session-v3 budget "
                  "authority; current Session-v4 execution is diagnostic-only until a new "
                  "manifest and protocol are frozen\n";
     return 2;
   }
+#endif
   const std::string executable = SelfExecutable();
   if (executable.empty()) {
     std::cerr << "failed to resolve the source-identical worker executable\n";
@@ -369,8 +438,14 @@ int main(int argc, char** argv) {
   if (options.same_run_telemetry_output.has_value()) {
     const std::string source_commit =
         options.runtime_commit.value_or(std::string(apgar::benchmark::kPhase3BuiltCommit));
-    auto execution = apgar::benchmark::RunPhase4IsolatedCellWithSameRunDecisionTelemetryV1(
-        options.cell, executable, options.fixture_path);
+    auto execution =
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+        apgar::benchmark::RunPhase4IsolatedCellWithSameRunDecisionTelemetryForCorpusV2(
+            options.cell, executable, options.fixture_path);
+#else
+        apgar::benchmark::RunPhase4IsolatedCellWithSameRunDecisionTelemetryV1(
+            options.cell, executable, options.fixture_path);
+#endif
     if (std::holds_alternative<apgar::benchmark::Phase4TrialHarnessError>(execution)) {
       const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(execution);
       std::cerr << error.invariant_id << ": " << error.detail << '\n';
@@ -426,9 +501,16 @@ int main(int argc, char** argv) {
     const auto raw = apgar::benchmark::SerializePhase4SameRunIsolatedCellJsonV2(
         capture.raw_cell, source_commit, apgar::benchmark::kPhase3SourceStamped,
         apgar::benchmark::kPhase3BuiltFromDirtyTree);
-    const auto telemetry = apgar::benchmark::SerializePhase4SameRunDecisionTelemetryJsonV1(
-        capture, *fixture, source_commit, apgar::benchmark::kPhase3SourceStamped,
-        apgar::benchmark::kPhase3BuiltFromDirtyTree);
+    const auto telemetry =
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+        apgar::benchmark::SerializePhase4SameRunDecisionTelemetryForCorpusV2JsonV1(
+            capture, *fixture, source_commit, apgar::benchmark::kPhase3SourceStamped,
+            apgar::benchmark::kPhase3BuiltFromDirtyTree);
+#else
+        apgar::benchmark::SerializePhase4SameRunDecisionTelemetryJsonV1(
+            capture, *fixture, source_commit, apgar::benchmark::kPhase3SourceStamped,
+            apgar::benchmark::kPhase3BuiltFromDirtyTree);
+#endif
     if (!raw.has_value() || !WriteStdout(*raw)) {
       std::cerr << "failed to write the same-run Raw evidence artifact\n";
       return 2;
@@ -440,7 +522,12 @@ int main(int argc, char** argv) {
     return 0;
   }
   auto execution =
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+      apgar::benchmark::RunPhase4IsolatedCellForCorpusV2(options.cell, executable,
+                                                         options.fixture_path);
+#else
       apgar::benchmark::RunPhase4IsolatedCellV1(options.cell, executable, options.fixture_path);
+#endif
   if (std::holds_alternative<apgar::benchmark::Phase4TrialHarnessError>(execution)) {
     const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(execution);
     std::cerr << error.invariant_id << ": " << error.detail << '\n';

@@ -2285,7 +2285,7 @@ std::optional<Phase4PairedTrialError> ValidatePhase4SameRunArmDecisionTelemetryF
     const allocator::MultiNetWorkload& workload,
     const Phase4SameRunArmDecisionTelemetryV1& telemetry) noexcept {
   if (std::optional<Phase4PairedTrialError> error =
-          ValidatePhase4TrialArmSemanticsForAuthorityV1(authority, semantics);
+          internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(authority, semantics);
       error.has_value()) {
     return error;
   }
@@ -2644,11 +2644,11 @@ namespace {
 }
 
 [[nodiscard]] std::optional<Phase4PairedTrialError> ValidateExecutionObservation(
-    const Phase4TrialArmExecution& execution,
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialArmExecution& execution,
     const Phase4ExternalResourceObservation& observation) noexcept {
   const Phase4TrialArmSemantics& semantics = execution.semantics;
   if (std::optional<Phase4PairedTrialError> error =
-          internal::ValidatePhase4TrialArmSemanticsV1(semantics);
+          internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(authority, semantics);
       error.has_value()) {
     return error;
   }
@@ -2726,7 +2726,7 @@ namespace {
 }
 
 [[nodiscard]] std::optional<Phase4PairedTrialError> ValidateFinalizedRecord(
-    const Phase4TrialArmRecord& record) noexcept {
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialArmRecord& record) noexcept {
   const Phase4TrialArmExecution execution{
       .semantics = record.semantics,
       .case_build_elapsed_nanoseconds = record.case_build_elapsed_nanoseconds,
@@ -2735,7 +2735,7 @@ namespace {
       .preparer_lifecycle = record.preparer_lifecycle,
   };
   if (std::optional<Phase4PairedTrialError> error =
-          ValidateExecutionObservation(execution, record.external_observation);
+          ValidateExecutionObservation(authority, execution, record.external_observation);
       error.has_value()) {
     return error;
   }
@@ -3197,9 +3197,10 @@ Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotV
 namespace {
 
 [[nodiscard]] Phase4TrialArmRecordResult FinalizePhase4TrialArmImpl(
-    Phase4TrialArmExecution execution, const Phase4ExternalResourceObservation& observation) {
+    Phase4RepresentativeCorpusAuthority authority, Phase4TrialArmExecution execution,
+    const Phase4ExternalResourceObservation& observation) {
   if (std::optional<Phase4PairedTrialError> error =
-          ValidateExecutionObservation(execution, observation);
+          ValidateExecutionObservation(authority, execution, observation);
       error.has_value()) {
     return *error;
   }
@@ -3216,17 +3217,18 @@ namespace {
 }
 
 [[nodiscard]] Phase4PairedTrialAssemblyResult AssemblePhase4PairedTrialImpl(
-    Phase4TrialArmRecord baseline, Phase4TrialArmRecord candidate) {
+    Phase4RepresentativeCorpusAuthority authority, Phase4TrialArmRecord baseline,
+    Phase4TrialArmRecord candidate) {
   if (baseline.semantics.arm != Phase4TrialArm::kSequentialBaseline ||
       candidate.semantics.arm != Phase4TrialArm::kReusableCandidateAllocation) {
     return Error(Phase4PairedTrialErrorCode::kPairMismatch, "P4PAIR-ASSEMBLE-001",
                  "the pair must contain one baseline and one candidate arm");
   }
-  if (std::optional<Phase4PairedTrialError> error = ValidateFinalizedRecord(baseline);
+  if (std::optional<Phase4PairedTrialError> error = ValidateFinalizedRecord(authority, baseline);
       error.has_value()) {
     return *error;
   }
-  if (std::optional<Phase4PairedTrialError> error = ValidateFinalizedRecord(candidate);
+  if (std::optional<Phase4PairedTrialError> error = ValidateFinalizedRecord(authority, candidate);
       error.has_value()) {
     return *error;
   }
@@ -3259,12 +3261,26 @@ namespace {
 
 Phase4TrialArmRecordResult FinalizePhase4TrialArmV1(
     Phase4TrialArmExecution execution, const Phase4ExternalResourceObservation& observation) {
-  return FinalizePhase4TrialArmImpl(std::move(execution), observation);
+  return FinalizePhase4TrialArmImpl(Phase4RepresentativeCorpusAuthority::kV1, std::move(execution),
+                                    observation);
 }
 
 Phase4PairedTrialAssemblyResult AssemblePhase4PairedTrialV1(Phase4TrialArmRecord baseline,
                                                             Phase4TrialArmRecord candidate) {
-  return AssemblePhase4PairedTrialImpl(std::move(baseline), std::move(candidate));
+  return AssemblePhase4PairedTrialImpl(Phase4RepresentativeCorpusAuthority::kV1,
+                                       std::move(baseline), std::move(candidate));
+}
+
+Phase4TrialArmRecordResult FinalizePhase4TrialArmForCorpusV2(
+    Phase4TrialArmExecution execution, const Phase4ExternalResourceObservation& observation) {
+  return FinalizePhase4TrialArmImpl(Phase4RepresentativeCorpusAuthority::kV2, std::move(execution),
+                                    observation);
+}
+
+Phase4PairedTrialAssemblyResult AssemblePhase4PairedTrialForCorpusV2(
+    Phase4TrialArmRecord baseline, Phase4TrialArmRecord candidate) {
+  return AssemblePhase4PairedTrialImpl(Phase4RepresentativeCorpusAuthority::kV2,
+                                       std::move(baseline), std::move(candidate));
 }
 
 Phase4TrialArmExecutionResult ExecutePhase4TrialArmForCorpusV2(

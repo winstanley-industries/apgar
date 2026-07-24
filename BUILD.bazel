@@ -988,6 +988,14 @@ py_binary(
     legacy_create_init = 0,
     main = "tools/validate_phase4_raw_evidence.py",
     python_version = "3.13",
+    deps = [":phase4_bounded_json_input_lib"],
+)
+
+py_library(
+    name = "phase4_bounded_json_input_lib",
+    srcs = ["tools/phase4_bounded_json_input.py"],
+    imports = ["."],
+    visibility = ["//visibility:private"],
 )
 
 py_library(
@@ -996,6 +1004,24 @@ py_library(
     data = ["schemas/benchmark/phase4_representative_manifest_v1.json"],
     imports = ["."],
     visibility = ["//visibility:private"],
+    deps = [":phase4_bounded_json_input_lib"],
+)
+
+py_binary(
+    name = "phase4_confirmatory_raw_evidence_validator",
+    srcs = ["tools/validate_phase4_confirmatory_raw_evidence.py"],
+    data = [
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_raw_evidence.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+    ],
 )
 
 py_binary(
@@ -1399,6 +1425,7 @@ py_binary(
     main = "tools/validate_phase4_same_run_decision_telemetry.py",
     python_version = "3.13",
     deps = [
+        ":phase4_bounded_json_input_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_statistical_protocol_v2_validator_lib",
         ":phase4_workload_net_roster_manifest_validator_lib",
@@ -1416,9 +1443,29 @@ py_library(
     imports = ["."],
     visibility = ["//visibility:private"],
     deps = [
+        ":phase4_bounded_json_input_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_statistical_protocol_v2_validator_lib",
         ":phase4_workload_net_roster_manifest_validator_lib",
+    ],
+)
+
+py_binary(
+    name = "phase4_confirmatory_same_run_decision_telemetry_validator",
+    srcs = ["tools/validate_phase4_confirmatory_same_run_decision_telemetry.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_same_run_decision_telemetry.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
     ],
 )
 
@@ -1507,6 +1554,35 @@ py_test(
     legacy_create_init = 0,
     main = "tests/tools/validate_phase4_raw_evidence_test.py",
     python_version = "3.13",
+    deps = [":phase4_bounded_json_input_lib"],
+)
+
+py_test(
+    name = "phase4_confirmatory_raw_evidence_validator_test",
+    size = "medium",
+    srcs = ["tests/tools/validate_phase4_confirmatory_raw_evidence_test.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_confirmatory_evidence_fault_test_runner",
+        ":phase4_confirmatory_evidence_runner",
+        ":phase4_confirmatory_evidence_test_runner",
+        ":phase4_confirmatory_raw_evidence_validator",
+        ":phase4_confirmatory_same_run_decision_telemetry_validator",
+        ":phase4_evidence_runner",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_confirmatory_raw_evidence_test.py",
+    python_version = "3.13",
+    tags = ["exact-address-space-envelope"],
+    deps = [
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
 )
 
 py_binary(
@@ -1980,6 +2056,61 @@ cc_binary(
         ":phase3_commit",
         ":phase3_source_stamp",
         ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_evidence_runner",
+    srcs = ["tools/phase4_evidence_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    defines = ["APGAR_PHASE4_CONFIRMATORY_RUNNER"],
+    linkopts = ["-pthread"],
+    tags = ["manual"],
+    deps = [
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_evidence_test_runner",
+    testonly = True,
+    srcs = ["tools/phase4_evidence_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_RUNNER",
+        "APGAR_PHASE4_CONFIRMATORY_RUNNER_TESTING",
+    ],
+    linkopts = ["-pthread"],
+    deps = [
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_evidence_fault_test_runner",
+    testonly = True,
+    srcs = ["tools/phase4_evidence_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_RUNNER",
+        "APGAR_PHASE4_CONFIRMATORY_RUNNER_TESTING",
+        "APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT",
+    ],
+    linkopts = ["-pthread"],
+    deps = [
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_trial_harness_fault_test_variant",
         ":tool_runfiles",
     ],
 )

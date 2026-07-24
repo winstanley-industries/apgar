@@ -13,6 +13,7 @@ from typing import Any
 from tools import validate_phase4_raw_evidence as raw_validator
 from tools import validate_phase4_statistical_protocol_v2 as protocol_validator
 from tools import validate_phase4_workload_net_roster_manifest as roster_validator
+from tools.phase4_bounded_json_input import read_regular_file
 
 _U32_MAX = (1 << 32) - 1
 _U64_MAX = (1 << 64) - 1
@@ -189,8 +190,7 @@ def _reject_constant(value: str) -> None:
 
 def read_document(path: pathlib.Path) -> Mapping[str, Any]:
     try:
-        with path.open("rb") as stream:
-            encoded = stream.read(_MAX_BYTES + 1)
+        encoded = read_regular_file(path, _MAX_BYTES, label="same-run telemetry")
         if len(encoded) > _MAX_BYTES:
             raise EvidenceError(f"same-run telemetry exceeds {_MAX_BYTES} bytes")
         if (
@@ -449,7 +449,7 @@ def _arm_capture(
     return capture
 
 
-def validate_join(
+def _validate_join(
     raw: Any,
     sidecar: Any,
     *,
@@ -457,16 +457,26 @@ def validate_join(
     expected_commit: str | None = None,
     expected_repetitions: int = 20,
     expected_workers: int = 4,
+    confirmatory: bool,
 ) -> Mapping[str, Any]:
     if not allow_unstamped and (expected_repetitions != 20 or expected_workers != 4):
         raise EvidenceError("testing cardinality overrides require --testing-allow-unstamped")
-    raw_validator.validate_same_run_document_v2(
-        raw,
-        allow_unstamped=allow_unstamped,
-        expected_commit=expected_commit,
-        expected_repetitions=expected_repetitions,
-        expected_workers=expected_workers,
-    )
+    if confirmatory:
+        raw_validator.validate_confirmatory_same_run_document_v2(
+            raw,
+            allow_unstamped=allow_unstamped,
+            expected_commit=expected_commit,
+            expected_repetitions=expected_repetitions,
+            expected_workers=expected_workers,
+        )
+    else:
+        raw_validator.validate_same_run_document_v2(
+            raw,
+            allow_unstamped=allow_unstamped,
+            expected_commit=expected_commit,
+            expected_repetitions=expected_repetitions,
+            expected_workers=expected_workers,
+        )
     raw_document = _object(raw, "raw cell")
     document = _object(sidecar, "same-run telemetry")
     _fields(document, _TOP_FIELDS, "same-run telemetry")
@@ -516,22 +526,51 @@ def validate_join(
         actual = _u64(document[field], field)
         if actual == 0 or actual != expected:
             raise EvidenceError(f"{field} differs from Raw")
-    try:
-        protocol_validator.read_protocol()
-        cells = {
-            (case_id, pool): role
-            for case_id, pool, role, disposition in protocol_validator.expanded_cells()
-            if disposition == "same_run_raw_success" and role in {"exact", "heldout", "imported"}
-        }
-    except ValueError as error:
-        raise EvidenceError(f"cannot authenticate the frozen decision protocol: {error}") from error
+    if confirmatory:
+        from tools import validate_phase4_confirmatory_decision_protocol as confirmatory_protocol
+
+        try:
+            confirmatory_protocol.read_protocol()
+            cells = {
+                (case_id, pool): role
+                for case_id, pool, role, disposition in confirmatory_protocol.expanded_cells()
+                if disposition == "confirmatory_raw_success"
+                and role in {"exact", "heldout", "imported"}
+            }
+        except ValueError as error:
+            raise EvidenceError(
+                f"cannot authenticate the frozen confirmatory protocol: {error}"
+            ) from error
+    else:
+        try:
+            protocol_validator.read_protocol()
+            cells = {
+                (case_id, pool): role
+                for case_id, pool, role, disposition in protocol_validator.expanded_cells()
+                if disposition == "same_run_raw_success"
+                and role in {"exact", "heldout", "imported"}
+            }
+        except ValueError as error:
+            raise EvidenceError(
+                f"cannot authenticate the frozen decision protocol: {error}"
+            ) from error
     config = raw_document["config"]
     if cells.get((config["case_id"], config["requested_pool_size"])) is None:
         raise EvidenceError("same-run telemetry cell is outside the frozen decision scope")
-    try:
-        _, roster = roster_validator.validated_successful_case_roster(config["case_id"])
-    except roster_validator.ManifestError as error:
-        raise EvidenceError(f"cannot authenticate the workload roster: {error}") from error
+    if confirmatory:
+        from tools import validate_phase4_representative_manifest_v2 as confirmatory_authorities
+
+        try:
+            _, roster = confirmatory_authorities.validated_successful_case_roster(config["case_id"])
+        except confirmatory_authorities.AuthorityError as error:
+            raise EvidenceError(
+                f"cannot authenticate the confirmatory workload roster: {error}"
+            ) from error
+    else:
+        try:
+            _, roster = roster_validator.validated_successful_case_roster(config["case_id"])
+        except roster_validator.ManifestError as error:
+            raise EvidenceError(f"cannot authenticate the workload roster: {error}") from error
     attempts = _array(document["attempts"], "attempts")
     raw_attempts = raw_document["attempts"]
     if len(attempts) != expected_repetitions or len(attempts) != len(raw_attempts):
@@ -590,6 +629,48 @@ def validate_join(
     if source_checksum == 0 or source_checksum != compute_source_envelope_checksum(document):
         raise EvidenceError("source_envelope_checksum does not authenticate the source envelope")
     return document
+
+
+def validate_join(
+    raw: Any,
+    sidecar: Any,
+    *,
+    allow_unstamped: bool = False,
+    expected_commit: str | None = None,
+    expected_repetitions: int = 20,
+    expected_workers: int = 4,
+) -> Mapping[str, Any]:
+    """Validate the frozen Corpus V1 same-run Raw/telemetry join."""
+    return _validate_join(
+        raw,
+        sidecar,
+        allow_unstamped=allow_unstamped,
+        expected_commit=expected_commit,
+        expected_repetitions=expected_repetitions,
+        expected_workers=expected_workers,
+        confirmatory=False,
+    )
+
+
+def validate_confirmatory_join(
+    raw: Any,
+    sidecar: Any,
+    *,
+    allow_unstamped: bool = False,
+    expected_commit: str | None = None,
+    expected_repetitions: int = 20,
+    expected_workers: int = 4,
+) -> Mapping[str, Any]:
+    """Validate the frozen Corpus V2 confirmatory Raw/telemetry join."""
+    return _validate_join(
+        raw,
+        sidecar,
+        allow_unstamped=allow_unstamped,
+        expected_commit=expected_commit,
+        expected_repetitions=expected_repetitions,
+        expected_workers=expected_workers,
+        confirmatory=True,
+    )
 
 
 def exact_rejection_guardrail_passes(document: Mapping[str, Any]) -> bool:

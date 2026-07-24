@@ -132,12 +132,21 @@ using Phase4TrialWireDecodeResultV2 = std::variant<Phase4TrialWireMessageV2, Pha
 [[nodiscard]] Phase4TrialWireDecodeResult DecodePhase4TrialWireMessageV1(
     std::span<const std::uint8_t> frame);
 
+[[nodiscard]] Phase4TrialWireEncodeResult EncodePhase4TrialWireMessageForCorpusV2(
+    const Phase4TrialWireMessage& message);
+
+[[nodiscard]] Phase4TrialWireDecodeResult DecodePhase4TrialWireMessageForCorpusV2(
+    std::span<const std::uint8_t> frame);
+
 // Stream helpers read or write exactly one frame and retry interrupted system
 // calls. A stream may contain later frames, so trailing-byte rejection belongs
 // to DecodePhase4TrialWireMessageV1 rather than the descriptor reader.
 [[nodiscard]] Phase4TrialWireDecodeResult ReadPhase4TrialWireMessageV1(int descriptor);
 
 [[nodiscard]] Phase4TrialWireWriteResult WritePhase4TrialWireMessageV1(
+    int descriptor, const Phase4TrialWireMessage& message);
+
+[[nodiscard]] Phase4TrialWireWriteResult WritePhase4TrialWireMessageForCorpusV2(
     int descriptor, const Phase4TrialWireMessage& message);
 
 // V2 uses the same bounded frame envelope and control/failure payloads as V1,
@@ -152,9 +161,18 @@ using Phase4TrialWireDecodeResultV2 = std::variant<Phase4TrialWireMessageV2, Pha
 [[nodiscard]] Phase4TrialWireDecodeResultV2 DecodePhase4TrialWireMessageV2(
     std::span<const std::uint8_t> frame);
 
+[[nodiscard]] Phase4TrialWireEncodeResultV2 EncodePhase4TrialWireMessageV2ForCorpusV2(
+    const Phase4TrialWireMessageV2& message);
+
+[[nodiscard]] Phase4TrialWireDecodeResultV2 DecodePhase4TrialWireMessageV2ForCorpusV2(
+    std::span<const std::uint8_t> frame);
+
 [[nodiscard]] Phase4TrialWireDecodeResultV2 ReadPhase4TrialWireMessageV2(int descriptor);
 
 [[nodiscard]] Phase4TrialWireWriteResult WritePhase4TrialWireMessageV2(
+    int descriptor, const Phase4TrialWireMessageV2& message);
+
+[[nodiscard]] Phase4TrialWireWriteResult WritePhase4TrialWireMessageV2ForCorpusV2(
     int descriptor, const Phase4TrialWireMessageV2& message);
 
 }  // namespace apgar::benchmark::internal

@@ -288,6 +288,9 @@ using Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1 =
 [[nodiscard]] Phase4DurableArmFailure ReconcilePhase4TrialArmFailureV1(
     Phase4TrialArmFailure failure);
 
+[[nodiscard]] Phase4DurableArmFailure ReconcilePhase4TrialArmFailureForCorpusV2(
+    Phase4TrialArmFailure failure);
+
 [[nodiscard]] Phase4ArmFailureReconciliationResultV1 TryReconcilePhase4TrialArmFailureV1(
     Phase4TrialArmFailure failure);
 
@@ -326,6 +329,10 @@ using Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1 =
     const Phase4CanonicalCellConfig& cell, std::string_view worker_executable,
     std::string_view imported_fixture_path);
 
+[[nodiscard]] Phase4IsolatedCellExecution RunPhase4IsolatedCellForCorpusV2(
+    const Phase4CanonicalCellConfig& cell, std::string_view worker_executable,
+    std::string_view imported_fixture_path);
+
 [[nodiscard]] std::uint64_t ComputePhase4IsolatedSameRunArmCaptureChecksumV1(
     const Phase4IsolatedSameRunArmDecisionTelemetryV1& capture) noexcept;
 
@@ -340,6 +347,10 @@ using Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1 =
 // publish it. This repeats the immutable checksum, command association,
 // process-lifetime, and canonical-cardinality checks at the publication seam.
 [[nodiscard]] bool ValidatePhase4IsolatedSameRunCellCaptureV1(
+    const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
+    std::string_view imported_fixture);
+
+[[nodiscard]] bool ValidatePhase4IsolatedSameRunCellCaptureForCorpusV2(
     const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
     std::string_view imported_fixture);
 
@@ -363,6 +374,11 @@ RunPhase4IsolatedCellWithSameRunDecisionTelemetryV1(const Phase4CanonicalCellCon
                                                     std::string_view worker_executable,
                                                     std::string_view imported_fixture_path);
 
+[[nodiscard]] Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1
+RunPhase4IsolatedCellWithSameRunDecisionTelemetryForCorpusV2(
+    const Phase4CanonicalCellConfig& cell, std::string_view worker_executable,
+    std::string_view imported_fixture_path);
+
 [[nodiscard]] std::optional<std::string> SerializePhase4IsolatedCellJsonV1(
     const Phase4IsolatedCellResult& result, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty);
@@ -380,6 +396,12 @@ RunPhase4IsolatedCellWithSameRunDecisionTelemetryV1(const Phase4CanonicalCellCon
                                          std::string_view imported_fixture, int request_descriptor,
                                          int response_descriptor) noexcept;
 
+[[nodiscard]] int RunPhase4TrialWorkerForCorpusV2(Phase4TrialArm arm,
+                                                  const Phase4CanonicalCellConfig& cell,
+                                                  std::string_view imported_fixture,
+                                                  int request_descriptor,
+                                                  int response_descriptor) noexcept;
+
 // Hidden wire-v2 worker entry point. Control and failure messages retain their
 // v1 shape; every success atomically carries the ordinary measured execution
 // and telemetry derived from that same execution.
@@ -388,6 +410,10 @@ RunPhase4IsolatedCellWithSameRunDecisionTelemetryV1(const Phase4CanonicalCellCon
                                                              std::string_view imported_fixture,
                                                              int request_descriptor,
                                                              int response_descriptor) noexcept;
+
+[[nodiscard]] int RunPhase4TrialWorkerWithSameRunTelemetryForCorpusV2(
+    Phase4TrialArm arm, const Phase4CanonicalCellConfig& cell, std::string_view imported_fixture,
+    int request_descriptor, int response_descriptor) noexcept;
 
 }  // namespace apgar::benchmark
 

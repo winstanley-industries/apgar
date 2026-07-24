@@ -298,13 +298,19 @@ std::uint64_t ComputePhase4SameRunDecisionTelemetrySourceEnvelopeChecksumV1(
   return hash.Finish();
 }
 
-std::optional<std::string> SerializePhase4SameRunDecisionTelemetryJsonV1(
+[[nodiscard]] static std::optional<std::string>
+SerializePhase4SameRunDecisionTelemetryForAuthorityJsonV1(
+    Phase4RepresentativeCorpusAuthority corpus_authority,
     const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
     std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty) {
   try {
     const Phase4IsolatedCellResult& raw = capture.raw_cell;
-    if (!ValidatePhase4IsolatedSameRunCellCaptureV1(capture, imported_fixture)) {
+    const bool capture_valid =
+        corpus_authority == Phase4RepresentativeCorpusAuthority::kV1
+            ? ValidatePhase4IsolatedSameRunCellCaptureV1(capture, imported_fixture)
+            : ValidatePhase4IsolatedSameRunCellCaptureForCorpusV2(capture, imported_fixture);
+    if (!capture_valid) {
       return std::nullopt;
     }
 #if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
@@ -367,6 +373,24 @@ std::optional<std::string> SerializePhase4SameRunDecisionTelemetryJsonV1(
   } catch (...) {
     return std::nullopt;
   }
+}
+
+std::optional<std::string> SerializePhase4SameRunDecisionTelemetryJsonV1(
+    const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
+    std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty) {
+  return SerializePhase4SameRunDecisionTelemetryForAuthorityJsonV1(
+      Phase4RepresentativeCorpusAuthority::kV1, capture, imported_fixture, source_commit,
+      source_stamped, source_tree_dirty);
+}
+
+std::optional<std::string> SerializePhase4SameRunDecisionTelemetryForCorpusV2JsonV1(
+    const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
+    std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty) {
+  return SerializePhase4SameRunDecisionTelemetryForAuthorityJsonV1(
+      Phase4RepresentativeCorpusAuthority::kV2, capture, imported_fixture, source_commit,
+      source_stamped, source_tree_dirty);
 }
 
 }  // namespace apgar::benchmark

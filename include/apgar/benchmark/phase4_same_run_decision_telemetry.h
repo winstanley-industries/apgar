@@ -25,6 +25,11 @@ inline constexpr std::uint32_t kPhase4SameRunDecisionTelemetryArtifactSchemaVers
     std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty);
 
+[[nodiscard]] std::optional<std::string> SerializePhase4SameRunDecisionTelemetryForCorpusV2JsonV1(
+    const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
+    std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty);
+
 }  // namespace apgar::benchmark
 
 #endif  // APGAR_BENCHMARK_PHASE4_SAME_RUN_DECISION_TELEMETRY_H_

@@ -439,6 +439,22 @@ def validate_authorities(
     return representative, roster
 
 
+def validated_successful_case_roster(
+    case_id: int,
+    representative_path: pathlib.Path = _REPRESENTATIVE,
+    roster_path: pathlib.Path = _ROSTER,
+) -> tuple[Mapping[str, Any], tuple[tuple[int, int], ...]]:
+    """Return one authenticated successful row and its full Corpus V2 net roster."""
+    if isinstance(case_id, bool) or not 0 <= case_id <= _U32_MAX:
+        raise AuthorityError("case_id must be an unsigned 32-bit integer")
+    _, roster = validate_authorities(representative_path, roster_path)
+    matches = [row for row in roster["successful_cases"] if row["case_id"] == case_id]
+    if len(matches) != 1:
+        raise AuthorityError("case is absent from the frozen successful roster manifest")
+    row = matches[0]
+    return row, _roster_for(row["case_id"], row["workload_net_count"])
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--representative", type=pathlib.Path, default=_REPRESENTATIVE)

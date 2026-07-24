@@ -504,6 +504,12 @@ ExecutePhase4TrialArmWithSameRunTelemetryV1(
 // Corpus-v2 entry points are intentionally separate from the frozen v1 entry
 // points. Corpus authority is selected out of band by the entry point and is
 // never added to the frozen Phase4PairedTrialSpec v1 field set.
+[[nodiscard]] Phase4TrialArmRecordResult FinalizePhase4TrialArmForCorpusV2(
+    Phase4TrialArmExecution execution, const Phase4ExternalResourceObservation& observation);
+
+[[nodiscard]] Phase4PairedTrialAssemblyResult AssemblePhase4PairedTrialForCorpusV2(
+    Phase4TrialArmRecord baseline, Phase4TrialArmRecord candidate);
+
 [[nodiscard]] Phase4TrialArmExecutionResult ExecutePhase4TrialArmForCorpusV2(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);

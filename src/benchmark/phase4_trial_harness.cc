@@ -704,6 +704,22 @@ Phase4DurableArmFailure ReconcilePhase4TrialArmFailureV1(Phase4TrialArmFailure f
   return durable;
 }
 
+Phase4DurableArmFailure ReconcilePhase4TrialArmFailureForCorpusV2(Phase4TrialArmFailure failure) {
+  Phase4ArmFailureReconciliationResultV1 result = TryReconcilePhase4TrialArmFailureForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV2, std::move(failure));
+  if (std::holds_alternative<Phase4DurableArmFailure>(result)) {
+    return std::get<Phase4DurableArmFailure>(std::move(result));
+  }
+  const auto& rejection = std::get<Phase4ArmFailureReconciliationRejectionV1>(result);
+  Phase4DurableArmFailure durable;
+  durable.summary_code = Phase4PairedTrialErrorCode::kCaseIdentityMismatch;
+  durable.arm = rejection.failure.summary.arm;
+  durable.summary_invariant_id = rejection.invariant_id;
+  durable.summary_detail = rejection.detail;
+  durable.payload_checksum = ComputePhase4DurableArmFailureChecksumV1(durable);
+  return durable;
+}
+
 Phase4ArmFailureReconciliationResultV1 TryReconcilePhase4TrialArmFailureV1(
     Phase4TrialArmFailure failure) {
   return TryReconcilePhase4TrialArmFailureForAuthority(Phase4RepresentativeCorpusAuthority::kV1,

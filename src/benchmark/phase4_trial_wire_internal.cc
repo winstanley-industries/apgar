@@ -372,10 +372,10 @@ void EncodeLifecycle(PayloadWriter& writer, const Phase4PreparerLifecycleObserva
 }
 
 [[nodiscard]] std::optional<Phase4TrialWireError> ValidateExecution(
-    const Phase4TrialArmExecution& execution) {
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialArmExecution& execution) {
   const Phase4TrialArmSemantics& semantics = execution.semantics;
   if (semantics.schema_version != kPhase4PairedTrialSchemaVersion ||
-      semantics.corpus_version != kPhase4RepresentativeCorpusVersion) {
+      semantics.corpus_version != Phase4RepresentativeCorpusVersionForAuthority(authority)) {
     return Error("benchmark.phase4_trial_wire.success_schema.v1",
                  "success payload has an unsupported semantic or corpus schema");
   }
@@ -614,7 +614,8 @@ void EncodeExecution(PayloadWriter& writer, const Phase4TrialArmExecution& execu
   EncodeLifecycle(writer, execution.preparer_lifecycle);
 }
 
-[[nodiscard]] bool DecodeExecution(PayloadReader& reader, Phase4TrialArmExecution* execution) {
+[[nodiscard]] bool DecodeExecution(Phase4RepresentativeCorpusAuthority authority,
+                                   PayloadReader& reader, Phase4TrialArmExecution* execution) {
   Phase4TrialArmSemantics& semantics = execution->semantics;
   std::uint8_t arm = 0;
   std::uint8_t order = 0;
@@ -681,7 +682,7 @@ void EncodeExecution(PayloadWriter& writer, const Phase4TrialArmExecution& execu
   semantics.execution_order = static_cast<Phase4TrialOrder>(order);
   semantics.terminal_reason = static_cast<Phase4NormalizedTerminalReason>(reason);
   semantics.candidate_outcome_source = static_cast<Phase4CandidateOutcomeSource>(source);
-  if (std::optional<Phase4TrialWireError> error = ValidateExecution(*execution);
+  if (std::optional<Phase4TrialWireError> error = ValidateExecution(authority, *execution);
       error.has_value()) {
     return reader.Reject(error->invariant_id, error->detail);
   }
@@ -704,11 +705,13 @@ void EncodeExecution(PayloadWriter& writer, const Phase4TrialArmExecution& execu
 }
 
 [[nodiscard]] std::optional<Phase4TrialWireError> ValidateSameRunDecisionExecutionV2(
+    Phase4RepresentativeCorpusAuthority authority,
     const Phase4TrialArmWithSameRunTelemetryExecutionV1& decision_execution) {
   const Phase4TrialArmExecution& execution = decision_execution.execution;
   const Phase4TrialArmSemantics& semantics = execution.semantics;
   const Phase4SameRunArmDecisionTelemetryV1& telemetry = decision_execution.telemetry;
-  if (std::optional<Phase4PairedTrialError> error = ValidatePhase4TrialArmSemanticsV1(semantics);
+  if (std::optional<Phase4PairedTrialError> error =
+          ValidatePhase4TrialArmSemanticsForAuthorityV1(authority, semantics);
       error.has_value()) {
     return Error("benchmark.phase4_trial_wire.success_semantics.v2",
                  std::string("same-run success payload contains invalid arm semantics: ") +
@@ -964,10 +967,10 @@ void EncodeSameRunTelemetryV2(PayloadWriter& writer,
 }
 
 [[nodiscard]] std::variant<std::vector<std::uint8_t>, Phase4TrialWireError> EncodePayload(
-    const Phase4TrialWireMessage& message) {
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialWireMessage& message) {
   PayloadWriter writer;
   const std::optional<Phase4TrialWireError> validation = std::visit(
-      [](const auto& value) -> std::optional<Phase4TrialWireError> {
+      [authority](const auto& value) -> std::optional<Phase4TrialWireError> {
         using Message = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<Message, Phase4TrialWireReady>) {
           return ValidateReady(value);
@@ -977,7 +980,7 @@ void EncodeSameRunTelemetryV2(PayloadWriter& writer,
                          "run command contains an unknown execution order");
           }
         } else if constexpr (std::is_same_v<Message, Phase4TrialWireSuccess>) {
-          return ValidateExecution(value.execution);
+          return ValidateExecution(authority, value.execution);
         } else if constexpr (std::is_same_v<Message, Phase4TrialWireFailure>) {
           return ValidateFailure(value.failure);
         }
@@ -1025,8 +1028,9 @@ void EncodeSameRunTelemetryV2(PayloadWriter& writer,
   return std::move(writer).Take();
 }
 
-[[nodiscard]] Phase4TrialWireDecodeResult DecodePayload(Phase4TrialWireMessageKind kind,
-                                                        std::span<const std::uint8_t> payload) {
+[[nodiscard]] Phase4TrialWireDecodeResult DecodePayload(
+    Phase4TrialWireMessageKind kind, std::span<const std::uint8_t> payload,
+    Phase4RepresentativeCorpusAuthority authority) {
   PayloadReader reader(payload);
   Phase4TrialWireMessage message;
   switch (kind) {
@@ -1066,8 +1070,13 @@ void EncodeSameRunTelemetryV2(PayloadWriter& writer,
       break;
     case Phase4TrialWireMessageKind::kSuccess: {
       Phase4TrialWireSuccess success;
-      if (!DecodeExecution(reader, &success.execution)) {
+      if (!DecodeExecution(authority, reader, &success.execution)) {
         return reader.error();
+      }
+      if (std::optional<Phase4TrialWireError> error =
+              ValidateExecution(authority, success.execution);
+          error.has_value()) {
+        return *error;
       }
       message = std::move(success);
       break;
@@ -1111,10 +1120,10 @@ void EncodeSameRunTelemetryV2(PayloadWriter& writer,
 }
 
 [[nodiscard]] std::variant<std::vector<std::uint8_t>, Phase4TrialWireError> EncodePayloadV2(
-    const Phase4TrialWireMessageV2& message) {
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialWireMessageV2& message) {
   PayloadWriter writer;
   const std::optional<Phase4TrialWireError> validation = std::visit(
-      [](const auto& value) -> std::optional<Phase4TrialWireError> {
+      [authority](const auto& value) -> std::optional<Phase4TrialWireError> {
         using Message = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<Message, Phase4TrialWireReady>) {
           if (std::optional<Phase4TrialWireError> error = ValidateReady(value); error.has_value()) {
@@ -1126,7 +1135,7 @@ void EncodeSameRunTelemetryV2(PayloadWriter& writer,
                          "run command contains an unknown execution order");
           }
         } else if constexpr (std::is_same_v<Message, Phase4TrialWireSuccessV2>) {
-          return ValidateSameRunDecisionExecutionV2(value.decision_execution);
+          return ValidateSameRunDecisionExecutionV2(authority, value.decision_execution);
         } else if constexpr (std::is_same_v<Message, Phase4TrialWireFailure>) {
           if (std::optional<Phase4TrialWireError> error = ValidateFailure(value.failure);
               error.has_value()) {
@@ -1178,8 +1187,9 @@ void EncodeSameRunTelemetryV2(PayloadWriter& writer,
   return std::move(writer).Take();
 }
 
-[[nodiscard]] Phase4TrialWireDecodeResultV2 DecodePayloadV2(Phase4TrialWireMessageKind kind,
-                                                            std::span<const std::uint8_t> payload) {
+[[nodiscard]] Phase4TrialWireDecodeResultV2 DecodePayloadV2(
+    Phase4TrialWireMessageKind kind, std::span<const std::uint8_t> payload,
+    Phase4RepresentativeCorpusAuthority authority) {
   PayloadReader reader(payload);
   Phase4TrialWireMessageV2 message;
   switch (kind) {
@@ -1219,14 +1229,14 @@ void EncodeSameRunTelemetryV2(PayloadWriter& writer,
       break;
     case Phase4TrialWireMessageKind::kSuccess: {
       Phase4TrialWireSuccessV2 success;
-      if (!DecodeExecution(reader, &success.decision_execution.execution) ||
+      if (!DecodeExecution(authority, reader, &success.decision_execution.execution) ||
           !DecodeSameRunTelemetryV2(
               reader, success.decision_execution.execution.semantics.workload_net_count,
               &success.decision_execution.telemetry)) {
         return AsV2Error(reader.error());
       }
       if (std::optional<Phase4TrialWireError> error =
-              ValidateSameRunDecisionExecutionV2(success.decision_execution);
+              ValidateSameRunDecisionExecutionV2(authority, success.decision_execution);
           error.has_value()) {
         return *error;
       }
@@ -1384,9 +1394,10 @@ Phase4TrialWireExpectedFrameSizeResult Phase4TrialWireExpectedFrameSizeV1(
   }
 }
 
-Phase4TrialWireEncodeResult EncodePhase4TrialWireMessageV1(const Phase4TrialWireMessage& message) {
+[[nodiscard]] static Phase4TrialWireEncodeResult EncodePhase4TrialWireMessageForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialWireMessage& message) {
   try {
-    auto payload_result = EncodePayload(message);
+    auto payload_result = EncodePayload(authority, message);
     if (std::holds_alternative<Phase4TrialWireError>(payload_result)) {
       return std::get<Phase4TrialWireError>(std::move(payload_result));
     }
@@ -1409,7 +1420,19 @@ Phase4TrialWireEncodeResult EncodePhase4TrialWireMessageV1(const Phase4TrialWire
   }
 }
 
-Phase4TrialWireDecodeResult DecodePhase4TrialWireMessageV1(std::span<const std::uint8_t> frame) {
+Phase4TrialWireEncodeResult EncodePhase4TrialWireMessageV1(const Phase4TrialWireMessage& message) {
+  return EncodePhase4TrialWireMessageForAuthority(Phase4RepresentativeCorpusAuthority::kV1,
+                                                  message);
+}
+
+Phase4TrialWireEncodeResult EncodePhase4TrialWireMessageForCorpusV2(
+    const Phase4TrialWireMessage& message) {
+  return EncodePhase4TrialWireMessageForAuthority(Phase4RepresentativeCorpusAuthority::kV2,
+                                                  message);
+}
+
+[[nodiscard]] static Phase4TrialWireDecodeResult DecodePhase4TrialWireMessageForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, std::span<const std::uint8_t> frame) {
   try {
     if (frame.size() < kPhase4TrialWireHeaderBytesV1) {
       return Error("benchmark.phase4_trial_wire.truncated.v1",
@@ -1439,12 +1462,22 @@ Phase4TrialWireDecodeResult DecodePhase4TrialWireMessageV1(std::span<const std::
       return Error("benchmark.phase4_trial_wire.checksum.v1",
                    "wire frame FNV-1a checksum does not match its envelope and payload");
     }
-    return DecodePayload(kind, frame.subspan(kPhase4TrialWireHeaderBytesV1, payload_length));
+    return DecodePayload(kind, frame.subspan(kPhase4TrialWireHeaderBytesV1, payload_length),
+                         authority);
   } catch (const std::bad_alloc&) {
     return ResourceError("host allocation failed while decoding a wire frame");
   } catch (const std::length_error&) {
     return ResourceError("host container length failed while decoding a wire frame");
   }
+}
+
+Phase4TrialWireDecodeResult DecodePhase4TrialWireMessageV1(std::span<const std::uint8_t> frame) {
+  return DecodePhase4TrialWireMessageForAuthority(Phase4RepresentativeCorpusAuthority::kV1, frame);
+}
+
+Phase4TrialWireDecodeResult DecodePhase4TrialWireMessageForCorpusV2(
+    std::span<const std::uint8_t> frame) {
+  return DecodePhase4TrialWireMessageForAuthority(Phase4RepresentativeCorpusAuthority::kV2, frame);
 }
 
 Phase4TrialWireDecodeResult ReadPhase4TrialWireMessageV1(int descriptor) {
@@ -1482,13 +1515,15 @@ Phase4TrialWireDecodeResult ReadPhase4TrialWireMessageV1(int descriptor) {
   }
 }
 
-Phase4TrialWireWriteResult WritePhase4TrialWireMessageV1(int descriptor,
-                                                         const Phase4TrialWireMessage& message) {
+[[nodiscard]] static Phase4TrialWireWriteResult WritePhase4TrialWireMessageForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, int descriptor,
+    const Phase4TrialWireMessage& message) {
   if (descriptor < 0) {
     return Error("benchmark.phase4_trial_wire.io_descriptor.v1",
                  "wire write descriptor is negative");
   }
-  Phase4TrialWireEncodeResult encoded = EncodePhase4TrialWireMessageV1(message);
+  Phase4TrialWireEncodeResult encoded =
+      EncodePhase4TrialWireMessageForAuthority(authority, message);
   if (std::holds_alternative<Phase4TrialWireError>(encoded)) {
     return std::get<Phase4TrialWireError>(std::move(encoded));
   }
@@ -1498,6 +1533,18 @@ Phase4TrialWireWriteResult WritePhase4TrialWireMessageV1(int descriptor,
     return *error;
   }
   return std::monostate{};
+}
+
+Phase4TrialWireWriteResult WritePhase4TrialWireMessageV1(int descriptor,
+                                                         const Phase4TrialWireMessage& message) {
+  return WritePhase4TrialWireMessageForAuthority(Phase4RepresentativeCorpusAuthority::kV1,
+                                                 descriptor, message);
+}
+
+Phase4TrialWireWriteResult WritePhase4TrialWireMessageForCorpusV2(
+    int descriptor, const Phase4TrialWireMessage& message) {
+  return WritePhase4TrialWireMessageForAuthority(Phase4RepresentativeCorpusAuthority::kV2,
+                                                 descriptor, message);
 }
 
 Phase4TrialWireExpectedFrameSizeResult Phase4TrialWireExpectedFrameSizeV2(
@@ -1522,10 +1569,10 @@ Phase4TrialWireExpectedFrameSizeResult Phase4TrialWireExpectedFrameSizeV2(
   }
 }
 
-Phase4TrialWireEncodeResultV2 EncodePhase4TrialWireMessageV2(
-    const Phase4TrialWireMessageV2& message) {
+[[nodiscard]] static Phase4TrialWireEncodeResultV2 EncodePhase4TrialWireMessageV2ForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialWireMessageV2& message) {
   try {
-    auto payload_result = EncodePayloadV2(message);
+    auto payload_result = EncodePayloadV2(authority, message);
     if (std::holds_alternative<Phase4TrialWireError>(payload_result)) {
       return std::get<Phase4TrialWireError>(std::move(payload_result));
     }
@@ -1547,7 +1594,20 @@ Phase4TrialWireEncodeResultV2 EncodePhase4TrialWireMessageV2(
   }
 }
 
-Phase4TrialWireDecodeResultV2 DecodePhase4TrialWireMessageV2(std::span<const std::uint8_t> frame) {
+Phase4TrialWireEncodeResultV2 EncodePhase4TrialWireMessageV2(
+    const Phase4TrialWireMessageV2& message) {
+  return EncodePhase4TrialWireMessageV2ForAuthority(Phase4RepresentativeCorpusAuthority::kV1,
+                                                    message);
+}
+
+Phase4TrialWireEncodeResultV2 EncodePhase4TrialWireMessageV2ForCorpusV2(
+    const Phase4TrialWireMessageV2& message) {
+  return EncodePhase4TrialWireMessageV2ForAuthority(Phase4RepresentativeCorpusAuthority::kV2,
+                                                    message);
+}
+
+[[nodiscard]] static Phase4TrialWireDecodeResultV2 DecodePhase4TrialWireMessageV2ForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, std::span<const std::uint8_t> frame) {
   try {
     if (frame.size() < kPhase4TrialWireHeaderBytesV2) {
       return Error("benchmark.phase4_trial_wire.truncated.v2",
@@ -1575,12 +1635,24 @@ Phase4TrialWireDecodeResultV2 DecodePhase4TrialWireMessageV2(std::span<const std
       return Error("benchmark.phase4_trial_wire.checksum.v2",
                    "wire frame FNV-1a checksum does not match its envelope and payload");
     }
-    return DecodePayloadV2(kind, frame.subspan(kPhase4TrialWireHeaderBytesV2, payload_length));
+    return DecodePayloadV2(kind, frame.subspan(kPhase4TrialWireHeaderBytesV2, payload_length),
+                           authority);
   } catch (const std::bad_alloc&) {
     return ResourceErrorV2("host allocation failed while decoding a wire frame");
   } catch (const std::length_error&) {
     return ResourceErrorV2("host container length failed while decoding a wire frame");
   }
+}
+
+Phase4TrialWireDecodeResultV2 DecodePhase4TrialWireMessageV2(std::span<const std::uint8_t> frame) {
+  return DecodePhase4TrialWireMessageV2ForAuthority(Phase4RepresentativeCorpusAuthority::kV1,
+                                                    frame);
+}
+
+Phase4TrialWireDecodeResultV2 DecodePhase4TrialWireMessageV2ForCorpusV2(
+    std::span<const std::uint8_t> frame) {
+  return DecodePhase4TrialWireMessageV2ForAuthority(Phase4RepresentativeCorpusAuthority::kV2,
+                                                    frame);
 }
 
 Phase4TrialWireDecodeResultV2 ReadPhase4TrialWireMessageV2(int descriptor) {
@@ -1619,13 +1691,15 @@ Phase4TrialWireDecodeResultV2 ReadPhase4TrialWireMessageV2(int descriptor) {
   }
 }
 
-Phase4TrialWireWriteResult WritePhase4TrialWireMessageV2(int descriptor,
-                                                         const Phase4TrialWireMessageV2& message) {
+[[nodiscard]] static Phase4TrialWireWriteResult WritePhase4TrialWireMessageV2ForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, int descriptor,
+    const Phase4TrialWireMessageV2& message) {
   if (descriptor < 0) {
     return Error("benchmark.phase4_trial_wire.io_descriptor.v2",
                  "wire write descriptor is negative");
   }
-  Phase4TrialWireEncodeResultV2 encoded = EncodePhase4TrialWireMessageV2(message);
+  Phase4TrialWireEncodeResultV2 encoded =
+      EncodePhase4TrialWireMessageV2ForAuthority(authority, message);
   if (std::holds_alternative<Phase4TrialWireError>(encoded)) {
     return std::get<Phase4TrialWireError>(std::move(encoded));
   }
@@ -1635,6 +1709,18 @@ Phase4TrialWireWriteResult WritePhase4TrialWireMessageV2(int descriptor,
     return AsV2Error(std::move(*error));
   }
   return std::monostate{};
+}
+
+Phase4TrialWireWriteResult WritePhase4TrialWireMessageV2(int descriptor,
+                                                         const Phase4TrialWireMessageV2& message) {
+  return WritePhase4TrialWireMessageV2ForAuthority(Phase4RepresentativeCorpusAuthority::kV1,
+                                                   descriptor, message);
+}
+
+Phase4TrialWireWriteResult WritePhase4TrialWireMessageV2ForCorpusV2(
+    int descriptor, const Phase4TrialWireMessageV2& message) {
+  return WritePhase4TrialWireMessageV2ForAuthority(Phase4RepresentativeCorpusAuthority::kV2,
+                                                   descriptor, message);
 }
 
 }  // namespace apgar::benchmark::internal

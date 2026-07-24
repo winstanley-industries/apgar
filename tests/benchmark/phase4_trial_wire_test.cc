@@ -299,6 +299,20 @@ TEST(Phase4TrialWireTest, RoundTripsEveryMessageKindLosslessly) {
   }
 }
 
+TEST(Phase4TrialWireTest, CorpusAuthoritiesRejectCrossDecodedSuccesses) {
+  Phase4TrialArmExecution execution = Execution();
+  execution.semantics.corpus_version = kPhase4RepresentativeCorpusVersionV2;
+  const Phase4TrialWireMessage message = Phase4TrialWireSuccess{.execution = std::move(execution)};
+  Phase4TrialWireEncodeResult encoded = EncodePhase4TrialWireMessageForCorpusV2(message);
+  ASSERT_TRUE(std::holds_alternative<std::vector<std::uint8_t>>(encoded));
+  const auto& frame = std::get<std::vector<std::uint8_t>>(encoded);
+  EXPECT_TRUE(std::holds_alternative<Phase4TrialWireMessage>(
+      DecodePhase4TrialWireMessageForCorpusV2(frame)));
+  EXPECT_TRUE(std::holds_alternative<Phase4TrialWireError>(DecodePhase4TrialWireMessageV1(frame)));
+  EXPECT_TRUE(
+      std::holds_alternative<Phase4TrialWireError>(EncodePhase4TrialWireMessageV1(message)));
+}
+
 TEST(Phase4TrialWireTest, RoundTripsCanonicalFailureStateForEveryPayloadKind) {
   for (const Phase4DurableFailurePayloadKind kind : {
            Phase4DurableFailurePayloadKind::kSummaryOnly,

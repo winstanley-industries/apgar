@@ -1391,6 +1391,13 @@ acceleration.
   no V2 heldout allocation outcome has been observed. Heldout acquisition MUST
   run from the clean commit containing the frozen V2 authorities, and any
   earlier observation invalidates that heldout roster.
+  The initial post-freeze confirmatory runner and validators are a separate,
+  explicit Corpus v2 authority path. Before the complete acquisition and
+  publication chain is reviewed and committed, that development runner MUST
+  accept only exact and calibration roles and MUST reject fixed-query, stress,
+  heldout, and imported cases before worker launch. Legacy runner, wire, and
+  validator entry points remain Corpus v1-only; V2 wire decoding and Raw joins
+  require an explicit out-of-band Corpus v2 entry point.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully
