@@ -16,7 +16,8 @@ namespace apgar::allocator {
 inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersionV1 = 1;
 inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersionV2 = 2;
 inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersionV3 = 3;
-inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersion = 4;
+inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersionV4 = 4;
+inline constexpr std::uint32_t kTargetedRegenerationExecutionSchemaVersion = 5;
 inline constexpr std::uint64_t kMaximumTargetedRegenerationRouteQueriesV2 = 1'000'000;
 inline constexpr std::uint64_t kMaximumTargetedRegenerationRouteWorkUnitsV2 =
     1'000'000'000'000'000ULL;

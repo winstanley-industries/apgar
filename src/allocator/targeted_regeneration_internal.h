@@ -10,6 +10,9 @@
 
 namespace apgar::allocator::internal {
 
+void SetTargetedRegenerationPlanSchemaVersionForTesting(TargetedRegenerationPlan& plan,
+                                                        std::uint32_t schema_version) noexcept;
+
 [[nodiscard]] bool TargetedRegenerationConfigIsValidV1(
     const TargetedRegenerationConfig& config) noexcept;
 
@@ -32,6 +35,8 @@ struct TargetedRegenerationChecksumHeaderV1 {
   std::uint64_t total_conflict_impact = 0;
   std::uint64_t expanded_resource_visits = 0;
 };
+
+using TargetedRegenerationChecksumHeaderV2 = TargetedRegenerationChecksumHeaderV1;
 
 struct TargetedRegenerationResourceScanV1 {
   std::uint64_t conflict_resource_count = 0;
@@ -73,6 +78,10 @@ ProjectTargetedRegenerationPolicyEntriesV1(const geometry_compiler::CompiledBoar
 
 [[nodiscard]] std::uint64_t ComputeTargetedRegenerationPlanChecksumV1(
     const TargetedRegenerationChecksumHeaderV1& header,
+    std::span<const TargetedRegenerationNet> targets) noexcept;
+
+[[nodiscard]] std::uint64_t ComputeTargetedRegenerationPlanChecksumV2(
+    const TargetedRegenerationChecksumHeaderV2& header,
     std::span<const TargetedRegenerationNet> targets) noexcept;
 
 }  // namespace apgar::allocator::internal

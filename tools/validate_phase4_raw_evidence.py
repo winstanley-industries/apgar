@@ -169,7 +169,7 @@ def _version(value: Mapping[str, Any], label: str) -> None:
 
 
 @functools.cache
-def _representative_manifest() -> tuple[
+def _frozen_representative_manifest() -> tuple[
     int, Mapping[int, Mapping[str, Any]], Mapping[tuple[int, int], int]
 ]:
     try:
@@ -282,6 +282,12 @@ def _representative_manifest() -> tuple[
     if set(indexed) != {case_id for case_id, _ in budgets}:
         raise EvidenceError("representative budget roster does not cover every case")
     return corpus_checksum, indexed, budgets
+
+
+def _representative_manifest() -> tuple[
+    int, Mapping[int, Mapping[str, Any]], Mapping[tuple[int, int], int]
+]:
+    return _frozen_representative_manifest()
 
 
 _BUDGET_FIELDS = (

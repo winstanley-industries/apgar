@@ -1,9 +1,9 @@
 # CPU Candidate-Allocation Session v2
 
-> Superseded for production allocation by CPU Candidate-Allocation Session v3.
+> Superseded for production allocation by CPU Candidate-Allocation Session v4.
 > This frozen document preserves the version-2 replay encoding. Current
-> production callers reject versions `1` and `2` and must use schema version
-> `3`.
+> production callers reject versions `1` through `3` and must use schema
+> version `4`.
 
 CPU Candidate-Allocation Session v2 composes persistent CPU candidate-pool
 preparation, the One-World and negotiated-price CPU references, bounded

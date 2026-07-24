@@ -1474,8 +1474,7 @@ std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmSemanticsForAuthorit
       !IsPhase4RepresentativeCorpusAuthorityValid(authority) ||
       semantics.corpus_version != Phase4RepresentativeCorpusVersionForAuthority(authority) ||
       semantics.corpus_checksum != Phase4RepresentativeCorpusChecksumForAuthority(authority) ||
-      !descriptor_identity_valid ||
-      semantics.semantic_checksum == 0 ||
+      !descriptor_identity_valid || semantics.semantic_checksum == 0 ||
       semantics.semantic_checksum != ComputePhase4TrialArmSemanticChecksumV1(semantics)) {
     return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4PAIR-FINALIZE-001",
                  "the arm semantic identity, enum, or checksum is invalid", semantics.arm);

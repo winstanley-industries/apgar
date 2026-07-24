@@ -212,11 +212,13 @@ bool internal::TargetedRegenerationConfigIsValidV1(
   return ConfigIsValid(config);
 }
 
-std::uint64_t internal::ComputeTargetedRegenerationPlanChecksumV1(
-    const TargetedRegenerationChecksumHeaderV1& header,
+namespace {
+
+[[nodiscard]] std::uint64_t ComputeTargetedRegenerationPlanChecksum(
+    std::string_view domain, const internal::TargetedRegenerationChecksumHeaderV1& header,
     std::span<const TargetedRegenerationNet> targets) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-TARGETED-REGENERATION-PLAN-V1");
+  hash.AddString(domain);
   hash.AddU32(header.schema_version);
   hash.AddU64(header.associations.board_content_hash);
   hash.AddU64(header.associations.compiler_profile_fingerprint);
@@ -268,6 +270,22 @@ std::uint64_t internal::ComputeTargetedRegenerationPlanChecksumV1(
     }
   }
   return hash.Finish();
+}
+
+}  // namespace
+
+std::uint64_t internal::ComputeTargetedRegenerationPlanChecksumV1(
+    const TargetedRegenerationChecksumHeaderV1& header,
+    std::span<const TargetedRegenerationNet> targets) noexcept {
+  return ComputeTargetedRegenerationPlanChecksum("APGAR-TARGETED-REGENERATION-PLAN-V1", header,
+                                                 targets);
+}
+
+std::uint64_t internal::ComputeTargetedRegenerationPlanChecksumV2(
+    const TargetedRegenerationChecksumHeaderV2& header,
+    std::span<const TargetedRegenerationNet> targets) noexcept {
+  return ComputeTargetedRegenerationPlanChecksum("APGAR-TARGETED-REGENERATION-PLAN-V2", header,
+                                                 targets);
 }
 
 bool internal::TargetedRegenerationTargetRanksBeforeV1(
@@ -553,13 +571,13 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
   }
   if (schema_version != kTargetedRegenerationPlanSchemaVersion) {
     return Error(TargetedRegenerationErrorCode::kUnsupportedSchema,
-                 "allocator.targeted_regeneration.schema.v1",
+                 "allocator.targeted_regeneration.schema.v2",
                  "Targeted-regeneration plan schema is unsupported");
   }
   if (!ConfigIsValid(config)) {
     return Error(TargetedRegenerationErrorCode::kInvalidConfiguration,
-                 "allocator.targeted_regeneration.configuration.v1",
-                 "Targeted-regeneration configuration is outside schema-v1 bounds");
+                 "allocator.targeted_regeneration.configuration.v2",
+                 "Targeted-regeneration configuration is outside schema-v2 bounds");
   }
 
   return WithFailureEnvelope([&]() -> TargetedRegenerationPlanResult {
@@ -781,9 +799,11 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
       if (target.resource_actions.empty()) {
         break;
       }
-      const std::uint64_t desired_columns =
-          std::min({config.maximum_columns_per_net, target.conflict_resource_count,
-                    static_cast<std::uint64_t>(target.resource_actions.size()) + 1U});
+      const UWide desired_columns_wide =
+          std::min({static_cast<UWide>(config.maximum_columns_per_net),
+                    static_cast<UWide>(target.conflict_resource_count) + 1U,
+                    static_cast<UWide>(target.resource_actions.size()) + 1U});
+      const std::uint64_t desired_columns = static_cast<std::uint64_t>(desired_columns_wide);
       const std::uint64_t available_columns = static_cast<std::uint64_t>(
           static_cast<UWide>(config.maximum_total_columns) - total_columns);
       const std::uint64_t available_candidate_headroom =
@@ -851,7 +871,7 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
     }
     pin_lease.emplace(std::get<candidates::CandidateStorePinLease>(std::move(lease_result)));
 
-    const internal::TargetedRegenerationChecksumHeaderV1 checksum_header{
+    const internal::TargetedRegenerationChecksumHeaderV2 checksum_header{
         .schema_version = schema_version,
         .associations = price_state.associations(),
         .workload_checksum = price_state.workload_checksum(),
@@ -871,7 +891,7 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
         .expanded_resource_visits = static_cast<std::uint64_t>(expanded_visits),
     };
     const std::uint64_t checksum =
-        internal::ComputeTargetedRegenerationPlanChecksumV1(checksum_header, targets);
+        internal::ComputeTargetedRegenerationPlanChecksumV2(checksum_header, targets);
     TargetedRegenerationPlan result(
         schema_version, price_state.associations(), price_state.workload_checksum(),
         source_selection.request_manifest_checksum,
@@ -908,6 +928,11 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
   return BuildTargetedRegenerationPlanImpl<false>(schema_version, previous_price_state,
                                                   source_request, world, candidate_store, config,
                                                   nullptr);
+}
+
+void internal::SetTargetedRegenerationPlanSchemaVersionForTesting(
+    TargetedRegenerationPlan& plan, std::uint32_t schema_version) noexcept {
+  plan.schema_version_ = schema_version;
 }
 
 TargetedRegenerationPlanResult BuildTargetedRegenerationPlanWithOperationalProfileV1(

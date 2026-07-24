@@ -158,6 +158,36 @@ TEST(Phase4TrialHarnessTest, BuildsExactEqualOpportunityMathForEveryCanonicalPoo
   }
 }
 
+TEST(Phase4TrialHarnessTest, CorpusV2BudgetMakesSoleBanReachableWithoutIncreasingTotalOpportunity) {
+  const Phase4PairedTrialSpec v1 =
+      Built(BuildPhase4CanonicalTrialSpecV1(Cell(200, 8), 0, Phase4TrialOrder::kBaselineFirst));
+  const Phase4PairedTrialSpec v2 = Built(BuildPhase4CanonicalTrialSpecForCorpusV2(
+      Cell(10'200, 8), 0, Phase4TrialOrder::kBaselineFirst));
+  constexpr std::uint64_t kNetCount = 64;
+  EXPECT_EQ(v1.candidate_session_config.regeneration_plan_config.maximum_columns_per_net, 1U);
+  EXPECT_EQ(v2.candidate_session_config.regeneration_plan_config.maximum_columns_per_net, 2U);
+  EXPECT_EQ(v1.candidate_session_config.regeneration_plan_config.maximum_total_columns, kNetCount);
+  EXPECT_EQ(v2.candidate_session_config.regeneration_plan_config.maximum_total_columns, kNetCount);
+  EXPECT_EQ(v2.candidate_session_config.regeneration_execution_config.maximum_route_queries,
+            kNetCount);
+  EXPECT_EQ(v2.baseline_config.price_config.present_step_per_overuse_unit, 1U);
+  EXPECT_EQ(v2.baseline_config.price_config.history_step_per_overuse_unit, 2'250U);
+  EXPECT_EQ(v2.candidate_session_config.price_config, v2.baseline_config.price_config);
+  EXPECT_EQ(v2.candidate_session_config.limits.maximum_total_route_queries, 2U * kNetCount);
+  EXPECT_EQ(v2.baseline_config.limits.maximum_route_queries,
+            v2.preparation_config.limits.maximum_route_queries +
+                v2.candidate_session_config.limits.maximum_total_route_queries);
+  EXPECT_EQ(v2.baseline_config.limits.maximum_total_route_work_units,
+            v2.preparation_config.limits.maximum_total_route_work_units +
+                v2.candidate_session_config.limits.maximum_total_route_work_units);
+  EXPECT_EQ(
+      v2.candidate_session_config.regeneration_execution_config.maximum_candidate_draft_bytes,
+      v1.candidate_session_config.regeneration_execution_config.maximum_candidate_draft_bytes +
+          kPhase4CanonicalCandidateDraftBytesPerPolicyEntryV1);
+  EXPECT_NE(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(v1),
+            internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(v2));
+}
+
 TEST(Phase4TrialHarnessTest, DerivesClosedCorpusEnvelopeForEveryExecutableDescriptorCell) {
   std::uint64_t executable_cells = 0;
   for (const Phase4CaseDescriptor& descriptor : Phase4CaseDescriptorsV1()) {
@@ -261,15 +291,26 @@ TEST(Phase4TrialHarnessTest, RootSeedIsCellScopedAndIndependentOfOrderAndRepetit
 }
 
 TEST(Phase4TrialHarnessTest, FrozenManifestPinsCanonicalAlgorithmBudgetChecksums) {
-  const Phase4PairedTrialSpec exact =
-      Built(BuildPhase4CanonicalTrialSpecV1(Cell(100, 4), 0, Phase4TrialOrder::kBaselineFirst));
+  const Phase4PairedTrialSpec exact = Built(BuildPhase4FrozenCanonicalBudgetPreimageV1(
+      Cell(100, 4), 0, Phase4TrialOrder::kBaselineFirst));
+  EXPECT_EQ(exact.candidate_session_config.schema_version,
+            allocator::kCpuCandidateAllocationSessionSchemaVersionV3);
   EXPECT_EQ(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(exact),
             5'410'605'065'288'423'733ULL);
 
-  const Phase4PairedTrialSpec held_out = Built(
-      BuildPhase4CanonicalTrialSpecV1(Cell(1'200, 16), 19, Phase4TrialOrder::kCandidateFirst));
+  const Phase4PairedTrialSpec held_out = Built(BuildPhase4FrozenCanonicalBudgetPreimageV1(
+      Cell(1'200, 16), 19, Phase4TrialOrder::kCandidateFirst));
   EXPECT_EQ(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(held_out),
             184'770'070'709'091'276ULL);
+}
+
+TEST(Phase4TrialHarnessTest, ExecutableV1CanonicalSpecUsesCurrentSessionAuthority) {
+  const Phase4PairedTrialSpec executable =
+      Built(BuildPhase4CanonicalTrialSpecV1(Cell(100, 4), 0, Phase4TrialOrder::kBaselineFirst));
+  EXPECT_EQ(executable.candidate_session_config.schema_version,
+            allocator::kCpuCandidateAllocationSessionSchemaVersion);
+  EXPECT_NE(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(executable),
+            5'410'605'065'288'423'733ULL);
 }
 
 TEST(Phase4TrialHarnessTest, RejectsEveryInvalidCellAxisBeforeBuildingWork) {

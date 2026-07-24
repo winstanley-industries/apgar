@@ -1,6 +1,6 @@
 # ADR-018: Phase 4 Store-Backed Targeted Regeneration Planning
 
-**Status:** Accepted for the fourth Phase 4 vertical slice
+**Status:** Accepted for the fourth Phase 4 vertical slice; amended by ADR-043
 **Date:** July 20, 2026
 **Applies to:** Deterministic congestion hotsets, complete-pool insufficiency,
 and bounded column requests
@@ -21,7 +21,8 @@ and because caller-chosen pin owners did not represent independent lifetimes.
 
 ## Decision
 
-- Adopt `schemas/allocator/targeted_regeneration_plan_v1.md`.
+- Preserve `schemas/allocator/targeted_regeneration_plan_v1.md` and adopt
+  `schemas/allocator/targeted_regeneration_plan_v2.md` for production.
 - Factor the production One-World validator/scorer into a source-private
   selection-only pass shared with full allocation. It canonicalizes and
   validates every pool alternative, selects exact winners, computes request and

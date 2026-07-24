@@ -8,6 +8,7 @@ import pathlib
 import subprocess
 import unittest
 
+from tests.support.phase4_current_diagnostic_budget import patch_live_diagnostic_budgets
 from tools import validate_phase4_per_net_report as report_validator
 from tools import validate_phase4_raw_evidence as raw_validator
 
@@ -92,6 +93,14 @@ def run_raw(case_id: int) -> dict[str, object]:
 
 
 class Phase4PerNetReportProcessTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.budget_patcher = patch_live_diagnostic_budgets(raw_validator, runfile)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.budget_patcher.stop()
+
     def run_join(self, case_id: int) -> tuple[dict[str, object], str]:
         raw = run_raw(case_id)
         command = report_command(raw)

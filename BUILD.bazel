@@ -1346,11 +1346,38 @@ py_test(
     ],
 )
 
+py_library(
+    name = "phase4_current_diagnostic_budget_test_support",
+    testonly = True,
+    srcs = ["tests/support/phase4_current_diagnostic_budget.py"],
+    imports = ["."],
+)
+
+py_binary(
+    name = "phase4_current_v1_diagnostic_cli",
+    testonly = True,
+    srcs = ["tests/support/run_phase4_current_diagnostic_cli.py"],
+    data = ["schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json"],
+    legacy_create_init = 0,
+    main = "tests/support/run_phase4_current_diagnostic_cli.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_current_diagnostic_budget_test_support",
+        ":phase4_exact_small_oracle_v2_validator_lib",
+        ":phase4_exact_small_oracle_validator_lib",
+        ":phase4_operational_measurement_validator_lib",
+        ":phase4_operational_projection_v2_lib",
+        ":phase4_per_net_report_v2_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+    ],
+)
+
 py_test(
     name = "phase4_same_run_decision_telemetry_validator_test",
     size = "medium",
     srcs = ["tests/tools/validate_phase4_same_run_decision_telemetry_test.py"],
     data = [
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
         "schemas/benchmark/phase4_representative_manifest_v1.json",
         "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
@@ -1363,6 +1390,7 @@ py_test(
     python_version = "3.13",
     tags = ["exact-address-space-envelope"],
     deps = [
+        ":phase4_current_diagnostic_budget_test_support",
         ":phase4_same_run_decision_telemetry_validator_lib",
     ],
 )
@@ -1585,11 +1613,12 @@ py_test(
     size = "medium",
     srcs = ["tests/tools/validate_phase4_exact_small_oracle_test.py"],
     data = [
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
         "schemas/benchmark/phase4_representative_manifest_v1.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        ":phase4_current_v1_diagnostic_cli",
         ":phase4_evidence_runner",
         ":phase4_exact_small_candidate_admission_replay",
-        ":phase4_exact_small_oracle_validator",
         ":phase4_exact_small_snapshot_test_runner",
         ":phase4_per_net_report_test_runner",
     ],
@@ -1598,6 +1627,7 @@ py_test(
     python_version = "3.13",
     tags = ["exact-address-space-envelope"],
     deps = [
+        ":phase4_current_diagnostic_budget_test_support",
         ":phase4_exact_small_oracle_validator_lib",
         ":phase4_raw_evidence_validator_lib",
     ],
@@ -1608,12 +1638,13 @@ py_test(
     size = "medium",
     srcs = ["tests/benchmark/phase4_exact_small_oracle_v2_test.py"],
     data = [
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
         "schemas/benchmark/phase4_representative_manifest_v1.json",
         "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        ":phase4_current_v1_diagnostic_cli",
         ":phase4_evidence_runner",
         ":phase4_exact_small_candidate_admission_replay",
-        ":phase4_exact_small_oracle_v2_validator",
         ":phase4_exact_small_snapshot_test_runner",
         ":phase4_per_net_report_test_runner",
     ],
@@ -1622,6 +1653,7 @@ py_test(
     python_version = "3.13",
     tags = ["exact-address-space-envelope"],
     deps = [
+        ":phase4_current_diagnostic_budget_test_support",
         ":phase4_exact_small_oracle_v2_validator_lib",
         ":phase4_exact_small_oracle_validator_lib",
         ":phase4_raw_evidence_validator_lib",
@@ -2042,10 +2074,11 @@ py_test(
     size = "large",
     srcs = ["tests/tools/validate_phase4_operational_measurement_test.py"],
     data = [
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
         "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
+        ":phase4_current_v1_diagnostic_cli",
         ":phase4_evidence_runner",
         ":phase4_operational_capture",
-        ":phase4_operational_measurement_validator",
         ":phase4_operational_replay_worker",
         ":phase4_per_net_report_test_runner",
     ],
@@ -2054,6 +2087,7 @@ py_test(
     python_version = "3.13",
     tags = ["exact-address-space-envelope"],
     deps = [
+        ":phase4_current_diagnostic_budget_test_support",
         ":phase4_matrix_aggregator_lib",
         ":phase4_operational_capture_lib",
         ":phase4_operational_measurement_validator_lib",
@@ -2178,6 +2212,7 @@ py_test(
     size = "medium",
     srcs = ["tests/benchmark/phase4_per_net_report_process_test.py"],
     data = [
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
         "schemas/benchmark/phase4_representative_manifest_v1.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
         "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
@@ -2189,6 +2224,7 @@ py_test(
     python_version = "3.13",
     tags = ["exact-address-space-envelope"],
     deps = [
+        ":phase4_current_diagnostic_budget_test_support",
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_workload_net_roster_manifest_validator_lib",
@@ -2200,18 +2236,19 @@ py_test(
     size = "medium",
     srcs = ["tests/benchmark/phase4_raw_v2_downstream_join_test.py"],
     data = [
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
         "schemas/benchmark/phase4_representative_manifest_v1.json",
         "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        ":phase4_current_v1_diagnostic_cli",
         ":phase4_evidence_runner",
-        ":phase4_operational_projection_v2",
         ":phase4_per_net_report_test_runner",
-        ":phase4_per_net_report_v2_validator",
     ],
     legacy_create_init = 0,
     python_version = "3.13",
     tags = ["exact-address-space-envelope"],
     deps = [
+        ":phase4_current_diagnostic_budget_test_support",
         ":phase4_operational_projection_v2_lib",
         ":phase4_per_net_report_v2_validator_lib",
         ":phase4_per_net_report_validator_lib",

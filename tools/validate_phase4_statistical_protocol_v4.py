@@ -59,7 +59,7 @@ def _compute_budget_roster_checksum(
 
 
 def _validate_canonical_budget_roster() -> None:
-    corpus_checksum, _, budgets = raw_validator._representative_manifest()
+    corpus_checksum, _, budgets = raw_validator._frozen_representative_manifest()
     if corpus_checksum != _CANONICAL_BUDGET_ROSTER_CORPUS_CHECKSUM:
         raise ProtocolV4Error("canonical budget roster corpus checksum drifted")
     if len(budgets) != _CANONICAL_BUDGET_ROSTER_CELL_COUNT:

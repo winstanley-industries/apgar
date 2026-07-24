@@ -1,6 +1,6 @@
 # ADR-026: Phase 4 Equal-Budget Work and Seed Accounting
 
-**Status:** Accepted for the twelfth Phase 4 vertical slice
+**Status:** Accepted for the twelfth Phase 4 vertical slice; amended by ADR-043
 **Date:** July 20, 2026
 **Applies to:** Replay inputs and CPU route-work evidence required before the
 paired equal-budget trial runner
@@ -33,8 +33,8 @@ these replay records does not invalidate prior evidence.
   failed execution observations and the composed session checksum.
 - Preserve the version-2 seedless targeted-execution replay contract and the
   version-1 composed-session contract. Production rejects those legacy
-  versions and uses Candidate-Allocation Session v3 with Targeted Execution
-  v4. These child-authority supersessions preserve this ADR's equal-budget work
+  versions. ADR-043 further supersedes production with Candidate-Allocation
+  Session v4 and Targeted Execution v5. These child-authority supersessions preserve this ADR's equal-budget work
   and seed-accounting decision.
 - Return a checksum-covered failed Preparation v2 observation whenever a
   failure follows at least one started route query. It retains all actually

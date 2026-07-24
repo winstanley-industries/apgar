@@ -184,7 +184,7 @@ void AddStoreConfig(board_ir::StableHashBuilder& hash,
     const TargetedRegenerationExecutionConfig& config,
     const candidates::CandidateStoreConfig& store_config) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-TARGETED-REGENERATION-CPU-BATCH-V4");
+  hash.AddString("APGAR-TARGETED-REGENERATION-CPU-BATCH-V5");
   hash.AddU64(plan_checksum);
   hash.AddU64(net.id);
   hash.AddU32(net.generation);
@@ -436,7 +436,7 @@ void AddColumns(board_ir::StableHashBuilder& hash,
       .columns = std::move(columns),
   };
   observation.observation_checksum =
-      internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
+      internal::ComputeTargetedRegenerationFailedObservationChecksumV5(
           plan_checksum, config, store_config, candidate_store_publication_committed, code,
           counters, observation.columns);
   return TargetedRegenerationExecutionError{
@@ -510,6 +510,11 @@ struct FailedExecutionState {
 }  // namespace
 
 bool internal::TargetedRegenerationExecutionConfigIsValidV4(
+    const TargetedRegenerationExecutionConfig& config) noexcept {
+  return ConfigIsValid(config);
+}
+
+bool internal::TargetedRegenerationExecutionConfigIsValidV5(
     const TargetedRegenerationExecutionConfig& config) noexcept {
   return ConfigIsValid(config);
 }
@@ -676,6 +681,45 @@ std::uint64_t internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
     std::span<const TargetedRegenerationColumnRecord> columns) noexcept {
   board_ir::StableHashBuilder hash;
   hash.AddString("APGAR-TARGETED-REGENERATION-FAILED-EXECUTION-V4");
+  hash.AddU32(kTargetedRegenerationExecutionSchemaVersionV4);
+  hash.AddU64(plan_checksum);
+  AddExecutionConfig(hash, config);
+  AddStoreConfig(hash, store_config);
+  hash.AddBool(candidate_store_publication_committed);
+  hash.AddByte(static_cast<std::uint8_t>(error_code));
+  AddCounters(hash, counters);
+  AddColumns(hash, columns);
+  return hash.Finish();
+}
+
+std::uint64_t internal::ComputeTargetedRegenerationExecutionChecksumV5(
+    const TargetedRegenerationExecutionChecksumHeaderV5& header,
+    std::span<const TargetedRegenerationColumnRecord> columns) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-TARGETED-REGENERATION-EXECUTION-V5");
+  hash.AddU32(header.schema_version);
+  hash.AddU64(header.plan_checksum);
+  AddExecutionConfig(hash, header.config);
+  AddStoreConfig(hash, header.store_config);
+  hash.AddU64(header.refreshed_request_manifest_checksum);
+  hash.AddU64(header.refreshed_candidate_pool_manifest_checksum);
+  hash.AddU64(header.baseline_world_checksum);
+  hash.AddU64(header.refreshed_world_checksum);
+  hash.AddByte(static_cast<std::uint8_t>(header.disposition));
+  hash.AddByte(static_cast<std::uint8_t>(header.terminal_reason));
+  AddCounters(hash, header.counters);
+  AddColumns(hash, columns);
+  return hash.Finish();
+}
+
+std::uint64_t internal::ComputeTargetedRegenerationFailedObservationChecksumV5(
+    std::uint64_t plan_checksum, const TargetedRegenerationExecutionConfig& config,
+    const candidates::CandidateStoreConfig& store_config,
+    bool candidate_store_publication_committed, TargetedRegenerationExecutionErrorCode error_code,
+    const TargetedRegenerationExecutionCounters& counters,
+    std::span<const TargetedRegenerationColumnRecord> columns) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-TARGETED-REGENERATION-FAILED-EXECUTION-V5");
   hash.AddU32(kTargetedRegenerationExecutionSchemaVersion);
   hash.AddU64(plan_checksum);
   AddExecutionConfig(hash, config);
@@ -717,13 +761,18 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
   g_source_resource_span_visits = 0;
   if (schema_version != kTargetedRegenerationExecutionSchemaVersion) {
     return Error(TargetedRegenerationExecutionErrorCode::kUnsupportedSchema,
-                 "allocator.targeted_regeneration_execution.schema.v4",
+                 "allocator.targeted_regeneration_execution.schema.v5",
                  "Targeted-regeneration execution schema is unsupported");
   }
   if (!ConfigIsValid(config)) {
     return Error(TargetedRegenerationExecutionErrorCode::kInvalidConfiguration,
-                 "allocator.targeted_regeneration_execution.configuration.v4",
-                 "Targeted-regeneration execution configuration is outside schema-v4 bounds");
+                 "allocator.targeted_regeneration_execution.configuration.v5",
+                 "Targeted-regeneration execution configuration is outside schema-v5 bounds");
+  }
+  if (plan.schema_version() != kTargetedRegenerationPlanSchemaVersion) {
+    return Error(TargetedRegenerationExecutionErrorCode::kUnsupportedSchema,
+                 "allocator.targeted_regeneration_execution.plan_schema.v5",
+                 "Targeted-regeneration execution requires a schema-v2 plan");
   }
   if (!plan.has_active_pin_lease()) {
     return Error(TargetedRegenerationExecutionErrorCode::kInactivePlanLease,
@@ -1711,7 +1760,7 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
           final_start =
               ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
         }
-        const internal::TargetedRegenerationExecutionChecksumHeaderV4 checksum_header{
+        const internal::TargetedRegenerationExecutionChecksumHeaderV5 checksum_header{
             .schema_version = schema_version,
             .plan_checksum = plan.plan_checksum(),
             .config = config,
@@ -1726,7 +1775,7 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
             .counters = counters,
         };
         const std::uint64_t checksum =
-            internal::ComputeTargetedRegenerationExecutionChecksumV4(checksum_header, columns);
+            internal::ComputeTargetedRegenerationExecutionChecksumV5(checksum_header, columns);
         TargetedRegenerationExecution result(
             schema_version, std::move(plan), config, candidate_store.config(), disposition,
             terminal_reason, counters, std::move(columns), std::move(refreshed_pools),

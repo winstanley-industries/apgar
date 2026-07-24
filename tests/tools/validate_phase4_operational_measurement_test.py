@@ -16,6 +16,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from tests.support.phase4_current_diagnostic_budget import patch_live_diagnostic_budgets
 from tools import aggregate_phase4_matrix as matrix_aggregator
 from tools import capture_phase4_operational_measurement as capture_tool
 from tools import validate_phase4_operational_measurement as validator
@@ -158,6 +159,15 @@ def _worker_options(worker: pathlib.Path) -> SimpleNamespace:
 class Phase4OperationalMeasurementTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls.budget_patcher = patch_live_diagnostic_budgets(raw_validator, _runfile)
+        roles = {
+            (100, 4): ("exact", "same_run_raw_success"),
+            (200, 4): ("calibration", "raw_success"),
+        }
+        cls.cell_role_patcher = mock.patch.object(
+            validator, "_cell_role", side_effect=lambda case_id, pool: roles[(case_id, pool)]
+        )
+        cls.cell_role_patcher.start()
         cls.temporary = tempfile.TemporaryDirectory()
         cls.root = pathlib.Path(cls.temporary.name)
         sidecar_path = cls.root / "same-run-original.json"
@@ -276,6 +286,8 @@ class Phase4OperationalMeasurementTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.temporary.cleanup()
+        cls.cell_role_patcher.stop()
+        cls.budget_patcher.stop()
 
     def test_complete_join_has_four_execs_and_only_measured_resources(self) -> None:
         validator.validate_capture(self.capture, expected_commit=_COMMIT)
@@ -1012,7 +1024,8 @@ class Phase4OperationalMeasurementTest(unittest.TestCase):
     def test_cli_installs_canonical_publication_atomically_without_replacement(self) -> None:
         output = self.root / f"publication-{self.id().rsplit('.', 1)[-1]}.json"
         command = [
-            str(_runfile("phase4_operational_measurement_validator")),
+            str(_runfile("phase4_current_v1_diagnostic_cli")),
+            "--testing-tool=operational-measurement",
             "--raw",
             str(self.raw_path),
             "--same-run-telemetry",
@@ -1036,7 +1049,11 @@ class Phase4OperationalMeasurementTest(unittest.TestCase):
         self.assertEqual(output.read_bytes(), before)
 
         validated = subprocess.run(
-            command[:-2] + ["--validate", str(output)],
+            command[:-2]
+            + [
+                "--validate",
+                str(output),
+            ],
             check=False,
             text=True,
             capture_output=True,

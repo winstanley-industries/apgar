@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
+from tests.support.phase4_current_diagnostic_budget import patch_live_diagnostic_budgets
 from tools import validate_phase4_raw_evidence as raw_validator
 from tools import validate_phase4_same_run_decision_telemetry as validator
 
@@ -18,6 +19,7 @@ def runfile(relative: str) -> pathlib.Path:
 class Phase4SameRunDecisionTelemetryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls.budget_patcher = patch_live_diagnostic_budgets(raw_validator, runfile)
         cls.temporary = tempfile.TemporaryDirectory()
         root = pathlib.Path(cls.temporary.name)
         cls.root = root
@@ -47,6 +49,7 @@ class Phase4SameRunDecisionTelemetryTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.temporary.cleanup()
+        cls.budget_patcher.stop()
 
     def validate(self, sidecar: object) -> None:
         validator.validate_join(
@@ -80,6 +83,19 @@ class Phase4SameRunDecisionTelemetryTest(unittest.TestCase):
                 expected_repetitions=20,
                 expected_workers=4,
             )
+        type(self).budget_patcher.stop()
+        try:
+            with self.assertRaisesRegex(
+                raw_validator.EvidenceError, "associated with another command or cell"
+            ):
+                raw_validator.validate_same_run_document_v2(
+                    self.raw,
+                    allow_unstamped=True,
+                    expected_repetitions=20,
+                    expected_workers=4,
+                )
+        finally:
+            type(self).budget_patcher.start()
         raw_validator.validate_same_run_document_v2(
             self.raw,
             allow_unstamped=True,

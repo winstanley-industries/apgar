@@ -1138,8 +1138,12 @@ acceleration.
   price snapshot, and retain refreshed winners before releasing source-world
   retention. Known exact conflicts absent from the current resource vocabulary
   MUST produce resource-refinement-required rather than convergence or stall.
-- Production targeted regeneration is versioned by
-  `schemas/allocator/targeted_regeneration_execution_v4.md`. It MUST use bounded
+- Production targeted-regeneration planning is versioned by
+  `schemas/allocator/targeted_regeneration_plan_v2.md`. A retained target MUST
+  budget its price-only column plus every reachable retained hard-ban action,
+  subject to the per-net, total-column, and candidate-headroom caps.
+  Production targeted-regeneration execution is versioned by
+  `schemas/allocator/targeted_regeneration_execution_v5.md`. It MUST use bounded
   CPU A*, preflight aggregate route work, all complete price-roster projection
   passes, candidate-draft/rejection/transient bytes, and CandidateStore
   input/exact work before the first query. The same preflight MUST prove the
@@ -1164,7 +1168,7 @@ acceleration.
   into each derived target batch and policy identity; the root seed is part of
   execution and composed-session replay identity.
 - The reusable CPU contender is versioned by
-  `schemas/allocator/cpu_candidate_allocation_session_v3.md`. It MUST own the
+  `schemas/allocator/cpu_candidate_allocation_session_v4.md`. It MUST own the
   prepared CandidateStore and every lease-bearing terminal result on success,
   retain caller ownership of all inputs on failure, and preserve that
   authoritative store when a failed targeted observation says publication

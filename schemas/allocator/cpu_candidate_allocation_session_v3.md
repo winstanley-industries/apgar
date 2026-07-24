@@ -1,5 +1,7 @@
 # CPU Candidate-Allocation Session v3
 
+> Superseded for production allocation by CPU Candidate-Allocation Session v4.
+
 CPU Candidate-Allocation Session v3 is a narrow child-authority supersession
 of
 [`cpu_candidate_allocation_session_v2.md`](cpu_candidate_allocation_session_v2.md).

@@ -474,7 +474,7 @@ void ExpectStoreState(const candidates::CandidateStore& store,
     std::uint64_t final_rejection_manifest_checksum = PrimeRejectionManifest(),
     std::uint64_t final_price_state_checksum = 463, std::uint64_t final_single_world_checksum = 467,
     std::uint64_t final_multi_world_checksum = 479) {
-  return internal::ComputeCpuCandidateAllocationSessionChecksumV3(
+  return internal::ComputeCpuCandidateAllocationSessionChecksumV4(
       config, board_content_hash, workload_checksum, capacity_model_checksum, preparation_checksum,
       terminal_reason, counters, epochs, final_pool_manifest_checksum,
       final_rejection_manifest_checksum, final_price_state_checksum, final_single_world_checksum,
@@ -702,12 +702,24 @@ TEST(CpuCandidateAllocationSessionTest, RejectsLegacyArgumentAndConfigurationSch
     EXPECT_EQ(std::get<CpuCandidateAllocationSessionError>(result).code,
               CpuCandidateAllocationSessionErrorCode::kUnsupportedSchema);
   }
+  {
+    Fixture fixture = MakeFixture(1, 1);
+    CpuCandidateAllocationSessionConfig config = SessionConfig();
+    config.schema_version = kCpuCandidateAllocationSessionSchemaVersionV3;
+    auto result = ExecuteCpuCandidateAllocationSession(
+        kCpuCandidateAllocationSessionSchemaVersionV3, std::move(fixture.board),
+        std::move(fixture.workload), std::move(fixture.capacities), std::move(fixture.prepared),
+        config);
+    ASSERT_TRUE(std::holds_alternative<CpuCandidateAllocationSessionError>(result));
+    EXPECT_EQ(std::get<CpuCandidateAllocationSessionError>(result).code,
+              CpuCandidateAllocationSessionErrorCode::kUnsupportedSchema);
+  }
 }
 
 TEST(CpuCandidateAllocationSessionTest, StableSessionRepresentationIsGolden) {
   CpuCandidateAllocationSession session = Executed(MakeFixture(1, 1), SessionConfig());
 
-  EXPECT_EQ(session.session_checksum(), 16234194786355953118ULL);
+  EXPECT_EQ(session.session_checksum(), 17242808134009288068ULL);
 }
 
 TEST(CpuCandidateAllocationSessionTest,
@@ -743,15 +755,23 @@ TEST(CpuCandidateAllocationSessionTest,
       .changed_selections = 433,
   };
   const std::array epochs = {PrimeEpoch()};
-  const std::uint64_t session_checksum = internal::ComputeCpuCandidateAllocationSessionChecksumV3(
+  CpuCandidateAllocationSessionConfig v3_config = config;
+  v3_config.schema_version = kCpuCandidateAllocationSessionSchemaVersionV3;
+  const std::uint64_t v3_session_checksum =
+      internal::ComputeCpuCandidateAllocationSessionChecksumV3(
+          v3_config, 439, 443, 449, 457, CpuCandidateAllocationTerminalReason::kFixedPoint,
+          counters, epochs, 461, rejection_manifest, 463, 467, 479);
+  EXPECT_EQ(v3_session_checksum, 1096655002616802593ULL);
+
+  const std::uint64_t session_checksum = internal::ComputeCpuCandidateAllocationSessionChecksumV4(
       config, 439, 443, 449, 457, CpuCandidateAllocationTerminalReason::kFixedPoint, counters,
       epochs, 461, rejection_manifest, 463, 467, 479);
-  EXPECT_EQ(session_checksum, 1096655002616802593ULL);
+  EXPECT_EQ(session_checksum, 5346529622056530635ULL);
 
   std::array changed_epochs = epochs;
   ASSERT_TRUE(changed_epochs.front().columns.front().route_telemetry.has_value());
   ++changed_epochs.front().columns.front().route_telemetry->queue_pops;
-  EXPECT_NE(internal::ComputeCpuCandidateAllocationSessionChecksumV3(
+  EXPECT_NE(internal::ComputeCpuCandidateAllocationSessionChecksumV4(
                 config, 439, 443, 449, 457, CpuCandidateAllocationTerminalReason::kFixedPoint,
                 counters, changed_epochs, 461, rejection_manifest, 463, 467, 479),
             session_checksum);

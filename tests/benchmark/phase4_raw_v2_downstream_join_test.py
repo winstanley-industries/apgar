@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from tests.support.phase4_current_diagnostic_budget import patch_live_diagnostic_budgets
 from tools import project_phase4_operational_evidence_v2 as operational_v2
 from tools import validate_phase4_per_net_report as report_v1
 from tools import validate_phase4_per_net_report_v2 as report_v2
@@ -84,6 +85,7 @@ def _report_command(raw: dict[str, object]) -> list[str]:
 class Phase4RawV2DownstreamJoinTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls.budget_patcher = patch_live_diagnostic_budgets(raw_validator, _runfile)
         cls.temporary = tempfile.TemporaryDirectory()
         root = pathlib.Path(cls.temporary.name)
         cls.root = root
@@ -127,6 +129,7 @@ class Phase4RawV2DownstreamJoinTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.temporary.cleanup()
+        cls.budget_patcher.stop()
 
     def test_complete_three_way_join_and_projection(self) -> None:
         report_v2.validate_join(
@@ -200,7 +203,8 @@ class Phase4RawV2DownstreamJoinTest(unittest.TestCase):
             operational_v2.validate_projection(self.raw, self.sidecar, changed)
 
         command = [
-            str(_runfile("phase4_operational_projection_v2")),
+            str(_runfile("phase4_current_v1_diagnostic_cli")),
+            "--testing-tool=operational-projection-v2",
             "--raw",
             str(self.raw_path),
             "--same-run-telemetry",
@@ -216,7 +220,8 @@ class Phase4RawV2DownstreamJoinTest(unittest.TestCase):
 
         joined = subprocess.run(
             [
-                str(_runfile("phase4_per_net_report_v2_validator")),
+                str(_runfile("phase4_current_v1_diagnostic_cli")),
+                "--testing-tool=per-net-report-v2",
                 "--expected-commit",
                 _COMMIT,
                 "--raw",
@@ -246,7 +251,8 @@ class Phase4RawV2DownstreamJoinTest(unittest.TestCase):
         malformed_report.write_bytes(b"\xff")
         completed = subprocess.run(
             [
-                str(_runfile("phase4_per_net_report_v2_validator")),
+                str(_runfile("phase4_current_v1_diagnostic_cli")),
+                "--testing-tool=per-net-report-v2",
                 "--expected-commit",
                 _COMMIT,
                 "--raw",
@@ -269,7 +275,8 @@ class Phase4RawV2DownstreamJoinTest(unittest.TestCase):
         non_object_report.write_text("[]\n", encoding="utf-8")
         completed = subprocess.run(
             [
-                str(_runfile("phase4_per_net_report_v2_validator")),
+                str(_runfile("phase4_current_v1_diagnostic_cli")),
+                "--testing-tool=per-net-report-v2",
                 "--expected-commit",
                 _COMMIT,
                 "--raw",

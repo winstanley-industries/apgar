@@ -1,7 +1,7 @@
 # ADR-019: Phase 4 CPU Targeted-Regeneration Execution
 
 **Status:** Accepted for the fifth Phase 4 vertical slice; amended by bounded
-execution v2 and by ADR-026 before canonical evidence
+execution v2, ADR-026 before canonical evidence, and ADR-043
 **Date:** July 20, 2026
 **Applies to:** Authentic CPU column generation, conditional store publication,
 and deterministic progress or stall classification
@@ -24,8 +24,8 @@ resource vocabulary cannot represent.
 - Preserve `schemas/allocator/targeted_regeneration_execution_v1.md` for its
   original replay boundary and
   `schemas/allocator/targeted_regeneration_execution_v2.md` for the bounded
-  seedless boundary. Adopt
-  `schemas/allocator/targeted_regeneration_execution_v4.md` for production.
+  seedless boundary. Preserve v3 and v4 and adopt
+  `schemas/allocator/targeted_regeneration_execution_v5.md` for production.
 - Execute a plan only while its CandidateStore-issued source lease is active
   and belongs to the exact store supplied to execution.
 - Reproduce the complete source manifest, next negotiated-price snapshot, and

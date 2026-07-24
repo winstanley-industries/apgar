@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 
+from tests.support.phase4_current_diagnostic_budget import patch_live_diagnostic_budgets
 from tools import validate_phase4_exact_small_oracle as oracle
 from tools import validate_phase4_per_net_report as report_validator
 from tools import validate_phase4_raw_evidence as raw_validator
@@ -129,7 +130,12 @@ def candidate(identity: int, cost: int, resources: list[dict[str, int]]) -> dict
 class Phase4ExactSmallOracleTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls.budget_patcher = patch_live_diagnostic_budgets(raw_validator, runfile)
         cls.documents = {case_id: prepare(case_id) for case_id in (100, 101, 102)}
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.budget_patcher.stop()
 
     def test_all_exact_cases_join_and_production_is_optimal(self) -> None:
         for case_id, (raw, report, snapshot) in self.documents.items():
@@ -386,7 +392,8 @@ class Phase4ExactSmallOracleTest(unittest.TestCase):
                     json.dumps(document, separators=(",", ":")) + "\n", encoding="utf-8"
                 )
             command = [
-                str(runfile("phase4_exact_small_oracle_validator")),
+                str(runfile("phase4_current_v1_diagnostic_cli")),
+                "--testing-tool=exact-small-oracle",
                 f"--expected-commit={_COMMIT}",
                 f"--raw={paths['raw']}",
                 f"--report={paths['report']}",

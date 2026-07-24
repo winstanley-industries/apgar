@@ -355,6 +355,12 @@ int main(int argc, char** argv) {
     PrintUsage();
     return 2;
   }
+  if (publishable) {
+    std::cerr << "Phase 4 Raw-v1/Wire-v2 publication is frozen at the Session-v3 budget "
+                 "authority; current Session-v4 execution is diagnostic-only until a new "
+                 "manifest and protocol are frozen\n";
+    return 2;
+  }
   const std::string executable = SelfExecutable();
   if (executable.empty()) {
     std::cerr << "failed to resolve the source-identical worker executable\n";

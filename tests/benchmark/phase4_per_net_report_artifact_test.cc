@@ -173,9 +173,9 @@ TEST(Phase4PerNetReportArtifactTest, BuildsValidDiagnosticCompanionWithCanonical
   EXPECT_EQ(artifact.arms[0].arm, Phase4TrialArm::kSequentialBaseline);
   EXPECT_EQ(artifact.arms[1].arm, Phase4TrialArm::kReusableCandidateAllocation);
   EXPECT_NE(artifact.artifact_checksum, 0U);
-  EXPECT_EQ(artifact.artifact_checksum, 2560745716727592074ULL);
+  EXPECT_EQ(artifact.artifact_checksum, 16359200653597817931ULL);
   EXPECT_NE(artifact.source_envelope_checksum, 0U);
-  EXPECT_EQ(artifact.source_envelope_checksum, 3870793724825064983ULL);
+  EXPECT_EQ(artifact.source_envelope_checksum, 1052393676816734507ULL);
 
   const std::string first = SerializePhase4PerNetReportArtifactJsonV1(artifact);
   const std::string second = SerializePhase4PerNetReportArtifactJsonV1(artifact);

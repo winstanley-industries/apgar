@@ -1,9 +1,9 @@
 # Targeted Regeneration Execution v3
 
-> Superseded for production execution by Targeted Regeneration Execution v4.
+> Superseded for production execution by Targeted Regeneration Execution v5.
 > This frozen document preserves the version-3 seeded replay encoding. Current
-> production callers reject versions `1`, `2`, and `3` and must use schema
-> version `4`.
+> production callers reject versions `1` through `4` and must use schema
+> version `5`.
 
 Targeted Regeneration Execution v3 preserves the immutable-plan, conditional
 CAN-004 publication, refreshed-world, lease, and terminal semantics of version

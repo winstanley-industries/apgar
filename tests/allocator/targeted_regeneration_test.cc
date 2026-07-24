@@ -257,6 +257,92 @@ struct PlanningFixture {
   return *unique;
 }
 
+[[nodiscard]] PlanningFixture BuildSingletonConflictFixture() {
+  PlanningFixture fixture = BuildPlanningFixture(1);
+  EXPECT_EQ(fixture.pools.size(), 2U);
+  if (fixture.pools.size() != 2U) {
+    std::abort();
+  }
+  EXPECT_EQ(fixture.pools[0].candidates.size(), 1U);
+  EXPECT_EQ(fixture.pools[1].candidates.size(), 1U);
+  if (fixture.pools[0].candidates.size() != 1U || fixture.pools[1].candidates.size() != 1U) {
+    std::abort();
+  }
+  const std::vector<routing::EdgeResourceKey> first =
+      AtomicResources(fixture.pools[0].candidates.front());
+  EXPECT_FALSE(first.empty());
+  if (first.empty()) {
+    std::abort();
+  }
+  fixture.capacities = BuiltCapacities(BuildResourceCapacityModel(
+      kResourceCapacityModelSchemaVersion, fixture.board,
+      fixture.workload.nets().front().compiled_board, 1,
+      {ResourceCapacityOverride{.resource = first.front(), .capacity_units = 0}}));
+  fixture.initial_price_state = BuiltState(BuildInitialNegotiatedPriceState(
+      kNegotiatedPriceStateSchemaVersion, fixture.capacities, fixture.workload,
+      NegotiatedPriceConfig{
+          .present_step_per_overuse_unit = 1,
+          .history_step_per_overuse_unit = 1,
+          .maximum_price_per_resource = 100,
+          .maximum_iterations = 4,
+          .maximum_price_records = 1'000,
+      }));
+  fixture.request.capacities = fixture.capacities;
+  fixture.request.prices =
+      BuiltSnapshot(BuildPriceSnapshotForState(fixture.capacities, fixture.initial_price_state));
+  fixture.world = BuiltWorld(AllocateOneWorld(fixture.request));
+  return fixture;
+}
+
+TEST(TargetedRegenerationTest, SingletonConflictPlansPriceOnlyAndSoleBanColumns) {
+  PlanningFixture fixture = BuildSingletonConflictFixture();
+  ASSERT_EQ(fixture.world.total_overuse_units, 1U);
+  TargetedRegenerationConfig config = PlanConfig();
+  config.maximum_target_nets = 2;
+  config.maximum_columns_per_net = 2;
+  config.maximum_total_columns = 2;
+  config.maximum_resource_actions_per_net = 1;
+  config.maximum_total_resource_actions = 2;
+
+  const TargetedRegenerationPlan plan = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, config));
+  ASSERT_EQ(plan.targets().size(), 1U);
+  const TargetedRegenerationNet& target = plan.targets().front();
+  EXPECT_EQ(target.conflict_resource_count, 1U);
+  ASSERT_EQ(target.resource_actions.size(), 1U);
+  EXPECT_EQ(target.requested_columns, 2U);
+  EXPECT_EQ(plan.total_requested_columns(), 2U);
+
+  const PreparedNetRoutingContext* context = fixture.workload.FindNet(target.net);
+  ASSERT_NE(context, nullptr);
+  const std::vector<routing::NormalizedCandidateGenerationPolicy> policies = BuiltPolicies(
+      BuildTargetedRegenerationPoliciesV1(*context, plan.price_state(), 1, target, 0x4321U, 9));
+  ASSERT_EQ(policies.size(), 2U);
+  EXPECT_TRUE(policies[0].policy.banned_resources.empty());
+  ASSERT_EQ(policies[1].policy.banned_resources.size(), 1U);
+  EXPECT_EQ(policies[1].policy.banned_resources.front(), target.resource_actions[0].resource);
+}
+
+TEST(TargetedRegenerationTest, RejectsLegacyPlanSchemaBeforeStoreMutation) {
+  PlanningFixture fixture = BuildSingletonConflictFixture();
+  const std::vector<candidates::StoredCandidate> before_first =
+      fixture.store->Enumerate(fixture.request.pools[0].net);
+  const std::vector<candidates::StoredCandidate> before_second =
+      fixture.store->Enumerate(fixture.request.pools[1].net);
+  const std::vector<candidates::CandidateRejection> before_rejections = fixture.store->Rejections();
+
+  const TargetedRegenerationPlanResult result = BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersionV1, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, PlanConfig());
+  ASSERT_TRUE(std::holds_alternative<TargetedRegenerationError>(result));
+  EXPECT_EQ(std::get<TargetedRegenerationError>(result).code,
+            TargetedRegenerationErrorCode::kUnsupportedSchema);
+  EXPECT_EQ(fixture.store->Enumerate(fixture.request.pools[0].net), before_first);
+  EXPECT_EQ(fixture.store->Enumerate(fixture.request.pools[1].net), before_second);
+  EXPECT_EQ(fixture.store->Rejections(), before_rejections);
+}
+
 TEST(TargetedRegenerationTest, PlansAuthenticConflictedNetsDeterministically) {
   PlanningFixture fixture = BuildPlanningFixture(0);
   const TargetedRegenerationPlan first = BuiltPlan(BuildTargetedRegenerationPlan(
@@ -975,8 +1061,13 @@ TEST(TargetedRegenerationTest, PlanChecksumHasGoldenAndFieldSensitivity) {
   };
   const std::uint64_t golden = internal::ComputeTargetedRegenerationPlanChecksumV1(header, targets);
   EXPECT_EQ(golden, 10'960'306'375'439'121'819ULL);
+  header.schema_version = kTargetedRegenerationPlanSchemaVersion;
+  const std::uint64_t v2_golden =
+      internal::ComputeTargetedRegenerationPlanChecksumV2(header, targets);
+  EXPECT_EQ(v2_golden, 8958480360901484544ULL);
   ++header.price_state_checksum;
   EXPECT_NE(internal::ComputeTargetedRegenerationPlanChecksumV1(header, targets), golden);
+  EXPECT_NE(internal::ComputeTargetedRegenerationPlanChecksumV2(header, targets), v2_golden);
   --header.price_state_checksum;
   ++targets.front().resource_actions.front().conflict_impact;
   EXPECT_NE(internal::ComputeTargetedRegenerationPlanChecksumV1(header, targets), golden);

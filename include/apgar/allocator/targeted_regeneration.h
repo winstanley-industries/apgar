@@ -13,7 +13,15 @@
 
 namespace apgar::allocator {
 
-inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersion = 1;
+class TargetedRegenerationPlan;
+
+namespace internal {
+void SetTargetedRegenerationPlanSchemaVersionForTesting(TargetedRegenerationPlan& plan,
+                                                        std::uint32_t schema_version) noexcept;
+}  // namespace internal
+
+inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersionV1 = 1;
+inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersion = 2;
 
 struct TargetedRegenerationConfig {
   std::uint64_t maximum_target_nets = 100'000;
@@ -219,6 +227,8 @@ class TargetedRegenerationPlan {
   BuildTargetedRegenerationPlan(std::uint32_t, const NegotiatedPriceState&,
                                 const OneWorldAllocationRequest&, const OneWorldAllocation&,
                                 candidates::CandidateStore&, const TargetedRegenerationConfig&);
+  friend void internal::SetTargetedRegenerationPlanSchemaVersionForTesting(
+      TargetedRegenerationPlan&, std::uint32_t) noexcept;
   template <bool>
   friend std::variant<TargetedRegenerationPlan, TargetedRegenerationError>
   BuildTargetedRegenerationPlanImpl(std::uint32_t, const NegotiatedPriceState&,

@@ -1,5 +1,7 @@
 # Targeted Regeneration Execution v4
 
+> Superseded for production execution by Targeted Regeneration Execution v5.
+
 Targeted Regeneration Execution v4 is a narrow bound-and-identity
 supersession of
 [`targeted_regeneration_execution_v3.md`](targeted_regeneration_execution_v3.md).

@@ -152,7 +152,26 @@ template <typename Value, typename Error>
 [[nodiscard]] Phase4PairedTrialSpec SpecV2(
     Phase4TrialOrder order = Phase4TrialOrder::kBaselineFirst, std::uint32_t case_id = 10'100,
     std::uint64_t net_count = 6) {
-  return Spec(order, case_id, net_count);
+  Phase4PairedTrialSpec spec = Spec(order, case_id, net_count);
+  spec.candidate_session_config.regeneration_plan_config.maximum_columns_per_net = 2;
+  return spec;
+}
+
+[[nodiscard]] Phase4PairedTrialSpec PortalCalibrationSpecV2() {
+  Phase4CanonicalCellConfig cell;
+  cell.case_id = 10'200;
+  cell.requested_pool_size = 8;
+  cell.preparation_worker_count = 4;
+  cell.repetitions = 20;
+  cell.maximum_setup_elapsed_nanoseconds = 60'000'000'000ULL;
+  cell.external_budget = {
+      .maximum_prepared_elapsed_nanoseconds = 120'000'000'000ULL,
+      .maximum_cold_elapsed_nanoseconds = 180'000'000'000ULL,
+      .maximum_address_space_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL,
+      .maximum_peak_host_bytes = 32ULL * 1024ULL * 1024ULL * 1024ULL,
+  };
+  return ValueOf<Phase4PairedTrialSpec>(
+      BuildPhase4CanonicalTrialSpecForCorpusV2(cell, 0, Phase4TrialOrder::kBaselineFirst));
 }
 
 [[nodiscard]] std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> Preparer(
@@ -382,9 +401,10 @@ void ExpectReportMatchesPoolAndSelection(const Phase4PerNetReportV1& report,
 }
 
 [[nodiscard]] allocator::CpuCandidateAllocationSession ExecuteCandidateSessionForSources(
-    const Phase4PairedTrialSpec& spec) {
+    const Phase4PairedTrialSpec& spec,
+    Phase4RepresentativeCorpusAuthority authority = Phase4RepresentativeCorpusAuthority::kV1) {
   Phase4RepresentativeCase corpus = ValueOf<Phase4RepresentativeCase>(
-      BuildPhase4RepresentativeCaseV1(spec.case_id, {}, spec.corpus_limits));
+      BuildPhase4RepresentativeCaseForAuthority(authority, spec.case_id, {}, spec.corpus_limits));
   std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer =
       Preparer(spec.preparation_worker_count);
   allocator::PreparedCpuCandidatePools prepared =
@@ -557,7 +577,7 @@ TEST(Phase4PairedTrialTest, ExecutesAndAuthenticatesEqualOpportunityPair) {
   EXPECT_EQ(result.candidate.semantics.root_seed, spec.root_seed);
   EXPECT_NE(result.semantic_checksum, 0U);
   EXPECT_NE(result.artifact_checksum, 0U);
-  EXPECT_EQ(result.semantic_checksum, 17'059'476'489'352'091'847ULL);
+  EXPECT_EQ(result.semantic_checksum, 1'546'196'415'088'943'078ULL);
 }
 
 TEST(Phase4PairedTrialTest, CorpusAuthorityDispatchIsExplicitAndDisjoint) {
@@ -648,6 +668,78 @@ TEST(Phase4PairedTrialTest, ExecutesCorpusV2ExactPairAndBindsStructuralAuthority
       FinalizePhase4TrialArmV1(baseline, baseline_observation)));
 }
 
+TEST(Phase4PairedTrialTest, CorpusV2PortalCalibrationImprovesWithSoleBanReachable) {
+  const Phase4PairedTrialSpec spec = PortalCalibrationSpecV2();
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer(4);
+  const Phase4TrialArmDiagnosticExecutionV1 baseline = ValueOf<Phase4TrialArmDiagnosticExecutionV1>(
+      ExecutePhase4TrialArmDiagnosticForCorpusV2(Phase4TrialArm::kSequentialBaseline, spec, {}));
+  const Phase4TrialArmDiagnosticExecutionV1 candidate =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticForCorpusV2(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  const Phase4TrialArmDiagnosticExecutionV1 repeated =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticForCorpusV2(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+  EXPECT_EQ(candidate.semantics, repeated.semantics);
+  EXPECT_EQ(candidate.telemetry, repeated.telemetry);
+  EXPECT_EQ(candidate.semantics.outcome.selected_net_count,
+            baseline.semantics.outcome.selected_net_count);
+  EXPECT_EQ(baseline.semantics.outcome.selected_net_count, 64U);
+  EXPECT_EQ(candidate.semantics.outcome.selected_net_count, 64U);
+  EXPECT_EQ(baseline.semantics.outcome.no_candidate_net_count, 0U);
+  EXPECT_EQ(candidate.semantics.outcome.no_candidate_net_count, 0U);
+  EXPECT_EQ(baseline.semantics.outcome.total_overuse_units, 32U);
+  EXPECT_EQ(candidate.semantics.outcome.total_overuse_units, 21U);
+  Phase4PerNetColumnOutcomesV1 candidate_columns;
+  for (const Phase4PerNetReportV1& report : candidate.telemetry.per_net) {
+    candidate_columns.requested_columns += report.columns.requested_columns;
+    candidate_columns.executed_route_queries += report.columns.executed_route_queries;
+    candidate_columns.admitted_candidates += report.columns.admitted_candidates;
+    candidate_columns.duplicate_candidates += report.columns.duplicate_candidates;
+    candidate_columns.disconnected_columns += report.columns.disconnected_columns;
+    candidate_columns.unsupported_columns += report.columns.unsupported_columns;
+    candidate_columns.skipped_columns += report.columns.skipped_columns;
+    candidate_columns.exact_validation_rejections += report.columns.exact_validation_rejections;
+    candidate_columns.other_rejections += report.columns.other_rejections;
+  }
+  EXPECT_LT(candidate.semantics.outcome.total_overuse_units,
+            baseline.semantics.outcome.total_overuse_units)
+      << " requested=" << candidate_columns.requested_columns
+      << " queries=" << candidate_columns.executed_route_queries
+      << " admitted=" << candidate_columns.admitted_candidates
+      << " duplicate=" << candidate_columns.duplicate_candidates
+      << " disconnected=" << candidate_columns.disconnected_columns
+      << " other_rejections=" << candidate_columns.other_rejections
+      << " regen_queries=" << candidate.semantics.regeneration_route_queries
+      << " semantic_admitted=" << candidate.semantics.admitted_candidates
+      << " semantic_rejected=" << candidate.semantics.rejected_columns
+      << " final_candidates=" << candidate.semantics.final_candidate_count
+      << " terminal=" << static_cast<int>(candidate.semantics.terminal_reason)
+      << " outcome_source=" << static_cast<int>(candidate.semantics.candidate_outcome_source);
+  const auto exact_rejections = [](const Phase4TrialArmDiagnosticExecutionV1& execution) {
+    std::uint64_t total = 0;
+    for (const Phase4PerNetReportV1& report : execution.telemetry.per_net) {
+      total += report.columns.exact_validation_rejections;
+    }
+    return total;
+  };
+  EXPECT_EQ(exact_rejections(baseline), 0U);
+  EXPECT_EQ(exact_rejections(candidate), 0U);
+  EXPECT_EQ(candidate.semantics.regeneration_route_queries, 128U);
+
+  const allocator::CpuCandidateAllocationSession session =
+      ExecuteCandidateSessionForSources(spec, Phase4RepresentativeCorpusAuthority::kV2);
+  bool executed_hard_ban_column = false;
+  for (const allocator::CpuCandidateAllocationEpochRecord& epoch : session.epochs()) {
+    executed_hard_ban_column =
+        executed_hard_ban_column ||
+        std::ranges::any_of(epoch.columns,
+                            [](const allocator::TargetedRegenerationColumnRecord& column) {
+                              return column.column_index > 0 && column.route_telemetry.has_value();
+                            });
+  }
+  EXPECT_TRUE(executed_hard_ban_column);
+}
+
 TEST(Phase4PairedTrialTest, CorpusV2DiagnosticEntryPointsRemainAuthorityBound) {
   const Phase4PairedTrialSpec spec = SpecV2();
   const Phase4RepresentativeCase corpus =
@@ -732,6 +824,16 @@ TEST(Phase4PairedTrialTest, RejectsUnknownArmAndExecutionOrderBeforeDereference)
         SummaryOf(ExecutePhase4TrialArmV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
     EXPECT_EQ(error.invariant_id, "P4PAIR-ENUM-001");
   }
+}
+
+TEST(Phase4PairedTrialTest, RejectsFrozenV1BudgetPreimageAsAnExecutionSpec) {
+  Phase4PairedTrialSpec historical = Spec();
+  historical.candidate_session_config.schema_version =
+      allocator::kCpuCandidateAllocationSessionSchemaVersionV3;
+  const Phase4PairedTrialError error =
+      SummaryOf(ExecutePhase4TrialArmV1(Phase4TrialArm::kSequentialBaseline, historical, {}));
+  EXPECT_EQ(error.code, Phase4PairedTrialErrorCode::kUnsupportedSchema);
+  EXPECT_EQ(error.invariant_id, "P4PAIR-SCHEMA-001");
 }
 
 TEST(Phase4PairedTrialTest, RejectsSeedAndStoppingLineageMismatch) {
@@ -1924,7 +2026,7 @@ TEST(Phase4PairedTrialTest, CandidateReplayAuthorityRejectsStaleNestedLiveChecks
 
 TEST(Phase4PairedTrialTest, FragmentedCalibrationReplayWitnessUsesCanonicalCandidateOrder) {
   Phase4CanonicalCellConfig cell;
-  cell.case_id = 220;
+  cell.case_id = 10'220;
   cell.requested_pool_size = 4;
   cell.preparation_worker_count = kPhase4CanonicalPreparationWorkersV1;
   cell.repetitions = kPhase4CanonicalRepetitionsV1;
@@ -1936,8 +2038,9 @@ TEST(Phase4PairedTrialTest, FragmentedCalibrationReplayWitnessUsesCanonicalCandi
       .maximum_peak_host_bytes = 32ULL * 1024ULL * 1024ULL * 1024ULL,
   };
   const Phase4PairedTrialSpec spec = ValueOf<Phase4PairedTrialSpec>(
-      BuildPhase4CanonicalTrialSpecV1(cell, 0, Phase4TrialOrder::kBaselineFirst));
-  allocator::CpuCandidateAllocationSession session = ExecuteCandidateSessionForSources(spec);
+      BuildPhase4CanonicalTrialSpecForCorpusV2(cell, 0, Phase4TrialOrder::kBaselineFirst));
+  allocator::CpuCandidateAllocationSession session =
+      ExecuteCandidateSessionForSources(spec, Phase4RepresentativeCorpusAuthority::kV2);
   EXPECT_TRUE(
       allocator::internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(session).has_value());
 }

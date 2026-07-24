@@ -1,10 +1,10 @@
 # Targeted Regeneration Execution v1
 
-> Superseded for production execution by Targeted Regeneration Execution v4.
+> Superseded for production execution by Targeted Regeneration Execution v5.
 > Version 1 remains documented for replay identification, but its unbounded
 > three-argument CPU A* call is not valid for a composed allocation session.
-> Versions 2 and 3 are also preserved as historical replay contracts.
-> Current callers must use schema version `4`.
+> Versions 2 through 4 are also preserved as historical replay contracts.
+> Current callers must use schema version `5`.
 
 Targeted Regeneration Execution v1 is the CPU-reference execution and handoff
 contract for one immutable `TargetedRegenerationPlan`.

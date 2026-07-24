@@ -274,6 +274,17 @@ using Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1 =
     const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
     Phase4TrialOrder execution_order) noexcept;
 
+// Reconstructs only the frozen Representative Corpus v1 algorithm-budget
+// preimage. The returned spec deliberately names legacy Session v3 and must
+// never be passed to an execution entry point.
+[[nodiscard]] Phase4CanonicalSpecResult BuildPhase4FrozenCanonicalBudgetPreimageV1(
+    const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
+    Phase4TrialOrder execution_order) noexcept;
+
+[[nodiscard]] Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecForCorpusV2(
+    const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
+    Phase4TrialOrder execution_order) noexcept;
+
 [[nodiscard]] Phase4DurableArmFailure ReconcilePhase4TrialArmFailureV1(
     Phase4TrialArmFailure failure);
 

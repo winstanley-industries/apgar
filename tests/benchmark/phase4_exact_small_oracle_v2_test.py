@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
+from tests.support.phase4_current_diagnostic_budget import patch_live_diagnostic_budgets
 from tools import validate_phase4_exact_small_oracle as oracle_v1
 from tools import validate_phase4_exact_small_oracle_v2 as oracle_v2
 from tools import validate_phase4_raw_evidence as raw_validator
@@ -142,6 +143,7 @@ def _prepare(
 class Phase4ExactSmallOracleV2Test(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls.budget_patcher = patch_live_diagnostic_budgets(raw_validator, _runfile)
         cls.temporary = tempfile.TemporaryDirectory()
         cls.root = pathlib.Path(cls.temporary.name)
         cls.documents = {case_id: _prepare(cls.root, case_id) for case_id in (100, 101, 102)}
@@ -149,6 +151,7 @@ class Phase4ExactSmallOracleV2Test(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.temporary.cleanup()
+        cls.budget_patcher.stop()
 
     def test_all_exact_cells_publish_sidecar_bound_oracle_v2(self) -> None:
         for case_id, (raw, sidecar, report, snapshot) in self.documents.items():
@@ -260,7 +263,8 @@ class Phase4ExactSmallOracleV2Test(unittest.TestCase):
             environment.pop(variable, None)
         completed = subprocess.run(
             [
-                str(_runfile("phase4_exact_small_oracle_v2_validator").resolve(strict=True)),
+                str(_runfile("phase4_current_v1_diagnostic_cli")),
+                "--testing-tool=exact-small-oracle-v2",
                 "--expected-commit",
                 _COMMIT,
                 "--raw",
@@ -300,7 +304,8 @@ class Phase4ExactSmallOracleV2Test(unittest.TestCase):
         foreign_report_path.write_text(_canonical(foreign_report), encoding="utf-8")
         completed = subprocess.run(
             [
-                str(_runfile("phase4_exact_small_oracle_v2_validator")),
+                str(_runfile("phase4_current_v1_diagnostic_cli")),
+                "--testing-tool=exact-small-oracle-v2",
                 "--expected-commit",
                 _COMMIT,
                 "--raw",
@@ -328,7 +333,8 @@ class Phase4ExactSmallOracleV2Test(unittest.TestCase):
             stream.write(b"\n")
         completed = subprocess.run(
             [
-                str(_runfile("phase4_exact_small_oracle_v2_validator")),
+                str(_runfile("phase4_current_v1_diagnostic_cli")),
+                "--testing-tool=exact-small-oracle-v2",
                 "--expected-commit",
                 _COMMIT,
                 "--raw",
@@ -352,7 +358,8 @@ class Phase4ExactSmallOracleV2Test(unittest.TestCase):
 
         completed = subprocess.run(
             [
-                str(_runfile("phase4_exact_small_oracle_v2_validator")),
+                str(_runfile("phase4_current_v1_diagnostic_cli")),
+                "--testing-tool=exact-small-oracle-v2",
                 "--expected-commit",
                 _COMMIT,
                 "--raw",

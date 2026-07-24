@@ -56,11 +56,14 @@ using Wide = unsigned __int128;
 
 [[nodiscard]] std::uint64_t ToU64(Wide value) noexcept { return static_cast<std::uint64_t>(value); }
 
-[[nodiscard]] std::uint64_t CanonicalRootSeed(std::uint32_t case_id,
+[[nodiscard]] std::uint64_t CanonicalRootSeed(Phase4RepresentativeCorpusAuthority authority,
+                                              std::uint32_t case_id,
                                               std::uint32_t pool_size) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-PHASE4-CANONICAL-ROOT-V1");
-  hash.AddU64(Phase4RepresentativeCorpusChecksumV1());
+  hash.AddString(authority == Phase4RepresentativeCorpusAuthority::kV2
+                     ? "APGAR-PHASE4-CANONICAL-ROOT-V2"
+                     : "APGAR-PHASE4-CANONICAL-ROOT-V1");
+  hash.AddU64(Phase4RepresentativeCorpusChecksumForAuthority(authority));
   hash.AddU32(case_id);
   hash.AddU32(pool_size);
   const std::uint64_t seed = hash.Finish();
@@ -239,8 +242,10 @@ void SetChildError(Phase4DurableArmFailure* durable, std::uint8_t code, std::str
   return hash.Finish();
 }
 
-[[nodiscard]] bool ValidCell(const Phase4CanonicalCellConfig& cell) noexcept {
-  const Phase4CaseDescriptor* descriptor = FindPhase4CaseDescriptorV1(cell.case_id);
+[[nodiscard]] bool ValidCell(Phase4RepresentativeCorpusAuthority authority,
+                             const Phase4CanonicalCellConfig& cell) noexcept {
+  const Phase4CaseDescriptor* descriptor =
+      FindPhase4CaseDescriptorForAuthority(authority, cell.case_id);
   const std::uint64_t address_space_limit = cell.external_budget.maximum_address_space_bytes;
   const bool address_space_representable =
       address_space_limit <= static_cast<std::uint64_t>(std::numeric_limits<rlim_t>::max()) &&
@@ -284,14 +289,26 @@ std::uint64_t ComputePhase4DurableArmFailureChecksumV1(
 
 Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
-    Phase4TrialOrder execution_order) noexcept {
+    Phase4TrialOrder execution_order) noexcept;
+
+namespace {
+
+Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4CanonicalCellConfig& cell,
+    std::uint32_t repetition_index, Phase4TrialOrder execution_order,
+    bool frozen_v1_budget_preimage) noexcept {
   try {
-    if (!ValidCell(cell) || repetition_index >= cell.repetitions ||
+    if (frozen_v1_budget_preimage && authority != Phase4RepresentativeCorpusAuthority::kV1) {
+      return HarnessError("P4HARNESS-SPEC-001",
+                          "frozen V1 budget preimages require the V1 corpus authority");
+    }
+    if (!ValidCell(authority, cell) || repetition_index >= cell.repetitions ||
         (execution_order != Phase4TrialOrder::kBaselineFirst &&
          execution_order != Phase4TrialOrder::kCandidateFirst)) {
       return HarnessError("P4HARNESS-SPEC-001", "canonical cell or repetition is invalid");
     }
-    const Phase4CaseDescriptor* descriptor = FindPhase4CaseDescriptorV1(cell.case_id);
+    const Phase4CaseDescriptor* descriptor =
+        FindPhase4CaseDescriptorForAuthority(authority, cell.case_id);
     if (descriptor == nullptr ||
         std::find(descriptor->requested_pool_sizes.begin(),
                   descriptor->requested_pool_sizes.begin() + descriptor->requested_pool_size_count,
@@ -309,7 +326,9 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     const std::uint64_t columns_per_epoch = net_count;
     const std::uint64_t terminal_rounds = pool_size + 1;
     const std::uint64_t sweeps = pool_size + epochs;
-    const std::uint64_t root_seed = CanonicalRootSeed(cell.case_id, cell.requested_pool_size);
+    const bool corpus_v2 = authority == Phase4RepresentativeCorpusAuthority::kV2;
+    const std::uint64_t root_seed =
+        CanonicalRootSeed(authority, cell.case_id, cell.requested_pool_size);
     const Wide route_queries = static_cast<Wide>(net_count) * sweeps;
     const Wide route_work = route_queries * kPhase4CanonicalRouteWorkUnitsPerQueryV1;
     const Wide retained_capacity = static_cast<Wide>(net_count) * (pool_size + epochs);
@@ -342,10 +361,13 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
                                                  kPhase4CanonicalPreparationBytesPerBaseResourceV1;
     constexpr std::uint64_t kCandidateBytesPerNet = 64ULL * 1024ULL * 1024ULL;
     const Wide preparation_retained_bytes = static_cast<Wide>(net_count) * kCandidateBytesPerNet;
+    const Wide regeneration_policy_entries_per_candidate =
+        selected_resource_bound + (corpus_v2 ? 1U : 0U);
     const Wide regeneration_draft_bytes =
         kPhase4CanonicalCandidateDraftFixedBytesV1 +
         kPhase4CanonicalCandidateDraftBytesPerStateV1 * reconstruction_states +
-        kPhase4CanonicalCandidateDraftBytesPerPolicyEntryV1 * selected_resource_bound;
+        kPhase4CanonicalCandidateDraftBytesPerPolicyEntryV1 *
+            regeneration_policy_entries_per_candidate;
     const Wide regeneration_generated_bytes =
         static_cast<Wide>(columns_per_epoch) * regeneration_draft_bytes;
     const Wide regeneration_policy_projection_visits =
@@ -354,7 +376,8 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     const Wide regeneration_policy_entries_projection =
         static_cast<Wide>(net_count) * (selected_resource_bound + 1U);
     const bool compiled_work_bound_case =
-        descriptor->case_id == 3'001 || descriptor->case_id == 3'002;
+        descriptor->case_id == 3'001 || descriptor->case_id == 3'002 ||
+        descriptor->case_id == 13'001 || descriptor->case_id == 13'002;
     if (!compiled_work_bound_case &&
         regeneration_policy_entries_projection > kPhase4CanonicalMaximumAggregatePolicyEntriesV1) {
       return HarnessError("P4HARNESS-SPEC-003",
@@ -415,6 +438,10 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     spec.baseline_config.maximum_sweeps = static_cast<std::uint32_t>(sweeps);
     spec.baseline_config.route_limits.maximum_work_units = kPhase4CanonicalRouteWorkUnitsPerQueryV1;
     spec.baseline_config.route_limits.maximum_reconstruction_states = ToU64(reconstruction_states);
+    if (corpus_v2) {
+      spec.baseline_config.price_config.present_step_per_overuse_unit = 1;
+      spec.baseline_config.price_config.history_step_per_overuse_unit = 2'250;
+    }
     spec.baseline_config.price_config.maximum_iterations =
         static_cast<std::uint32_t>(sweeps + terminal_rounds + epochs + 4);
     spec.baseline_config.price_config.maximum_price_records = ToU64(selected_resource_bound);
@@ -468,12 +495,17 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     };
 
     auto& session = spec.candidate_session_config;
+    if (frozen_v1_budget_preimage) {
+      // This validation-only profile reconstructs the preserved V1 manifest
+      // preimage. Executable canonical specs always retain current Session v4.
+      session.schema_version = allocator::kCpuCandidateAllocationSessionSchemaVersionV3;
+    }
     session.intrinsic_cost_weight = spec.baseline_config.intrinsic_cost_weight;
     session.maximum_regeneration_epochs = epochs;
     session.price_config = spec.baseline_config.price_config;
     session.allocator_limits = spec.baseline_config.allocator_limits;
     session.regeneration_plan_config.maximum_target_nets = net_count;
-    session.regeneration_plan_config.maximum_columns_per_net = 1;
+    session.regeneration_plan_config.maximum_columns_per_net = corpus_v2 ? 2 : 1;
     session.regeneration_plan_config.maximum_total_columns = columns_per_epoch;
     session.regeneration_plan_config.maximum_resource_actions_per_net = 16;
     session.regeneration_plan_config.maximum_total_resource_actions = net_count * 16;
@@ -530,6 +562,29 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
   } catch (const std::exception&) {
     return HarnessError("P4HARNESS-SPEC-005", "unexpected exception building canonical spec");
   }
+}
+
+}  // namespace
+
+Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
+    const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
+    Phase4TrialOrder execution_order) noexcept {
+  return BuildPhase4CanonicalTrialSpecForAuthority(Phase4RepresentativeCorpusAuthority::kV1, cell,
+                                                   repetition_index, execution_order, false);
+}
+
+Phase4CanonicalSpecResult BuildPhase4FrozenCanonicalBudgetPreimageV1(
+    const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
+    Phase4TrialOrder execution_order) noexcept {
+  return BuildPhase4CanonicalTrialSpecForAuthority(Phase4RepresentativeCorpusAuthority::kV1, cell,
+                                                   repetition_index, execution_order, true);
+}
+
+Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecForCorpusV2(
+    const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
+    Phase4TrialOrder execution_order) noexcept {
+  return BuildPhase4CanonicalTrialSpecForAuthority(Phase4RepresentativeCorpusAuthority::kV2, cell,
+                                                   repetition_index, execution_order, false);
 }
 
 [[nodiscard]] Phase4ArmFailureReconciliationResultV1 TryReconcilePhase4TrialArmFailureForAuthority(
