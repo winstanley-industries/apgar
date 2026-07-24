@@ -995,6 +995,17 @@ def validate_report_against_validated_raw(
     )
 
 
+def validate_confirmatory_report_against_validated_raw(
+    raw_value: Any, report_value: Any, *, expected_commit: str
+) -> None:
+    """Structurally join a Corpus V2 report after its Raw authority was validated."""
+    if _COMMIT.fullmatch(expected_commit) is None:
+        raise EvidenceError("publication requires an independently supplied expected commit")
+    _validate_join_documents(
+        raw_value, report_value, expected_commit=expected_commit, corpus_version=2
+    )
+
+
 def validate_confirmatory_join(
     raw_value: Any,
     report_value: Any,

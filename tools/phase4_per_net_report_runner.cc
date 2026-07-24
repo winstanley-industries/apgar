@@ -20,6 +20,11 @@
 #include "apgar/benchmark/phase4_per_net_report_artifact.h"
 #include "apgar/tooling/runfiles.h"
 
+#if defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER) && \
+    !defined(APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER)
+#error "same-run confirmatory report runner requires the Corpus V2 runner authority"
+#endif
+
 namespace {
 
 using apgar::benchmark::Phase4CanonicalCellConfig;
@@ -252,10 +257,17 @@ struct Options {
 
 void PrintUsage() {
 #ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+#ifdef APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER
+  std::cerr << "phase4_confirmatory_same_run_per_net_report_runner requires explicit "
+               "--corpus_version=2, the frozen development cell (10100,4), same-run Wire 2, a "
+               "complete canonical cell, clean --apgar_commit=<40 lowercase hex>, and every "
+               "repetition-zero Raw reference checksum as strict --name=decimal arguments.\n";
+#else
   std::cerr << "phase4_confirmatory_per_net_report_runner requires explicit --corpus_version=2, "
                "the frozen development cell (10200,4), ordinary Wire 1, a complete canonical "
                "cell, clean --apgar_commit=<40 lowercase hex>, and every repetition-zero Raw "
                "reference checksum as strict --name=decimal arguments.\n";
+#endif
 #else
   std::cerr << "phase4_per_net_report_runner requires a complete canonical cell, clean "
                "--apgar_commit=<40 lowercase hex>, and every repetition-zero Raw reference "
@@ -282,8 +294,13 @@ int main(int argc, char** argv) try {
       apgar::benchmark::FindPhase4WorkloadNetRosterManifestEntryV2(options.cell.case_id) != nullptr;
   const bool corpus_scope_valid =
       options.corpus_version == apgar::benchmark::kPhase4RepresentativeCorpusVersionV2 &&
+#ifdef APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER
+      options.cell.case_id == 10100 && options.cell.requested_pool_size == 4 &&
+      options.raw_wire_schema_version == apgar::benchmark::kPhase4SameRunTrialWireSchemaVersion;
+#else
       options.cell.case_id == 10200 && options.cell.requested_pool_size == 4 &&
       options.raw_wire_schema_version == apgar::benchmark::kPhase4TrialWireSchemaVersion;
+#endif
 #else
   const bool roster_case_known =
       apgar::benchmark::FindPhase4WorkloadNetRosterManifestEntryV1(options.cell.case_id) != nullptr;

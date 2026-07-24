@@ -1681,6 +1681,45 @@ py_library(
 )
 
 py_binary(
+    name = "phase4_confirmatory_same_run_per_net_report_validator",
+    srcs = ["tools/validate_phase4_confirmatory_same_run_per_net_report.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_same_run_per_net_report.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_same_run_per_net_report_validator_lib",
+    srcs = ["tools/validate_phase4_confirmatory_same_run_per_net_report.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_binary(
     name = "phase4_per_net_report_v2_validator",
     srcs = ["tools/validate_phase4_per_net_report_v2.py"],
     data = [
@@ -2231,6 +2270,49 @@ cc_binary(
 )
 
 cc_binary(
+    name = "phase4_confirmatory_same_run_per_net_report_runner",
+    srcs = ["tools/phase4_per_net_report_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER",
+        "APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER",
+    ],
+    linkopts = ["-pthread"],
+    tags = ["manual"],
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_paired_trial",
+        ":phase4_per_net_report_artifact",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_same_run_per_net_report_test_runner",
+    testonly = True,
+    srcs = ["tools/phase4_per_net_report_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER",
+        "APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER",
+        "APGAR_PHASE4_REPORT_RUNNER_TESTING",
+    ],
+    linkopts = ["-pthread"],
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_paired_trial",
+        ":phase4_per_net_report_artifact",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
     name = "phase4_exact_small_snapshot_runner",
     srcs = ["tools/phase4_exact_small_snapshot_runner.cc"],
     copts = APGAR_COPTS,
@@ -2568,6 +2650,38 @@ py_test(
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_representative_manifest_v2_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_confirmatory_same_run_per_net_report_process_test",
+    size = "medium",
+    srcs = ["tests/benchmark/phase4_confirmatory_same_run_per_net_report_process_test.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_confirmatory_evidence_test_runner",
+        ":phase4_confirmatory_per_net_report_test_runner",
+        ":phase4_confirmatory_same_run_per_net_report_runner",
+        ":phase4_confirmatory_same_run_per_net_report_test_runner",
+        ":phase4_confirmatory_same_run_per_net_report_validator",
+        ":phase4_evidence_runner",
+    ],
+    legacy_create_init = 0,
+    main = "tests/benchmark/phase4_confirmatory_same_run_per_net_report_process_test.py",
+    python_version = "3.13",
+    tags = ["exact-address-space-envelope"],
+    deps = [
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_confirmatory_same_run_per_net_report_validator_lib",
+        ":phase4_per_net_report_v2_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
     ],
 )
 

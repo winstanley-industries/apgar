@@ -1407,6 +1407,17 @@ acceleration.
   diagnostic execution. Its publication validator MUST fully authenticate the
   Raw cell before opening the bounded regular report input, then structurally
   join both complete arm semantics and the frozen V2 EntityRef roster.
+  The separately versioned confirmatory same-run join is
+  `schemas/benchmark/phase4_confirmatory_same_run_per_net_report_publication_join_v1.md`.
+  Its runner MUST accept exactly `(10100,4)` with explicit Corpus 2 and Wire 2
+  and MUST reject every other case/pool before diagnostic execution. Its
+  publication validator MUST read and completely authenticate Raw first,
+  enforce that exact development cell, then read and completely join the
+  bounded regular same-run telemetry sidecar. Only after the sidecar join
+  succeeds may it open and structurally join the bounded regular report. Raw
+  remains outcome/timing authority, the sidecar remains exact-rejection
+  guardrail authority, and the report remains non-decision-eligible diagnostic
+  evidence.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully
