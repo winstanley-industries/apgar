@@ -21,6 +21,41 @@ preparation, and candidate-session configurations, and four external caps:
 prepared elapsed nanoseconds, cold elapsed nanoseconds, virtual address-space
 bytes, and peak resident host bytes.
 
+Representative-corpus authority is deliberately not a
+`Phase4PairedTrialSpec` field. A trusted caller selects a frozen corpus through
+an authority-specific entry point, and that selection supplies descriptor
+lookup, descriptor fingerprinting, corpus version/checksum, case construction,
+and the paired-budget preimage. Case IDs and returned evidence never select or
+override the authority. The original v1 entry points remain strict
+Representative Corpus v1 entry points and therefore preserve their byte and
+checksum behavior.
+
+The existing schema-v1 semantic carrier already includes corpus version,
+corpus checksum, case ID, descriptor fingerprint, and built-case identities.
+It may therefore carry non-decision calibration executions produced by the
+explicit Representative Corpus v2 entry points without adding a field or
+changing field order or width. These v2 entry points are not a
+decision-eligible finalization path: `FinalizePhase4TrialArmV1` and
+`AssemblePhase4PairedTrialV1` continue to reject non-v1 corpus semantics. A
+future v2 evidence controller must independently bind case checksum, Board,
+workload, capacity, and budget identities to its frozen v2 manifest before it
+may add authority-specific finalization and publication. Recomputing public
+checksums is not a substitute for that independent join.
+
+Typed failures from a v2 calibration execution use
+`TryReconcilePhase4TrialArmFailureForCorpusV2`, which applies the v2 descriptor
+fingerprint domain while preserving the unchanged Durable Arm Failure v1
+carrier. Both strict `TryReconcile` profiles first require the retained
+descriptor to exactly match the independently selected corpus roster. A
+cross-corpus payload returns an explicit association rejection that retains the
+original move-only typed failure and any authoritative CandidateStore; it is
+never flattened into a schema-invalid Durable v1 record. The legacy v1
+reconciliation entry point remains restricted to failures from its trusted v1
+executor. V2 held-out cases
+must not be executed through the calibration surface; the implementation
+rejects held-out, query-shape, stress, and imported-guardrail roles before case
+construction.
+
 The paired wire remains schema v1 when a nested allocator schema changes:
 `budget_checksum` authenticates the complete baseline, preparation, and
 candidate-session configurations, including the candidate-session schema
@@ -151,10 +186,15 @@ configuration checksum but are not executable-success promises.
 
 ## Arm execution
 
-Each call independently builds exactly one Representative Corpus v1 case.
-Case descriptor, net count, Board/workload association, corpus checksum,
-descriptor fingerprint, case checksum, Board content hash, workload checksum,
-and capacity-model checksum become paired identity.
+Each v1 decision-path call independently builds exactly one Representative
+Corpus v1 case. An explicit v2 calibration-path call instead independently
+builds exactly one Representative Corpus v2 case. Case descriptor, net count,
+Board/workload association, selected-corpus checksum, selected descriptor
+fingerprint, case checksum, Board content hash, workload checksum, and
+capacity-model checksum become the execution identity. Only the v1 profile is
+eligible for the finalization and assembly operations defined by this
+contract; v2 publication requires the independent manifest join described
+above.
 
 The baseline arm executes the named sequential reference and retains its final
 One-World board outcome. The candidate arm prepares the initial pools through

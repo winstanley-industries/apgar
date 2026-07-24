@@ -27,6 +27,13 @@ inline constexpr std::uint32_t kPhase4PrimaryPoolSizeV1 = 8;
 inline constexpr std::uint32_t kPhase4PrimaryPoolSizeV2 = 8;
 inline constexpr board_ir::DbCoord kPhase4RepresentativeLatticeStepV2 = 8;
 
+// Trusted callers select a frozen corpus explicitly. Case IDs and evidence
+// payloads are never used to infer this authority.
+enum class Phase4RepresentativeCorpusAuthority : std::uint8_t {
+  kV1 = 1,
+  kV2 = 2,
+};
+
 enum class Phase4CaseSource : std::uint8_t {
   kSynthetic = 0,
   kImportedFixture = 1,
@@ -207,6 +214,34 @@ struct Phase4RepresentativeCaseOperationalProfileV1 {
 BuildPhase4RepresentativeCaseV2WithOperationalProfileV1(
     std::uint32_t case_id, std::string_view imported_fixture,
     const Phase4RepresentativeCorpusLimits& limits,
+    Phase4RepresentativeCaseOperationalProfileV1& operational_profile);
+
+[[nodiscard]] bool IsPhase4RepresentativeCorpusAuthorityValid(
+    Phase4RepresentativeCorpusAuthority authority) noexcept;
+
+[[nodiscard]] std::uint32_t Phase4RepresentativeCorpusVersionForAuthority(
+    Phase4RepresentativeCorpusAuthority authority) noexcept;
+
+[[nodiscard]] std::span<const Phase4CaseDescriptor> Phase4CaseDescriptorsForAuthority(
+    Phase4RepresentativeCorpusAuthority authority) noexcept;
+
+[[nodiscard]] const Phase4CaseDescriptor* FindPhase4CaseDescriptorForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, std::uint32_t case_id) noexcept;
+
+[[nodiscard]] std::uint64_t FingerprintPhase4CaseDescriptorForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4CaseDescriptor& descriptor) noexcept;
+
+[[nodiscard]] std::uint64_t Phase4RepresentativeCorpusChecksumForAuthority(
+    Phase4RepresentativeCorpusAuthority authority) noexcept;
+
+[[nodiscard]] Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, std::uint32_t case_id,
+    std::string_view imported_fixture, const Phase4RepresentativeCorpusLimits& limits = {});
+
+[[nodiscard]] Phase4RepresentativeCaseResult
+BuildPhase4RepresentativeCaseForAuthorityWithOperationalProfileV1(
+    Phase4RepresentativeCorpusAuthority authority, std::uint32_t case_id,
+    std::string_view imported_fixture, const Phase4RepresentativeCorpusLimits& limits,
     Phase4RepresentativeCaseOperationalProfileV1& operational_profile);
 
 }  // namespace apgar::benchmark

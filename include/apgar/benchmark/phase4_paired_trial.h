@@ -501,6 +501,36 @@ ExecutePhase4TrialArmWithSameRunTelemetryV1(
 [[nodiscard]] Phase4PairedTrialAssemblyResult AssemblePhase4PairedTrialV1(
     Phase4TrialArmRecord baseline, Phase4TrialArmRecord candidate);
 
+// Corpus-v2 entry points are intentionally separate from the frozen v1 entry
+// points. Corpus authority is selected out of band by the entry point and is
+// never added to the frozen Phase4PairedTrialSpec v1 field set.
+[[nodiscard]] Phase4TrialArmExecutionResult ExecutePhase4TrialArmForCorpusV2(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+[[nodiscard]] Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticForCorpusV2(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+[[nodiscard]] Phase4TrialArmWithSameRunTelemetryExecutionResultV1
+ExecutePhase4TrialArmWithSameRunTelemetryForCorpusV2(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+[[nodiscard]] Phase4TrialArmOperationalProfileResultV1
+ExecutePhase4TrialArmOperationalProfileForCorpusV2(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+[[nodiscard]] Phase4TrialArmReplayAuthorityResultV1 ExecutePhase4TrialArmReplayAuthorityForCorpusV2(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+[[nodiscard]] Phase4CandidatePoolSnapshotExecutionResultV1
+ExecutePhase4CandidatePoolSnapshotForCorpusV2(
+    const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer);
+
 }  // namespace apgar::benchmark
 
 #endif  // APGAR_BENCHMARK_PHASE4_PAIRED_TRIAL_H_

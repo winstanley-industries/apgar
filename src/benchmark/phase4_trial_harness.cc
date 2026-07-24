@@ -161,15 +161,23 @@ void AddOptionalEntity(board_ir::StableHashBuilder& hash,
   return hash.Finish();
 }
 
-void SetCaseIdentity(Phase4DurableArmFailure* durable,
-                     const Phase4RepresentativeCase& case_state) noexcept {
+[[nodiscard]] bool SetCaseIdentity(Phase4RepresentativeCorpusAuthority authority,
+                                   Phase4DurableArmFailure* durable,
+                                   const Phase4RepresentativeCase& case_state) noexcept {
+  const Phase4CaseDescriptor* descriptor =
+      FindPhase4CaseDescriptorForAuthority(authority, case_state.descriptor.case_id);
+  if (descriptor == nullptr || !(*descriptor == case_state.descriptor)) {
+    return false;
+  }
   durable->has_case_identity = true;
   durable->case_id = case_state.descriptor.case_id;
-  durable->descriptor_fingerprint = FingerprintPhase4CaseDescriptorV1(case_state.descriptor);
+  durable->descriptor_fingerprint =
+      FingerprintPhase4CaseDescriptorForAuthority(authority, case_state.descriptor);
   durable->case_checksum = case_state.case_checksum;
   durable->board_content_hash = case_state.board.content_hash();
   durable->workload_checksum = case_state.workload.workload_checksum();
   durable->capacity_model_checksum = CapacityChecksum(case_state);
+  return true;
 }
 
 void SetChildError(Phase4DurableArmFailure* durable, std::uint8_t code, std::string_view invariant,
@@ -524,7 +532,16 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
   }
 }
 
-Phase4DurableArmFailure ReconcilePhase4TrialArmFailureV1(Phase4TrialArmFailure failure) {
+[[nodiscard]] Phase4ArmFailureReconciliationResultV1 TryReconcilePhase4TrialArmFailureForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, Phase4TrialArmFailure failure) {
+  const auto reject = [&failure]() -> Phase4ArmFailureReconciliationResultV1 {
+    return Phase4ArmFailureReconciliationRejectionV1{
+        .invariant_id = "P4HARNESS-FAILURE-CORPUS-001",
+        .detail =
+            "the typed failure case is absent from or differs from the selected corpus authority",
+        .failure = std::move(failure),
+    };
+  };
   Phase4DurableArmFailure durable;
   durable.summary_code = failure.summary.code;
   durable.arm = failure.summary.arm;
@@ -534,6 +551,9 @@ Phase4DurableArmFailure ReconcilePhase4TrialArmFailureV1(Phase4TrialArmFailure f
   durable.summary_detail = std::string(failure.summary.detail);
   if (std::holds_alternative<Phase4RepresentativeCorpusError>(failure.payload)) {
     const auto& child = std::get<Phase4RepresentativeCorpusError>(failure.payload);
+    if (FindPhase4CaseDescriptorForAuthority(authority, child.requested_case_id) == nullptr) {
+      return reject();
+    }
     durable.payload_kind = Phase4DurableFailurePayloadKind::kCorpus;
     SetChildError(&durable, static_cast<std::uint8_t>(child.code), child.invariant_id, child.detail,
                   child.first_unpreparable_net, child.required_compiled_nodes,
@@ -545,15 +565,19 @@ Phase4DurableArmFailure ReconcilePhase4TrialArmFailureV1(Phase4TrialArmFailure f
     durable.attempted_column_count = child.maximum_preparable_net_count;
   } else if (std::holds_alternative<Phase4SequentialFailureState>(failure.payload)) {
     const auto& state = std::get<Phase4SequentialFailureState>(failure.payload);
+    if (!SetCaseIdentity(authority, &durable, state.case_state)) {
+      return reject();
+    }
     durable.payload_kind = Phase4DurableFailurePayloadKind::kSequential;
-    SetCaseIdentity(&durable, state.case_state);
     SetChildError(&durable, static_cast<std::uint8_t>(state.error.code), state.error.invariant_id,
                   state.error.detail, state.error.net, state.error.required,
                   state.error.configured);
   } else if (std::holds_alternative<Phase4CandidatePreparationFailureState>(failure.payload)) {
     const auto& state = std::get<Phase4CandidatePreparationFailureState>(failure.payload);
+    if (!SetCaseIdentity(authority, &durable, state.case_state)) {
+      return reject();
+    }
     durable.payload_kind = Phase4DurableFailurePayloadKind::kCandidatePreparation;
-    SetCaseIdentity(&durable, state.case_state);
     SetChildError(&durable, static_cast<std::uint8_t>(state.error.code), state.error.invariant_id,
                   state.error.detail, state.error.net, state.error.required,
                   state.error.configured);
@@ -576,8 +600,10 @@ Phase4DurableArmFailure ReconcilePhase4TrialArmFailureV1(Phase4TrialArmFailure f
     }
   } else if (std::holds_alternative<Phase4CandidateSessionFailureState>(failure.payload)) {
     const auto& state = std::get<Phase4CandidateSessionFailureState>(failure.payload);
+    if (!SetCaseIdentity(authority, &durable, state.case_state)) {
+      return reject();
+    }
     durable.payload_kind = Phase4DurableFailurePayloadKind::kCandidateSession;
-    SetCaseIdentity(&durable, state.case_state);
     durable.child_error_code = static_cast<std::uint8_t>(state.error.code);
     durable.child_invariant_id = std::string(state.error.invariant_id);
     durable.child_detail = std::string(state.error.detail);
@@ -605,6 +631,34 @@ Phase4DurableArmFailure ReconcilePhase4TrialArmFailureV1(Phase4TrialArmFailure f
   }
   durable.payload_checksum = ComputePhase4DurableArmFailureChecksumV1(durable);
   return durable;
+}
+
+Phase4DurableArmFailure ReconcilePhase4TrialArmFailureV1(Phase4TrialArmFailure failure) {
+  Phase4ArmFailureReconciliationResultV1 result = TryReconcilePhase4TrialArmFailureForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV1, std::move(failure));
+  if (std::holds_alternative<Phase4DurableArmFailure>(result)) {
+    return std::get<Phase4DurableArmFailure>(std::move(result));
+  }
+  const auto& rejection = std::get<Phase4ArmFailureReconciliationRejectionV1>(result);
+  Phase4DurableArmFailure durable;
+  durable.summary_code = Phase4PairedTrialErrorCode::kCaseIdentityMismatch;
+  durable.arm = rejection.failure.summary.arm;
+  durable.summary_invariant_id = rejection.invariant_id;
+  durable.summary_detail = rejection.detail;
+  durable.payload_checksum = ComputePhase4DurableArmFailureChecksumV1(durable);
+  return durable;
+}
+
+Phase4ArmFailureReconciliationResultV1 TryReconcilePhase4TrialArmFailureV1(
+    Phase4TrialArmFailure failure) {
+  return TryReconcilePhase4TrialArmFailureForAuthority(Phase4RepresentativeCorpusAuthority::kV1,
+                                                       std::move(failure));
+}
+
+Phase4ArmFailureReconciliationResultV1 TryReconcilePhase4TrialArmFailureForCorpusV2(
+    Phase4TrialArmFailure failure) {
+  return TryReconcilePhase4TrialArmFailureForAuthority(Phase4RepresentativeCorpusAuthority::kV2,
+                                                       std::move(failure));
 }
 
 }  // namespace apgar::benchmark

@@ -149,6 +149,12 @@ template <typename Value, typename Error>
   return spec;
 }
 
+[[nodiscard]] Phase4PairedTrialSpec SpecV2(
+    Phase4TrialOrder order = Phase4TrialOrder::kBaselineFirst, std::uint32_t case_id = 10'100,
+    std::uint64_t net_count = 6) {
+  return Spec(order, case_id, net_count);
+}
+
 [[nodiscard]] std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> Preparer(
     std::uint32_t workers = 1) {
   return ValueOf<std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer>>(
@@ -554,6 +560,146 @@ TEST(Phase4PairedTrialTest, ExecutesAndAuthenticatesEqualOpportunityPair) {
   EXPECT_EQ(result.semantic_checksum, 17'059'476'489'352'091'847ULL);
 }
 
+TEST(Phase4PairedTrialTest, CorpusAuthorityDispatchIsExplicitAndDisjoint) {
+  EXPECT_TRUE(IsPhase4RepresentativeCorpusAuthorityValid(Phase4RepresentativeCorpusAuthority::kV1));
+  EXPECT_TRUE(IsPhase4RepresentativeCorpusAuthorityValid(Phase4RepresentativeCorpusAuthority::kV2));
+  EXPECT_FALSE(IsPhase4RepresentativeCorpusAuthorityValid(
+      static_cast<Phase4RepresentativeCorpusAuthority>(0)));
+  EXPECT_EQ(Phase4RepresentativeCorpusVersionForAuthority(Phase4RepresentativeCorpusAuthority::kV1),
+            kPhase4RepresentativeCorpusVersion);
+  EXPECT_EQ(Phase4RepresentativeCorpusVersionForAuthority(Phase4RepresentativeCorpusAuthority::kV2),
+            kPhase4RepresentativeCorpusVersionV2);
+  EXPECT_EQ(FindPhase4CaseDescriptorForAuthority(Phase4RepresentativeCorpusAuthority::kV1, 10'100),
+            nullptr);
+  EXPECT_EQ(FindPhase4CaseDescriptorForAuthority(Phase4RepresentativeCorpusAuthority::kV2, 100),
+            nullptr);
+  EXPECT_NE(
+      Phase4RepresentativeCorpusChecksumForAuthority(Phase4RepresentativeCorpusAuthority::kV1),
+      Phase4RepresentativeCorpusChecksumForAuthority(Phase4RepresentativeCorpusAuthority::kV2));
+}
+
+TEST(Phase4PairedTrialTest, RejectsCrossCorpusEntryPointSubstitution) {
+  const Phase4PairedTrialSpec v2_spec = SpecV2();
+  const Phase4PairedTrialError v1_with_v2_spec =
+      SummaryOf(ExecutePhase4TrialArmV1(Phase4TrialArm::kSequentialBaseline, v2_spec, {}));
+  EXPECT_EQ(v1_with_v2_spec.invariant_id, "P4PAIR-CASE-001");
+
+  const Phase4PairedTrialError v2_with_v1_spec =
+      SummaryOf(ExecutePhase4TrialArmForCorpusV2(Phase4TrialArm::kSequentialBaseline, Spec(), {}));
+  EXPECT_EQ(v2_with_v1_spec.invariant_id, "P4PAIR-CASE-001");
+
+  Phase4PairedTrialSpec v2_case_with_v1_entry_point = Spec();
+  v2_case_with_v1_entry_point.case_id = 10'100;
+  const Phase4PairedTrialError wrong_v1_case = SummaryOf(ExecutePhase4TrialArmV1(
+      Phase4TrialArm::kSequentialBaseline, v2_case_with_v1_entry_point, {}));
+  EXPECT_EQ(wrong_v1_case.invariant_id, "P4PAIR-CASE-001");
+
+  Phase4PairedTrialSpec v1_case_with_v2_entry_point = SpecV2();
+  v1_case_with_v2_entry_point.case_id = 100;
+  const Phase4PairedTrialError wrong_v2_case = SummaryOf(ExecutePhase4TrialArmForCorpusV2(
+      Phase4TrialArm::kSequentialBaseline, v1_case_with_v2_entry_point, {}));
+  EXPECT_EQ(wrong_v2_case.invariant_id, "P4PAIR-CASE-001");
+
+  for (const auto [case_id, net_count] : {std::pair{11'000U, 256U}, std::pair{12'000U, 1U},
+                                          std::pair{13'000U, 1'024U}, std::pair{14'000U, 2U}}) {
+    const Phase4PairedTrialError firewall = SummaryOf(ExecutePhase4TrialArmForCorpusV2(
+        Phase4TrialArm::kSequentialBaseline,
+        SpecV2(Phase4TrialOrder::kBaselineFirst, case_id, net_count), {}));
+    EXPECT_EQ(firewall.invariant_id, "P4PAIR-CORPUS-V2-FIREWALL-001");
+  }
+}
+
+TEST(Phase4PairedTrialTest, ExecutesCorpusV2ExactPairAndBindsStructuralAuthority) {
+  const Phase4PairedTrialSpec spec = SpecV2();
+  Phase4TrialArmExecution baseline = ValueOf<Phase4TrialArmExecution>(
+      ExecutePhase4TrialArmForCorpusV2(Phase4TrialArm::kSequentialBaseline, spec, {}));
+
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer =
+      Preparer(spec.preparation_worker_count);
+  static_cast<void>(ValueOf<Phase4TrialArmExecution>(ExecutePhase4TrialArmForCorpusV2(
+      Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get())));
+  Phase4TrialArmExecution candidate =
+      ValueOf<Phase4TrialArmExecution>(ExecutePhase4TrialArmForCorpusV2(
+          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+
+  for (const Phase4TrialArmExecution* execution : {&baseline, &candidate}) {
+    EXPECT_EQ(execution->semantics.corpus_version, kPhase4RepresentativeCorpusVersionV2);
+    EXPECT_EQ(execution->semantics.corpus_checksum, Phase4RepresentativeCorpusChecksumV2());
+    EXPECT_EQ(execution->semantics.descriptor_fingerprint,
+              FingerprintPhase4CaseDescriptorV2(*FindPhase4CaseDescriptorV2(spec.case_id)));
+    EXPECT_FALSE(internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(
+                     Phase4RepresentativeCorpusAuthority::kV2, execution->semantics)
+                     .has_value());
+    EXPECT_TRUE(internal::ValidatePhase4TrialArmSemanticsV1(execution->semantics).has_value());
+  }
+
+  Phase4TrialArmSemantics rehashed_substitution = baseline.semantics;
+  rehashed_substitution.descriptor_fingerprint =
+      FingerprintPhase4CaseDescriptorV2(*FindPhase4CaseDescriptorV2(10'101));
+  rehashed_substitution.semantic_checksum =
+      internal::ComputePhase4TrialArmSemanticChecksumV1(rehashed_substitution);
+  EXPECT_TRUE(internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(
+                  Phase4RepresentativeCorpusAuthority::kV2, rehashed_substitution)
+                  .has_value());
+
+  const Phase4ExternalResourceObservation baseline_observation =
+      SyntheticAuthorityForContractTest(baseline);
+  EXPECT_TRUE(std::holds_alternative<Phase4PairedTrialError>(
+      FinalizePhase4TrialArmV1(baseline, baseline_observation)));
+}
+
+TEST(Phase4PairedTrialTest, CorpusV2DiagnosticEntryPointsRemainAuthorityBound) {
+  const Phase4PairedTrialSpec spec = SpecV2();
+  const Phase4RepresentativeCase corpus =
+      ValueOf<Phase4RepresentativeCase>(BuildPhase4RepresentativeCaseV2(spec.case_id, {}));
+
+  const Phase4TrialArmDiagnosticExecutionV1 diagnostic =
+      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticForCorpusV2(
+          Phase4TrialArm::kSequentialBaseline, spec, {}));
+  EXPECT_FALSE(internal::ValidatePhase4ArmReportTelemetryForAuthorityV1(
+                   Phase4RepresentativeCorpusAuthority::kV2, diagnostic.semantics, corpus.workload,
+                   diagnostic.telemetry)
+                   .has_value());
+  EXPECT_TRUE(internal::ValidatePhase4ArmReportTelemetryV1(diagnostic.semantics, corpus.workload,
+                                                           diagnostic.telemetry)
+                  .has_value());
+
+  const Phase4TrialArmWithSameRunTelemetryExecutionV1 same_run =
+      ValueOf<Phase4TrialArmWithSameRunTelemetryExecutionV1>(
+          ExecutePhase4TrialArmWithSameRunTelemetryForCorpusV2(Phase4TrialArm::kSequentialBaseline,
+                                                               spec, {}));
+  EXPECT_FALSE(internal::ValidatePhase4SameRunArmDecisionTelemetryForAuthorityV1(
+                   Phase4RepresentativeCorpusAuthority::kV2, same_run.execution.semantics,
+                   corpus.workload, same_run.telemetry)
+                   .has_value());
+
+  const Phase4TrialArmOperationalProfileV1 operational =
+      ValueOf<Phase4TrialArmOperationalProfileV1>(
+          ExecutePhase4TrialArmOperationalProfileForCorpusV2(Phase4TrialArm::kSequentialBaseline,
+                                                             spec, {}));
+  EXPECT_FALSE(internal::ValidatePhase4TrialArmOperationalProfileForAuthorityV1(
+                   Phase4RepresentativeCorpusAuthority::kV2, operational)
+                   .has_value());
+
+  const Phase4TrialArmReplayAuthorityV1 replay =
+      ValueOf<Phase4TrialArmReplayAuthorityV1>(ExecutePhase4TrialArmReplayAuthorityForCorpusV2(
+          Phase4TrialArm::kSequentialBaseline, spec, {}));
+  EXPECT_FALSE(internal::ValidatePhase4TrialArmReplayAuthorityForAuthorityV1(
+                   Phase4RepresentativeCorpusAuthority::kV2, replay)
+                   .has_value());
+
+  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer =
+      Preparer(spec.preparation_worker_count);
+  const Phase4CandidatePoolSnapshotExecutionV1 snapshot =
+      ValueOf<Phase4CandidatePoolSnapshotExecutionV1>(
+          ExecutePhase4CandidatePoolSnapshotForCorpusV2(spec, {}, preparer.get()));
+  EXPECT_EQ(snapshot.semantics.corpus_version, kPhase4RepresentativeCorpusVersionV2);
+  EXPECT_FALSE(internal::ValidatePhase4ArmReportTelemetryForAuthorityV1(
+                   Phase4RepresentativeCorpusAuthority::kV2, snapshot.semantics, corpus.workload,
+                   snapshot.telemetry)
+                   .has_value());
+}
+
 TEST(Phase4PairedTrialTest, RejectsOneUnitQueryOpportunityMismatchBeforeExecution) {
   Phase4PairedTrialSpec spec = Spec();
   ++spec.candidate_session_config.regeneration_plan_config.maximum_total_columns;
@@ -652,6 +798,22 @@ TEST(Phase4PairedTrialTest, PreservesTypedCorpusAndPreparationFailures) {
     EXPECT_EQ(failure.summary.invariant_id, child.error.invariant_id);
     EXPECT_EQ(child.case_state.workload.nets().size(), 6U);
   }
+  {
+    Phase4PairedTrialSpec spec = SpecV2();
+    spec.preparation_config.store_config.maximum_candidates_per_net = 0;
+    std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+    Phase4TrialArmFailure failure =
+        ErrorOf<Phase4TrialArmExecution>(ExecutePhase4TrialArmForCorpusV2(
+            Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
+    ASSERT_TRUE(std::holds_alternative<Phase4CandidatePreparationFailureState>(failure.payload));
+    const std::uint64_t expected_fingerprint =
+        FingerprintPhase4CaseDescriptorV2(*FindPhase4CaseDescriptorV2(spec.case_id));
+    const Phase4DurableArmFailure durable = ValueOf<Phase4DurableArmFailure>(
+        TryReconcilePhase4TrialArmFailureForCorpusV2(std::move(failure)));
+    EXPECT_TRUE(durable.has_case_identity);
+    EXPECT_EQ(durable.case_id, spec.case_id);
+    EXPECT_EQ(durable.descriptor_fingerprint, expected_fingerprint);
+  }
 }
 
 TEST(Phase4PairedTrialTest, PreservesCallerStateOnSessionFailure) {
@@ -669,6 +831,46 @@ TEST(Phase4PairedTrialTest, PreservesCallerStateOnSessionFailure) {
   EXPECT_EQ(child.case_state.board.content_hash(), child.case_state.workload.board_content_hash());
   EXPECT_EQ(child.case_state.workload.nets().size(), 6U);
   EXPECT_EQ(failure.summary.invariant_id, child.error.invariant_id);
+}
+
+TEST(Phase4PairedTrialTest, CrossCorpusReconciliationRejectionPreservesOwnedCandidateStore) {
+  const auto execute_v1_failure = [] {
+    const Phase4PairedTrialSpec spec = Spec();
+    std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+    allocator::internal::SetCpuCandidateAllocationFinalAssemblyFailureForTesting(true);
+    Phase4TrialArmExecutionResult result = ExecutePhase4TrialArmV1(
+        Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get());
+    allocator::internal::SetCpuCandidateAllocationFinalAssemblyFailureForTesting(false);
+    return ErrorOf<Phase4TrialArmExecution>(std::move(result));
+  };
+  const auto execute_v2_failure = [] {
+    const Phase4PairedTrialSpec spec = SpecV2();
+    std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+    allocator::internal::SetCpuCandidateAllocationFinalAssemblyFailureForTesting(true);
+    Phase4TrialArmExecutionResult result = ExecutePhase4TrialArmForCorpusV2(
+        Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get());
+    allocator::internal::SetCpuCandidateAllocationFinalAssemblyFailureForTesting(false);
+    return ErrorOf<Phase4TrialArmExecution>(std::move(result));
+  };
+  const auto expect_preserved_store =
+      [](const Phase4ArmFailureReconciliationRejectionV1& rejection) {
+        EXPECT_EQ(rejection.invariant_id, "P4HARNESS-FAILURE-CORPUS-001");
+        ASSERT_TRUE(
+            std::holds_alternative<Phase4CandidateSessionFailureState>(rejection.failure.payload));
+        const auto& state = std::get<Phase4CandidateSessionFailureState>(rejection.failure.payload);
+        EXPECT_TRUE(state.prepared.has_candidate_store());
+        std::uint64_t candidate_count = 0;
+        for (const allocator::PreparedNetRoutingContext& context :
+             state.case_state.workload.nets()) {
+          candidate_count += state.prepared.candidate_store().Enumerate(context.request.net).size();
+        }
+        EXPECT_GT(candidate_count, 0U);
+      };
+
+  expect_preserved_store(ErrorOf<Phase4DurableArmFailure>(
+      TryReconcilePhase4TrialArmFailureForCorpusV2(execute_v1_failure())));
+  expect_preserved_store(
+      ErrorOf<Phase4DurableArmFailure>(TryReconcilePhase4TrialArmFailureV1(execute_v2_failure())));
 }
 
 TEST(Phase4PairedTrialTest, PreservationBoundaryRetainsCommittedStoreEvidence) {

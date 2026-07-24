@@ -1487,4 +1487,98 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV2WithOperationalPro
   return result;
 }
 
+bool IsPhase4RepresentativeCorpusAuthorityValid(
+    Phase4RepresentativeCorpusAuthority authority) noexcept {
+  return authority == Phase4RepresentativeCorpusAuthority::kV1 ||
+         authority == Phase4RepresentativeCorpusAuthority::kV2;
+}
+
+std::uint32_t Phase4RepresentativeCorpusVersionForAuthority(
+    Phase4RepresentativeCorpusAuthority authority) noexcept {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return kPhase4RepresentativeCorpusVersion;
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return kPhase4RepresentativeCorpusVersionV2;
+  }
+  return 0;
+}
+
+std::span<const Phase4CaseDescriptor> Phase4CaseDescriptorsForAuthority(
+    Phase4RepresentativeCorpusAuthority authority) noexcept {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return Phase4CaseDescriptorsV1();
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return Phase4CaseDescriptorsV2();
+  }
+  return {};
+}
+
+const Phase4CaseDescriptor* FindPhase4CaseDescriptorForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, std::uint32_t case_id) noexcept {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return FindPhase4CaseDescriptorV1(case_id);
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return FindPhase4CaseDescriptorV2(case_id);
+  }
+  return nullptr;
+}
+
+std::uint64_t FingerprintPhase4CaseDescriptorForAuthority(
+    Phase4RepresentativeCorpusAuthority authority,
+    const Phase4CaseDescriptor& descriptor) noexcept {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return FingerprintPhase4CaseDescriptorV1(descriptor);
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return FingerprintPhase4CaseDescriptorV2(descriptor);
+  }
+  return 0;
+}
+
+std::uint64_t Phase4RepresentativeCorpusChecksumForAuthority(
+    Phase4RepresentativeCorpusAuthority authority) noexcept {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return Phase4RepresentativeCorpusChecksumV1();
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return Phase4RepresentativeCorpusChecksumV2();
+  }
+  return 0;
+}
+
+Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, std::uint32_t case_id,
+    std::string_view imported_fixture, const Phase4RepresentativeCorpusLimits& limits) {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return BuildPhase4RepresentativeCaseV1(case_id, imported_fixture, limits);
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return BuildPhase4RepresentativeCaseV2(case_id, imported_fixture, limits);
+  }
+  return Error(Phase4RepresentativeCorpusErrorCode::kInternalInvariant,
+               "benchmark.phase4_representative.authority",
+               "Representative corpus authority is invalid", case_id);
+}
+
+Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseForAuthorityWithOperationalProfileV1(
+    Phase4RepresentativeCorpusAuthority authority, std::uint32_t case_id,
+    std::string_view imported_fixture, const Phase4RepresentativeCorpusLimits& limits,
+    Phase4RepresentativeCaseOperationalProfileV1& operational_profile) {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return BuildPhase4RepresentativeCaseWithOperationalProfileV1(case_id, imported_fixture,
+                                                                   limits, operational_profile);
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return BuildPhase4RepresentativeCaseV2WithOperationalProfileV1(case_id, imported_fixture,
+                                                                     limits, operational_profile);
+  }
+  operational_profile = {};
+  return Error(Phase4RepresentativeCorpusErrorCode::kInternalInvariant,
+               "benchmark.phase4_representative.authority",
+               "Representative corpus authority is invalid", case_id);
+}
+
 }  // namespace apgar::benchmark

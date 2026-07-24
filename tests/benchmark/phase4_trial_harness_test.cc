@@ -62,6 +62,59 @@ namespace {
   return std::get<Phase4RepresentativeCase>(std::move(result));
 }
 
+[[nodiscard]] Phase4RepresentativeCase BuiltCaseV2(std::uint32_t case_id) {
+  Phase4RepresentativeCaseResult result = BuildPhase4RepresentativeCaseV2(case_id, {});
+  EXPECT_TRUE(std::holds_alternative<Phase4RepresentativeCase>(result));
+  if (!std::holds_alternative<Phase4RepresentativeCase>(result)) {
+    std::abort();
+  }
+  return std::get<Phase4RepresentativeCase>(std::move(result));
+}
+
+[[nodiscard]] Phase4TrialArmFailure SequentialFailure(Phase4RepresentativeCase case_state) {
+  return Phase4TrialArmFailure{
+      .summary =
+          Phase4PairedTrialError{
+              .code = Phase4PairedTrialErrorCode::kSequentialExecution,
+              .invariant_id = "summary.sequential.cross-corpus",
+              .detail = "sequential failed",
+              .arm = Phase4TrialArm::kSequentialBaseline,
+              .required = 0,
+              .configured = 0,
+          },
+      .payload =
+          Phase4SequentialFailureState{
+              .case_state = std::move(case_state),
+              .error =
+                  allocator::SequentialNegotiatedBaselineError{
+                      .code = allocator::SequentialNegotiatedBaselineErrorCode::kWorkBoundExceeded,
+                      .invariant_id = "sequential.work.cross-corpus",
+                      .detail = "work exhausted",
+                      .net = std::nullopt,
+                      .required = 0,
+                      .configured = 0,
+                  },
+          },
+  };
+}
+
+[[nodiscard]] Phase4DurableArmFailure Durable(Phase4ArmFailureReconciliationResultV1 result) {
+  EXPECT_TRUE(std::holds_alternative<Phase4DurableArmFailure>(result));
+  if (!std::holds_alternative<Phase4DurableArmFailure>(result)) {
+    std::abort();
+  }
+  return std::get<Phase4DurableArmFailure>(std::move(result));
+}
+
+[[nodiscard]] Phase4ArmFailureReconciliationRejectionV1 ReconciliationRejected(
+    Phase4ArmFailureReconciliationResultV1 result) {
+  EXPECT_TRUE(std::holds_alternative<Phase4ArmFailureReconciliationRejectionV1>(result));
+  if (!std::holds_alternative<Phase4ArmFailureReconciliationRejectionV1>(result)) {
+    std::abort();
+  }
+  return std::get<Phase4ArmFailureReconciliationRejectionV1>(std::move(result));
+}
+
 TEST(Phase4TrialHarnessTest, BuildsExactEqualOpportunityMathForEveryCanonicalPool) {
   for (const std::uint32_t pool_size : {4U, 8U, 16U}) {
     const Phase4CanonicalCellConfig cell = Cell(200, pool_size);
@@ -391,6 +444,67 @@ TEST(Phase4TrialHarnessTest, ReconcilesCaseIdentityAndTypedSequentialDiagnostic)
   EXPECT_EQ(durable.child_required, 12U);
   EXPECT_EQ(durable.child_configured, 11U);
   EXPECT_NE(durable.payload_checksum, 0U);
+}
+
+TEST(Phase4TrialHarnessTest, ReconcilesCorpusV2FailureWithV2DescriptorAuthority) {
+  Phase4RepresentativeCase case_state = BuiltCaseV2(10'100);
+  const std::uint64_t expected_v2_fingerprint =
+      FingerprintPhase4CaseDescriptorV2(case_state.descriptor);
+  const std::uint64_t wrong_v1_fingerprint =
+      FingerprintPhase4CaseDescriptorV1(case_state.descriptor);
+  ASSERT_NE(expected_v2_fingerprint, wrong_v1_fingerprint);
+  Phase4TrialArmFailure failure{
+      .summary =
+          Phase4PairedTrialError{
+              .code = Phase4PairedTrialErrorCode::kSequentialExecution,
+              .invariant_id = "summary.sequential.v2",
+              .detail = "corpus-v2 sequential failed",
+              .arm = Phase4TrialArm::kSequentialBaseline,
+          },
+      .payload =
+          Phase4SequentialFailureState{
+              .case_state = std::move(case_state),
+              .error =
+                  allocator::SequentialNegotiatedBaselineError{
+                      .code = allocator::SequentialNegotiatedBaselineErrorCode::kWorkBoundExceeded,
+                      .invariant_id = "sequential.work.v2",
+                      .detail = "work exhausted",
+                      .net = std::nullopt,
+                      .required = 0,
+                      .configured = 0,
+                  },
+          },
+  };
+
+  const Phase4DurableArmFailure durable =
+      Durable(TryReconcilePhase4TrialArmFailureForCorpusV2(std::move(failure)));
+  EXPECT_TRUE(durable.has_case_identity);
+  EXPECT_EQ(durable.case_id, 10'100U);
+  EXPECT_EQ(durable.descriptor_fingerprint, expected_v2_fingerprint);
+  EXPECT_NE(durable.descriptor_fingerprint, wrong_v1_fingerprint);
+  EXPECT_NE(durable.case_checksum, 0U);
+  EXPECT_NE(durable.board_content_hash, 0U);
+  EXPECT_NE(durable.workload_checksum, 0U);
+  EXPECT_NE(durable.capacity_model_checksum, 0U);
+  EXPECT_NE(durable.payload_checksum, 0U);
+}
+
+TEST(Phase4TrialHarnessTest, RejectsCrossCorpusFailureReconciliationBidirectionally) {
+  Phase4ArmFailureReconciliationRejectionV1 v1_as_v2 = ReconciliationRejected(
+      TryReconcilePhase4TrialArmFailureForCorpusV2(SequentialFailure(BuiltCase(100))));
+  EXPECT_EQ(v1_as_v2.invariant_id, "P4HARNESS-FAILURE-CORPUS-001");
+  ASSERT_TRUE(std::holds_alternative<Phase4SequentialFailureState>(v1_as_v2.failure.payload));
+  EXPECT_EQ(std::get<Phase4SequentialFailureState>(v1_as_v2.failure.payload)
+                .case_state.descriptor.case_id,
+            100U);
+
+  Phase4ArmFailureReconciliationRejectionV1 v2_as_v1 = ReconciliationRejected(
+      TryReconcilePhase4TrialArmFailureV1(SequentialFailure(BuiltCaseV2(10'100))));
+  EXPECT_EQ(v2_as_v1.invariant_id, "P4HARNESS-FAILURE-CORPUS-001");
+  ASSERT_TRUE(std::holds_alternative<Phase4SequentialFailureState>(v2_as_v1.failure.payload));
+  EXPECT_EQ(std::get<Phase4SequentialFailureState>(v2_as_v1.failure.payload)
+                .case_state.descriptor.case_id,
+            10'100U);
 }
 
 TEST(Phase4TrialHarnessTest, PreservesFailedPreparationObservationWithoutClaimingStore) {

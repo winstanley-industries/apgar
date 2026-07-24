@@ -90,6 +90,10 @@ template <typename Payload>
   return false;
 }
 
+[[nodiscard]] bool CorpusV2CalibrationRoleAllowed(Phase4CaseRole role) noexcept {
+  return role == Phase4CaseRole::kExactOracle || role == Phase4CaseRole::kCalibration;
+}
+
 [[nodiscard]] bool ValidArm(Phase4TrialArm arm) noexcept {
   return arm == Phase4TrialArm::kSequentialBaseline ||
          arm == Phase4TrialArm::kReusableCandidateAllocation;
@@ -140,10 +144,15 @@ template <typename Payload>
   return descriptor.known_unmapped_exact_conflicts ? 1U : 0U;
 }
 
-[[nodiscard]] ValidationResult ValidateSpec(const Phase4PairedTrialSpec& spec, Phase4TrialArm arm) {
+[[nodiscard]] ValidationResult ValidateSpec(Phase4RepresentativeCorpusAuthority authority,
+                                            const Phase4PairedTrialSpec& spec, Phase4TrialArm arm) {
   if (!ValidArm(arm) || !ValidOrder(spec.execution_order)) {
     return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration, "P4PAIR-ENUM-001",
                  "the trial arm and prescribed execution order must be known v1 values", arm);
+  }
+  if (!IsPhase4RepresentativeCorpusAuthorityValid(authority)) {
+    return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration, "P4PAIR-CORPUS-001",
+                 "the trusted corpus authority selected by the entry point is invalid", arm);
   }
   if (spec.schema_version != kPhase4PairedTrialSchemaVersion ||
       spec.baseline_config.schema_version !=
@@ -155,10 +164,17 @@ template <typename Payload>
     return Error(Phase4PairedTrialErrorCode::kUnsupportedSchema, "P4PAIR-SCHEMA-001",
                  "the trial or one of its contender configurations has an unsupported schema", arm);
   }
-  const Phase4CaseDescriptor* descriptor = FindPhase4CaseDescriptorV1(spec.case_id);
+  const Phase4CaseDescriptor* descriptor =
+      FindPhase4CaseDescriptorForAuthority(authority, spec.case_id);
   if (descriptor == nullptr) {
     return Error(Phase4PairedTrialErrorCode::kUnknownCase, "P4PAIR-CASE-001",
-                 "the representative case is not in corpus v1", arm);
+                 "the representative case is not in the selected corpus", arm);
+  }
+  if (authority == Phase4RepresentativeCorpusAuthority::kV2 &&
+      !CorpusV2CalibrationRoleAllowed(descriptor->role)) {
+    return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration, "P4PAIR-CORPUS-V2-FIREWALL-001",
+                 "the pre-observation corpus-v2 surface permits only exact and calibration roles",
+                 arm);
   }
   if ((spec.requested_pool_size != 4 && spec.requested_pool_size != 8 &&
        spec.requested_pool_size != 16) ||
@@ -335,8 +351,8 @@ template <typename Payload>
       .opportunity = opportunity,
       .candidate_columns_per_epoch = ToU64(columns_per_epoch),
       .candidate_terminal_selection_rounds = terminal_rounds,
-      .budget_checksum = internal::ComputePhase4PairedBudgetChecksumV1(
-          spec, opportunity, descriptor->requested_net_count, ToU64(columns_per_epoch),
+      .budget_checksum = internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
+          authority, spec, opportunity, descriptor->requested_net_count, ToU64(columns_per_epoch),
           terminal_rounds),
   };
 }
@@ -395,14 +411,17 @@ template <typename Payload>
 }
 
 [[nodiscard]] Phase4TrialArmSemantics CommonSemantics(
-    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, const Phase4RepresentativeCase& corpus,
+    Phase4RepresentativeCorpusAuthority authority, Phase4TrialArm arm,
+    const Phase4PairedTrialSpec& spec, const Phase4RepresentativeCase& corpus,
     const ValidatedTrialSpec& validated) noexcept {
   Phase4TrialArmSemantics semantics;
   semantics.arm = arm;
   semantics.execution_order = spec.execution_order;
-  semantics.corpus_checksum = Phase4RepresentativeCorpusChecksumV1();
+  semantics.corpus_version = Phase4RepresentativeCorpusVersionForAuthority(authority);
+  semantics.corpus_checksum = Phase4RepresentativeCorpusChecksumForAuthority(authority);
   semantics.case_id = spec.case_id;
-  semantics.descriptor_fingerprint = FingerprintPhase4CaseDescriptorV1(corpus.descriptor);
+  semantics.descriptor_fingerprint =
+      FingerprintPhase4CaseDescriptorForAuthority(authority, corpus.descriptor);
   semantics.case_checksum = corpus.case_checksum;
   semantics.board_content_hash = corpus.board.content_hash();
   semantics.workload_checksum = corpus.workload.workload_checksum();
@@ -545,7 +564,8 @@ using SameRunTelemetryBuildResult =
     std::variant<Phase4SameRunArmDecisionTelemetryV1, Phase4PairedTrialError>;
 
 [[nodiscard]] SameRunTelemetryBuildResult BuildSameRunDecisionTelemetry(
-    const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialArmSemantics& semantics,
+    const allocator::MultiNetWorkload& workload,
     const std::vector<allocator::SequentialNegotiatedColumnRecord>* baseline_columns,
     const allocator::PreparedCpuCandidatePools* preparation,
     const std::vector<allocator::CpuCandidateAllocationEpochRecord>* epochs) {
@@ -627,7 +647,8 @@ using SameRunTelemetryBuildResult =
   telemetry.telemetry_checksum =
       internal::ComputePhase4SameRunArmDecisionTelemetryChecksumV1(telemetry);
   if (std::optional<Phase4PairedTrialError> error =
-          internal::ValidatePhase4SameRunArmDecisionTelemetryV1(semantics, workload, telemetry);
+          internal::ValidatePhase4SameRunArmDecisionTelemetryForAuthorityV1(authority, semantics,
+                                                                            workload, telemetry);
       error.has_value()) {
     return *error;
   }
@@ -635,14 +656,14 @@ using SameRunTelemetryBuildResult =
 }
 
 [[nodiscard]] TelemetryBuildResult BuildPerNetTelemetry(
-    const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
-    const std::vector<allocator::CandidatePool>& pools,
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialArmSemantics& semantics,
+    const allocator::MultiNetWorkload& workload, const std::vector<allocator::CandidatePool>& pools,
     const allocator::OneWorldAllocation& selected_world,
     const std::vector<allocator::SequentialNegotiatedColumnRecord>* baseline_columns,
     const allocator::PreparedCpuCandidatePools* preparation,
     const std::vector<allocator::CpuCandidateAllocationEpochRecord>* epochs) {
-  SameRunTelemetryBuildResult column_result =
-      BuildSameRunDecisionTelemetry(semantics, workload, baseline_columns, preparation, epochs);
+  SameRunTelemetryBuildResult column_result = BuildSameRunDecisionTelemetry(
+      authority, semantics, workload, baseline_columns, preparation, epochs);
   if (std::holds_alternative<Phase4PairedTrialError>(column_result)) {
     return std::get<Phase4PairedTrialError>(column_result);
   }
@@ -803,7 +824,8 @@ using SameRunTelemetryBuildResult =
 
   telemetry.telemetry_checksum = internal::ComputePhase4ArmReportTelemetryChecksumV1(telemetry);
   if (std::optional<Phase4PairedTrialError> error =
-          internal::ValidatePhase4ArmReportTelemetryV1(semantics, workload, telemetry);
+          internal::ValidatePhase4ArmReportTelemetryForAuthorityV1(authority, semantics, workload,
+                                                                   telemetry);
       error.has_value()) {
     return *error;
   }
@@ -814,13 +836,13 @@ using ArmSemanticsResult = std::variant<Phase4TrialArmSemantics, Phase4TrialArmF
 
 template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
 [[nodiscard]] ArmSemanticsResult ExecuteBaseline(
-    const Phase4PairedTrialSpec& spec, Phase4RepresentativeCase corpus,
-    const ValidatedTrialSpec& validated, Phase4ArmReportTelemetryV1* telemetry,
-    Phase4SameRunArmDecisionTelemetryV1* same_run_telemetry,
+    Phase4RepresentativeCorpusAuthority authority, const Phase4PairedTrialSpec& spec,
+    Phase4RepresentativeCase corpus, const ValidatedTrialSpec& validated,
+    Phase4ArmReportTelemetryV1* telemetry, Phase4SameRunArmDecisionTelemetryV1* same_run_telemetry,
     allocator::SequentialNegotiatedBaselineOperationalProfileV1* operational_profile,
     std::uint64_t* replay_full_preimage_checksum, Clock::time_point* release_tail_start) {
   Phase4TrialArmSemantics semantics =
-      CommonSemantics(Phase4TrialArm::kSequentialBaseline, spec, corpus, validated);
+      CommonSemantics(authority, Phase4TrialArm::kSequentialBaseline, spec, corpus, validated);
   allocator::SequentialNegotiatedBaselineExecution execution = [&]() {
     if constexpr (CaptureOperationalProfile) {
       return allocator::ExecuteSequentialNegotiatedBaselineWithOperationalProfileV1(
@@ -871,8 +893,8 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
   semantics.semantic_checksum = internal::ComputePhase4TrialArmSemanticChecksumV1(semantics);
   if (telemetry != nullptr) {
     TelemetryBuildResult built =
-        BuildPerNetTelemetry(semantics, corpus.workload, result.final_pools(), result.final_world(),
-                             &result.columns(), nullptr, nullptr);
+        BuildPerNetTelemetry(authority, semantics, corpus.workload, result.final_pools(),
+                             result.final_world(), &result.columns(), nullptr, nullptr);
     if (std::holds_alternative<Phase4PairedTrialError>(built)) {
       return ArmFailure(std::get<Phase4PairedTrialError>(built));
     }
@@ -880,7 +902,7 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
   }
   if (same_run_telemetry != nullptr) {
     SameRunTelemetryBuildResult built = BuildSameRunDecisionTelemetry(
-        semantics, corpus.workload, &result.columns(), nullptr, nullptr);
+        authority, semantics, corpus.workload, &result.columns(), nullptr, nullptr);
     if (std::holds_alternative<Phase4PairedTrialError>(built)) {
       return ArmFailure(std::get<Phase4PairedTrialError>(built));
     }
@@ -907,16 +929,17 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
 
 template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
 [[nodiscard]] ArmSemanticsResult ExecuteCandidate(
-    const Phase4PairedTrialSpec& spec, Phase4RepresentativeCase corpus,
-    const ValidatedTrialSpec& validated, allocator::PersistentCpuCandidatePoolPreparer& preparer,
-    Phase4ArmReportTelemetryV1* telemetry, Phase4SameRunArmDecisionTelemetryV1* same_run_telemetry,
+    Phase4RepresentativeCorpusAuthority authority, const Phase4PairedTrialSpec& spec,
+    Phase4RepresentativeCase corpus, const ValidatedTrialSpec& validated,
+    allocator::PersistentCpuCandidatePoolPreparer& preparer, Phase4ArmReportTelemetryV1* telemetry,
+    Phase4SameRunArmDecisionTelemetryV1* same_run_telemetry,
     Phase4CandidatePoolSnapshotExecutionV1* snapshot,
     allocator::CpuCandidatePoolPreparationOperationalProfileV1* preparation_profile,
     allocator::CpuCandidateAllocationSessionOperationalProfileV1* session_profile,
     allocator::CpuCandidateAllocationSessionReplayWitnessV1* replay_witness,
     Clock::time_point* release_tail_start) {
-  Phase4TrialArmSemantics semantics =
-      CommonSemantics(Phase4TrialArm::kReusableCandidateAllocation, spec, corpus, validated);
+  Phase4TrialArmSemantics semantics = CommonSemantics(
+      authority, Phase4TrialArm::kReusableCandidateAllocation, spec, corpus, validated);
   allocator::PreparedCpuCandidatePoolsResult preparation = [&]() {
     if constexpr (CaptureOperationalProfile) {
       return allocator::PrepareInitialCpuCandidatePoolsWithOperationalProfileV1(
@@ -1037,16 +1060,17 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
   semantics.semantic_checksum = internal::ComputePhase4TrialArmSemanticChecksumV1(semantics);
   if (telemetry != nullptr) {
     TelemetryBuildResult built =
-        BuildPerNetTelemetry(semantics, session.workload(), session.final_pools(), *chosen_world,
-                             nullptr, &session.preparation(), &session.epochs());
+        BuildPerNetTelemetry(authority, semantics, session.workload(), session.final_pools(),
+                             *chosen_world, nullptr, &session.preparation(), &session.epochs());
     if (std::holds_alternative<Phase4PairedTrialError>(built)) {
       return ArmFailure(std::get<Phase4PairedTrialError>(built));
     }
     *telemetry = std::get<Phase4ArmReportTelemetryV1>(std::move(built));
   }
   if (same_run_telemetry != nullptr) {
-    SameRunTelemetryBuildResult built = BuildSameRunDecisionTelemetry(
-        semantics, session.workload(), nullptr, &session.preparation(), &session.epochs());
+    SameRunTelemetryBuildResult built =
+        BuildSameRunDecisionTelemetry(authority, semantics, session.workload(), nullptr,
+                                      &session.preparation(), &session.epochs());
     if (std::holds_alternative<Phase4PairedTrialError>(built)) {
       return ArmFailure(std::get<Phase4PairedTrialError>(built));
     }
@@ -1330,14 +1354,29 @@ std::uint64_t ComputePhase4PairedBudgetChecksumV1(
     const Phase4PairedTrialSpec& spec, const Phase4RouteOpportunity& opportunity,
     std::uint32_t workload_net_count, std::uint64_t candidate_columns_per_epoch,
     std::uint32_t candidate_terminal_selection_rounds) {
+  return ComputePhase4PairedBudgetChecksumForAuthorityV1(
+      Phase4RepresentativeCorpusAuthority::kV1, spec, opportunity, workload_net_count,
+      candidate_columns_per_epoch, candidate_terminal_selection_rounds);
+}
+
+std::uint64_t ComputePhase4PairedBudgetChecksumForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4PairedTrialSpec& spec,
+    const Phase4RouteOpportunity& opportunity, std::uint32_t workload_net_count,
+    std::uint64_t candidate_columns_per_epoch, std::uint32_t candidate_terminal_selection_rounds) {
+  if (!IsPhase4RepresentativeCorpusAuthorityValid(authority)) {
+    return 0;
+  }
   board_ir::StableHashBuilder hash;
   hash.AddString("APGAR-PHASE4-PAIRED-BUDGET-V1");
   hash.AddU32(spec.schema_version);
-  hash.AddU32(kPhase4RepresentativeCorpusVersion);
-  hash.AddU64(Phase4RepresentativeCorpusChecksumV1());
+  hash.AddU32(Phase4RepresentativeCorpusVersionForAuthority(authority));
+  hash.AddU64(Phase4RepresentativeCorpusChecksumForAuthority(authority));
   hash.AddU32(spec.case_id);
-  const Phase4CaseDescriptor* descriptor = FindPhase4CaseDescriptorV1(spec.case_id);
-  hash.AddU64(descriptor == nullptr ? 0 : FingerprintPhase4CaseDescriptorV1(*descriptor));
+  const Phase4CaseDescriptor* descriptor =
+      FindPhase4CaseDescriptorForAuthority(authority, spec.case_id);
+  hash.AddU64(descriptor == nullptr
+                  ? 0
+                  : FingerprintPhase4CaseDescriptorForAuthority(authority, *descriptor));
   hash.AddU32(spec.requested_pool_size);
   hash.AddU64(spec.root_seed);
   hash.AddU64(spec.corpus_limits.maximum_nets);
@@ -1411,13 +1450,31 @@ std::uint64_t ComputePhase4TrialArmSemanticChecksumV1(
 
 std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmSemanticsV1(
     const Phase4TrialArmSemantics& semantics) noexcept {
+  return ValidatePhase4TrialArmSemanticsForAuthorityV1(Phase4RepresentativeCorpusAuthority::kV1,
+                                                       semantics);
+}
+
+std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmSemanticsForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority authority,
+    const Phase4TrialArmSemantics& semantics) noexcept {
+  const Phase4CaseDescriptor* descriptor =
+      FindPhase4CaseDescriptorForAuthority(authority, semantics.case_id);
+  const bool descriptor_identity_valid =
+      authority == Phase4RepresentativeCorpusAuthority::kV1 ||
+      (descriptor != nullptr &&
+       semantics.descriptor_fingerprint ==
+           FingerprintPhase4CaseDescriptorForAuthority(authority, *descriptor) &&
+       semantics.workload_net_count == descriptor->requested_net_count &&
+       DescriptorSupportsPool(*descriptor, semantics.requested_pool_size));
   if (semantics.schema_version != kPhase4PairedTrialSchemaVersion || !ValidArm(semantics.arm) ||
       !ValidOrder(semantics.execution_order) || !ValidTerminalReason(semantics.terminal_reason) ||
       !ValidOutcomeSource(semantics.candidate_outcome_source) ||
       semantics.preparation_worker_count == 0 ||
       semantics.preparation_worker_count > allocator::kMaximumPersistentCpuCandidateWorkersV1 ||
-      semantics.corpus_version != kPhase4RepresentativeCorpusVersion ||
-      semantics.corpus_checksum != Phase4RepresentativeCorpusChecksumV1() ||
+      !IsPhase4RepresentativeCorpusAuthorityValid(authority) ||
+      semantics.corpus_version != Phase4RepresentativeCorpusVersionForAuthority(authority) ||
+      semantics.corpus_checksum != Phase4RepresentativeCorpusChecksumForAuthority(authority) ||
+      !descriptor_identity_valid ||
       semantics.semantic_checksum == 0 ||
       semantics.semantic_checksum != ComputePhase4TrialArmSemanticChecksumV1(semantics)) {
     return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, "P4PAIR-FINALIZE-001",
@@ -1788,13 +1845,20 @@ std::uint64_t ComputePhase4TrialArmReplayAuthorityChecksumV1(
 
 std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmReplayAuthorityV1(
     const Phase4TrialArmReplayAuthorityV1& authority) noexcept {
+  return ValidatePhase4TrialArmReplayAuthorityForAuthorityV1(
+      Phase4RepresentativeCorpusAuthority::kV1, authority);
+}
+
+std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmReplayAuthorityForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority corpus_authority,
+    const Phase4TrialArmReplayAuthorityV1& authority) noexcept {
   const Phase4TrialArm arm = authority.semantics.arm;
   const auto invalid = [arm](std::string_view invariant_id,
                              std::string_view detail) -> std::optional<Phase4PairedTrialError> {
     return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, invariant_id, detail, arm);
   };
   if (std::optional<Phase4PairedTrialError> error =
-          ValidatePhase4TrialArmSemanticsV1(authority.semantics);
+          ValidatePhase4TrialArmSemanticsForAuthorityV1(corpus_authority, authority.semantics);
       error.has_value()) {
     return error;
   }
@@ -1859,13 +1923,20 @@ std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmReplayAuthorityV1(
 
 std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmOperationalProfileV1(
     const Phase4TrialArmOperationalProfileV1& profile) noexcept {
+  return ValidatePhase4TrialArmOperationalProfileForAuthorityV1(
+      Phase4RepresentativeCorpusAuthority::kV1, profile);
+}
+
+std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmOperationalProfileForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority authority,
+    const Phase4TrialArmOperationalProfileV1& profile) noexcept {
   const Phase4TrialArm arm = profile.execution.semantics.arm;
   const auto invalid = [arm](std::string_view invariant_id,
                              std::string_view detail) -> std::optional<Phase4PairedTrialError> {
     return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation, invariant_id, detail, arm);
   };
   if (std::optional<Phase4PairedTrialError> error =
-          ValidatePhase4TrialArmSemanticsV1(profile.execution.semantics);
+          ValidatePhase4TrialArmSemanticsForAuthorityV1(authority, profile.execution.semantics);
       error.has_value()) {
     return error;
   }
@@ -1905,7 +1976,7 @@ std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmOperationalProfileV1
   }
 
   const Phase4CaseDescriptor* descriptor =
-      FindPhase4CaseDescriptorV1(profile.execution.semantics.case_id);
+      FindPhase4CaseDescriptorForAuthority(authority, profile.execution.semantics.case_id);
   if (descriptor == nullptr || profile.case_build.case_source != descriptor->source) {
     return invalid("P4OP-CASE-SOURCE-001",
                    "operational case source does not match the frozen descriptor");
@@ -2206,7 +2277,16 @@ std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmOperationalProfileV1
 std::optional<Phase4PairedTrialError> ValidatePhase4SameRunArmDecisionTelemetryV1(
     const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
     const Phase4SameRunArmDecisionTelemetryV1& telemetry) noexcept {
-  if (std::optional<Phase4PairedTrialError> error = ValidatePhase4TrialArmSemanticsV1(semantics);
+  return ValidatePhase4SameRunArmDecisionTelemetryForAuthorityV1(
+      Phase4RepresentativeCorpusAuthority::kV1, semantics, workload, telemetry);
+}
+
+std::optional<Phase4PairedTrialError> ValidatePhase4SameRunArmDecisionTelemetryForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialArmSemantics& semantics,
+    const allocator::MultiNetWorkload& workload,
+    const Phase4SameRunArmDecisionTelemetryV1& telemetry) noexcept {
+  if (std::optional<Phase4PairedTrialError> error =
+          ValidatePhase4TrialArmSemanticsForAuthorityV1(authority, semantics);
       error.has_value()) {
     return error;
   }
@@ -2340,7 +2420,16 @@ std::uint64_t ComputePhase4ArmReportTelemetryChecksumV1(
 std::optional<Phase4PairedTrialError> ValidatePhase4ArmReportTelemetryV1(
     const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
     const Phase4ArmReportTelemetryV1& telemetry) noexcept {
-  if (std::optional<Phase4PairedTrialError> error = ValidatePhase4TrialArmSemanticsV1(semantics);
+  return ValidatePhase4ArmReportTelemetryForAuthorityV1(Phase4RepresentativeCorpusAuthority::kV1,
+                                                        semantics, workload, telemetry);
+}
+
+std::optional<Phase4PairedTrialError> ValidatePhase4ArmReportTelemetryForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialArmSemantics& semantics,
+    const allocator::MultiNetWorkload& workload,
+    const Phase4ArmReportTelemetryV1& telemetry) noexcept {
+  if (std::optional<Phase4PairedTrialError> error =
+          ValidatePhase4TrialArmSemanticsForAuthorityV1(authority, semantics);
       error.has_value()) {
     return error;
   }
@@ -2699,7 +2788,8 @@ struct ReplayAuthorityCaptureState<true> {
 
 template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
 [[nodiscard]] ArmExecutionWithOptionalTelemetryResult ExecutePhase4TrialArmImpl(
-    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    Phase4RepresentativeCorpusAuthority authority, Phase4TrialArm arm,
+    const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer, bool capture_telemetry,
     bool capture_same_run_telemetry, bool capture_snapshot) {
   try {
@@ -2708,7 +2798,7 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
                               "P4SNAPSHOT-ARM-001",
                               "pool snapshots are candidate-arm diagnostics only", arm));
     }
-    const ValidationResult validation = ValidateSpec(spec, arm);
+    const ValidationResult validation = ValidateSpec(authority, spec, arm);
     if (std::holds_alternative<Phase4PairedTrialError>(validation)) {
       return ArmFailure(std::get<Phase4PairedTrialError>(validation));
     }
@@ -2760,11 +2850,12 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
       const Clock::time_point case_start = Clock::now();
       Phase4RepresentativeCaseResult case_result = [&]() {
         if constexpr (CaptureOperationalProfile) {
-          return BuildPhase4RepresentativeCaseWithOperationalProfileV1(
-              spec.case_id, imported_fixture, spec.corpus_limits, operational.case_build);
+          return BuildPhase4RepresentativeCaseForAuthorityWithOperationalProfileV1(
+              authority, spec.case_id, imported_fixture, spec.corpus_limits,
+              operational.case_build);
         } else {
-          return BuildPhase4RepresentativeCaseV1(spec.case_id, imported_fixture,
-                                                 spec.corpus_limits);
+          return BuildPhase4RepresentativeCaseForAuthority(authority, spec.case_id,
+                                                           imported_fixture, spec.corpus_limits);
         }
       }();
       case_build_elapsed = ElapsedNanoseconds(case_start, Clock::now());
@@ -2788,26 +2879,28 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
         if (arm == Phase4TrialArm::kSequentialBaseline) {
           if constexpr (CaptureOperationalProfile) {
             return ExecuteBaseline<true, CaptureReplayAuthority>(
-                spec, std::move(corpus), validated, capture_telemetry ? &telemetry : nullptr,
+                authority, spec, std::move(corpus), validated,
+                capture_telemetry ? &telemetry : nullptr,
                 capture_same_run_telemetry ? &same_run_telemetry : nullptr, &operational.baseline,
                 replay_full_preimage_checksum, &operational.release_tail_start);
           } else {
             return ExecuteBaseline<false, CaptureReplayAuthority>(
-                spec, std::move(corpus), validated, capture_telemetry ? &telemetry : nullptr,
+                authority, spec, std::move(corpus), validated,
+                capture_telemetry ? &telemetry : nullptr,
                 capture_same_run_telemetry ? &same_run_telemetry : nullptr, nullptr,
                 replay_full_preimage_checksum, nullptr);
           }
         }
         if constexpr (CaptureOperationalProfile) {
           return ExecuteCandidate<true, CaptureReplayAuthority>(
-              spec, std::move(corpus), validated, *candidate_preparer,
+              authority, spec, std::move(corpus), validated, *candidate_preparer,
               capture_telemetry ? &telemetry : nullptr,
               capture_same_run_telemetry ? &same_run_telemetry : nullptr,
               capture_snapshot ? &snapshot : nullptr, &operational.preparation,
               &operational.session, replay_witness, &operational.release_tail_start);
         } else {
           return ExecuteCandidate<false, CaptureReplayAuthority>(
-              spec, std::move(corpus), validated, *candidate_preparer,
+              authority, spec, std::move(corpus), validated, *candidate_preparer,
               capture_telemetry ? &telemetry : nullptr,
               capture_same_run_telemetry ? &same_run_telemetry : nullptr,
               capture_snapshot ? &snapshot : nullptr, nullptr, nullptr, replay_witness, nullptr);
@@ -2941,7 +3034,7 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
       profile.profile_checksum =
           internal::ComputePhase4TrialArmOperationalProfileChecksumV1(profile);
       if (std::optional<Phase4PairedTrialError> error =
-              internal::ValidatePhase4TrialArmOperationalProfileV1(profile);
+              internal::ValidatePhase4TrialArmOperationalProfileForAuthorityV1(authority, profile);
           error.has_value()) {
         return ArmFailure(*error);
       }
@@ -2951,7 +3044,7 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
       if (arm == Phase4TrialArm::kReusableCandidateAllocation) {
         replay.full_preimage_session_checksum = replay.candidate_session_witness.session_checksum;
       }
-      Phase4TrialArmReplayAuthorityV1 authority{
+      Phase4TrialArmReplayAuthorityV1 replay_authority{
           .schema_version = kPhase4TrialArmReplayAuthoritySchemaVersion,
           .semantics = output.execution.semantics,
           .preparer_lifecycle = output.execution.preparer_lifecycle,
@@ -2960,16 +3053,17 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
           .authority_checksum = 0,
       };
       if (arm == Phase4TrialArm::kReusableCandidateAllocation) {
-        authority.candidate_session_witness = replay.candidate_session_witness;
+        replay_authority.candidate_session_witness = replay.candidate_session_witness;
       }
-      authority.authority_checksum =
-          internal::ComputePhase4TrialArmReplayAuthorityChecksumV1(authority);
+      replay_authority.authority_checksum =
+          internal::ComputePhase4TrialArmReplayAuthorityChecksumV1(replay_authority);
       if (std::optional<Phase4PairedTrialError> error =
-              internal::ValidatePhase4TrialArmReplayAuthorityV1(authority);
+              internal::ValidatePhase4TrialArmReplayAuthorityForAuthorityV1(authority,
+                                                                            replay_authority);
           error.has_value()) {
         return ArmFailure(*error);
       }
-      output.replay_authority = std::move(authority);
+      output.replay_authority = std::move(replay_authority);
     }
     return output;
   } catch (const std::bad_alloc&) {
@@ -2993,7 +3087,8 @@ Phase4TrialArmExecutionResult ExecutePhase4TrialArmV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      arm, spec, imported_fixture, candidate_preparer, false, false, false);
+      Phase4RepresentativeCorpusAuthority::kV1, arm, spec, imported_fixture, candidate_preparer,
+      false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3004,7 +3099,8 @@ Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      arm, spec, imported_fixture, candidate_preparer, true, false, false);
+      Phase4RepresentativeCorpusAuthority::kV1, arm, spec, imported_fixture, candidate_preparer,
+      true, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3024,7 +3120,8 @@ Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4TrialArmWithSam
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      arm, spec, imported_fixture, candidate_preparer, false, true, false);
+      Phase4RepresentativeCorpusAuthority::kV1, arm, spec, imported_fixture, candidate_preparer,
+      false, true, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3045,7 +3142,8 @@ Phase4TrialArmOperationalProfileResultV1 ExecutePhase4TrialArmOperationalProfile
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<true, false>(
-      arm, spec, imported_fixture, candidate_preparer, false, false, false);
+      Phase4RepresentativeCorpusAuthority::kV1, arm, spec, imported_fixture, candidate_preparer,
+      false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3062,7 +3160,8 @@ Phase4TrialArmReplayAuthorityResultV1 ExecutePhase4TrialArmReplayAuthorityV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, true>(
-      arm, spec, imported_fixture, candidate_preparer, false, false, false);
+      Phase4RepresentativeCorpusAuthority::kV1, arm, spec, imported_fixture, candidate_preparer,
+      false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3080,8 +3179,8 @@ Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotV
     const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      Phase4TrialArm::kReusableCandidateAllocation, spec, imported_fixture, candidate_preparer,
-      true, false, true);
+      Phase4RepresentativeCorpusAuthority::kV1, Phase4TrialArm::kReusableCandidateAllocation, spec,
+      imported_fixture, candidate_preparer, true, false, true);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3096,7 +3195,9 @@ Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotV
   return std::move(*output.snapshot);
 }
 
-Phase4TrialArmRecordResult FinalizePhase4TrialArmV1(
+namespace {
+
+[[nodiscard]] Phase4TrialArmRecordResult FinalizePhase4TrialArmImpl(
     Phase4TrialArmExecution execution, const Phase4ExternalResourceObservation& observation) {
   if (std::optional<Phase4PairedTrialError> error =
           ValidateExecutionObservation(execution, observation);
@@ -3115,8 +3216,8 @@ Phase4TrialArmRecordResult FinalizePhase4TrialArmV1(
   return record;
 }
 
-Phase4PairedTrialAssemblyResult AssemblePhase4PairedTrialV1(Phase4TrialArmRecord baseline,
-                                                            Phase4TrialArmRecord candidate) {
+[[nodiscard]] Phase4PairedTrialAssemblyResult AssemblePhase4PairedTrialImpl(
+    Phase4TrialArmRecord baseline, Phase4TrialArmRecord candidate) {
   if (baseline.semantics.arm != Phase4TrialArm::kSequentialBaseline ||
       candidate.semantics.arm != Phase4TrialArm::kReusableCandidateAllocation) {
     return Error(Phase4PairedTrialErrorCode::kPairMismatch, "P4PAIR-ASSEMBLE-001",
@@ -3153,6 +3254,131 @@ Phase4PairedTrialAssemblyResult AssemblePhase4PairedTrialV1(Phase4TrialArmRecord
   result.semantic_checksum = internal::ComputePhase4PairedTrialSemanticChecksumV1(result);
   result.artifact_checksum = internal::ComputePhase4PairedTrialArtifactChecksumV1(result);
   return result;
+}
+
+}  // namespace
+
+Phase4TrialArmRecordResult FinalizePhase4TrialArmV1(
+    Phase4TrialArmExecution execution, const Phase4ExternalResourceObservation& observation) {
+  return FinalizePhase4TrialArmImpl(std::move(execution), observation);
+}
+
+Phase4PairedTrialAssemblyResult AssemblePhase4PairedTrialV1(Phase4TrialArmRecord baseline,
+                                                            Phase4TrialArmRecord candidate) {
+  return AssemblePhase4PairedTrialImpl(std::move(baseline), std::move(candidate));
+}
+
+Phase4TrialArmExecutionResult ExecutePhase4TrialArmForCorpusV2(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
+      Phase4RepresentativeCorpusAuthority::kV2, arm, spec, imported_fixture, candidate_preparer,
+      false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  return std::get<ArmExecutionWithOptionalTelemetry>(std::move(result)).execution;
+}
+
+Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticForCorpusV2(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
+      Phase4RepresentativeCorpusAuthority::kV2, arm, spec, imported_fixture, candidate_preparer,
+      true, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.telemetry.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4REPORT-INTERNAL-001",
+                            "diagnostic execution completed without per-net telemetry", arm));
+  }
+  return Phase4TrialArmDiagnosticExecutionV1{
+      .semantics = std::move(output.execution.semantics),
+      .telemetry = std::move(*output.telemetry),
+  };
+}
+
+Phase4TrialArmWithSameRunTelemetryExecutionResultV1
+ExecutePhase4TrialArmWithSameRunTelemetryForCorpusV2(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
+      Phase4RepresentativeCorpusAuthority::kV2, arm, spec, imported_fixture, candidate_preparer,
+      false, true, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.same_run_telemetry.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                            "P4SAMERUN-INTERNAL-001",
+                            "same-run execution completed without decision telemetry", arm));
+  }
+  return Phase4TrialArmWithSameRunTelemetryExecutionV1{
+      .execution = std::move(output.execution),
+      .telemetry = std::move(*output.same_run_telemetry),
+  };
+}
+
+Phase4TrialArmOperationalProfileResultV1 ExecutePhase4TrialArmOperationalProfileForCorpusV2(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<true, false>(
+      Phase4RepresentativeCorpusAuthority::kV2, arm, spec, imported_fixture, candidate_preparer,
+      false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.operational_profile.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4OP-INTERNAL-001",
+                            "operational execution completed without its profile", arm));
+  }
+  return std::move(*output.operational_profile);
+}
+
+Phase4TrialArmReplayAuthorityResultV1 ExecutePhase4TrialArmReplayAuthorityForCorpusV2(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, true>(
+      Phase4RepresentativeCorpusAuthority::kV2, arm, spec, imported_fixture, candidate_preparer,
+      false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.replay_authority.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                            "P4OP-AUTHORITY-INTERNAL-001",
+                            "unmeasured replay completed without full-preimage authority", arm));
+  }
+  return std::move(*output.replay_authority);
+}
+
+Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotForCorpusV2(
+    const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
+      Phase4RepresentativeCorpusAuthority::kV2, Phase4TrialArm::kReusableCandidateAllocation, spec,
+      imported_fixture, candidate_preparer, true, false, true);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.snapshot.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                            "P4SNAPSHOT-INTERNAL-001",
+                            "candidate execution completed without a final-pool snapshot",
+                            Phase4TrialArm::kReusableCandidateAllocation));
+  }
+  return std::move(*output.snapshot);
 }
 
 }  // namespace apgar::benchmark

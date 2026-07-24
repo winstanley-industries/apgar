@@ -17,6 +17,11 @@ namespace apgar::benchmark::internal {
     std::uint32_t workload_net_count, std::uint64_t candidate_columns_per_epoch,
     std::uint32_t candidate_terminal_selection_rounds);
 
+[[nodiscard]] std::uint64_t ComputePhase4PairedBudgetChecksumForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4PairedTrialSpec& spec,
+    const Phase4RouteOpportunity& opportunity, std::uint32_t workload_net_count,
+    std::uint64_t candidate_columns_per_epoch, std::uint32_t candidate_terminal_selection_rounds);
+
 [[nodiscard]] std::uint64_t ComputePhase4CanonicalAlgorithmBudgetChecksumV1(
     const Phase4PairedTrialSpec& spec);
 
@@ -29,11 +34,20 @@ namespace apgar::benchmark::internal {
 [[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmSemanticsV1(
     const Phase4TrialArmSemantics& semantics) noexcept;
 
+[[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmSemanticsForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority authority,
+    const Phase4TrialArmSemantics& semantics) noexcept;
+
 [[nodiscard]] std::uint64_t ComputePhase4ArmReportTelemetryChecksumV1(
     const Phase4ArmReportTelemetryV1& telemetry) noexcept;
 
 [[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4ArmReportTelemetryV1(
     const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
+    const Phase4ArmReportTelemetryV1& telemetry) noexcept;
+
+[[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4ArmReportTelemetryForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialArmSemantics& semantics,
+    const allocator::MultiNetWorkload& workload,
     const Phase4ArmReportTelemetryV1& telemetry) noexcept;
 
 [[nodiscard]] std::uint64_t ComputePhase4SameRunArmDecisionTelemetryChecksumV1(
@@ -45,14 +59,30 @@ namespace apgar::benchmark::internal {
 [[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmOperationalProfileV1(
     const Phase4TrialArmOperationalProfileV1& profile) noexcept;
 
+[[nodiscard]] std::optional<Phase4PairedTrialError>
+ValidatePhase4TrialArmOperationalProfileForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority authority,
+    const Phase4TrialArmOperationalProfileV1& profile) noexcept;
+
 [[nodiscard]] std::uint64_t ComputePhase4TrialArmReplayAuthorityChecksumV1(
     const Phase4TrialArmReplayAuthorityV1& authority) noexcept;
 
 [[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4TrialArmReplayAuthorityV1(
     const Phase4TrialArmReplayAuthorityV1& authority) noexcept;
 
+[[nodiscard]] std::optional<Phase4PairedTrialError>
+ValidatePhase4TrialArmReplayAuthorityForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority corpus_authority,
+    const Phase4TrialArmReplayAuthorityV1& authority) noexcept;
+
 [[nodiscard]] std::optional<Phase4PairedTrialError> ValidatePhase4SameRunArmDecisionTelemetryV1(
     const Phase4TrialArmSemantics& semantics, const allocator::MultiNetWorkload& workload,
+    const Phase4SameRunArmDecisionTelemetryV1& telemetry) noexcept;
+
+[[nodiscard]] std::optional<Phase4PairedTrialError>
+ValidatePhase4SameRunArmDecisionTelemetryForAuthorityV1(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4TrialArmSemantics& semantics,
+    const allocator::MultiNetWorkload& workload,
     const Phase4SameRunArmDecisionTelemetryV1& telemetry) noexcept;
 
 [[nodiscard]] bool AccumulatePhase4BaselineColumnV1(

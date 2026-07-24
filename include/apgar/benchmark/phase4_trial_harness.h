@@ -116,6 +116,18 @@ struct Phase4DurableArmFailure {
   friend bool operator==(const Phase4DurableArmFailure&, const Phase4DurableArmFailure&) = default;
 };
 
+// A strict authority profile could not associate the retained typed failure
+// with its selected corpus. The original move-only failure remains owned here,
+// including any authoritative CandidateStore, so no state is discarded.
+struct Phase4ArmFailureReconciliationRejectionV1 {
+  std::string invariant_id;
+  std::string detail;
+  Phase4TrialArmFailure failure;
+};
+
+using Phase4ArmFailureReconciliationResultV1 =
+    std::variant<Phase4DurableArmFailure, Phase4ArmFailureReconciliationRejectionV1>;
+
 enum class Phase4IsolatedAttemptDisposition : std::uint8_t {
   kSuccess = 0,
   kTypedChildFailure = 1,
@@ -263,6 +275,12 @@ using Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1 =
     Phase4TrialOrder execution_order) noexcept;
 
 [[nodiscard]] Phase4DurableArmFailure ReconcilePhase4TrialArmFailureV1(
+    Phase4TrialArmFailure failure);
+
+[[nodiscard]] Phase4ArmFailureReconciliationResultV1 TryReconcilePhase4TrialArmFailureV1(
+    Phase4TrialArmFailure failure);
+
+[[nodiscard]] Phase4ArmFailureReconciliationResultV1 TryReconcilePhase4TrialArmFailureForCorpusV2(
     Phase4TrialArmFailure failure);
 
 [[nodiscard]] std::uint64_t ComputePhase4DurableArmFailureChecksumV1(
