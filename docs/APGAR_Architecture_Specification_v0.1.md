@@ -1398,6 +1398,15 @@ acceleration.
   heldout, and imported cases before worker launch. Legacy runner, wire, and
   validator entry points remain Corpus v1-only; V2 wire decoding and Raw joins
   require an explicit out-of-band Corpus v2 entry point.
+  The first confirmatory downstream join is versioned by
+  `schemas/benchmark/phase4_confirmatory_per_net_report_publication_join_v1.md`.
+  It retains Per-Net Report Artifact v1 as non-decision-eligible diagnostic
+  payload while selecting Corpus v2 explicitly. Before later report roles are
+  reviewed and committed, its runner MUST accept exactly ordinary cell
+  `(10200,4)` and MUST reject Wire 2 and every other case/pool before
+  diagnostic execution. Its publication validator MUST fully authenticate the
+  Raw cell before opening the bounded regular report input, then structurally
+  join both complete arm semantics and the frozen V2 EntityRef roster.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully

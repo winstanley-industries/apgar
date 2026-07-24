@@ -165,6 +165,42 @@ TEST(Phase4PerNetReportArtifactTest, FrozenManifestHasGoldenCoverageAndLiveRoste
   EXPECT_EQ(FindPhase4WorkloadNetRosterManifestEntryV1(3001), nullptr);
 }
 
+TEST(Phase4PerNetReportArtifactTest, ConfirmatoryManifestHasGoldenCoverageAndLiveRosterWitness) {
+  EXPECT_EQ(ComputePhase4WorkloadNetRosterManifestChecksumV2(),
+            kPhase4WorkloadNetRosterManifestChecksumV2);
+  ASSERT_EQ(Phase4WorkloadNetRosterManifestV2().size(), 38U);
+  ASSERT_EQ(Phase4WorkloadNetRosterManifestExclusionsV2().size(), 4U);
+  const std::string sidecar =
+      tooling::ReadRunfile("schemas/benchmark/phase4_workload_net_roster_manifest_v2.json")
+          .value_or(std::string{});
+  ASSERT_FALSE(sidecar.empty());
+  EXPECT_NE(sidecar.find("\"manifest_checksum\":14986327048461036142"), std::string::npos);
+  for (const Phase4CaseDescriptor& descriptor : Phase4CaseDescriptorsV2()) {
+    const auto successful =
+        std::ranges::find(Phase4WorkloadNetRosterManifestV2(), descriptor.case_id,
+                          &Phase4WorkloadNetRosterManifestEntryV1::case_id);
+    const auto excluded =
+        std::ranges::find(Phase4WorkloadNetRosterManifestExclusionsV2(), descriptor.case_id,
+                          &Phase4WorkloadNetRosterManifestExclusionV1::case_id);
+    ASSERT_NE(successful != Phase4WorkloadNetRosterManifestV2().end(),
+              excluded != Phase4WorkloadNetRosterManifestExclusionsV2().end());
+    EXPECT_EQ(successful != Phase4WorkloadNetRosterManifestV2().end()
+                  ? successful->descriptor_fingerprint
+                  : excluded->descriptor_fingerprint,
+              FingerprintPhase4CaseDescriptorV2(descriptor));
+  }
+  Phase4RepresentativeCase representative =
+      ValueOf<Phase4RepresentativeCase>(BuildPhase4RepresentativeCaseV2(10200, std::string{}));
+  const Phase4WorkloadNetRosterManifestEntryV1* frozen =
+      FindPhase4WorkloadNetRosterManifestEntryV2(10200);
+  ASSERT_NE(frozen, nullptr);
+  EXPECT_EQ(ComputePhase4WorkloadNetRosterChecksumV2(representative), frozen->roster_checksum);
+  EXPECT_EQ(frozen->roster_checksum, 718781758134362332ULL);
+  EXPECT_EQ(representative.workload.nets().size(), 64U);
+  EXPECT_EQ(FindPhase4WorkloadNetRosterManifestEntryV2(12000), nullptr);
+  EXPECT_EQ(FindPhase4WorkloadNetRosterManifestEntryV2(13001), nullptr);
+}
+
 TEST(Phase4PerNetReportArtifactTest, BuildsValidDiagnosticCompanionWithCanonicalJson) {
   const Phase4PerNetReportArtifactV1 artifact = Artifact();
   EXPECT_TRUE(

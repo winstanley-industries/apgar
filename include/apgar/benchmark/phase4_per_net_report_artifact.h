@@ -13,8 +13,10 @@
 namespace apgar::benchmark {
 
 inline constexpr std::uint32_t kPhase4WorkloadNetRosterManifestSchemaVersion = 1;
+inline constexpr std::uint32_t kPhase4WorkloadNetRosterManifestSchemaVersionV2 = 2;
 inline constexpr std::uint32_t kPhase4PerNetReportArtifactSchemaVersion = 1;
 inline constexpr std::uint64_t kPhase4WorkloadNetRosterManifestChecksumV1 = 3143811343998575433ULL;
+inline constexpr std::uint64_t kPhase4WorkloadNetRosterManifestChecksumV2 = 14986327048461036142ULL;
 
 enum class Phase4WorkloadNetRosterExclusionDispositionV1 : std::uint8_t {
   kDescriptorOnlyUnsupportedPool = 0,
@@ -113,18 +115,35 @@ using Phase4PerNetReportArtifactResultV1 =
 [[nodiscard]] std::span<const Phase4WorkloadNetRosterManifestEntryV1>
 Phase4WorkloadNetRosterManifestV1() noexcept;
 
+[[nodiscard]] std::span<const Phase4WorkloadNetRosterManifestEntryV1>
+Phase4WorkloadNetRosterManifestV2() noexcept;
+
 [[nodiscard]] std::span<const Phase4WorkloadNetRosterManifestExclusionV1>
 Phase4WorkloadNetRosterManifestExclusionsV1() noexcept;
 
+[[nodiscard]] std::span<const Phase4WorkloadNetRosterManifestExclusionV1>
+Phase4WorkloadNetRosterManifestExclusionsV2() noexcept;
+
 [[nodiscard]] std::uint64_t ComputePhase4WorkloadNetRosterManifestChecksumV1() noexcept;
+
+[[nodiscard]] std::uint64_t ComputePhase4WorkloadNetRosterManifestChecksumV2();
 
 [[nodiscard]] const Phase4WorkloadNetRosterManifestEntryV1*
 FindPhase4WorkloadNetRosterManifestEntryV1(std::uint32_t case_id) noexcept;
 
+[[nodiscard]] const Phase4WorkloadNetRosterManifestEntryV1*
+FindPhase4WorkloadNetRosterManifestEntryV2(std::uint32_t case_id) noexcept;
+
 [[nodiscard]] std::uint64_t ComputePhase4WorkloadNetRosterChecksumV1(
     const Phase4RepresentativeCase& representative_case) noexcept;
 
+[[nodiscard]] std::uint64_t ComputePhase4WorkloadNetRosterChecksumV2(
+    const Phase4RepresentativeCase& representative_case) noexcept;
+
 [[nodiscard]] std::uint64_t ComputePhase4CanonicalCellPlanChecksumV1(
+    const Phase4CanonicalCellConfig& config) noexcept;
+
+[[nodiscard]] std::uint64_t ComputePhase4CanonicalCellPlanChecksumForCorpusV2(
     const Phase4CanonicalCellConfig& config) noexcept;
 
 [[nodiscard]] std::uint64_t ComputePhase4PerNetReportArtifactChecksumV1(
@@ -147,9 +166,22 @@ FindPhase4WorkloadNetRosterManifestEntryV1(std::uint32_t case_id) noexcept;
     std::string_view imported_fixture,
     std::uint32_t raw_wire_schema_version = kPhase4TrialWireSchemaVersion);
 
+[[nodiscard]] Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactForCorpusV2(
+    const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
+    std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
+    Phase4PerNetReportRawReferenceV1 raw_reference,
+    std::array<Phase4TrialArmDiagnosticExecutionV1, 2> diagnostics,
+    std::string_view imported_fixture,
+    std::uint32_t raw_wire_schema_version = kPhase4TrialWireSchemaVersion);
+
 [[nodiscard]] std::variant<std::monostate, Phase4PerNetReportArtifactError>
 ValidatePhase4PerNetReportArtifactV1(const Phase4PerNetReportArtifactV1& artifact,
                                      std::string_view imported_fixture);
+
+[[nodiscard]] std::variant<std::monostate, Phase4PerNetReportArtifactError>
+ValidatePhase4PerNetReportArtifactForCorpusV2(const Phase4PerNetReportArtifactV1& artifact,
+                                              std::string_view imported_fixture);
 
 // Canonical compact UTF-8 JSON: one object, fixed key order, exactly one LF.
 [[nodiscard]] std::string SerializePhase4PerNetReportArtifactJsonV1(

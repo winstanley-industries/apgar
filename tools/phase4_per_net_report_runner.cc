@@ -27,6 +27,7 @@ using apgar::benchmark::Phase4CanonicalCellConfig;
 struct Options {
   bool testing_allow_unstamped = false;
   std::optional<std::string> runtime_commit;
+  std::uint32_t corpus_version = apgar::benchmark::kPhase4RepresentativeCorpusVersion;
   std::uint32_t raw_wire_schema_version = apgar::benchmark::kPhase4TrialWireSchemaVersion;
   Phase4CanonicalCellConfig cell;
   std::uint64_t raw_cell_plan_checksum = 0;
@@ -54,7 +55,7 @@ struct Options {
 }
 
 [[nodiscard]] std::optional<Options> ParseOptions(int argc, char** argv) {
-  if (argc < 2 || argc > 28) {
+  if (argc < 2 || argc > 30) {
     return std::nullopt;
   }
   Options options;
@@ -96,6 +97,14 @@ struct Options {
         return std::nullopt;
       }
       options.runtime_commit = std::string(value);
+    } else if (key == "corpus_version") {
+#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+      if (!ParseU32(value, &options.corpus_version)) {
+        return std::nullopt;
+      }
+#else
+      return std::nullopt;
+#endif
     } else if (key == "raw_wire_schema_version") {
       if (!ParseU32(value, &options.raw_wire_schema_version)) {
         return std::nullopt;
@@ -233,13 +242,25 @@ struct Options {
       return std::nullopt;
     }
   }
+#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+  if (!seen.contains("corpus_version") || !seen.contains("raw_wire_schema_version")) {
+    return std::nullopt;
+  }
+#endif
   return options;
 }
 
 void PrintUsage() {
+#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+  std::cerr << "phase4_confirmatory_per_net_report_runner requires explicit --corpus_version=2, "
+               "the frozen development cell (10200,4), ordinary Wire 1, a complete canonical "
+               "cell, clean --apgar_commit=<40 lowercase hex>, and every repetition-zero Raw "
+               "reference checksum as strict --name=decimal arguments.\n";
+#else
   std::cerr << "phase4_per_net_report_runner requires a complete canonical cell, clean "
                "--apgar_commit=<40 lowercase hex>, and every repetition-zero Raw reference "
                "checksum as strict --name=decimal arguments.\n";
+#endif
 }
 
 [[nodiscard]] int PrintArmFailure(const apgar::benchmark::Phase4TrialArmFailure& failure) {
@@ -256,16 +277,26 @@ int main(int argc, char** argv) try {
     return 2;
   }
   Options& options = *parsed;
+#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+  const bool roster_case_known =
+      apgar::benchmark::FindPhase4WorkloadNetRosterManifestEntryV2(options.cell.case_id) != nullptr;
+  const bool corpus_scope_valid =
+      options.corpus_version == apgar::benchmark::kPhase4RepresentativeCorpusVersionV2 &&
+      options.cell.case_id == 10200 && options.cell.requested_pool_size == 4 &&
+      options.raw_wire_schema_version == apgar::benchmark::kPhase4TrialWireSchemaVersion;
+#else
+  const bool roster_case_known =
+      apgar::benchmark::FindPhase4WorkloadNetRosterManifestEntryV1(options.cell.case_id) != nullptr;
+  const bool corpus_scope_valid = true;
+#endif
   if (!options.runtime_commit.has_value() ||
       !apgar::benchmark::IsFullLowercaseGitCommit(*options.runtime_commit) ||
       options.cell.case_id == 0 || options.cell.requested_pool_size == 0 ||
       options.cell.preparation_worker_count !=
           apgar::benchmark::kPhase4CanonicalPreparationWorkersV1 ||
       options.cell.repetitions != apgar::benchmark::kPhase4CanonicalRepetitionsV1 ||
-      apgar::benchmark::FindPhase4WorkloadNetRosterManifestEntryV1(options.cell.case_id) ==
-          nullptr ||
-      options.raw_cell_plan_checksum == 0 || options.raw_cell_artifact_checksum == 0 ||
-      options.raw_source_envelope_checksum == 0 ||
+      !roster_case_known || !corpus_scope_valid || options.raw_cell_plan_checksum == 0 ||
+      options.raw_cell_artifact_checksum == 0 || options.raw_source_envelope_checksum == 0 ||
       options.raw_reference.pair_attempt_checksum == 0 ||
       options.raw_reference.paired_semantic_checksum == 0 ||
       options.raw_reference.paired_artifact_checksum == 0 ||
@@ -296,8 +327,13 @@ int main(int argc, char** argv) try {
     PrintUsage();
     return 2;
   }
-  if (options.raw_cell_plan_checksum !=
-          apgar::benchmark::ComputePhase4CanonicalCellPlanChecksumV1(options.cell) ||
+  const std::uint64_t expected_cell_plan_checksum =
+#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+      apgar::benchmark::ComputePhase4CanonicalCellPlanChecksumForCorpusV2(options.cell);
+#else
+      apgar::benchmark::ComputePhase4CanonicalCellPlanChecksumV1(options.cell);
+#endif
+  if (options.raw_cell_plan_checksum != expected_cell_plan_checksum ||
       options.raw_source_envelope_checksum !=
           (options.raw_wire_schema_version == apgar::benchmark::kPhase4SameRunTrialWireSchemaVersion
                ? apgar::benchmark::ComputePhase4SourceEnvelopeChecksumV2(
@@ -318,16 +354,26 @@ int main(int argc, char** argv) try {
     return 2;
   }
   apgar::benchmark::Phase4CanonicalSpecResult spec_result =
+#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+      apgar::benchmark::BuildPhase4CanonicalTrialSpecForCorpusV2(
+          options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+#else
       apgar::benchmark::BuildPhase4CanonicalTrialSpecV1(
           options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+#endif
   if (!std::holds_alternative<apgar::benchmark::Phase4PairedTrialSpec>(spec_result)) {
     const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(spec_result);
     std::cerr << error.invariant_id << ": " << error.detail << '\n';
     return 2;
   }
   const auto& spec = std::get<apgar::benchmark::Phase4PairedTrialSpec>(spec_result);
+#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+  auto baseline_result = apgar::benchmark::ExecutePhase4TrialArmDiagnosticForCorpusV2(
+      apgar::benchmark::Phase4TrialArm::kSequentialBaseline, spec, *fixture);
+#else
   auto baseline_result = apgar::benchmark::ExecutePhase4TrialArmDiagnosticV1(
       apgar::benchmark::Phase4TrialArm::kSequentialBaseline, spec, *fixture);
+#endif
   if (std::holds_alternative<apgar::benchmark::Phase4TrialArmFailure>(baseline_result)) {
     return PrintArmFailure(std::get<apgar::benchmark::Phase4TrialArmFailure>(baseline_result));
   }
@@ -342,9 +388,15 @@ int main(int argc, char** argv) try {
   std::unique_ptr<apgar::allocator::PersistentCpuCandidatePoolPreparer> preparer =
       std::get<std::unique_ptr<apgar::allocator::PersistentCpuCandidatePoolPreparer>>(
           std::move(preparer_result));
+#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+  auto candidate_result = apgar::benchmark::ExecutePhase4TrialArmDiagnosticForCorpusV2(
+      apgar::benchmark::Phase4TrialArm::kReusableCandidateAllocation, spec, *fixture,
+      preparer.get());
+#else
   auto candidate_result = apgar::benchmark::ExecutePhase4TrialArmDiagnosticV1(
       apgar::benchmark::Phase4TrialArm::kReusableCandidateAllocation, spec, *fixture,
       preparer.get());
+#endif
   if (std::holds_alternative<apgar::benchmark::Phase4TrialArmFailure>(candidate_result)) {
     return PrintArmFailure(std::get<apgar::benchmark::Phase4TrialArmFailure>(candidate_result));
   }
@@ -352,11 +404,19 @@ int main(int argc, char** argv) try {
       std::get<apgar::benchmark::Phase4TrialArmDiagnosticExecutionV1>(std::move(baseline_result)),
       std::get<apgar::benchmark::Phase4TrialArmDiagnosticExecutionV1>(std::move(candidate_result)),
   };
+#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+  auto artifact_result = apgar::benchmark::BuildPhase4PerNetReportArtifactForCorpusV2(
+      options.cell, *options.runtime_commit, source_stamped, source_tree_dirty,
+      options.raw_cell_plan_checksum, options.raw_cell_artifact_checksum,
+      options.raw_source_envelope_checksum, options.raw_reference, std::move(diagnostics), *fixture,
+      options.raw_wire_schema_version);
+#else
   auto artifact_result = apgar::benchmark::BuildPhase4PerNetReportArtifactV1(
       options.cell, *options.runtime_commit, source_stamped, source_tree_dirty,
       options.raw_cell_plan_checksum, options.raw_cell_artifact_checksum,
       options.raw_source_envelope_checksum, options.raw_reference, std::move(diagnostics), *fixture,
       options.raw_wire_schema_version);
+#endif
   if (std::holds_alternative<apgar::benchmark::Phase4PerNetReportArtifactError>(artifact_result)) {
     const auto& error =
         std::get<apgar::benchmark::Phase4PerNetReportArtifactError>(artifact_result);

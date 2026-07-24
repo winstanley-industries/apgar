@@ -11,7 +11,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from tools import validate_phase4_raw_evidence as raw_validator
+from tools import validate_phase4_representative_manifest_v2 as authority_validator_v2
 from tools import validate_phase4_workload_net_roster_manifest as roster_validator
+from tools.phase4_bounded_json_input import read_regular_file
 
 _U32_MAX = (1 << 32) - 1
 _U64_MAX = (1 << 64) - 1
@@ -272,8 +274,7 @@ def _check_json_nesting(value: Any, label: str) -> None:
 
 def _read_canonical(path: pathlib.Path, label: str, maximum_bytes: int) -> Any:
     try:
-        with path.open("rb") as stream:
-            encoded = stream.read(maximum_bytes + 1)
+        encoded = read_regular_file(path, maximum_bytes, label=label)
         if len(encoded) > maximum_bytes:
             raise EvidenceError(f"{label} exceeds the {maximum_bytes}-byte input bound")
         text = encoded.decode("utf-8")
@@ -303,13 +304,26 @@ def _read_canonical(path: pathlib.Path, label: str, maximum_bytes: int) -> Any:
 
 def _frozen_roster_row(
     case_id: int,
+    *,
+    corpus_version: int = 1,
 ) -> tuple[Mapping[str, Any], tuple[tuple[int, int], ...]]:
-    try:
-        return roster_validator.validated_successful_case_roster(
-            case_id, _ROSTER_MANIFEST, _REPRESENTATIVE_MANIFEST
-        )
-    except roster_validator.ManifestError as error:
-        raise EvidenceError(f"frozen workload-net roster manifest is invalid: {error}") from error
+    if corpus_version == 1:
+        try:
+            return roster_validator.validated_successful_case_roster(
+                case_id, _ROSTER_MANIFEST, _REPRESENTATIVE_MANIFEST
+            )
+        except roster_validator.ManifestError as error:
+            raise EvidenceError(
+                f"frozen workload-net roster manifest is invalid: {error}"
+            ) from error
+    if corpus_version == 2:
+        try:
+            return authority_validator_v2.validated_successful_case_roster(case_id)
+        except authority_validator_v2.AuthorityError as error:
+            raise EvidenceError(
+                f"frozen confirmatory workload-net roster manifest is invalid: {error}"
+            ) from error
+    raise EvidenceError(f"unsupported per-net report corpus version {corpus_version}")
 
 
 def _budget(value: Any, label: str) -> Mapping[str, Any]:
@@ -377,15 +391,15 @@ def _outcome(value: Any, label: str) -> Mapping[str, Any]:
     return result
 
 
-def _semantics(value: Any, label: str) -> Mapping[str, Any]:
+def _semantics(value: Any, label: str, *, corpus_version: int = 1) -> Mapping[str, Any]:
     result = _object(value, label)
     _fields(result, _SEMANTICS_FIELDS, label)
     if _u32(result["schema_version"], f"{label}.schema_version") != 1:
         raise EvidenceError(f"{label}.schema_version must be 1")
     _enum(result["arm"], {0, 1}, f"{label}.arm")
     _enum(result["execution_order"], {0, 1}, f"{label}.execution_order")
-    if _u32(result["corpus_version"], f"{label}.corpus_version") != 1:
-        raise EvidenceError(f"{label}.corpus_version must be 1")
+    if _u32(result["corpus_version"], f"{label}.corpus_version") != corpus_version:
+        raise EvidenceError(f"{label}.corpus_version must be {corpus_version}")
     for field in (
         "corpus_checksum",
         "descriptor_fingerprint",
@@ -678,9 +692,20 @@ def compute_telemetry_checksum(telemetry: Mapping[str, Any]) -> int:
     return hashed.finish()
 
 
-def compute_roster_checksum(row: Mapping[str, Any], nets: Sequence[tuple[int, int]]) -> int:
+def compute_roster_checksum(
+    row: Mapping[str, Any],
+    nets: Sequence[tuple[int, int]],
+    *,
+    corpus_version: int = 1,
+) -> int:
+    if corpus_version not in {1, 2}:
+        raise EvidenceError(f"unsupported per-net roster corpus version {corpus_version}")
     hashed = raw_validator.StableHashBuilder()
-    hashed.string("APGAR-PHASE4-WORKLOAD-NET-ROSTER-V1")
+    hashed.string(
+        "APGAR-PHASE4-WORKLOAD-NET-ROSTER-V1"
+        if corpus_version == 1
+        else "APGAR-PHASE4-WORKLOAD-NET-ROSTER-V2"
+    )
     hashed.u32(row["schema_version"])
     hashed.u32(row["corpus_version"])
     hashed.u64(row["corpus_checksum"])
@@ -702,6 +727,8 @@ def _parse_telemetry(
     semantics: Mapping[str, Any],
     roster_row: Mapping[str, Any],
     expected_nets: Sequence[tuple[int, int]],
+    *,
+    corpus_version: int = 1,
 ) -> Mapping[str, Any]:
     telemetry = _object(value, label)
     _fields(telemetry, _TELEMETRY_FIELDS, label)
@@ -757,7 +784,10 @@ def _parse_telemetry(
         or totals["cost"] != semantics["outcome"]["total_intrinsic_cost"]
     ):
         raise EvidenceError(f"{label} per-net totals do not close complete arm semantics")
-    if compute_roster_checksum(roster_row, nets) != roster_row["roster_checksum"]:
+    if (
+        compute_roster_checksum(roster_row, nets, corpus_version=corpus_version)
+        != roster_row["roster_checksum"]
+    ):
         raise EvidenceError(f"{label} full EntityRef roster checksum differs from the frozen row")
     return telemetry
 
@@ -814,7 +844,13 @@ def compute_report_source_envelope_checksum(document: Mapping[str, Any]) -> int:
     return hashed.finish()
 
 
-def _validate_join_documents(raw_value: Any, report_value: Any, *, expected_commit: str) -> None:
+def _validate_join_documents(
+    raw_value: Any,
+    report_value: Any,
+    *,
+    expected_commit: str,
+    corpus_version: int = 1,
+) -> None:
     raw_document = _object(raw_value, "raw cell")
     report = _object(report_value, "per-net report")
     _fields(report, _TOP_FIELDS, "per-net report")
@@ -848,7 +884,9 @@ def _validate_join_documents(raw_value: Any, report_value: Any, *, expected_comm
     ):
         if _u64(report[report_field], f"report.{report_field}") != raw_document[raw_field]:
             raise EvidenceError(f"report.{report_field} does not join the raw cell")
-    if report["raw_cell_plan_checksum"] != raw_validator.compute_cell_plan_checksum(raw_document):
+    if report["raw_cell_plan_checksum"] != raw_validator.compute_cell_plan_checksum(
+        raw_document, corpus_version=corpus_version
+    ):
         raise EvidenceError("report raw cell plan is not independently reconstructible")
     if _boolean(report["decision_eligible"], "report.decision_eligible"):
         raise EvidenceError("per-net diagnostics must never be decision eligible")
@@ -880,7 +918,7 @@ def _validate_join_documents(raw_value: Any, report_value: Any, *, expected_comm
     if reference != expected_reference:
         raise EvidenceError("report raw reference does not exactly join repetition-zero records")
 
-    roster_row, expected_nets = _frozen_roster_row(config["case_id"])
+    roster_row, expected_nets = _frozen_roster_row(config["case_id"], corpus_version=corpus_version)
     if (
         _u64(report["workload_net_roster_checksum"], "report.workload_net_roster_checksum")
         != roster_row["roster_checksum"]
@@ -900,7 +938,11 @@ def _validate_join_documents(raw_value: Any, report_value: Any, *, expected_comm
             raise EvidenceError("report arms must be ordered baseline then candidate")
         diagnostic = _object(arm["diagnostic"], f"{label}.diagnostic")
         _fields(diagnostic, _DIAGNOSTIC_FIELDS, f"{label}.diagnostic")
-        semantics = _semantics(diagnostic["semantics"], f"{label}.semantics")
+        semantics = _semantics(
+            diagnostic["semantics"],
+            f"{label}.semantics",
+            corpus_version=corpus_version,
+        )
         if (
             _u64(arm["raw_semantic_checksum"], f"{label}.raw_semantic_checksum")
             != raw_semantics[index]["semantic_checksum"]
@@ -914,6 +956,7 @@ def _validate_join_documents(raw_value: Any, report_value: Any, *, expected_comm
                 semantics,
                 roster_row,
                 expected_nets,
+                corpus_version=corpus_version,
             )
         )
     first_roster = [report["net"] for report in parsed_telemetry[0]["per_net"]]
@@ -936,7 +979,9 @@ def validate_join(raw_value: Any, report_value: Any, *, expected_commit: str) ->
     if _COMMIT.fullmatch(expected_commit) is None:
         raise EvidenceError("publication requires an independently supplied expected commit")
     raw_validator.validate_document(raw_value, expected_commit=expected_commit)
-    _validate_join_documents(raw_value, report_value, expected_commit=expected_commit)
+    _validate_join_documents(
+        raw_value, report_value, expected_commit=expected_commit, corpus_version=1
+    )
 
 
 def validate_report_against_validated_raw(
@@ -945,7 +990,38 @@ def validate_report_against_validated_raw(
     """Structurally join a report after its versioned Raw authority was validated."""
     if _COMMIT.fullmatch(expected_commit) is None:
         raise EvidenceError("publication requires an independently supplied expected commit")
-    _validate_join_documents(raw_value, report_value, expected_commit=expected_commit)
+    _validate_join_documents(
+        raw_value, report_value, expected_commit=expected_commit, corpus_version=1
+    )
+
+
+def validate_confirmatory_join(
+    raw_value: Any,
+    report_value: Any,
+    *,
+    expected_commit: str,
+) -> None:
+    """Validate the frozen (10200,4) ordinary Corpus V2 report join."""
+    raw_validator.validate_confirmatory_document(
+        raw_value,
+        expected_commit=expected_commit,
+    )
+    raw_document = _object(raw_value, "raw cell")
+    config = _object(raw_document["config"], "raw cell.config")
+    if (
+        raw_document["wire_schema_version"] != 1
+        or config["case_id"] != 10200
+        or config["requested_pool_size"] != 4
+    ):
+        raise EvidenceError(
+            "confirmatory per-net report authority is restricted to ordinary (10200,4)"
+        )
+    _validate_join_documents(
+        raw_document,
+        report_value,
+        expected_commit=expected_commit,
+        corpus_version=2,
+    )
 
 
 def validate_config(value: Any) -> Mapping[str, Any]:

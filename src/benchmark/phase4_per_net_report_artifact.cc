@@ -22,7 +22,9 @@
 namespace apgar::benchmark {
 namespace {
 
-constexpr std::array<Phase4WorkloadNetRosterManifestEntryV1, 38> kRosterManifest = {{
+constexpr std::uint64_t kRepresentativeManifestChecksumV2 = 9613362670139358355ULL;
+
+constexpr std::array<Phase4WorkloadNetRosterManifestEntryV1, 38> kRosterManifestV1 = {{
     {1, 1, 7311872938254494931ULL, 100, 8019315640326555851ULL, 17177310953492740304ULL,
      13282114147341482240ULL, 5538372392994751246ULL, 6, 2173846823820267664ULL},
     {1, 1, 7311872938254494931ULL, 101, 6282934470436762953ULL, 8332006487454784915ULL,
@@ -101,10 +103,10 @@ constexpr std::array<Phase4WorkloadNetRosterManifestEntryV1, 38> kRosterManifest
      229027575659763193ULL, 13031419002947588674ULL, 2, 16396043058073973332ULL},
 }};
 
-static_assert(std::ranges::is_sorted(kRosterManifest, {},
+static_assert(std::ranges::is_sorted(kRosterManifestV1, {},
                                      &Phase4WorkloadNetRosterManifestEntryV1::case_id));
 
-constexpr std::array<Phase4WorkloadNetRosterManifestExclusionV1, 4> kRosterExclusions = {{
+constexpr std::array<Phase4WorkloadNetRosterManifestExclusionV1, 4> kRosterExclusionsV1 = {{
     {2000, 8203613321943675931ULL,
      Phase4WorkloadNetRosterExclusionDispositionV1::kDescriptorOnlyUnsupportedPool},
     {2001, 11000562598404360444ULL,
@@ -115,7 +117,103 @@ constexpr std::array<Phase4WorkloadNetRosterManifestExclusionV1, 4> kRosterExclu
      Phase4WorkloadNetRosterExclusionDispositionV1::kCompiledWorkBound},
 }};
 
-static_assert(std::ranges::is_sorted(kRosterExclusions, {},
+static_assert(std::ranges::is_sorted(kRosterExclusionsV1, {},
+                                     &Phase4WorkloadNetRosterManifestExclusionV1::case_id));
+
+constexpr std::array<Phase4WorkloadNetRosterManifestEntryV1, 38> kRosterManifestV2 = {{
+    {2, 2, 4182833841936446798ULL, 10100, 10228607137210506848ULL, 3217116157854000498ULL,
+     3708260191876229468ULL, 6027624155096895757ULL, 6, 12521697377381992336ULL},
+    {2, 2, 4182833841936446798ULL, 10101, 12534649919415282514ULL, 10937201691349586908ULL,
+     17722123837174620426ULL, 4158717984138887175ULL, 6, 18050473376725214649ULL},
+    {2, 2, 4182833841936446798ULL, 10102, 9108441457058720974ULL, 13971517485574820650ULL,
+     7458776459072423372ULL, 7643361195091441726ULL, 6, 6293759481185660505ULL},
+    {2, 2, 4182833841936446798ULL, 10200, 10695636458714729567ULL, 6576364998077639914ULL,
+     2447570761459181156ULL, 10842289401720827444ULL, 64, 718781758134362332ULL},
+    {2, 2, 4182833841936446798ULL, 10201, 4780362575974240017ULL, 1170585785749259975ULL,
+     15518679849240237846ULL, 3989073419330904360ULL, 64, 17918408665925418079ULL},
+    {2, 2, 4182833841936446798ULL, 10210, 111802236827638924ULL, 13032949222693167053ULL,
+     8278042861691986003ULL, 3446124616876093946ULL, 64, 6951598089694699218ULL},
+    {2, 2, 4182833841936446798ULL, 10211, 10072227360595614054ULL, 9800416471022572180ULL,
+     9313197537736512173ULL, 16626550182460378230ULL, 64, 7800368394898395973ULL},
+    {2, 2, 4182833841936446798ULL, 10220, 17011582647336855521ULL, 4534216547630514888ULL,
+     12640497438328008878ULL, 4780456240743882496ULL, 64, 7733114666958053561ULL},
+    {2, 2, 4182833841936446798ULL, 10221, 13841678036039008815ULL, 10064164847344700412ULL,
+     2302777592651024835ULL, 4301325213103002033ULL, 64, 4802867216703793533ULL},
+    {2, 2, 4182833841936446798ULL, 11000, 8136738652820056141ULL, 2476998220201041869ULL,
+     12702879829538190842ULL, 8510111773791366646ULL, 256, 16918227780685315839ULL},
+    {2, 2, 4182833841936446798ULL, 11001, 9025649207859729135ULL, 129868894109733195ULL,
+     3123002483948176728ULL, 1576204168038199387ULL, 256, 14412867192141928858ULL},
+    {2, 2, 4182833841936446798ULL, 11002, 13758157734185782053ULL, 1530312207837069639ULL,
+     6248092518556667216ULL, 17576602136241997304ULL, 256, 8830031394465138765ULL},
+    {2, 2, 4182833841936446798ULL, 11003, 16832999589922620843ULL, 5799482920864064809ULL,
+     5670575717578553304ULL, 17047459640325115981ULL, 256, 15096773894735607282ULL},
+    {2, 2, 4182833841936446798ULL, 11004, 10868572533173993653ULL, 1233087454689931747ULL,
+     15424045188600345080ULL, 12100770952801776407ULL, 256, 5077236833437032980ULL},
+    {2, 2, 4182833841936446798ULL, 11005, 1902948818349247439ULL, 15106108367413670798ULL,
+     9000808363812532116ULL, 10251624731676413774ULL, 256, 4669199570255553059ULL},
+    {2, 2, 4182833841936446798ULL, 11006, 14987565108784072333ULL, 6290441341249542899ULL,
+     14648590007385544376ULL, 3409681017975767848ULL, 256, 16812066801646357250ULL},
+    {2, 2, 4182833841936446798ULL, 11007, 13846435945966906755ULL, 4308197026110786758ULL,
+     6886586962757537789ULL, 14693638917351838544ULL, 256, 18282971630594186900ULL},
+    {2, 2, 4182833841936446798ULL, 11100, 17254115015626694131ULL, 13621892480483243824ULL,
+     3985171703181687743ULL, 14455106541564489145ULL, 256, 3482086558380620987ULL},
+    {2, 2, 4182833841936446798ULL, 11101, 4631353101696368957ULL, 7471852269647370228ULL,
+     14376871709671562414ULL, 11840714331748229763ULL, 256, 8953413426480224133ULL},
+    {2, 2, 4182833841936446798ULL, 11102, 3443187958812335243ULL, 13348361695802709029ULL,
+     16588744157530176849ULL, 680905808581787283ULL, 256, 8761640217038669334ULL},
+    {2, 2, 4182833841936446798ULL, 11103, 14776480158817206729ULL, 11628233568003636837ULL,
+     7992812382463676402ULL, 16884786860624758635ULL, 256, 1835207716877508965ULL},
+    {2, 2, 4182833841936446798ULL, 11104, 3976063945855671043ULL, 10729950693401478992ULL,
+     12242098821034020177ULL, 6679217322588658589ULL, 256, 2485016882148461024ULL},
+    {2, 2, 4182833841936446798ULL, 11105, 4731964912821905621ULL, 5674762623871453036ULL,
+     11601282020973814231ULL, 4308541346835106773ULL, 256, 16258231127987294347ULL},
+    {2, 2, 4182833841936446798ULL, 11106, 16736978585831354331ULL, 14892584494879265677ULL,
+     6504346041280847357ULL, 17227159938979966435ULL, 256, 9118379732650837183ULL},
+    {2, 2, 4182833841936446798ULL, 11107, 9644762493109187945ULL, 463526743657728179ULL,
+     9320781362191743678ULL, 2921575187413957010ULL, 256, 12197584162667887020ULL},
+    {2, 2, 4182833841936446798ULL, 11200, 14558992864330598942ULL, 1232058813546457113ULL,
+     1503912220307690516ULL, 11587849255170943588ULL, 384, 5670614489053562719ULL},
+    {2, 2, 4182833841936446798ULL, 11201, 10136742974126937952ULL, 14173256805288273683ULL,
+     1495139329132544806ULL, 13493282191036454925ULL, 384, 8788856667736241220ULL},
+    {2, 2, 4182833841936446798ULL, 11202, 18189296475219763950ULL, 6628852326349369235ULL,
+     14031082160115185972ULL, 16618138946565028855ULL, 384, 16807498195603833901ULL},
+    {2, 2, 4182833841936446798ULL, 11203, 8447781850993000772ULL, 10693237650635755086ULL,
+     1657536874448428646ULL, 17875661166905089009ULL, 384, 13832576674990431244ULL},
+    {2, 2, 4182833841936446798ULL, 11204, 10894892895167280414ULL, 5587891652191391132ULL,
+     8401502098282009686ULL, 14770658607695601322ULL, 384, 5925116735152085183ULL},
+    {2, 2, 4182833841936446798ULL, 11205, 7101705348508213944ULL, 9229551299961563159ULL,
+     9729733382135666456ULL, 5645702921802132111ULL, 384, 15887507704133815439ULL},
+    {2, 2, 4182833841936446798ULL, 11206, 10374464461943108110ULL, 712616556097066391ULL,
+     10426409899536900395ULL, 757659926964692250ULL, 384, 3930625192130737550ULL},
+    {2, 2, 4182833841936446798ULL, 11207, 796307798496737908ULL, 1495326321299319594ULL,
+     10517392412180594019ULL, 11928634378035431034ULL, 384, 1034197301085994999ULL},
+    {2, 2, 4182833841936446798ULL, 12002, 15456014750933644988ULL, 18138895948317835272ULL,
+     7146360669030614799ULL, 17750264605297057285ULL, 256, 5935305127240549430ULL},
+    {2, 2, 4182833841936446798ULL, 12003, 592418894459475426ULL, 12078035219740956236ULL,
+     17419536203139389805ULL, 18370558243653545970ULL, 128, 11256367023368876454ULL},
+    {2, 2, 4182833841936446798ULL, 12004, 8094371739003837108ULL, 15927124833554587233ULL,
+     9745345286114463611ULL, 5466651941191899182ULL, 64, 17138882257473826962ULL},
+    {2, 2, 4182833841936446798ULL, 13000, 5672749310222075805ULL, 11481720930702911221ULL,
+     18436758006885866983ULL, 6659276508905187440ULL, 1024, 1115153633669017100ULL},
+    {2, 2, 4182833841936446798ULL, 14000, 10588276323446831186ULL, 4993717029123835713ULL,
+     229027575659763193ULL, 13031419002947588674ULL, 2, 9966342868999091695ULL},
+}};
+
+static_assert(std::ranges::is_sorted(kRosterManifestV2, {},
+                                     &Phase4WorkloadNetRosterManifestEntryV1::case_id));
+
+constexpr std::array<Phase4WorkloadNetRosterManifestExclusionV1, 4> kRosterExclusionsV2 = {{
+    {12000, 10463951918282411440ULL,
+     Phase4WorkloadNetRosterExclusionDispositionV1::kDescriptorOnlyUnsupportedPool},
+    {12001, 18273953003518375579ULL,
+     Phase4WorkloadNetRosterExclusionDispositionV1::kDescriptorOnlyUnsupportedPool},
+    {13001, 8122399637670938771ULL,
+     Phase4WorkloadNetRosterExclusionDispositionV1::kCompiledWorkBound},
+    {13002, 15811805131329987573ULL,
+     Phase4WorkloadNetRosterExclusionDispositionV1::kCompiledWorkBound},
+}};
+
+static_assert(std::ranges::is_sorted(kRosterExclusionsV2, {},
                                      &Phase4WorkloadNetRosterManifestExclusionV1::case_id));
 
 [[nodiscard]] Phase4PerNetReportArtifactError Error(std::string_view invariant,
@@ -160,8 +258,16 @@ void HashCellConfig(board_ir::StableHashBuilder* hash, const Phase4CanonicalCell
 [[nodiscard]] bool SameSemanticConfig(const Phase4TrialArmSemantics& semantics, Phase4TrialArm arm,
                                       const Phase4PairedTrialSpec& spec,
                                       const Phase4RepresentativeCase& representative_case,
-                                      std::uint64_t expected_budget_checksum) noexcept {
+                                      std::uint64_t expected_budget_checksum,
+                                      bool corpus_v2) noexcept {
   const Phase4CaseDescriptor& descriptor = representative_case.descriptor;
+  const std::uint32_t corpus_version =
+      corpus_v2 ? kPhase4RepresentativeCorpusVersionV2 : kPhase4RepresentativeCorpusVersion;
+  const std::uint64_t corpus_checksum =
+      corpus_v2 ? Phase4RepresentativeCorpusChecksumV2() : Phase4RepresentativeCorpusChecksumV1();
+  const std::uint64_t descriptor_fingerprint = corpus_v2
+                                                   ? FingerprintPhase4CaseDescriptorV2(descriptor)
+                                                   : FingerprintPhase4CaseDescriptorV1(descriptor);
   const std::uint64_t capacity_model_checksum =
       allocator::internal::ComputeResourceCapacityModelChecksumV1(
           allocator::internal::ResourceCapacityChecksumHeaderV1{
@@ -172,10 +278,9 @@ void HashCellConfig(board_ir::StableHashBuilder* hash, const Phase4CanonicalCell
           representative_case.capacities.overrides());
   return semantics.schema_version == kPhase4PairedTrialSchemaVersion && semantics.arm == arm &&
          semantics.execution_order == Phase4TrialOrder::kBaselineFirst &&
-         semantics.corpus_version == kPhase4RepresentativeCorpusVersion &&
-         semantics.corpus_checksum == Phase4RepresentativeCorpusChecksumV1() &&
-         semantics.case_id == spec.case_id &&
-         semantics.descriptor_fingerprint == FingerprintPhase4CaseDescriptorV1(descriptor) &&
+         semantics.corpus_version == corpus_version &&
+         semantics.corpus_checksum == corpus_checksum && semantics.case_id == spec.case_id &&
+         semantics.descriptor_fingerprint == descriptor_fingerprint &&
          semantics.case_checksum == representative_case.case_checksum &&
          semantics.board_content_hash == representative_case.board.content_hash() &&
          semantics.workload_checksum == representative_case.workload.workload_checksum() &&
@@ -574,16 +679,89 @@ void WriteTelemetry(JsonWriter* writer, const Phase4ArmReportTelemetryV1& value)
   writer->EndObject();
 }
 
+[[nodiscard]] std::string CanonicalRosterManifestPayloadV2() {
+  JsonWriter writer;
+  writer.BeginObject();
+  writer.Key("schema_version");
+  writer.Integer(kPhase4WorkloadNetRosterManifestSchemaVersionV2);
+  writer.Key("corpus_version");
+  writer.Integer(kPhase4RepresentativeCorpusVersionV2);
+  writer.Key("corpus_checksum");
+  writer.Integer(Phase4RepresentativeCorpusChecksumV2());
+  writer.Key("representative_manifest_checksum");
+  writer.Integer(kRepresentativeManifestChecksumV2);
+  writer.Key("successful_cases");
+  writer.BeginArray();
+  for (const Phase4WorkloadNetRosterManifestEntryV1& entry : kRosterManifestV2) {
+    writer.Element();
+    writer.BeginObject();
+    writer.Key("schema_version");
+    writer.Integer(entry.schema_version);
+    writer.Key("corpus_version");
+    writer.Integer(entry.corpus_version);
+    writer.Key("corpus_checksum");
+    writer.Integer(entry.corpus_checksum);
+    writer.Key("case_id");
+    writer.Integer(entry.case_id);
+    writer.Key("descriptor_fingerprint");
+    writer.Integer(entry.descriptor_fingerprint);
+    writer.Key("case_checksum");
+    writer.Integer(entry.case_checksum);
+    writer.Key("board_content_hash");
+    writer.Integer(entry.board_content_hash);
+    writer.Key("workload_checksum");
+    writer.Integer(entry.workload_checksum);
+    writer.Key("workload_net_count");
+    writer.Integer(entry.workload_net_count);
+    writer.Key("roster_checksum");
+    writer.Integer(entry.roster_checksum);
+    writer.EndObject();
+  }
+  writer.EndArray();
+  writer.Key("excluded_cases");
+  writer.BeginArray();
+  for (const Phase4WorkloadNetRosterManifestExclusionV1& exclusion : kRosterExclusionsV2) {
+    writer.Element();
+    writer.BeginObject();
+    writer.Key("case_id");
+    writer.Integer(exclusion.case_id);
+    writer.Key("descriptor_fingerprint");
+    writer.Integer(exclusion.descriptor_fingerprint);
+    writer.Key("disposition");
+    writer.String(
+        exclusion.disposition ==
+                Phase4WorkloadNetRosterExclusionDispositionV1::kDescriptorOnlyUnsupportedPool
+            ? "descriptor_only_unsupported_pool"
+            : "compiled_work_bound");
+    writer.EndObject();
+  }
+  writer.EndArray();
+  writer.EndObject();
+  std::string payload = std::move(writer).Finish();
+  payload.pop_back();
+  return payload;
+}
+
 }  // namespace
 
 std::span<const Phase4WorkloadNetRosterManifestEntryV1>
 Phase4WorkloadNetRosterManifestV1() noexcept {
-  return kRosterManifest;
+  return kRosterManifestV1;
+}
+
+std::span<const Phase4WorkloadNetRosterManifestEntryV1>
+Phase4WorkloadNetRosterManifestV2() noexcept {
+  return kRosterManifestV2;
 }
 
 std::span<const Phase4WorkloadNetRosterManifestExclusionV1>
 Phase4WorkloadNetRosterManifestExclusionsV1() noexcept {
-  return kRosterExclusions;
+  return kRosterExclusionsV1;
+}
+
+std::span<const Phase4WorkloadNetRosterManifestExclusionV1>
+Phase4WorkloadNetRosterManifestExclusionsV2() noexcept {
+  return kRosterExclusionsV2;
 }
 
 std::uint64_t ComputePhase4WorkloadNetRosterManifestChecksumV1() noexcept {
@@ -592,8 +770,8 @@ std::uint64_t ComputePhase4WorkloadNetRosterManifestChecksumV1() noexcept {
   hash.AddU32(kPhase4WorkloadNetRosterManifestSchemaVersion);
   hash.AddU32(kPhase4RepresentativeCorpusVersion);
   hash.AddU64(Phase4RepresentativeCorpusChecksumV1());
-  hash.AddU64(kRosterManifest.size());
-  for (const Phase4WorkloadNetRosterManifestEntryV1& entry : kRosterManifest) {
+  hash.AddU64(kRosterManifestV1.size());
+  for (const Phase4WorkloadNetRosterManifestEntryV1& entry : kRosterManifestV1) {
     hash.AddU32(entry.schema_version);
     hash.AddU32(entry.corpus_version);
     hash.AddU64(entry.corpus_checksum);
@@ -605,8 +783,8 @@ std::uint64_t ComputePhase4WorkloadNetRosterManifestChecksumV1() noexcept {
     hash.AddU32(entry.workload_net_count);
     hash.AddU64(entry.roster_checksum);
   }
-  hash.AddU64(kRosterExclusions.size());
-  for (const Phase4WorkloadNetRosterManifestExclusionV1& exclusion : kRosterExclusions) {
+  hash.AddU64(kRosterExclusionsV1.size());
+  for (const Phase4WorkloadNetRosterManifestExclusionV1& exclusion : kRosterExclusionsV1) {
     hash.AddU32(exclusion.case_id);
     hash.AddU64(exclusion.descriptor_fingerprint);
     hash.AddByte(static_cast<std::uint8_t>(exclusion.disposition));
@@ -614,11 +792,25 @@ std::uint64_t ComputePhase4WorkloadNetRosterManifestChecksumV1() noexcept {
   return hash.Finish();
 }
 
+std::uint64_t ComputePhase4WorkloadNetRosterManifestChecksumV2() {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-PHASE4-WORKLOAD-NET-ROSTER-MANIFEST-V2");
+  hash.AddString(CanonicalRosterManifestPayloadV2());
+  return hash.Finish();
+}
+
 const Phase4WorkloadNetRosterManifestEntryV1* FindPhase4WorkloadNetRosterManifestEntryV1(
     std::uint32_t case_id) noexcept {
-  const auto found = std::ranges::lower_bound(kRosterManifest, case_id, {},
+  const auto found = std::ranges::lower_bound(kRosterManifestV1, case_id, {},
                                               &Phase4WorkloadNetRosterManifestEntryV1::case_id);
-  return found != kRosterManifest.end() && found->case_id == case_id ? &*found : nullptr;
+  return found != kRosterManifestV1.end() && found->case_id == case_id ? &*found : nullptr;
+}
+
+const Phase4WorkloadNetRosterManifestEntryV1* FindPhase4WorkloadNetRosterManifestEntryV2(
+    std::uint32_t case_id) noexcept {
+  const auto found = std::ranges::lower_bound(kRosterManifestV2, case_id, {},
+                                              &Phase4WorkloadNetRosterManifestEntryV1::case_id);
+  return found != kRosterManifestV2.end() && found->case_id == case_id ? &*found : nullptr;
 }
 
 std::uint64_t ComputePhase4WorkloadNetRosterChecksumV1(
@@ -641,12 +833,48 @@ std::uint64_t ComputePhase4WorkloadNetRosterChecksumV1(
   return hash.Finish();
 }
 
+std::uint64_t ComputePhase4WorkloadNetRosterChecksumV2(
+    const Phase4RepresentativeCase& representative_case) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-PHASE4-WORKLOAD-NET-ROSTER-V2");
+  hash.AddU32(kPhase4WorkloadNetRosterManifestSchemaVersionV2);
+  hash.AddU32(kPhase4RepresentativeCorpusVersionV2);
+  hash.AddU64(Phase4RepresentativeCorpusChecksumV2());
+  hash.AddU32(representative_case.descriptor.case_id);
+  hash.AddU64(FingerprintPhase4CaseDescriptorV2(representative_case.descriptor));
+  hash.AddU64(representative_case.case_checksum);
+  hash.AddU64(representative_case.board.content_hash());
+  hash.AddU64(representative_case.workload.workload_checksum());
+  hash.AddU64(representative_case.workload.nets().size());
+  for (const allocator::PreparedNetRoutingContext& context : representative_case.workload.nets()) {
+    hash.AddU64(context.request.net.id);
+    hash.AddU32(context.request.net.generation);
+  }
+  return hash.Finish();
+}
+
 std::uint64_t ComputePhase4CanonicalCellPlanChecksumV1(
     const Phase4CanonicalCellConfig& config) noexcept {
   board_ir::StableHashBuilder hash;
   hash.AddString("APGAR-PHASE4-CANONICAL-CELL-PLAN-V1");
   hash.AddU32(config.schema_version);
   hash.AddU64(Phase4RepresentativeCorpusChecksumV1());
+  hash.AddU32(config.case_id);
+  hash.AddU32(config.requested_pool_size);
+  hash.AddU32(config.preparation_worker_count);
+  hash.AddU32(config.repetitions);
+  hash.AddU64(config.maximum_setup_elapsed_nanoseconds);
+  HashExternalBudget(&hash, config.external_budget);
+  HashCorpusLimits(&hash, config.corpus_limits);
+  return hash.Finish();
+}
+
+std::uint64_t ComputePhase4CanonicalCellPlanChecksumForCorpusV2(
+    const Phase4CanonicalCellConfig& config) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-PHASE4-CANONICAL-CELL-PLAN-V2");
+  hash.AddU32(config.schema_version);
+  hash.AddU64(Phase4RepresentativeCorpusChecksumV2());
   hash.AddU32(config.case_id);
   hash.AddU32(config.requested_pool_size);
   hash.AddU32(config.preparation_worker_count);
@@ -701,8 +929,9 @@ std::uint64_t ComputePhase4PerNetReportSourceEnvelopeChecksumV1(
   return hash.Finish();
 }
 
-std::variant<std::monostate, Phase4PerNetReportArtifactError> ValidatePhase4PerNetReportArtifactV1(
-    const Phase4PerNetReportArtifactV1& artifact, std::string_view imported_fixture) {
+std::variant<std::monostate, Phase4PerNetReportArtifactError>
+ValidatePhase4PerNetReportArtifactForAuthority(const Phase4PerNetReportArtifactV1& artifact,
+                                               std::string_view imported_fixture, bool corpus_v2) {
   try {
     if (artifact.schema_version != kPhase4PerNetReportArtifactSchemaVersion ||
         (artifact.raw_wire_schema_version != kPhase4TrialWireSchemaVersion &&
@@ -712,8 +941,13 @@ std::variant<std::monostate, Phase4PerNetReportArtifactError> ValidatePhase4PerN
       return Error("P4REPORT-ARTIFACT-ENVELOPE-001",
                    "report schema, clean stamped source, or diagnostic eligibility is invalid");
     }
-    if (ComputePhase4WorkloadNetRosterManifestChecksumV1() !=
-        kPhase4WorkloadNetRosterManifestChecksumV1) {
+    const std::uint64_t roster_manifest_checksum =
+        corpus_v2 ? ComputePhase4WorkloadNetRosterManifestChecksumV2()
+                  : ComputePhase4WorkloadNetRosterManifestChecksumV1();
+    const std::uint64_t expected_roster_manifest_checksum =
+        corpus_v2 ? kPhase4WorkloadNetRosterManifestChecksumV2
+                  : kPhase4WorkloadNetRosterManifestChecksumV1;
+    if (roster_manifest_checksum != expected_roster_manifest_checksum) {
       return Error("P4REPORT-ROSTER-MANIFEST-CHECKSUM-001",
                    "compiled workload-net roster manifest constants have drifted");
     }
@@ -730,7 +964,8 @@ std::variant<std::monostate, Phase4PerNetReportArtifactError> ValidatePhase4PerN
     if (artifact.raw_cell_plan_checksum == 0 || artifact.raw_cell_artifact_checksum == 0 ||
         artifact.raw_source_envelope_checksum == 0 ||
         artifact.raw_cell_plan_checksum !=
-            ComputePhase4CanonicalCellPlanChecksumV1(artifact.config) ||
+            (corpus_v2 ? ComputePhase4CanonicalCellPlanChecksumForCorpusV2(artifact.config)
+                       : ComputePhase4CanonicalCellPlanChecksumV1(artifact.config)) ||
         artifact.raw_source_envelope_checksum !=
             (artifact.raw_wire_schema_version == kPhase4SameRunTrialWireSchemaVersion
                  ? ComputePhase4SourceEnvelopeChecksumV2(
@@ -759,29 +994,44 @@ std::variant<std::monostate, Phase4PerNetReportArtifactError> ValidatePhase4PerN
                    "report must bind the canonical worker and repetition configuration");
     }
     Phase4CanonicalSpecResult spec_result =
-        BuildPhase4CanonicalTrialSpecV1(artifact.config, 0, Phase4TrialOrder::kBaselineFirst);
+        corpus_v2
+            ? BuildPhase4CanonicalTrialSpecForCorpusV2(artifact.config, 0,
+                                                       Phase4TrialOrder::kBaselineFirst)
+            : BuildPhase4CanonicalTrialSpecV1(artifact.config, 0, Phase4TrialOrder::kBaselineFirst);
     if (!std::holds_alternative<Phase4PairedTrialSpec>(spec_result)) {
       return Error("P4REPORT-CONFIG-002", "report cell configuration is not canonical");
     }
     const Phase4PairedTrialSpec spec = std::get<Phase4PairedTrialSpec>(std::move(spec_result));
-    if (artifact.corpus_checksum != Phase4RepresentativeCorpusChecksumV1()) {
+    const std::uint64_t expected_corpus_checksum =
+        corpus_v2 ? Phase4RepresentativeCorpusChecksumV2() : Phase4RepresentativeCorpusChecksumV1();
+    if (artifact.corpus_checksum != expected_corpus_checksum) {
       return Error("P4REPORT-CORPUS-001", "report names a foreign representative corpus");
     }
-    Phase4RepresentativeCaseResult case_result = BuildPhase4RepresentativeCaseV1(
-        artifact.config.case_id, imported_fixture, artifact.config.corpus_limits);
+    Phase4RepresentativeCaseResult case_result =
+        corpus_v2 ? BuildPhase4RepresentativeCaseV2(artifact.config.case_id, imported_fixture,
+                                                    artifact.config.corpus_limits)
+                  : BuildPhase4RepresentativeCaseV1(artifact.config.case_id, imported_fixture,
+                                                    artifact.config.corpus_limits);
     if (!std::holds_alternative<Phase4RepresentativeCase>(case_result)) {
       return Error("P4REPORT-CASE-001", "the referenced representative case cannot be rebuilt");
     }
     const Phase4RepresentativeCase representative_case =
         std::get<Phase4RepresentativeCase>(std::move(case_result));
     const Phase4WorkloadNetRosterManifestEntryV1* frozen =
-        FindPhase4WorkloadNetRosterManifestEntryV1(artifact.config.case_id);
-    if (frozen == nullptr ||
-        frozen->schema_version != kPhase4WorkloadNetRosterManifestSchemaVersion ||
-        frozen->corpus_version != kPhase4RepresentativeCorpusVersion ||
+        corpus_v2 ? FindPhase4WorkloadNetRosterManifestEntryV2(artifact.config.case_id)
+                  : FindPhase4WorkloadNetRosterManifestEntryV1(artifact.config.case_id);
+    const std::uint32_t roster_schema_version =
+        corpus_v2 ? kPhase4WorkloadNetRosterManifestSchemaVersionV2
+                  : kPhase4WorkloadNetRosterManifestSchemaVersion;
+    const std::uint32_t corpus_version =
+        corpus_v2 ? kPhase4RepresentativeCorpusVersionV2 : kPhase4RepresentativeCorpusVersion;
+    const std::uint64_t descriptor_fingerprint =
+        corpus_v2 ? FingerprintPhase4CaseDescriptorV2(representative_case.descriptor)
+                  : FingerprintPhase4CaseDescriptorV1(representative_case.descriptor);
+    if (frozen == nullptr || frozen->schema_version != roster_schema_version ||
+        frozen->corpus_version != corpus_version ||
         frozen->corpus_checksum != artifact.corpus_checksum ||
-        frozen->descriptor_fingerprint !=
-            FingerprintPhase4CaseDescriptorV1(representative_case.descriptor) ||
+        frozen->descriptor_fingerprint != descriptor_fingerprint ||
         frozen->case_checksum != representative_case.case_checksum ||
         frozen->board_content_hash != representative_case.board.content_hash() ||
         frozen->workload_checksum != representative_case.workload.workload_checksum() ||
@@ -790,15 +1040,19 @@ std::variant<std::monostate, Phase4PerNetReportArtifactError> ValidatePhase4PerN
                    "rebuilt case identity does not match the frozen successful-case roster row");
     }
     const std::uint64_t roster_checksum =
-        ComputePhase4WorkloadNetRosterChecksumV1(representative_case);
+        corpus_v2 ? ComputePhase4WorkloadNetRosterChecksumV2(representative_case)
+                  : ComputePhase4WorkloadNetRosterChecksumV1(representative_case);
     if (roster_checksum == 0 || roster_checksum != frozen->roster_checksum ||
         artifact.workload_net_roster_checksum != roster_checksum) {
       return Error("P4REPORT-ROSTER-001",
                    "the complete rebuilt workload EntityRef roster is not independently frozen");
     }
 
-    const std::uint64_t budget_checksum = internal::ComputePhase4PairedBudgetChecksumV1(
-        spec,
+    const Phase4RepresentativeCorpusAuthority authority =
+        corpus_v2 ? Phase4RepresentativeCorpusAuthority::kV2
+                  : Phase4RepresentativeCorpusAuthority::kV1;
+    const std::uint64_t budget_checksum = internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
+        authority, spec,
         Phase4RouteOpportunity{
             .route_queries = spec.baseline_config.limits.maximum_route_queries,
             .route_work_units = spec.baseline_config.limits.maximum_total_route_work_units,
@@ -816,17 +1070,24 @@ std::variant<std::monostate, Phase4PerNetReportArtifactError> ValidatePhase4PerN
     };
     for (std::size_t index = 0; index < artifact.arms.size(); ++index) {
       const Phase4PerNetReportArmArtifactV1& arm = artifact.arms[index];
-      if (arm.arm != expected_arms[index] || arm.raw_semantic_checksum != raw_semantics[index] ||
-          arm.diagnostic.semantics.arm != arm.arm ||
-          arm.diagnostic.semantics.semantic_checksum != arm.raw_semantic_checksum ||
-          !SameSemanticConfig(arm.diagnostic.semantics, arm.arm, spec, representative_case,
-                              budget_checksum)) {
+      if (arm.arm != expected_arms[index] || arm.diagnostic.semantics.arm != arm.arm) {
         return Error("P4REPORT-ARM-IDENTITY-001",
-                     "diagnostic arms are not exact baseline-then-candidate raw semantic joins");
+                     "diagnostic arms are not ordered baseline then candidate");
+      }
+      if (arm.raw_semantic_checksum != raw_semantics[index] ||
+          arm.diagnostic.semantics.semantic_checksum != arm.raw_semantic_checksum) {
+        return Error("P4REPORT-ARM-IDENTITY-002",
+                     "diagnostic arm semantic checksum differs from its raw reference");
+      }
+      if (!SameSemanticConfig(arm.diagnostic.semantics, arm.arm, spec, representative_case,
+                              budget_checksum, corpus_v2)) {
+        return Error("P4REPORT-ARM-IDENTITY-001",
+                     "diagnostic arm semantics differ from canonical case and budget identity");
       }
       if (std::optional<Phase4PairedTrialError> telemetry_error =
-              internal::ValidatePhase4ArmReportTelemetryV1(
-                  arm.diagnostic.semantics, representative_case.workload, arm.diagnostic.telemetry);
+              internal::ValidatePhase4ArmReportTelemetryForAuthorityV1(
+                  authority, arm.diagnostic.semantics, representative_case.workload,
+                  arm.diagnostic.telemetry);
           telemetry_error.has_value()) {
         return Error("P4REPORT-ARM-TELEMETRY-001",
                      "diagnostic per-net telemetry failed authentic workload validation");
@@ -847,13 +1108,24 @@ std::variant<std::monostate, Phase4PerNetReportArtifactError> ValidatePhase4PerN
   }
 }
 
-Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactV1(
+std::variant<std::monostate, Phase4PerNetReportArtifactError> ValidatePhase4PerNetReportArtifactV1(
+    const Phase4PerNetReportArtifactV1& artifact, std::string_view imported_fixture) {
+  return ValidatePhase4PerNetReportArtifactForAuthority(artifact, imported_fixture, false);
+}
+
+std::variant<std::monostate, Phase4PerNetReportArtifactError>
+ValidatePhase4PerNetReportArtifactForCorpusV2(const Phase4PerNetReportArtifactV1& artifact,
+                                              std::string_view imported_fixture) {
+  return ValidatePhase4PerNetReportArtifactForAuthority(artifact, imported_fixture, true);
+}
+
+Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactForAuthority(
     const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
     std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
     Phase4PerNetReportRawReferenceV1 raw_reference,
     std::array<Phase4TrialArmDiagnosticExecutionV1, 2> diagnostics,
-    std::string_view imported_fixture, std::uint32_t raw_wire_schema_version) {
+    std::string_view imported_fixture, std::uint32_t raw_wire_schema_version, bool corpus_v2) {
   if (!IsLowerHexCommit(source_commit)) {
     return Error("P4REPORT-BUILD-SOURCE-001",
                  "source commit must be exactly 40 lowercase hexadecimal characters");
@@ -865,13 +1137,15 @@ Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactV1(
     artifact.source_tree_dirty = source_tree_dirty;
     artifact.raw_wire_schema_version = raw_wire_schema_version;
     artifact.config = config;
-    artifact.corpus_checksum = Phase4RepresentativeCorpusChecksumV1();
+    artifact.corpus_checksum =
+        corpus_v2 ? Phase4RepresentativeCorpusChecksumV2() : Phase4RepresentativeCorpusChecksumV1();
     artifact.raw_cell_plan_checksum = raw_cell_plan_checksum;
     artifact.raw_cell_artifact_checksum = raw_cell_artifact_checksum;
     artifact.raw_source_envelope_checksum = raw_source_envelope_checksum;
     artifact.raw_reference = raw_reference;
     const Phase4WorkloadNetRosterManifestEntryV1* frozen =
-        FindPhase4WorkloadNetRosterManifestEntryV1(config.case_id);
+        corpus_v2 ? FindPhase4WorkloadNetRosterManifestEntryV2(config.case_id)
+                  : FindPhase4WorkloadNetRosterManifestEntryV1(config.case_id);
     artifact.workload_net_roster_checksum = frozen == nullptr ? 0 : frozen->roster_checksum;
     artifact.arms = {
         Phase4PerNetReportArmArtifactV1{
@@ -889,7 +1163,8 @@ Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactV1(
     artifact.source_envelope_checksum = ComputePhase4PerNetReportSourceEnvelopeChecksumV1(
         artifact.source_commit, artifact.source_stamped, artifact.source_tree_dirty,
         artifact.artifact_checksum);
-    auto validation = ValidatePhase4PerNetReportArtifactV1(artifact, imported_fixture);
+    auto validation =
+        ValidatePhase4PerNetReportArtifactForAuthority(artifact, imported_fixture, corpus_v2);
     if (std::holds_alternative<Phase4PerNetReportArtifactError>(validation)) {
       return std::get<Phase4PerNetReportArtifactError>(std::move(validation));
     }
@@ -907,6 +1182,32 @@ Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactV1(
     return Error("P4REPORT-BUILD-HOST-004",
                  "unexpected non-standard exception while building report artifact");
   }
+}
+
+Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactV1(
+    const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
+    std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
+    Phase4PerNetReportRawReferenceV1 raw_reference,
+    std::array<Phase4TrialArmDiagnosticExecutionV1, 2> diagnostics,
+    std::string_view imported_fixture, std::uint32_t raw_wire_schema_version) {
+  return BuildPhase4PerNetReportArtifactForAuthority(
+      config, source_commit, source_stamped, source_tree_dirty, raw_cell_plan_checksum,
+      raw_cell_artifact_checksum, raw_source_envelope_checksum, raw_reference,
+      std::move(diagnostics), imported_fixture, raw_wire_schema_version, false);
+}
+
+Phase4PerNetReportArtifactResultV1 BuildPhase4PerNetReportArtifactForCorpusV2(
+    const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
+    std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
+    Phase4PerNetReportRawReferenceV1 raw_reference,
+    std::array<Phase4TrialArmDiagnosticExecutionV1, 2> diagnostics,
+    std::string_view imported_fixture, std::uint32_t raw_wire_schema_version) {
+  return BuildPhase4PerNetReportArtifactForAuthority(
+      config, source_commit, source_stamped, source_tree_dirty, raw_cell_plan_checksum,
+      raw_cell_artifact_checksum, raw_source_envelope_checksum, raw_reference,
+      std::move(diagnostics), imported_fixture, raw_wire_schema_version, true);
 }
 
 std::string SerializePhase4PerNetReportArtifactJsonV1(
