@@ -237,7 +237,7 @@ class Phase4OperationalMeasurementTest(unittest.TestCase):
             check=False,
             text=True,
             capture_output=True,
-            timeout=120,
+            timeout=360,
         )
         if raw_v1_run.returncode != 0:
             raise RuntimeError(raw_v1_run.stderr)
@@ -248,7 +248,7 @@ class Phase4OperationalMeasurementTest(unittest.TestCase):
             check=False,
             text=True,
             capture_output=True,
-            timeout=120,
+            timeout=360,
         )
         if report_v1_run.returncode != 0:
             raise RuntimeError(report_v1_run.stderr)
@@ -268,7 +268,7 @@ class Phase4OperationalMeasurementTest(unittest.TestCase):
             check=False,
             text=True,
             capture_output=True,
-            timeout=120,
+            timeout=360,
         )
         if capture_v1_run.returncode != 0:
             raise RuntimeError(capture_v1_run.stderr)

@@ -1418,6 +1418,31 @@ acceleration.
   remains outcome/timing authority, the sidecar remains exact-rejection
   guardrail authority, and the report remains non-decision-eligible diagnostic
   evidence.
+  The first confirmatory operational join is versioned by
+  `schemas/benchmark/phase4_confirmatory_operational_measurement_publication_v1.md`.
+  Its production and test-only workers MUST require explicit Corpus 2, Wire 1,
+  and exactly calibration cell `(10200,4)` before fixture access, case
+  construction, preparer creation, warmup, or replay; only the test target may
+  recognize an unstamped-source escape. The separately named publisher MUST
+  completely validate bounded regular ordinary Raw first and enforce that
+  exact scope before opening the bounded regular four-process capture. Only
+  after capture validation and the complete Raw/capture semantic join may it
+  open a publication validation input or install output. Corpus v2 authority
+  MUST be selected explicitly in worker serialization and capture validation,
+  while legacy entry points remain Corpus v1-only. Worker selection MUST come
+  only from the authority's own Bazel runfiles tree after a compiled launcher
+  clears ambient runfiles variables, and the publisher MUST independently bind
+  the canonical production-worker digest. The test worker MUST retain its
+  actual non-publishable source envelope; it MUST NOT synthesize clean source
+  state. When an unstamped test build exposes no commit identity, its worker
+  source envelope MUST use the all-zero 40-character unavailable sentinel
+  rather than the caller-supplied commit association, and a test worker built
+  from a publishable clean stamped source MUST fail without replay or output.
+  These stable hashes remain non-cryptographic association checks, not
+  protection against arbitrary malicious artifact rewriting. Measured process
+  resources remain diagnostic, Raw remains outcome/timing authority, and the
+  confirmatory publication remains non-standalone, non-statistical, and
+  incomplete coverage.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully

@@ -18,6 +18,11 @@
 #include "apgar/benchmark/phase4_trial_harness.h"
 #include "apgar/tooling/runfiles.h"
 
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_TESTING) && \
+    !defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+#error "The confirmatory operational worker testing escape requires the confirmatory worker"
+#endif
+
 namespace {
 
 enum class Mode : std::uint8_t {
@@ -25,13 +30,35 @@ enum class Mode : std::uint8_t {
   kAuthority,
 };
 
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+inline constexpr std::uint32_t kConfirmatoryOrdinaryCaseId = 10'200;
+inline constexpr std::uint32_t kConfirmatoryOrdinaryPoolSize = 4;
+inline constexpr std::uint64_t kConfirmatorySetupNanoseconds = 300'000'000'000ULL;
+inline constexpr std::uint64_t kConfirmatoryPreparedNanoseconds = 300'000'000'000ULL;
+inline constexpr std::uint64_t kConfirmatoryColdNanoseconds = 300'000'000'000ULL;
+inline constexpr std::uint64_t kConfirmatoryAddressSpaceBytes = 64ULL * 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kConfirmatoryPeakHostBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kConfirmatoryMaximumNets = 4096;
+inline constexpr std::uint64_t kConfirmatoryMaximumCompiledNodes = 100'000'000;
+inline constexpr std::uint64_t kConfirmatoryMaximumCompiledHostBytes =
+    8ULL * 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kConfirmatoryMaximumActiveRegions = 250'000;
+inline constexpr std::uint64_t kConfirmatoryMaximumBoardEntities = 100'000;
+#endif
+
 struct Options {
   std::optional<Mode> mode;
   std::optional<apgar::benchmark::Phase4TrialArm> arm;
   std::optional<std::string> runtime_commit;
   bool testing_allow_unstamped = false;
+#if !defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
   std::string fixture_path;
+#endif
   apgar::benchmark::Phase4CanonicalCellConfig cell;
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+  std::optional<std::uint32_t> corpus_version;
+  std::optional<std::uint32_t> raw_wire_schema_version;
+#endif
 };
 
 [[nodiscard]] bool ParseUnsigned(std::string_view text, std::uint64_t* value) noexcept {
@@ -61,8 +88,10 @@ struct Options {
   options.cell.external_budget.maximum_cold_elapsed_nanoseconds = 300'000'000'000ULL;
   options.cell.external_budget.maximum_address_space_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL;
   options.cell.external_budget.maximum_peak_host_bytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+#if !defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
   options.fixture_path =
       apgar::tooling::ResolveRunfile("tests/fixtures/phase4_supported_multinet_v1.kicad_pcb");
+#endif
 
   std::unordered_set<std::string> seen;
   for (int index = 1; index < argc; ++index) {
@@ -95,15 +124,38 @@ struct Options {
     } else if (key == "apgar_commit") {
       options.runtime_commit = std::string(value);
     } else if (key == "testing_allow_unstamped") {
+#if !defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_TESTING)
       options.testing_allow_unstamped = value == "1";
       if (!options.testing_allow_unstamped) {
         return std::nullopt;
       }
+#else
+      return std::nullopt;
+#endif
     } else if (key == "fixture_path") {
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+      return std::nullopt;
+#else
       if (value.empty()) {
         return std::nullopt;
       }
       options.fixture_path = std::string(value);
+#endif
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+    } else if (key == "corpus_version") {
+      std::uint32_t parsed_version = 0;
+      if (!ParseU32(value, &parsed_version)) {
+        return std::nullopt;
+      }
+      options.corpus_version = parsed_version;
+    } else if (key == "raw_wire_schema_version") {
+      std::uint32_t parsed_version = 0;
+      if (!ParseU32(value, &parsed_version)) {
+        return std::nullopt;
+      }
+      options.raw_wire_schema_version = parsed_version;
+#endif
     } else if (key == "case_id") {
       if (!ParseU32(value, &options.cell.case_id)) {
         return std::nullopt;
@@ -162,16 +214,55 @@ struct Options {
     }
   }
   if (!options.mode.has_value() || !options.arm.has_value() || options.cell.case_id == 0 ||
-      options.cell.requested_pool_size == 0 || options.fixture_path.empty()) {
+      options.cell.requested_pool_size == 0
+#if !defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+      || options.fixture_path.empty()
+#endif
+  ) {
     return std::nullopt;
   }
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+  if (!options.corpus_version.has_value() ||
+      *options.corpus_version != apgar::benchmark::kPhase4RepresentativeCorpusVersionV2 ||
+      !options.raw_wire_schema_version.has_value() ||
+      *options.raw_wire_schema_version != apgar::benchmark::kPhase4TrialWireSchemaVersion ||
+      !options.runtime_commit.has_value() ||
+      !apgar::benchmark::IsFullLowercaseGitCommit(*options.runtime_commit) ||
+      options.cell.case_id != kConfirmatoryOrdinaryCaseId ||
+      options.cell.requested_pool_size != kConfirmatoryOrdinaryPoolSize ||
+      options.cell.preparation_worker_count !=
+          apgar::benchmark::kPhase4CanonicalPreparationWorkersV1 ||
+      options.cell.repetitions != apgar::benchmark::kPhase4CanonicalRepetitionsV1 ||
+      options.cell.maximum_setup_elapsed_nanoseconds != kConfirmatorySetupNanoseconds ||
+      options.cell.external_budget.maximum_prepared_elapsed_nanoseconds !=
+          kConfirmatoryPreparedNanoseconds ||
+      options.cell.external_budget.maximum_cold_elapsed_nanoseconds !=
+          kConfirmatoryColdNanoseconds ||
+      options.cell.external_budget.maximum_address_space_bytes != kConfirmatoryAddressSpaceBytes ||
+      options.cell.external_budget.maximum_peak_host_bytes != kConfirmatoryPeakHostBytes ||
+      options.cell.corpus_limits.maximum_nets != kConfirmatoryMaximumNets ||
+      options.cell.corpus_limits.maximum_compiled_nodes != kConfirmatoryMaximumCompiledNodes ||
+      options.cell.corpus_limits.maximum_compiled_host_bytes !=
+          kConfirmatoryMaximumCompiledHostBytes ||
+      options.cell.corpus_limits.maximum_active_regions != kConfirmatoryMaximumActiveRegions ||
+      options.cell.corpus_limits.maximum_board_entities != kConfirmatoryMaximumBoardEntities) {
+    return std::nullopt;
+  }
+#endif
   return options;
 }
 
 void PrintUsage() {
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+  std::cerr << "phase4_confirmatory_operational_replay_worker requires "
+               "--corpus_version=2 --raw_wire_schema_version=1 --mode=measured|authority "
+               "--arm=baseline|candidate --case_id=10200 --pool_size=4 --workers=4 and a clean "
+               "--apgar_commit=<40 lowercase hex>; numeric bounds use strict decimal\n";
+#else
   std::cerr << "phase4_operational_replay_worker requires --mode=measured|authority "
                "--arm=baseline|candidate --case_id=N --pool_size=4|8|16 and a clean "
                "--apgar_commit=<40 lowercase hex>; numeric bounds use strict decimal\n";
+#endif
 }
 
 [[nodiscard]] bool ExactAddressSpaceLimit(std::uint64_t expected) noexcept {
@@ -201,6 +292,12 @@ int main(int argc, char** argv) {
       apgar::benchmark::IsPublishableBenchmarkSource(
           *options.runtime_commit, apgar::benchmark::kPhase3BuiltCommit,
           apgar::benchmark::kPhase3SourceStamped, apgar::benchmark::kPhase3BuiltFromDirtyTree);
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_TESTING)
+  if (publishable) {
+    std::cerr << "confirmatory operational test worker refuses a publishable source build\n";
+    return 2;
+  }
+#endif
   if (!publishable && !options.testing_allow_unstamped) {
     PrintUsage();
     return 2;
@@ -209,13 +306,23 @@ int main(int argc, char** argv) {
     std::cerr << "operational worker did not observe the exact RLIMIT_AS contract\n";
     return 2;
   }
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+  constexpr std::string_view imported_fixture;
+#else
   const std::optional<std::string> fixture = apgar::tooling::ReadFile(options.fixture_path);
   if (!fixture.has_value()) {
     std::cerr << "failed to read the imported Phase 4 fixture\n";
     return 2;
   }
+  const std::string_view imported_fixture = *fixture;
+#endif
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+  auto spec_result = apgar::benchmark::BuildPhase4CanonicalTrialSpecForCorpusV2(
+      options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+#else
   auto spec_result = apgar::benchmark::BuildPhase4CanonicalTrialSpecV1(
       options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+#endif
   if (std::holds_alternative<apgar::benchmark::Phase4TrialHarnessError>(spec_result)) {
     const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(spec_result);
     std::cerr << error.invariant_id << ": " << error.detail << '\n';
@@ -234,40 +341,76 @@ int main(int argc, char** argv) {
     preparer = std::get<std::unique_ptr<apgar::allocator::PersistentCpuCandidatePoolPreparer>>(
         std::move(created));
   }
-  auto warmup =
-      apgar::benchmark::ExecutePhase4TrialArmV1(*options.arm, spec, *fixture, preparer.get());
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+  auto warmup = apgar::benchmark::ExecutePhase4TrialArmForCorpusV2(
+      *options.arm, spec, imported_fixture, preparer.get());
+#else
+  auto warmup = apgar::benchmark::ExecutePhase4TrialArmV1(*options.arm, spec, imported_fixture,
+                                                          preparer.get());
+#endif
   if (std::holds_alternative<apgar::benchmark::Phase4TrialArmFailure>(warmup)) {
     const auto& failure = std::get<apgar::benchmark::Phase4TrialArmFailure>(warmup);
     std::cerr << failure.summary.invariant_id << ": " << failure.summary.detail << '\n';
     return 1;
   }
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_TESTING)
   const std::string source_commit =
-      options.runtime_commit.value_or(apgar::benchmark::kPhase3BuiltCommit.empty()
-                                          ? std::string(40, '0')
-                                          : std::string(apgar::benchmark::kPhase3BuiltCommit));
+      apgar::benchmark::kPhase3BuiltCommit.empty()
+          ? std::string(apgar::benchmark::kFullGitCommitHexCharacters, '0')
+          : std::string(apgar::benchmark::kPhase3BuiltCommit);
+#else
+  const std::string source_commit = options.runtime_commit.value_or(
+      apgar::benchmark::kPhase3BuiltCommit.empty()
+          ? std::string(apgar::benchmark::kFullGitCommitHexCharacters, '0')
+          : std::string(apgar::benchmark::kPhase3BuiltCommit));
+#endif
+  constexpr bool source_stamped = apgar::benchmark::kPhase3SourceStamped;
+  constexpr bool source_tree_dirty = apgar::benchmark::kPhase3BuiltFromDirtyTree;
   std::optional<std::string> serialized;
   if (*options.mode == Mode::kMeasured) {
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+    auto result = apgar::benchmark::ExecutePhase4TrialArmOperationalProfileForCorpusV2(
+        *options.arm, spec, imported_fixture, preparer.get());
+#else
     auto result = apgar::benchmark::ExecutePhase4TrialArmOperationalProfileV1(
-        *options.arm, spec, *fixture, preparer.get());
+        *options.arm, spec, imported_fixture, preparer.get());
+#endif
     if (std::holds_alternative<apgar::benchmark::Phase4TrialArmFailure>(result)) {
       const auto& failure = std::get<apgar::benchmark::Phase4TrialArmFailure>(result);
       std::cerr << failure.summary.invariant_id << ": " << failure.summary.detail << '\n';
       return 1;
     }
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+    serialized = apgar::benchmark::SerializePhase4OperationalProfileWorkerJsonForCorpusV2(
+        std::get<apgar::benchmark::Phase4TrialArmOperationalProfileV1>(result), source_commit,
+        source_stamped, source_tree_dirty);
+#else
     serialized = apgar::benchmark::SerializePhase4OperationalProfileWorkerJsonV1(
         std::get<apgar::benchmark::Phase4TrialArmOperationalProfileV1>(result), source_commit,
-        apgar::benchmark::kPhase3SourceStamped, apgar::benchmark::kPhase3BuiltFromDirtyTree);
+        source_stamped, source_tree_dirty);
+#endif
   } else {
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+    auto result = apgar::benchmark::ExecutePhase4TrialArmReplayAuthorityForCorpusV2(
+        *options.arm, spec, imported_fixture, preparer.get());
+#else
     auto result = apgar::benchmark::ExecutePhase4TrialArmReplayAuthorityV1(
-        *options.arm, spec, *fixture, preparer.get());
+        *options.arm, spec, imported_fixture, preparer.get());
+#endif
     if (std::holds_alternative<apgar::benchmark::Phase4TrialArmFailure>(result)) {
       const auto& failure = std::get<apgar::benchmark::Phase4TrialArmFailure>(result);
       std::cerr << failure.summary.invariant_id << ": " << failure.summary.detail << '\n';
       return 1;
     }
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER)
+    serialized = apgar::benchmark::SerializePhase4ReplayAuthorityWorkerJsonForCorpusV2(
+        std::get<apgar::benchmark::Phase4TrialArmReplayAuthorityV1>(result), source_commit,
+        source_stamped, source_tree_dirty);
+#else
     serialized = apgar::benchmark::SerializePhase4ReplayAuthorityWorkerJsonV1(
         std::get<apgar::benchmark::Phase4TrialArmReplayAuthorityV1>(result), source_commit,
-        apgar::benchmark::kPhase3SourceStamped, apgar::benchmark::kPhase3BuiltFromDirtyTree);
+        source_stamped, source_tree_dirty);
+#endif
   }
   if (!serialized.has_value() || !WriteStdout(*serialized)) {
     std::cerr << "failed to serialize operational worker output\n";

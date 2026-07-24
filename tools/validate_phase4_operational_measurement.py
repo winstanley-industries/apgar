@@ -13,11 +13,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from tools import capture_phase4_operational_measurement as capture_tool
+from tools import phase4_confirmatory_operational_authority as confirmatory_authority
 from tools import project_phase4_operational_evidence as projection_v1
 from tools import project_phase4_operational_evidence_v2 as projection_v2
 from tools import validate_phase4_raw_evidence as raw_validator
 from tools import validate_phase4_same_run_decision_telemetry as same_run_validator
 from tools import validate_phase4_statistical_protocol_v4 as protocol_v4
+from tools.phase4_bounded_json_input import read_regular_file
 
 _MAXIMUM_CAPTURE_BYTES = 32 * 1024 * 1024
 _MAXIMUM_PUBLICATION_BYTES = 32 * 1024 * 1024
@@ -507,14 +509,25 @@ def _profile_checksum(profile: Mapping[str, Any]) -> int:
     return hashed.finish()
 
 
-def _profile(value: Any, label: str) -> Mapping[str, Any]:
+def _profile(
+    value: Any,
+    label: str,
+    *,
+    expected_corpus_version: int = 1,
+) -> Mapping[str, Any]:
+    if expected_corpus_version not in {1, 2}:
+        raise EvidenceError("operational profile corpus authority must be 1 or 2")
     profile = _object(value, label)
     _fields(profile, _PROFILE_FIELDS, label)
     if _u32(profile["schema_version"], f"{label}.schema_version") != 1:
         raise EvidenceError(f"{label}.schema_version must be 1")
     execution = _object(profile["execution"], f"{label}.execution")
     _fields(execution, _EXECUTION_FIELDS, f"{label}.execution")
-    semantics = raw_validator._semantics(execution["semantics"], f"{label}.execution.semantics")
+    semantics = raw_validator._semantics(
+        execution["semantics"],
+        f"{label}.execution.semantics",
+        expected_corpus_version=expected_corpus_version,
+    )
     lifecycle = _lifecycle(execution["preparer_lifecycle"], f"{label}.execution.preparer_lifecycle")
     for field in (
         "case_build_elapsed_nanoseconds",
@@ -539,7 +552,8 @@ def _profile(value: Any, label: str) -> Mapping[str, Any]:
     )
     _fields(case, case_fields, f"{label}.case_build")
     imported = _enum(case["case_source"], {0, 1}, f"{label}.case_build.case_source") == 1
-    if imported != (semantics["case_id"] == 4_000):
+    imported_case_id = 4_000 if expected_corpus_version == 1 else 14_000
+    if imported != (semantics["case_id"] == imported_case_id):
         raise EvidenceError(f"{label} case source differs from the frozen descriptor")
     if imported:
         _applicability(case["fixture_import_applicability"], f"{label}.case_build.fixture", 0, 0)
@@ -897,12 +911,23 @@ def _authority_checksum(authority: Mapping[str, Any]) -> int:
     return hashed.finish()
 
 
-def _authority(value: Any, label: str) -> Mapping[str, Any]:
+def _authority(
+    value: Any,
+    label: str,
+    *,
+    expected_corpus_version: int = 1,
+) -> Mapping[str, Any]:
+    if expected_corpus_version not in {1, 2}:
+        raise EvidenceError("operational replay corpus authority must be 1 or 2")
     authority = _object(value, label)
     _fields(authority, _AUTHORITY_FIELDS, label)
     if _u32(authority["schema_version"], f"{label}.schema_version") != 1:
         raise EvidenceError(f"{label}.schema_version must be 1")
-    semantics = raw_validator._semantics(authority["semantics"], f"{label}.semantics")
+    semantics = raw_validator._semantics(
+        authority["semantics"],
+        f"{label}.semantics",
+        expected_corpus_version=expected_corpus_version,
+    )
     lifecycle = _lifecycle(authority["preparer_lifecycle"], f"{label}.preparer_lifecycle")
     full = _u64(
         authority["recomputed_full_preimage_session_checksum"],
@@ -1107,7 +1132,15 @@ def _filesystem_provenance_identity(value: Any, label: str) -> Mapping[str, Any]
     return identity
 
 
-def _provenance(value: Any, label: str, compiler_identity: str) -> Mapping[str, Any]:
+def _provenance(
+    value: Any,
+    label: str,
+    compiler_identity: str,
+    *,
+    expected_publication_invocation: str,
+    expected_worker_target: str,
+    expected_worker_sha256: str | None = None,
+) -> Mapping[str, Any]:
     provenance = _object(value, label)
     fields = (
         "schema_version",
@@ -1134,9 +1167,8 @@ def _provenance(value: Any, label: str, compiler_identity: str) -> Mapping[str, 
     _fields(provenance, fields, label)
     if (
         _u32(provenance["schema_version"], f"{label}.schema_version") != 1
-        or provenance["publication_invocation"]
-        != "bazel --batch run --config=benchmark //:phase4_operational_capture"
-        or provenance["worker_target"] != "//:phase4_operational_replay_worker"
+        or provenance["publication_invocation"] != expected_publication_invocation
+        or provenance["worker_target"] != expected_worker_target
         or provenance["cplusplus_standard"] != "c++20"
         or provenance["backend"] != "cpu_only"
         or provenance["compiler_identity"] != compiler_identity
@@ -1156,6 +1188,8 @@ def _provenance(value: Any, label: str, compiler_identity: str) -> Mapping[str, 
         character not in hexadecimal for character in provenance["worker_sha256"]
     ):
         raise EvidenceError(f"{label}.worker_sha256 is invalid")
+    if expected_worker_sha256 is not None and provenance["worker_sha256"] != expected_worker_sha256:
+        raise EvidenceError(f"{label} worker digest differs from the canonical authority")
     worker_identity = _object(provenance["worker_file_identity"], f"{label}.worker_file_identity")
     _fields(
         worker_identity,
@@ -1339,7 +1373,29 @@ def _provenance(value: Any, label: str, compiler_identity: str) -> Mapping[str, 
     return provenance
 
 
-def validate_capture(value: Any, *, expected_commit: str | None = None) -> Mapping[str, Any]:
+def validate_capture(
+    value: Any,
+    *,
+    expected_commit: str | None = None,
+    expected_corpus_version: int = 1,
+    expected_publication_invocation: str | None = None,
+    expected_worker_target: str | None = None,
+    expected_worker_sha256: str | None = None,
+) -> Mapping[str, Any]:
+    if expected_corpus_version not in {1, 2}:
+        raise EvidenceError("operational capture corpus authority must be 1 or 2")
+    if expected_publication_invocation is None:
+        expected_publication_invocation = (
+            "bazel --batch run --config=benchmark //:phase4_operational_capture"
+            if expected_corpus_version == 1
+            else ("bazel --batch run --config=benchmark //:phase4_confirmatory_operational_capture")
+        )
+    if expected_worker_target is None:
+        expected_worker_target = (
+            "//:phase4_operational_replay_worker"
+            if expected_corpus_version == 1
+            else "//:phase4_confirmatory_operational_replay_worker"
+        )
     capture = _object(value, "capture")
     _check_depth(capture)
     _fields(capture, _CAPTURE_FIELDS, "capture")
@@ -1421,8 +1477,16 @@ def validate_capture(value: Any, *, expected_commit: str | None = None) -> Mappi
             ):
                 raise EvidenceError(f"{label} worker source differs from capture")
             compiler_identities.add(worker["compiler_identity"])
-        profile = _profile(measured_worker["payload"], f"{label}.profile")
-        authority = _authority(authority_worker["payload"], f"{label}.authority")
+        profile = _profile(
+            measured_worker["payload"],
+            f"{label}.profile",
+            expected_corpus_version=expected_corpus_version,
+        )
+        authority = _authority(
+            authority_worker["payload"],
+            f"{label}.authority",
+            expected_corpus_version=expected_corpus_version,
+        )
         if profile["execution"]["semantics"] != authority["semantics"]:
             raise EvidenceError(f"{label} measured and authority semantics differ")
         measured_witness = profile["candidate_session"]["replay_witness"] if index == 1 else None
@@ -1448,6 +1512,9 @@ def validate_capture(value: Any, *, expected_commit: str | None = None) -> Mappi
         capture["reproducibility_provenance"],
         "capture.reproducibility_provenance",
         next(iter(compiler_identities)),
+        expected_publication_invocation=expected_publication_invocation,
+        expected_worker_target=expected_worker_target,
+        expected_worker_sha256=expected_worker_sha256,
     )
     artifact = _u64(capture["artifact_checksum"], "capture.artifact_checksum")
     source = _u64(capture["source_envelope_checksum"], "capture.source_envelope_checksum")
@@ -1458,9 +1525,17 @@ def validate_capture(value: Any, *, expected_commit: str | None = None) -> Mappi
     return capture
 
 
-def read_capture(path: pathlib.Path, *, expected_commit: str | None = None) -> Mapping[str, Any]:
+def read_capture(
+    path: pathlib.Path,
+    *,
+    expected_commit: str | None = None,
+    expected_corpus_version: int = 1,
+    expected_publication_invocation: str | None = None,
+    expected_worker_target: str | None = None,
+    expected_worker_sha256: str | None = None,
+) -> Mapping[str, Any]:
     try:
-        data = path.read_bytes()
+        data = read_regular_file(path, _MAXIMUM_CAPTURE_BYTES, label="operational capture")
     except OSError as error:
         raise EvidenceError(f"cannot read capture: {error}") from error
     if len(data) > _MAXIMUM_CAPTURE_BYTES:
@@ -1472,7 +1547,14 @@ def read_capture(path: pathlib.Path, *, expected_commit: str | None = None) -> M
         value = json.loads(text, object_pairs_hook=_reject_pairs, parse_constant=_reject_constant)
     except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
         raise EvidenceError(f"cannot parse capture: {error}") from error
-    validated = validate_capture(value, expected_commit=expected_commit)
+    validated = validate_capture(
+        value,
+        expected_commit=expected_commit,
+        expected_corpus_version=expected_corpus_version,
+        expected_publication_invocation=expected_publication_invocation,
+        expected_worker_target=expected_worker_target,
+        expected_worker_sha256=expected_worker_sha256,
+    )
     if text != _canonical(validated) + "\n":
         raise EvidenceError("capture is not canonical compact JSON")
     return validated
@@ -1501,6 +1583,29 @@ def _publication_source_checksum(value: Mapping[str, Any]) -> int:
     return hashed.finish()
 
 
+def _confirmatory_publication_checksum(value: Mapping[str, Any]) -> int:
+    payload = {
+        key: item
+        for key, item in value.items()
+        if key not in {"artifact_checksum", "source_envelope_checksum"}
+    }
+    hashed = raw_validator.StableHashBuilder()
+    hashed.string("APGAR-PHASE4-CONFIRMATORY-OPERATIONAL-MEASUREMENT-PUBLICATION-ARTIFACT-V1")
+    hashed.string(_canonical(payload))
+    return hashed.finish()
+
+
+def _confirmatory_publication_source_checksum(value: Mapping[str, Any]) -> int:
+    hashed = raw_validator.StableHashBuilder()
+    hashed.string("APGAR-PHASE4-CONFIRMATORY-OPERATIONAL-MEASUREMENT-PUBLICATION-SOURCE-V1")
+    hashed.u32(value["schema_version"])
+    hashed.string(value["source_commit"])
+    hashed.boolean(value["source_stamped"])
+    hashed.boolean(value["source_tree_dirty"])
+    hashed.u64(value["artifact_checksum"])
+    return hashed.finish()
+
+
 def _cell_role(case_id: int, pool: int) -> tuple[str, str]:
     protocol_v4.read_protocol()
     rows = {
@@ -1513,21 +1618,11 @@ def _cell_role(case_id: int, pool: int) -> tuple[str, str]:
     return value
 
 
-def project_document(
+def _joined_repetition_zero_arms(
     raw: Mapping[str, Any],
     capture: Mapping[str, Any],
-    sidecar: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    config = raw["config"]
-    role, evidence = _cell_role(config["case_id"], config["requested_pool_size"])
-    raw_v2 = raw.get("raw_evidence_schema_version") == 2
-    if raw_v2 != (evidence == "same_run_raw_success"):
-        raise EvidenceError("Raw authority version differs from the frozen cell disposition")
-    if raw_v2 and sidecar is None:
-        raise EvidenceError("Raw-v2 operational publication requires same-run telemetry")
-    if not raw_v2 and sidecar is not None:
-        raise EvidenceError("Raw-v1 operational publication rejects a same-run companion")
-    if capture["cell_config"] != config:
+) -> tuple[Mapping[str, Any], list[dict[str, Any]]]:
+    if capture["cell_config"] != raw["config"]:
         raise EvidenceError("operational capture config differs from Raw")
     if (
         capture["source_commit"] != raw["source_commit"]
@@ -1538,34 +1633,6 @@ def project_document(
     pair = raw["attempts"][0]
     if pair["repetition_index"] != 0 or pair["execution_order"] != 0 or pair["result"] is None:
         raise EvidenceError("Raw repetition zero is not the canonical successful AB pair")
-    if raw_v2:
-        assert sidecar is not None
-        legacy = projection_v2.project_document(raw, sidecar)
-        raw_binding = {
-            "kind": "same_run_raw_v2",
-            "raw_evidence_schema_version": 2,
-            "wire_schema_version": 2,
-            "raw_artifact_checksum": raw["artifact_checksum"],
-            "raw_source_envelope_checksum": raw["source_envelope_checksum"],
-            "same_run_artifact_checksum": sidecar["artifact_checksum"],
-            "same_run_source_envelope_checksum": sidecar["source_envelope_checksum"],
-            "exact_rejection_guardrail_passed": (
-                same_run_validator.exact_rejection_guardrail_passes(sidecar)
-            ),
-        }
-    else:
-        legacy = projection_v1.project_document(raw)
-        raw_binding = {
-            "kind": "raw_v1",
-            "raw_evidence_schema_version": 1,
-            "wire_schema_version": 1,
-            "raw_artifact_checksum": raw["artifact_checksum"],
-            "raw_source_envelope_checksum": raw["source_envelope_checksum"],
-            "same_run": {
-                "status": "not_applicable",
-                "reason": "raw_v1_cell_has_no_same_run_companion",
-            },
-        }
     arms: list[dict[str, Any]] = []
     for index, key in enumerate(("baseline", "candidate")):
         capture_arm = capture["arms"][index]
@@ -1637,6 +1704,54 @@ def project_document(
                 "replay_authority_checksum": authority["authority_checksum"],
             }
         )
+    return pair, arms
+
+
+def _project_document_for_disposition(
+    raw: Mapping[str, Any],
+    capture: Mapping[str, Any],
+    sidecar: Mapping[str, Any] | None,
+    *,
+    role: str,
+    expects_same_run_raw: bool,
+) -> dict[str, Any]:
+    config = raw["config"]
+    raw_v2 = raw.get("raw_evidence_schema_version") == 2
+    if raw_v2 != expects_same_run_raw:
+        raise EvidenceError("Raw authority version differs from the frozen cell disposition")
+    if raw_v2 and sidecar is None:
+        raise EvidenceError("Raw-v2 operational publication requires same-run telemetry")
+    if not raw_v2 and sidecar is not None:
+        raise EvidenceError("Raw-v1 operational publication rejects a same-run companion")
+    _, arms = _joined_repetition_zero_arms(raw, capture)
+    if raw_v2:
+        assert sidecar is not None
+        legacy = projection_v2.project_document(raw, sidecar)
+        raw_binding = {
+            "kind": "same_run_raw_v2",
+            "raw_evidence_schema_version": 2,
+            "wire_schema_version": 2,
+            "raw_artifact_checksum": raw["artifact_checksum"],
+            "raw_source_envelope_checksum": raw["source_envelope_checksum"],
+            "same_run_artifact_checksum": sidecar["artifact_checksum"],
+            "same_run_source_envelope_checksum": sidecar["source_envelope_checksum"],
+            "exact_rejection_guardrail_passed": (
+                same_run_validator.exact_rejection_guardrail_passes(sidecar)
+            ),
+        }
+    else:
+        legacy = projection_v1.project_document(raw)
+        raw_binding = {
+            "kind": "raw_v1",
+            "raw_evidence_schema_version": 1,
+            "wire_schema_version": 1,
+            "raw_artifact_checksum": raw["artifact_checksum"],
+            "raw_source_envelope_checksum": raw["source_envelope_checksum"],
+            "same_run": {
+                "status": "not_applicable",
+                "reason": "raw_v1_cell_has_no_same_run_companion",
+            },
+        }
     result: dict[str, Any] = {
         "schema_version": 1,
         "source_commit": raw["source_commit"],
@@ -1672,6 +1787,97 @@ def project_document(
     return result
 
 
+def project_document(
+    raw: Mapping[str, Any],
+    capture: Mapping[str, Any],
+    sidecar: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    config = raw["config"]
+    role, evidence = _cell_role(config["case_id"], config["requested_pool_size"])
+    return _project_document_for_disposition(
+        raw,
+        capture,
+        sidecar,
+        role=role,
+        expects_same_run_raw=evidence == "same_run_raw_success",
+    )
+
+
+def project_confirmatory_ordinary_document(
+    raw: Mapping[str, Any],
+    capture: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the domain-separated ordinary Corpus-v2 development publication."""
+    config = raw["config"]
+    if (
+        raw.get("raw_evidence_schema_version", 1) != 1
+        or raw.get("wire_schema_version", 1) != 1
+        or not confirmatory_authority.has_exact_config(config)
+    ):
+        raise EvidenceError(
+            "confirmatory ordinary operational authority is restricted to Raw/Wire 1 (10200,4)"
+        )
+    pair, arms = _joined_repetition_zero_arms(raw, capture)
+    baseline_semantics = pair["result"]["baseline"]["semantics"]
+    candidate_semantics = pair["result"]["candidate"]["semantics"]
+    if (
+        baseline_semantics.get("corpus_version") != 2
+        or candidate_semantics.get("corpus_version") != 2
+    ):
+        raise EvidenceError("confirmatory operational replay semantics must select Corpus 2")
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "source_commit": raw["source_commit"],
+        "source_stamped": raw["source_stamped"],
+        "source_tree_dirty": raw["source_tree_dirty"],
+        "campaign_id": "phase4_confirmatory_corpus_v2",
+        "eligible_input_to_phase4_aggregation": True,
+        "standalone_decision_eligible": False,
+        "statistical_timing_eligible": False,
+        "coverage_complete": False,
+        "cell_operational_telemetry_complete": True,
+        "cell_role": "calibration",
+        "raw_authority_binding": {
+            "authority": "phase4_confirmatory_raw_evidence_v1",
+            "raw_evidence_schema_version": 1,
+            "wire_schema_version": 1,
+            "corpus_version": 2,
+            "corpus_checksum": raw["corpus_checksum"],
+            "cell_plan_checksum": raw["cell_plan_checksum"],
+            "environment_checksum": raw["environment"]["environment_checksum"],
+            "authority_run_identity": raw["authority_run_identity"],
+            "controller_identity": raw["controller_identity"],
+            "raw_artifact_checksum": raw["artifact_checksum"],
+            "raw_source_envelope_checksum": raw["source_envelope_checksum"],
+        },
+        "cell_config": copy.deepcopy(config),
+        "cell_identity": {
+            "case_id": baseline_semantics["case_id"],
+            "descriptor_fingerprint": baseline_semantics["descriptor_fingerprint"],
+            "case_checksum": baseline_semantics["case_checksum"],
+            "board_content_hash": baseline_semantics["board_content_hash"],
+            "workload_checksum": baseline_semantics["workload_checksum"],
+            "capacity_model_checksum": baseline_semantics["capacity_model_checksum"],
+            "budget_checksum": baseline_semantics["budget_checksum"],
+            "workload_net_count": baseline_semantics["workload_net_count"],
+            "root_seed": baseline_semantics["root_seed"],
+        },
+        "reproducibility_provenance": copy.deepcopy(capture["reproducibility_provenance"]),
+        "capture_binding": {
+            "controller_identity": capture["controller_identity"],
+            "capture_run_identity": capture["capture_run_identity"],
+            "capture_artifact_checksum": capture["artifact_checksum"],
+            "capture_source_envelope_checksum": capture["source_envelope_checksum"],
+        },
+        "arms": arms,
+        "artifact_checksum": 0,
+        "source_envelope_checksum": 0,
+    }
+    result["artifact_checksum"] = _confirmatory_publication_checksum(result)
+    result["source_envelope_checksum"] = _confirmatory_publication_source_checksum(result)
+    return result
+
+
 def validate_publication(
     raw: Mapping[str, Any],
     capture: Mapping[str, Any],
@@ -1686,9 +1892,35 @@ def validate_publication(
         raise EvidenceError("publication source envelope checksum is invalid")
 
 
+def validate_confirmatory_ordinary_publication(
+    raw: Mapping[str, Any],
+    capture: Mapping[str, Any],
+    publication: Mapping[str, Any],
+) -> None:
+    expected = project_confirmatory_ordinary_document(raw, capture)
+    validate_confirmatory_ordinary_publication_against_expected(expected, publication)
+
+
+def validate_confirmatory_ordinary_publication_against_expected(
+    expected: Mapping[str, Any],
+    publication: Mapping[str, Any],
+) -> None:
+    projection_v1.assert_exact_projection(expected, publication)
+    if publication["artifact_checksum"] != _confirmatory_publication_checksum(publication):
+        raise EvidenceError("publication artifact checksum is invalid")
+    if publication["source_envelope_checksum"] != _confirmatory_publication_source_checksum(
+        publication
+    ):
+        raise EvidenceError("publication source envelope checksum is invalid")
+
+
 def read_publication(path: pathlib.Path) -> Mapping[str, Any]:
     try:
-        data = path.read_bytes()
+        data = read_regular_file(
+            path,
+            _MAXIMUM_PUBLICATION_BYTES,
+            label="operational publication",
+        )
     except OSError as error:
         raise EvidenceError(f"cannot read publication: {error}") from error
     if len(data) > _MAXIMUM_PUBLICATION_BYTES:

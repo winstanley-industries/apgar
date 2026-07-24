@@ -672,13 +672,13 @@ template <typename Payload, typename Writer>
   return std::move(writer).Finish();
 }
 
-}  // namespace
-
-std::optional<std::string> SerializePhase4OperationalProfileWorkerJsonV1(
+[[nodiscard]] std::optional<std::string> SerializeOperationalProfileWorkerJsonForAuthority(
+    Phase4RepresentativeCorpusAuthority corpus_authority,
     const Phase4TrialArmOperationalProfileV1& profile, std::string_view source_commit,
     bool source_stamped, bool source_tree_dirty) {
   if (!IsLowerHexCommit(source_commit) || profile.profile_checksum == 0 ||
-      internal::ValidatePhase4TrialArmOperationalProfileV1(profile).has_value()) {
+      internal::ValidatePhase4TrialArmOperationalProfileForAuthorityV1(corpus_authority, profile)
+          .has_value()) {
     return std::nullopt;
   }
   return SerializeWorker(Phase4OperationalWorkerOutputKind::kMeasuredProfile, profile,
@@ -686,16 +686,52 @@ std::optional<std::string> SerializePhase4OperationalProfileWorkerJsonV1(
                          WriteOperationalProfile);
 }
 
-std::optional<std::string> SerializePhase4ReplayAuthorityWorkerJsonV1(
+[[nodiscard]] std::optional<std::string> SerializeReplayAuthorityWorkerJsonForAuthority(
+    Phase4RepresentativeCorpusAuthority corpus_authority,
     const Phase4TrialArmReplayAuthorityV1& authority, std::string_view source_commit,
     bool source_stamped, bool source_tree_dirty) {
   if (!IsLowerHexCommit(source_commit) || authority.authority_checksum == 0 ||
-      internal::ValidatePhase4TrialArmReplayAuthorityV1(authority).has_value()) {
+      internal::ValidatePhase4TrialArmReplayAuthorityForAuthorityV1(corpus_authority, authority)
+          .has_value()) {
     return std::nullopt;
   }
   return SerializeWorker(Phase4OperationalWorkerOutputKind::kUnmeasuredReplayAuthority, authority,
                          authority.authority_checksum, source_commit, source_stamped,
                          source_tree_dirty, WriteReplayAuthority);
+}
+
+}  // namespace
+
+std::optional<std::string> SerializePhase4OperationalProfileWorkerJsonV1(
+    const Phase4TrialArmOperationalProfileV1& profile, std::string_view source_commit,
+    bool source_stamped, bool source_tree_dirty) {
+  return SerializeOperationalProfileWorkerJsonForAuthority(Phase4RepresentativeCorpusAuthority::kV1,
+                                                           profile, source_commit, source_stamped,
+                                                           source_tree_dirty);
+}
+
+std::optional<std::string> SerializePhase4OperationalProfileWorkerJsonForCorpusV2(
+    const Phase4TrialArmOperationalProfileV1& profile, std::string_view source_commit,
+    bool source_stamped, bool source_tree_dirty) {
+  return SerializeOperationalProfileWorkerJsonForAuthority(Phase4RepresentativeCorpusAuthority::kV2,
+                                                           profile, source_commit, source_stamped,
+                                                           source_tree_dirty);
+}
+
+std::optional<std::string> SerializePhase4ReplayAuthorityWorkerJsonV1(
+    const Phase4TrialArmReplayAuthorityV1& authority, std::string_view source_commit,
+    bool source_stamped, bool source_tree_dirty) {
+  return SerializeReplayAuthorityWorkerJsonForAuthority(Phase4RepresentativeCorpusAuthority::kV1,
+                                                        authority, source_commit, source_stamped,
+                                                        source_tree_dirty);
+}
+
+std::optional<std::string> SerializePhase4ReplayAuthorityWorkerJsonForCorpusV2(
+    const Phase4TrialArmReplayAuthorityV1& authority, std::string_view source_commit,
+    bool source_stamped, bool source_tree_dirty) {
+  return SerializeReplayAuthorityWorkerJsonForAuthority(Phase4RepresentativeCorpusAuthority::kV2,
+                                                        authority, source_commit, source_stamped,
+                                                        source_tree_dirty);
 }
 
 }  // namespace apgar::benchmark

@@ -280,6 +280,11 @@ def _provenance(
     worker_identity: Mapping[str, Any],
     compiler_identity: str,
     execution_environment: Mapping[str, Any],
+    *,
+    publication_invocation: str = (
+        "bazel --batch run --config=benchmark //:phase4_operational_capture"
+    ),
+    worker_target: str = "//:phase4_operational_replay_worker",
 ) -> dict[str, Any]:
     files = {
         "bazel_version_file": _resolve_runfile(".bazelversion"),
@@ -309,11 +314,9 @@ def _provenance(
     uname = platform.uname()
     value: dict[str, Any] = {
         "schema_version": 1,
-        "publication_invocation": (
-            "bazel --batch run --config=benchmark //:phase4_operational_capture"
-        ),
+        "publication_invocation": publication_invocation,
         "bazel_release": bazel_release,
-        "worker_target": "//:phase4_operational_replay_worker",
+        "worker_target": worker_target,
         "worker_sha256": worker_identity["sha256"],
         "worker_file_identity": dict(worker_identity),
         "compiler_identity": compiler_identity,
@@ -664,6 +667,7 @@ def _launch(
     expected_kind: int,
     measurement_role: str,
     expected_execution_environment: Mapping[str, Any] | None = None,
+    worker_environment: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], Mapping[str, Any]]:
     if not arguments or worker_fd < 0:
         raise CaptureError("operational worker dispatch is invalid")
@@ -676,7 +680,7 @@ def _launch(
             if descriptor >= 0:
                 os.close(descriptor)
         raise
-    start = time.monotonic_ns()
+    start = 0
     controller_pid = os.getpid()
     subreaper_was_enabled = True
     subreaper_changed = False
@@ -687,6 +691,7 @@ def _launch(
         if not subreaper_was_enabled:
             _set_child_subreaper(True)
             subreaper_changed = True
+        start = time.monotonic_ns()
         pid = os.fork()
     except BaseException as error:
         setup_cleanup_errors: list[BaseException] = []
@@ -723,7 +728,7 @@ def _launch(
             os.execve(
                 f"/proc/self/fd/{exec_descriptor}",
                 list(arguments),
-                os.environ.copy(),
+                os.environ.copy() if worker_environment is None else dict(worker_environment),
             )
         except BaseException:
             os._exit(127)
@@ -993,11 +998,19 @@ def _cell_arguments(options: argparse.Namespace, mode: str, arm: str) -> list[st
         f"--maximum_compiled_host_bytes={options.maximum_compiled_host_bytes}",
         f"--maximum_active_regions={options.maximum_active_regions}",
         f"--maximum_board_entities={options.maximum_board_entities}",
-        f"--fixture_path={options.fixture}",
     ]
+    fixture = getattr(options, "fixture", None)
+    if fixture is not None:
+        arguments.append(f"--fixture_path={fixture}")
+    corpus_version = getattr(options, "corpus_version", None)
+    raw_wire_schema_version = getattr(options, "raw_wire_schema_version", None)
+    if corpus_version is not None:
+        arguments.append(f"--corpus_version={corpus_version}")
+    if raw_wire_schema_version is not None:
+        arguments.append(f"--raw_wire_schema_version={raw_wire_schema_version}")
     if options.apgar_commit is not None:
         arguments.append(f"--apgar_commit={options.apgar_commit}")
-    else:
+    if getattr(options, "testing_allow_unstamped", options.apgar_commit is None):
         arguments.append("--testing_allow_unstamped=1")
     return arguments
 
@@ -1059,6 +1072,7 @@ def _capture_with_pinned_worker(
                 expected_kind=0 if mode == "measured" else 1,
                 measurement_role=f"{mode}_{arm}",
                 expected_execution_environment=execution_environment,
+                worker_environment=getattr(options, "worker_environment", None),
             )
             _require_execution_environment(execution_environment)
     workers = [worker for _, worker in rows.values()]
@@ -1076,9 +1090,18 @@ def _capture_with_pinned_worker(
     source_commit, source_stamped, source_tree_dirty, compiler_identity = next(
         iter(source_identity)
     )
-    if options.apgar_commit is not None and (
-        source_commit != options.apgar_commit or not source_stamped or source_tree_dirty
+    require_clean_source = getattr(
+        options,
+        "require_clean_source",
+        options.apgar_commit is not None,
+    )
+    if (
+        require_clean_source
+        and options.apgar_commit is not None
+        and source_commit != options.apgar_commit
     ):
+        raise CaptureError("operational workers do not authenticate the requested commit")
+    if require_clean_source and (not source_stamped or source_tree_dirty):
         raise CaptureError("operational workers do not authenticate the requested clean commit")
     process_identities = {
         observation["process_instance_identity"] for observation, _ in rows.values()
@@ -1124,7 +1147,21 @@ def _capture_with_pinned_worker(
         )
     if _sha256_fd(worker_fd) != worker_identity["sha256"]:
         raise CaptureError("pinned operational worker changed during capture")
-    provenance = _provenance(worker_identity, compiler_identity, execution_environment)
+    provenance = _provenance(
+        worker_identity,
+        compiler_identity,
+        execution_environment,
+        publication_invocation=getattr(
+            options,
+            "publication_invocation",
+            "bazel --batch run --config=benchmark //:phase4_operational_capture",
+        ),
+        worker_target=getattr(
+            options,
+            "worker_target",
+            "//:phase4_operational_replay_worker",
+        ),
+    )
     result: dict[str, Any] = {
         "schema_version": 1,
         "source_commit": source_commit,

@@ -23,7 +23,15 @@ enum class Phase4OperationalWorkerOutputKind : std::uint8_t {
     const Phase4TrialArmOperationalProfileV1& profile, std::string_view source_commit,
     bool source_stamped, bool source_tree_dirty);
 
+[[nodiscard]] std::optional<std::string> SerializePhase4OperationalProfileWorkerJsonForCorpusV2(
+    const Phase4TrialArmOperationalProfileV1& profile, std::string_view source_commit,
+    bool source_stamped, bool source_tree_dirty);
+
 [[nodiscard]] std::optional<std::string> SerializePhase4ReplayAuthorityWorkerJsonV1(
+    const Phase4TrialArmReplayAuthorityV1& authority, std::string_view source_commit,
+    bool source_stamped, bool source_tree_dirty);
+
+[[nodiscard]] std::optional<std::string> SerializePhase4ReplayAuthorityWorkerJsonForCorpusV2(
     const Phase4TrialArmReplayAuthorityV1& authority, std::string_view source_commit,
     bool source_stamped, bool source_tree_dirty);
 

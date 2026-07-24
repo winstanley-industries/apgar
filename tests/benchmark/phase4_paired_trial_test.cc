@@ -744,6 +744,7 @@ TEST(Phase4PairedTrialTest, CorpusV2DiagnosticEntryPointsRemainAuthorityBound) {
   const Phase4PairedTrialSpec spec = SpecV2();
   const Phase4RepresentativeCase corpus =
       ValueOf<Phase4RepresentativeCase>(BuildPhase4RepresentativeCaseV2(spec.case_id, {}));
+  constexpr std::string_view commit = "0123456789abcdef0123456789abcdef01234567";
 
   const Phase4TrialArmDiagnosticExecutionV1 diagnostic =
       ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticForCorpusV2(
@@ -772,6 +773,11 @@ TEST(Phase4PairedTrialTest, CorpusV2DiagnosticEntryPointsRemainAuthorityBound) {
   EXPECT_FALSE(internal::ValidatePhase4TrialArmOperationalProfileForAuthorityV1(
                    Phase4RepresentativeCorpusAuthority::kV2, operational)
                    .has_value());
+  EXPECT_TRUE(
+      SerializePhase4OperationalProfileWorkerJsonForCorpusV2(operational, commit, true, false)
+          .has_value());
+  EXPECT_FALSE(
+      SerializePhase4OperationalProfileWorkerJsonV1(operational, commit, true, false).has_value());
 
   const Phase4TrialArmReplayAuthorityV1 replay =
       ValueOf<Phase4TrialArmReplayAuthorityV1>(ExecutePhase4TrialArmReplayAuthorityForCorpusV2(
@@ -779,6 +785,9 @@ TEST(Phase4PairedTrialTest, CorpusV2DiagnosticEntryPointsRemainAuthorityBound) {
   EXPECT_FALSE(internal::ValidatePhase4TrialArmReplayAuthorityForAuthorityV1(
                    Phase4RepresentativeCorpusAuthority::kV2, replay)
                    .has_value());
+  EXPECT_TRUE(
+      SerializePhase4ReplayAuthorityWorkerJsonForCorpusV2(replay, commit, true, false).has_value());
+  EXPECT_FALSE(SerializePhase4ReplayAuthorityWorkerJsonV1(replay, commit, true, false).has_value());
 
   std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer =
       Preparer(spec.preparation_worker_count);
@@ -2101,9 +2110,15 @@ TEST(Phase4PairedTrialTest, BaselineReplayAuthorityRejectsStaleNestedLiveChecksu
 
 TEST(Phase4PairedTrialTest, OperationalWorkerSerializationRejectsInvalidAuthorityInputs) {
   const Phase4PairedTrialSpec spec = Spec();
+  const Phase4TrialArmOperationalProfileV1 profile = ValueOf<Phase4TrialArmOperationalProfileV1>(
+      ExecutePhase4TrialArmOperationalProfileV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
   Phase4TrialArmReplayAuthorityV1 authority = ValueOf<Phase4TrialArmReplayAuthorityV1>(
       ExecutePhase4TrialArmReplayAuthorityV1(Phase4TrialArm::kSequentialBaseline, spec, {}));
   constexpr std::string_view commit = "0123456789abcdef0123456789abcdef01234567";
+  EXPECT_FALSE(SerializePhase4OperationalProfileWorkerJsonForCorpusV2(profile, commit, true, false)
+                   .has_value());
+  EXPECT_FALSE(SerializePhase4ReplayAuthorityWorkerJsonForCorpusV2(authority, commit, true, false)
+                   .has_value());
   const std::optional<std::string> serialized =
       SerializePhase4ReplayAuthorityWorkerJsonV1(authority, commit, true, false);
   ASSERT_TRUE(serialized.has_value());
