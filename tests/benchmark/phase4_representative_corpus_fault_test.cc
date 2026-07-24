@@ -33,6 +33,26 @@ TEST(Phase4RepresentativeCorpusFaultTest, ConvertsInjectedHostFailuresAndRecover
   }
 }
 
+TEST(Phase4RepresentativeCorpusFaultTest, ConvertsInjectedV2HostFailuresAndRecovers) {
+  for (const auto [fault, invariant] : {
+           std::pair{internal::Phase4RepresentativeCorpusFaultForTesting::kBadAlloc,
+                     std::string_view("benchmark.phase4_representative.host_memory.v2")},
+           std::pair{internal::Phase4RepresentativeCorpusFaultForTesting::kLengthError,
+                     std::string_view("benchmark.phase4_representative.host_container.v2")},
+       }) {
+    internal::SetPhase4RepresentativeCorpusFaultForTesting(fault);
+    const Phase4RepresentativeCaseResult rejected = BuildPhase4RepresentativeCaseV2(10'100, {});
+    ASSERT_TRUE(std::holds_alternative<Phase4RepresentativeCorpusError>(rejected));
+    const Phase4RepresentativeCorpusError& error =
+        std::get<Phase4RepresentativeCorpusError>(rejected);
+    EXPECT_EQ(error.code, Phase4RepresentativeCorpusErrorCode::kResourceExhausted);
+    EXPECT_EQ(error.invariant_id, invariant);
+
+    EXPECT_TRUE(std::holds_alternative<Phase4RepresentativeCase>(
+        BuildPhase4RepresentativeCaseV2(10'100, {})));
+  }
+}
+
 TEST(Phase4RepresentativeCorpusFaultTest, PreservesNestedStaticResourceInvariantIds) {
   allocator::internal::SetMultiNetWorkloadFaultForTesting(
       allocator::internal::MultiNetWorkloadFaultForTesting::kBadAlloc);
@@ -54,6 +74,21 @@ TEST(Phase4RepresentativeCorpusFaultTest, PreservesNestedStaticResourceInvariant
   EXPECT_EQ(std::get<Phase4RepresentativeCorpusError>(imported_rejected).code,
             Phase4RepresentativeCorpusErrorCode::kResourceExhausted);
   EXPECT_EQ(std::get<Phase4RepresentativeCorpusError>(imported_rejected).invariant_id,
+            "benchmark.phase4_corpus.host_memory.v1");
+
+  allocator::internal::SetMultiNetWorkloadFaultForTesting(
+      allocator::internal::MultiNetWorkloadFaultForTesting::kBadAlloc);
+  const Phase4RepresentativeCaseResult v2_workload_rejected =
+      BuildPhase4RepresentativeCaseV2(10'100, {});
+  ASSERT_TRUE(std::holds_alternative<Phase4RepresentativeCorpusError>(v2_workload_rejected));
+  EXPECT_EQ(std::get<Phase4RepresentativeCorpusError>(v2_workload_rejected).invariant_id,
+            "allocator.workload.host_memory_exhausted.v1");
+
+  internal::FailNextPhase4CorpusBuildForTesting();
+  const Phase4RepresentativeCaseResult v2_imported_rejected =
+      BuildPhase4RepresentativeCaseV2(14'000, fixture);
+  ASSERT_TRUE(std::holds_alternative<Phase4RepresentativeCorpusError>(v2_imported_rejected));
+  EXPECT_EQ(std::get<Phase4RepresentativeCorpusError>(v2_imported_rejected).invariant_id,
             "benchmark.phase4_corpus.host_memory.v1");
 }
 

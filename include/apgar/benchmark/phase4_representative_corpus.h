@@ -19,10 +19,13 @@
 namespace apgar::benchmark {
 
 inline constexpr std::uint32_t kPhase4RepresentativeCorpusVersion = 1;
+inline constexpr std::uint32_t kPhase4RepresentativeCorpusVersionV2 = 2;
 inline constexpr std::uint32_t kMaximumPhase4RepresentativeNetsV1 = 4'096;
 inline constexpr std::uint64_t kMaximumPhase4ActiveRegionsV1 = 1'000'000;
 inline constexpr std::uint64_t kMaximumPhase4BoardEntitiesV1 = 1'000'000;
 inline constexpr std::uint32_t kPhase4PrimaryPoolSizeV1 = 8;
+inline constexpr std::uint32_t kPhase4PrimaryPoolSizeV2 = 8;
+inline constexpr board_ir::DbCoord kPhase4RepresentativeLatticeStepV2 = 8;
 
 enum class Phase4CaseSource : std::uint8_t {
   kSynthetic = 0,
@@ -179,6 +182,29 @@ struct Phase4RepresentativeCaseOperationalProfileV1 {
     const Phase4RepresentativeCorpusLimits& limits = {});
 
 [[nodiscard]] Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseWithOperationalProfileV1(
+    std::uint32_t case_id, std::string_view imported_fixture,
+    const Phase4RepresentativeCorpusLimits& limits,
+    Phase4RepresentativeCaseOperationalProfileV1& operational_profile);
+
+// Version 2 is a disjoint, pre-observation corpus. Its fresh case IDs and
+// descriptor checksum domain cannot be accepted by version-1 evidence
+// validators or substituted for the preserved version-1 negative matrix.
+[[nodiscard]] std::span<const Phase4CaseDescriptor> Phase4CaseDescriptorsV2() noexcept;
+
+[[nodiscard]] const Phase4CaseDescriptor* FindPhase4CaseDescriptorV2(
+    std::uint32_t case_id) noexcept;
+
+[[nodiscard]] std::uint64_t FingerprintPhase4CaseDescriptorV2(
+    const Phase4CaseDescriptor& descriptor) noexcept;
+
+[[nodiscard]] std::uint64_t Phase4RepresentativeCorpusChecksumV2() noexcept;
+
+[[nodiscard]] Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV2(
+    std::uint32_t case_id, std::string_view imported_fixture,
+    const Phase4RepresentativeCorpusLimits& limits = {});
+
+[[nodiscard]] Phase4RepresentativeCaseResult
+BuildPhase4RepresentativeCaseV2WithOperationalProfileV1(
     std::uint32_t case_id, std::string_view imported_fixture,
     const Phase4RepresentativeCorpusLimits& limits,
     Phase4RepresentativeCaseOperationalProfileV1& operational_profile);

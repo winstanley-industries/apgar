@@ -2953,6 +2953,25 @@ cc_test(
 )
 
 cc_test(
+    name = "phase4_representative_corpus_v2_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_representative_corpus_v2_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    deps = [
+        ":candidate_contract",
+        ":cpu_astar",
+        ":cpu_candidate_pool_preparation",
+        ":phase4_representative_corpus",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "phase4_representative_corpus_scale_test",
     size = "medium",
     srcs = [

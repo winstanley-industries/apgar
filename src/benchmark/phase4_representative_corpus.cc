@@ -42,10 +42,22 @@ using OperationalClock = std::chrono::steady_clock;
 }
 
 constexpr std::size_t kDescriptorCountV1 = 42;
+constexpr std::size_t kDescriptorCountV2 = 42;
 constexpr std::array<std::uint32_t, 3> kPrimaryPools = {4, 8, 16};
 constexpr board_ir::HeadingMask kOrthogonalHeadings =
     static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal) |
     static_cast<board_ir::HeadingMask>(board_ir::Heading::kVertical);
+
+enum class RepresentativeCorpusContract : std::uint8_t {
+  kV1 = 1,
+  kV2 = 2,
+};
+
+[[nodiscard]] constexpr std::string_view InvariantFor(RepresentativeCorpusContract contract,
+                                                      std::string_view v1,
+                                                      std::string_view v2) noexcept {
+  return contract == RepresentativeCorpusContract::kV2 ? v2 : v1;
+}
 
 #if defined(APGAR_PHASE4_REPRESENTATIVE_CORPUS_FAULT_TEST_VARIANT)
 thread_local internal::Phase4RepresentativeCorpusFaultForTesting
@@ -124,7 +136,7 @@ constexpr Phase4CorpusFeatureMask kFragmentedFeatures =
 }
 
 [[nodiscard]] constexpr std::array<Phase4CaseDescriptor, kDescriptorCountV1>
-MakeDescriptors() noexcept {
+MakeDescriptorsV1() noexcept {
   std::array<Phase4CaseDescriptor, kDescriptorCountV1> descriptors{};
   std::size_t write = 0;
   for (std::uint32_t family_index = 0; family_index < 3; ++family_index) {
@@ -189,8 +201,76 @@ MakeDescriptors() noexcept {
   return descriptors;
 }
 
-constexpr auto kDescriptorsV1 = MakeDescriptors();
+[[nodiscard]] constexpr std::array<Phase4CaseDescriptor, kDescriptorCountV2>
+MakeDescriptorsV2() noexcept {
+  std::array<Phase4CaseDescriptor, kDescriptorCountV2> descriptors{};
+  std::size_t write = 0;
+  for (std::uint32_t family_index = 0; family_index < 3; ++family_index) {
+    const auto family = static_cast<Phase4SyntheticFamily>(family_index);
+    descriptors[write++] =
+        SyntheticDescriptor(10'100U + family_index, family, Phase4CaseRole::kExactOracle,
+                            0x2000ULL + family_index, 6, {4, 0, 0}, 1, 4'096);
+  }
+  for (std::uint32_t family_index = 0; family_index < 3; ++family_index) {
+    const auto family = static_cast<Phase4SyntheticFamily>(family_index);
+    for (std::uint32_t instance = 0; instance < 2; ++instance) {
+      descriptors[write++] = SyntheticDescriptor(
+          10'200U + family_index * 10U + instance, family, Phase4CaseRole::kCalibration,
+          0xCA120000ULL + family_index * 0x100ULL + instance, 64, kPrimaryPools, 3);
+    }
+  }
+  for (std::uint32_t family_index = 0; family_index < 3; ++family_index) {
+    const auto family = static_cast<Phase4SyntheticFamily>(family_index);
+    const std::uint32_t net_count = family == Phase4SyntheticFamily::kFragmentedMaze ? 384U : 256U;
+    for (std::uint32_t instance = 0; instance < 8; ++instance) {
+      descriptors[write++] = SyntheticDescriptor(
+          11'000U + family_index * 100U + instance, family, Phase4CaseRole::kHeldOut,
+          0xE2D00000ULL + family_index * 0x100ULL + instance, net_count, kPrimaryPools, 3);
+    }
+  }
+  descriptors[write++] =
+      SyntheticDescriptor(12'000, Phase4SyntheticFamily::kPortalChannels,
+                          Phase4CaseRole::kQueryShape, 0x52520000ULL, 1, {1'024, 0, 0}, 1);
+  descriptors[write++] =
+      SyntheticDescriptor(12'001, Phase4SyntheticFamily::kPortalChannels,
+                          Phase4CaseRole::kQueryShape, 0x52520001ULL, 1'024, {1, 0, 0}, 1);
+  descriptors[write++] =
+      SyntheticDescriptor(12'002, Phase4SyntheticFamily::kPortalChannels,
+                          Phase4CaseRole::kQueryShape, 0x52520002ULL, 256, {4, 0, 0}, 1);
+  descriptors[write++] =
+      SyntheticDescriptor(12'003, Phase4SyntheticFamily::kPortalChannels,
+                          Phase4CaseRole::kQueryShape, 0x52520003ULL, 128, {8, 0, 0}, 1);
+  descriptors[write++] =
+      SyntheticDescriptor(12'004, Phase4SyntheticFamily::kPortalChannels,
+                          Phase4CaseRole::kQueryShape, 0x52520004ULL, 64, {16, 0, 0}, 1);
+  for (std::uint32_t tier = 0; tier < 3; ++tier) {
+    descriptors[write++] = SyntheticDescriptor(
+        13'000U + tier, Phase4SyntheticFamily::kPortalChannels, Phase4CaseRole::kStress,
+        0x58E66000ULL + tier, 1'024U << tier, {4, 0, 0}, 1, 0, 4'096);
+  }
+  descriptors[write++] = Phase4CaseDescriptor{
+      .case_id = 14'000,
+      .source = Phase4CaseSource::kImportedFixture,
+      .family = Phase4SyntheticFamily::kImportedGuardrail,
+      .role = Phase4CaseRole::kImportedGuardrail,
+      .deterministic_seed = 0,
+      .requested_net_count = 2,
+      .declared_reachable_net_count = 2,
+      .requested_pool_sizes = kPrimaryPools,
+      .requested_pool_size_count = 3,
+      .features = FeaturesFor(Phase4SyntheticFamily::kImportedGuardrail),
+      .maximum_exact_candidate_products = 0,
+      .declared_stress_target_nets = 0,
+      .known_unmapped_exact_conflicts = false,
+      .globally_coupled_conflict_graph = false,
+  };
+  return descriptors;
+}
+
+constexpr auto kDescriptorsV1 = MakeDescriptorsV1();
+constexpr auto kDescriptorsV2 = MakeDescriptorsV2();
 static_assert(kDescriptorsV1.back().case_id == 4'000);
+static_assert(kDescriptorsV2.back().case_id == 14'000);
 
 [[nodiscard]] Phase4RepresentativeCorpusError Error(Phase4RepresentativeCorpusErrorCode code,
                                                     std::string_view invariant_id,
@@ -212,14 +292,16 @@ static_assert(kDescriptorsV1.back().case_id == 4'000);
 }
 
 [[nodiscard]] Phase4RepresentativeCorpusError WorkBoundError(
-    std::uint32_t case_id, Phase4RepresentativeWorkBound bound,
-    std::uint64_t maximum_preparable_net_count, board_ir::EntityRef first_unpreparable_net,
-    std::uint64_t required_compiled_nodes, std::uint64_t configured_compiled_node_limit,
-    std::uint64_t required_compiled_host_bytes,
+    RepresentativeCorpusContract contract, std::uint32_t case_id,
+    Phase4RepresentativeWorkBound bound, std::uint64_t maximum_preparable_net_count,
+    board_ir::EntityRef first_unpreparable_net, std::uint64_t required_compiled_nodes,
+    std::uint64_t configured_compiled_node_limit, std::uint64_t required_compiled_host_bytes,
     std::uint64_t configured_compiled_host_byte_limit) noexcept {
   return Phase4RepresentativeCorpusError{
       .code = Phase4RepresentativeCorpusErrorCode::kWorkBoundExceeded,
-      .invariant_id = "benchmark.phase4_representative.compiled_work_bound.v1",
+      .invariant_id =
+          InvariantFor(contract, "benchmark.phase4_representative.compiled_work_bound.v1",
+                       "benchmark.phase4_representative.compiled_work_bound.v2"),
       .detail = "Representative case exceeds a compiled-node or logical-host-byte bound",
       .requested_case_id = case_id,
       .limiting_work_bound = bound,
@@ -241,15 +323,22 @@ static_assert(kDescriptorsV1.back().case_id == 4'000);
                : Phase4RepresentativeWorkBound::kCompiledHostBytes;
 }
 
-[[nodiscard]] std::uint64_t CounterValue(std::uint64_t seed, std::uint64_t counter) noexcept {
+[[nodiscard]] std::uint64_t CounterValue(RepresentativeCorpusContract contract, std::uint64_t seed,
+                                         std::uint64_t counter) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-PHASE4-CORPUS-COUNTER-V1");
+  hash.AddString(
+      InvariantFor(contract, "APGAR-PHASE4-CORPUS-COUNTER-V1", "APGAR-PHASE4-CORPUS-COUNTER-V2"));
   hash.AddU64(seed);
   hash.AddU64(counter);
   return hash.Finish();
 }
 
-[[nodiscard]] Point64 Transform(Phase4SyntheticFamily family, Point64 point) noexcept {
+[[nodiscard]] Point64 Transform(RepresentativeCorpusContract contract, Phase4SyntheticFamily family,
+                                Point64 point) noexcept {
+  if (contract == RepresentativeCorpusContract::kV2) {
+    point.x *= kPhase4RepresentativeLatticeStepV2;
+    point.y *= kPhase4RepresentativeLatticeStepV2;
+  }
   if (family == Phase4SyntheticFamily::kPinFieldCrossbar) {
     return Point64{.x = point.y, .y = -point.x};
   }
@@ -288,16 +377,17 @@ void AddRegion(SyntheticGeometry* geometry, AxisAlignedBox64 bounds,
   ExtendBounds(geometry, bounds.max);
 }
 
-void AddPoint(SyntheticGeometry* geometry, Phase4SyntheticFamily family, Point64 point,
-              std::uint64_t maximum_active_regions) {
-  point = Transform(family, point);
+void AddPoint(SyntheticGeometry* geometry, RepresentativeCorpusContract contract,
+              Phase4SyntheticFamily family, Point64 point, std::uint64_t maximum_active_regions) {
+  point = Transform(contract, family, point);
   AddRegion(geometry, AxisAlignedBox64{.min = point, .max = point}, maximum_active_regions);
 }
 
-void AddOrthogonalSegment(SyntheticGeometry* geometry, Phase4SyntheticFamily family, Point64 start,
-                          Point64 end, std::uint64_t maximum_active_regions) {
-  start = Transform(family, start);
-  end = Transform(family, end);
+void AddOrthogonalSegment(SyntheticGeometry* geometry, RepresentativeCorpusContract contract,
+                          Phase4SyntheticFamily family, Point64 start, Point64 end,
+                          std::uint64_t maximum_active_regions) {
+  start = Transform(contract, family, start);
+  end = Transform(contract, family, end);
   const AxisAlignedBox64 bounds{
       .min = Point64{.x = std::min(start.x, end.x), .y = std::min(start.y, end.y)},
       .max = Point64{.x = std::max(start.x, end.x), .y = std::max(start.y, end.y)},
@@ -305,13 +395,20 @@ void AddOrthogonalSegment(SyntheticGeometry* geometry, Phase4SyntheticFamily fam
   AddRegion(geometry, bounds, maximum_active_regions);
 }
 
-[[nodiscard]] std::optional<routing::EdgeResourceKey> ResourceBetween(Phase4SyntheticFamily family,
-                                                                      Point64 start,
-                                                                      Point64 end) noexcept {
-  start = Transform(family, start);
-  end = Transform(family, end);
-  const std::int64_t dx = end.x - start.x;
-  const std::int64_t dy = end.y - start.y;
+[[nodiscard]] std::optional<routing::EdgeResourceKey> ResourceBetween(
+    Phase4SyntheticFamily family, RepresentativeCorpusContract contract,
+    const SyntheticGeometry& geometry, Point64 start, Point64 end) noexcept {
+  start = Transform(contract, family, start);
+  end = Transform(contract, family, end);
+  const std::optional<geometry_compiler::LatticeIndex> start_index =
+      geometry_compiler::ExactPointToLatticeIndex(geometry.profile, start);
+  const std::optional<geometry_compiler::LatticeIndex> end_index =
+      geometry_compiler::ExactPointToLatticeIndex(geometry.profile, end);
+  if (!start_index.has_value() || !end_index.has_value()) {
+    return std::nullopt;
+  }
+  const std::int64_t dx = end_index->x - start_index->x;
+  const std::int64_t dy = end_index->y - start_index->y;
   geometry_compiler::Direction direction;
   if (dx == 1 && dy == 0) {
     direction = geometry_compiler::Direction::kEast;
@@ -324,8 +421,7 @@ void AddOrthogonalSegment(SyntheticGeometry* geometry, Phase4SyntheticFamily fam
   } else {
     return std::nullopt;
   }
-  return routing::CanonicalPhysicalEdgeResource(
-      0, geometry_compiler::LatticeIndex{.x = start.x, .y = start.y}, direction);
+  return routing::CanonicalPhysicalEdgeResource(0, *start_index, direction);
 }
 
 [[nodiscard]] std::uint32_t MaximumRequestedPoolSize(
@@ -337,11 +433,94 @@ void AddOrthogonalSegment(SyntheticGeometry* geometry, Phase4SyntheticFamily fam
   return maximum;
 }
 
-void AddPortalMotif(const Phase4CaseDescriptor& descriptor, std::uint32_t motif_index,
-                    bool has_constrained_net, bool flexible_reachable, board_ir::DbCoord origin_y,
-                    std::uint32_t channel_count, SyntheticGeometry* geometry,
-                    std::uint64_t maximum_active_regions) {
-  const std::uint64_t variation = CounterValue(descriptor.deterministic_seed, motif_index);
+void AddFragmentedMotifV2(const Phase4CaseDescriptor& descriptor, std::uint32_t motif_index,
+                          bool has_constrained_net, bool flexible_reachable,
+                          board_ir::DbCoord origin_y, std::uint32_t channel_count,
+                          SyntheticGeometry* geometry, std::uint64_t maximum_active_regions) {
+  constexpr RepresentativeCorpusContract contract = RepresentativeCorpusContract::kV2;
+  const std::uint64_t variation =
+      CounterValue(contract, descriptor.deterministic_seed, motif_index);
+  const board_ir::DbCoord spacing = 10 + static_cast<board_ir::DbCoord>(variation % 3U);
+  constexpr board_ir::DbCoord left_backbone = -8;
+  constexpr board_ir::DbCoord right_backbone = 8;
+  const board_ir::DbCoord left_terminal =
+      left_backbone - 4 - static_cast<board_ir::DbCoord>((variation >> 8U) % 4U);
+  const board_ir::DbCoord right_terminal =
+      right_backbone + 4 + static_cast<board_ir::DbCoord>((variation >> 16U) % 4U);
+  const board_ir::DbCoord top = origin_y + spacing * (channel_count - 1U);
+  const Point64 flexible_start{.x = left_terminal, .y = origin_y};
+  const Point64 flexible_goal{.x = right_terminal, .y = origin_y};
+
+  AddPoint(geometry, contract, descriptor.family, flexible_start, maximum_active_regions);
+  AddPoint(geometry, contract, descriptor.family, flexible_goal, maximum_active_regions);
+  if (flexible_reachable) {
+    AddOrthogonalSegment(geometry, contract, descriptor.family, flexible_start,
+                         Point64{.x = left_backbone, .y = origin_y}, maximum_active_regions);
+  }
+  AddOrthogonalSegment(geometry, contract, descriptor.family,
+                       Point64{.x = right_backbone, .y = origin_y}, flexible_goal,
+                       maximum_active_regions);
+  AddOrthogonalSegment(geometry, contract, descriptor.family,
+                       Point64{.x = left_backbone, .y = origin_y},
+                       Point64{.x = left_backbone, .y = top}, maximum_active_regions);
+  AddOrthogonalSegment(geometry, contract, descriptor.family,
+                       Point64{.x = right_backbone, .y = origin_y},
+                       Point64{.x = right_backbone, .y = top}, maximum_active_regions);
+
+  for (std::uint32_t channel = 0; channel < channel_count; ++channel) {
+    const board_ir::DbCoord y = origin_y + spacing * channel;
+    const std::array<Point64, 10> corners = {
+        Point64{.x = left_backbone, .y = y},
+        Point64{.x = -5, .y = y},
+        Point64{.x = -5, .y = y + 4},
+        Point64{.x = -2, .y = y + 4},
+        Point64{.x = -2, .y = y},
+        Point64{.x = 3, .y = y},
+        Point64{.x = 3, .y = y - 4},
+        Point64{.x = 6, .y = y - 4},
+        Point64{.x = 6, .y = y},
+        Point64{.x = right_backbone, .y = y},
+    };
+    for (std::size_t index = 1; index < corners.size(); ++index) {
+      AddOrthogonalSegment(geometry, contract, descriptor.family, corners[index - 1],
+                           corners[index], maximum_active_regions);
+    }
+  }
+
+  geometry->endpoints.emplace_back(Transform(contract, descriptor.family, flexible_start),
+                                   Transform(contract, descriptor.family, flexible_goal));
+  if (!has_constrained_net) {
+    return;
+  }
+
+  const Point64 constrained_start{.x = 0, .y = origin_y - 4};
+  const Point64 constrained_goal{.x = 1, .y = origin_y + 4};
+  AddOrthogonalSegment(geometry, contract, descriptor.family, constrained_start,
+                       Point64{.x = 0, .y = origin_y}, maximum_active_regions);
+  AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 1, .y = origin_y},
+                       constrained_goal, maximum_active_regions);
+  geometry->endpoints.emplace_back(Transform(contract, descriptor.family, constrained_start),
+                                   Transform(contract, descriptor.family, constrained_goal));
+  const std::optional<routing::EdgeResourceKey> portal =
+      ResourceBetween(descriptor.family, contract, *geometry, Point64{.x = 0, .y = origin_y},
+                      Point64{.x = 1, .y = origin_y});
+  if (portal.has_value()) {
+    geometry->contested_resources.push_back(*portal);
+  }
+}
+
+void AddPortalMotif(RepresentativeCorpusContract contract, const Phase4CaseDescriptor& descriptor,
+                    std::uint32_t motif_index, bool has_constrained_net, bool flexible_reachable,
+                    board_ir::DbCoord origin_y, std::uint32_t channel_count,
+                    SyntheticGeometry* geometry, std::uint64_t maximum_active_regions) {
+  if (contract == RepresentativeCorpusContract::kV2 &&
+      descriptor.family == Phase4SyntheticFamily::kFragmentedMaze) {
+    AddFragmentedMotifV2(descriptor, motif_index, has_constrained_net, flexible_reachable, origin_y,
+                         channel_count, geometry, maximum_active_regions);
+    return;
+  }
+  const std::uint64_t variation =
+      CounterValue(contract, descriptor.deterministic_seed, motif_index);
   const board_ir::DbCoord spacing = 10 + static_cast<board_ir::DbCoord>(variation % 3U);
   constexpr board_ir::DbCoord left_backbone = -5;
   constexpr board_ir::DbCoord right_backbone = 6;
@@ -353,24 +532,28 @@ void AddPortalMotif(const Phase4CaseDescriptor& descriptor, std::uint32_t motif_
 
   const Point64 flexible_start{.x = left_terminal, .y = origin_y};
   const Point64 flexible_goal{.x = right_terminal, .y = origin_y};
-  AddPoint(geometry, descriptor.family, flexible_start, maximum_active_regions);
-  AddPoint(geometry, descriptor.family, flexible_goal, maximum_active_regions);
+  AddPoint(geometry, contract, descriptor.family, flexible_start, maximum_active_regions);
+  AddPoint(geometry, contract, descriptor.family, flexible_goal, maximum_active_regions);
   if (flexible_reachable) {
-    AddOrthogonalSegment(geometry, descriptor.family, flexible_start,
+    AddOrthogonalSegment(geometry, contract, descriptor.family, flexible_start,
                          Point64{.x = left_backbone, .y = origin_y}, maximum_active_regions);
   }
-  AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = right_backbone, .y = origin_y},
-                       flexible_goal, maximum_active_regions);
-  AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = left_backbone, .y = origin_y},
+  AddOrthogonalSegment(geometry, contract, descriptor.family,
+                       Point64{.x = right_backbone, .y = origin_y}, flexible_goal,
+                       maximum_active_regions);
+  AddOrthogonalSegment(geometry, contract, descriptor.family,
+                       Point64{.x = left_backbone, .y = origin_y},
                        Point64{.x = left_backbone, .y = top}, maximum_active_regions);
-  AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = right_backbone, .y = origin_y},
+  AddOrthogonalSegment(geometry, contract, descriptor.family,
+                       Point64{.x = right_backbone, .y = origin_y},
                        Point64{.x = right_backbone, .y = top}, maximum_active_regions);
 
   const board_ir::DbCoord detour = 2 + static_cast<board_ir::DbCoord>((variation >> 24U) % 2U);
   for (std::uint32_t channel = 0; channel < channel_count; ++channel) {
     const board_ir::DbCoord y = origin_y + spacing * channel;
     if (descriptor.family != Phase4SyntheticFamily::kFragmentedMaze) {
-      AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = left_backbone, .y = y},
+      AddOrthogonalSegment(geometry, contract, descriptor.family,
+                           Point64{.x = left_backbone, .y = y},
                            Point64{.x = right_backbone, .y = y}, maximum_active_regions);
       continue;
     }
@@ -387,73 +570,86 @@ void AddPortalMotif(const Phase4CaseDescriptor& descriptor, std::uint32_t motif_
         Point64{.x = 3, .y = y},
     };
     for (std::size_t index = 1; index < corners.size(); ++index) {
-      AddOrthogonalSegment(geometry, descriptor.family, corners[index - 1], corners[index],
-                           maximum_active_regions);
+      AddOrthogonalSegment(geometry, contract, descriptor.family, corners[index - 1],
+                           corners[index], maximum_active_regions);
     }
-    AddOrthogonalSegment(geometry, descriptor.family, corners.back(),
+    AddOrthogonalSegment(geometry, contract, descriptor.family, corners.back(),
                          Point64{.x = right_backbone, .y = y}, maximum_active_regions);
   }
 
-  geometry->endpoints.emplace_back(Transform(descriptor.family, flexible_start),
-                                   Transform(descriptor.family, flexible_goal));
+  geometry->endpoints.emplace_back(Transform(contract, descriptor.family, flexible_start),
+                                   Transform(contract, descriptor.family, flexible_goal));
   if (!has_constrained_net) {
     return;
   }
 
-  const Point64 constrained_start = descriptor.family == Phase4SyntheticFamily::kFragmentedMaze
-                                        ? Point64{.x = -1, .y = origin_y}
-                                        : Point64{.x = -3, .y = origin_y - 4};
+  const Point64 constrained_start =
+      descriptor.family == Phase4SyntheticFamily::kFragmentedMaze
+          ? Point64{.x = -1,
+                    .y = contract == RepresentativeCorpusContract::kV2 ? origin_y - 4 : origin_y}
+          : Point64{.x = -3, .y = origin_y - 4};
   if (descriptor.family == Phase4SyntheticFamily::kFragmentedMaze) {
-    AddOrthogonalSegment(geometry, descriptor.family, constrained_start,
-                         Point64{.x = 0, .y = origin_y}, maximum_active_regions);
+    if (contract == RepresentativeCorpusContract::kV2) {
+      AddOrthogonalSegment(geometry, contract, descriptor.family, constrained_start,
+                           Point64{.x = -1, .y = origin_y}, maximum_active_regions);
+      AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = -1, .y = origin_y},
+                           Point64{.x = 0, .y = origin_y}, maximum_active_regions);
+    } else {
+      AddOrthogonalSegment(geometry, contract, descriptor.family, constrained_start,
+                           Point64{.x = 0, .y = origin_y}, maximum_active_regions);
+    }
   } else {
-    AddOrthogonalSegment(geometry, descriptor.family, constrained_start,
+    AddOrthogonalSegment(geometry, contract, descriptor.family, constrained_start,
                          Point64{.x = 0, .y = origin_y - 4}, maximum_active_regions);
-    AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = 0, .y = origin_y - 4},
+    AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 0, .y = origin_y - 4},
                          Point64{.x = 0, .y = origin_y}, maximum_active_regions);
   }
   Point64 constrained_goal;
   if (descriptor.family == Phase4SyntheticFamily::kFragmentedMaze) {
     constrained_goal = Point64{.x = 4, .y = origin_y - 4};
-    AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = 1, .y = origin_y},
+    AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 1, .y = origin_y},
                          Point64{.x = 1, .y = origin_y - 4}, maximum_active_regions);
-    AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = 1, .y = origin_y - 4},
+    AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 1, .y = origin_y - 4},
                          constrained_goal, maximum_active_regions);
   } else {
     constrained_goal = Point64{.x = 3, .y = origin_y + 4};
-    AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = 1, .y = origin_y},
+    AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 1, .y = origin_y},
                          Point64{.x = 1, .y = origin_y + 4}, maximum_active_regions);
-    AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = 1, .y = origin_y + 4},
+    AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 1, .y = origin_y + 4},
                          constrained_goal, maximum_active_regions);
   }
-  geometry->endpoints.emplace_back(Transform(descriptor.family, constrained_start),
-                                   Transform(descriptor.family, constrained_goal));
-  const std::optional<routing::EdgeResourceKey> portal = ResourceBetween(
-      descriptor.family, Point64{.x = 0, .y = origin_y}, Point64{.x = 1, .y = origin_y});
+  geometry->endpoints.emplace_back(Transform(contract, descriptor.family, constrained_start),
+                                   Transform(contract, descriptor.family, constrained_goal));
+  const std::optional<routing::EdgeResourceKey> portal =
+      ResourceBetween(descriptor.family, contract, *geometry, Point64{.x = 0, .y = origin_y},
+                      Point64{.x = 1, .y = origin_y});
   if (portal.has_value()) {
     geometry->contested_resources.push_back(*portal);
   }
 }
 
-void AddPinFieldPortalLadder(const Phase4CaseDescriptor& descriptor, SyntheticGeometry* geometry,
+void AddPinFieldPortalLadder(RepresentativeCorpusContract contract,
+                             const Phase4CaseDescriptor& descriptor, SyntheticGeometry* geometry,
                              std::uint64_t maximum_active_regions) {
-  const std::uint64_t variation = CounterValue(descriptor.deterministic_seed, 0);
+  const std::uint64_t variation = CounterValue(contract, descriptor.deterministic_seed, 0);
   const board_ir::DbCoord spacing = 20 + 2 * static_cast<board_ir::DbCoord>(variation % 2U);
-  constexpr board_ir::DbCoord private_rail_x = -12;
-  constexpr board_ir::DbCoord shared_rail_x = 3;
+  const board_ir::DbCoord private_rail_x =
+      contract == RepresentativeCorpusContract::kV2 ? -16 : -12;
+  const board_ir::DbCoord shared_rail_x = contract == RepresentativeCorpusContract::kV2 ? 6 : 3;
   const std::uint32_t motif_count = descriptor.requested_net_count / 2U;
-  AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = shared_rail_x, .y = 0},
+  AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = shared_rail_x, .y = 0},
                        Point64{.x = shared_rail_x, .y = spacing * motif_count},
                        maximum_active_regions);
   for (std::uint32_t portal_index = 0; portal_index <= motif_count; ++portal_index) {
     const board_ir::DbCoord portal_y = spacing * portal_index;
-    AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = 0, .y = portal_y},
+    AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 0, .y = portal_y},
                          Point64{.x = 1, .y = portal_y}, maximum_active_regions);
-    AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = 1, .y = portal_y},
+    AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 1, .y = portal_y},
                          Point64{.x = shared_rail_x, .y = portal_y}, maximum_active_regions);
     if (portal_index < motif_count) {
-      if (const auto portal = ResourceBetween(descriptor.family, Point64{.x = 0, .y = portal_y},
-                                              Point64{.x = 1, .y = portal_y});
+      if (const auto portal =
+              ResourceBetween(descriptor.family, contract, *geometry,
+                              Point64{.x = 0, .y = portal_y}, Point64{.x = 1, .y = portal_y});
           portal.has_value()) {
         geometry->contested_resources.push_back(*portal);
       }
@@ -462,41 +658,66 @@ void AddPinFieldPortalLadder(const Phase4CaseDescriptor& descriptor, SyntheticGe
   for (std::uint32_t motif = 0; motif < motif_count; ++motif) {
     const board_ir::DbCoord lower_y = spacing * motif;
     const board_ir::DbCoord upper_y = spacing * (motif + 1U);
-    const Point64 flexible_start{.x = 0, .y = lower_y + 4};
-    const Point64 flexible_goal{.x = 0, .y = upper_y - 4};
-    AddOrthogonalSegment(geometry, descriptor.family, flexible_start, Point64{.x = 0, .y = lower_y},
+    const Point64 flexible_start = contract == RepresentativeCorpusContract::kV2
+                                       ? Point64{.x = 0, .y = lower_y + 8}
+                                       : Point64{.x = 0, .y = lower_y + 4};
+    const Point64 flexible_start_branch{.x = 0, .y = lower_y + 4};
+    const Point64 flexible_goal = contract == RepresentativeCorpusContract::kV2
+                                      ? Point64{.x = 0, .y = upper_y - 8}
+                                      : Point64{.x = 0, .y = upper_y - 4};
+    const Point64 flexible_goal_branch{.x = 0, .y = upper_y - 4};
+    if (contract == RepresentativeCorpusContract::kV2) {
+      AddOrthogonalSegment(geometry, contract, descriptor.family, flexible_start,
+                           flexible_start_branch, maximum_active_regions);
+      AddOrthogonalSegment(geometry, contract, descriptor.family, flexible_goal_branch,
+                           flexible_goal, maximum_active_regions);
+    }
+    AddOrthogonalSegment(geometry, contract, descriptor.family, flexible_start_branch,
+                         Point64{.x = 0, .y = lower_y}, maximum_active_regions);
+    AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 0, .y = upper_y},
+                         flexible_goal_branch, maximum_active_regions);
+    AddOrthogonalSegment(geometry, contract, descriptor.family, flexible_start_branch,
+                         Point64{.x = private_rail_x, .y = flexible_start_branch.y},
                          maximum_active_regions);
-    AddOrthogonalSegment(geometry, descriptor.family, Point64{.x = 0, .y = upper_y}, flexible_goal,
+    AddOrthogonalSegment(geometry, contract, descriptor.family,
+                         Point64{.x = private_rail_x, .y = flexible_start_branch.y},
+                         Point64{.x = private_rail_x, .y = flexible_goal_branch.y},
                          maximum_active_regions);
-    AddOrthogonalSegment(geometry, descriptor.family, flexible_start,
-                         Point64{.x = private_rail_x, .y = flexible_start.y},
-                         maximum_active_regions);
-    AddOrthogonalSegment(
-        geometry, descriptor.family, Point64{.x = private_rail_x, .y = flexible_start.y},
-        Point64{.x = private_rail_x, .y = flexible_goal.y}, maximum_active_regions);
-    AddOrthogonalSegment(geometry, descriptor.family,
-                         Point64{.x = private_rail_x, .y = flexible_goal.y}, flexible_goal,
-                         maximum_active_regions);
-    geometry->endpoints.emplace_back(Transform(descriptor.family, flexible_start),
-                                     Transform(descriptor.family, flexible_goal));
+    AddOrthogonalSegment(geometry, contract, descriptor.family,
+                         Point64{.x = private_rail_x, .y = flexible_goal_branch.y},
+                         flexible_goal_branch, maximum_active_regions);
+    geometry->endpoints.emplace_back(Transform(contract, descriptor.family, flexible_start),
+                                     Transform(contract, descriptor.family, flexible_goal));
 
     const Point64 constrained_start{.x = -4, .y = lower_y};
-    const Point64 constrained_goal{.x = 1, .y = lower_y};
-    AddOrthogonalSegment(geometry, descriptor.family, constrained_start,
+    const Point64 constrained_goal{
+        .x = contract == RepresentativeCorpusContract::kV2 ? 2 : 1,
+        .y = contract == RepresentativeCorpusContract::kV2 ? lower_y - 4 : lower_y,
+    };
+    AddOrthogonalSegment(geometry, contract, descriptor.family, constrained_start,
                          Point64{.x = 0, .y = lower_y}, maximum_active_regions);
-    geometry->endpoints.emplace_back(Transform(descriptor.family, constrained_start),
-                                     Transform(descriptor.family, constrained_goal));
+    if (contract == RepresentativeCorpusContract::kV2) {
+      AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 1, .y = lower_y},
+                           Point64{.x = 2, .y = lower_y}, maximum_active_regions);
+      AddOrthogonalSegment(geometry, contract, descriptor.family, Point64{.x = 2, .y = lower_y},
+                           constrained_goal, maximum_active_regions);
+    }
+    geometry->endpoints.emplace_back(Transform(contract, descriptor.family, constrained_start),
+                                     Transform(contract, descriptor.family, constrained_goal));
   }
 }
 
 [[nodiscard]] std::optional<SyntheticGeometry> BuildSyntheticGeometry(
-    const Phase4CaseDescriptor& descriptor, const Phase4RepresentativeCorpusLimits& limits) {
+    RepresentativeCorpusContract contract, const Phase4CaseDescriptor& descriptor,
+    const Phase4RepresentativeCorpusLimits& limits) {
   SyntheticGeometry geometry{
       .profile =
           CompilerProfile{
               .schema_version = geometry_compiler::kCompilerProfileSchemaVersion,
               .lattice_origin = Point64{.x = 0, .y = 0},
-              .lattice_step = 1,
+              .lattice_step = contract == RepresentativeCorpusContract::kV2
+                                  ? kPhase4RepresentativeLatticeStepV2
+                                  : 1,
               .tile_width_nodes = 8,
               .tile_height_nodes = 8,
               .compilation_roi = {},
@@ -515,7 +736,7 @@ void AddPinFieldPortalLadder(const Phase4CaseDescriptor& descriptor, SyntheticGe
   geometry.contested_resources.reserve(descriptor.requested_net_count / 2U);
   const std::uint32_t channel_count = MaximumRequestedPoolSize(descriptor);
   if (descriptor.family == Phase4SyntheticFamily::kPinFieldCrossbar) {
-    AddPinFieldPortalLadder(descriptor, &geometry, limits.maximum_active_regions);
+    AddPinFieldPortalLadder(contract, descriptor, &geometry, limits.maximum_active_regions);
     if (geometry.active_region_bound_exceeded || !geometry.has_bounds ||
         geometry.endpoints.size() != descriptor.requested_net_count) {
       return std::nullopt;
@@ -535,9 +756,9 @@ void AddPinFieldPortalLadder(const Phase4CaseDescriptor& descriptor, SyntheticGe
     const bool unreachable =
         descriptor.family == Phase4SyntheticFamily::kFragmentedMaze && unreachable_count != 0 &&
         ((motif + motif_count - unreachable_offset) % motif_count) < unreachable_count;
-    AddPortalMotif(descriptor, motif, has_constrained_net, !unreachable, cursor, channel_count,
-                   &geometry, limits.maximum_active_regions);
-    const std::uint64_t variation = CounterValue(descriptor.deterministic_seed, motif);
+    AddPortalMotif(contract, descriptor, motif, has_constrained_net, !unreachable, cursor,
+                   channel_count, &geometry, limits.maximum_active_regions);
+    const std::uint64_t variation = CounterValue(contract, descriptor.deterministic_seed, motif);
     const board_ir::DbCoord spacing = 10 + static_cast<board_ir::DbCoord>(variation % 3U);
     const board_ir::DbCoord detour_margin =
         descriptor.family == Phase4SyntheticFamily::kFragmentedMaze ? 4 : 0;
@@ -551,9 +772,10 @@ void AddPinFieldPortalLadder(const Phase4CaseDescriptor& descriptor, SyntheticGe
   return geometry;
 }
 
-[[nodiscard]] RoutingProfile ProfileFor(const Phase4CaseDescriptor& descriptor, EntityRef net,
+[[nodiscard]] RoutingProfile ProfileFor(RepresentativeCorpusContract contract,
+                                        const Phase4CaseDescriptor& descriptor, EntityRef net,
                                         std::uint32_t net_index) noexcept {
-  const std::uint64_t variation = CounterValue(descriptor.deterministic_seed, net_index);
+  const std::uint64_t variation = CounterValue(contract, descriptor.deterministic_seed, net_index);
   return RoutingProfile{
       .net = net,
       .nominal_width = 1 + static_cast<board_ir::DbCoord>(variation % 3U),
@@ -563,14 +785,15 @@ void AddPinFieldPortalLadder(const Phase4CaseDescriptor& descriptor, SyntheticGe
   };
 }
 
-[[nodiscard]] BoardData BuildSyntheticBoardData(const Phase4CaseDescriptor& descriptor,
+[[nodiscard]] BoardData BuildSyntheticBoardData(RepresentativeCorpusContract contract,
+                                                const Phase4CaseDescriptor& descriptor,
                                                 const SyntheticGeometry& geometry) {
   BoardData board{
       .schema_version = board_ir::kBoardSchemaVersion,
       .dbu_per_millimeter = 1'000'000,
       .revision = descriptor.deterministic_seed,
       .adapter_name = "phase4-representative-synthetic-corpus",
-      .adapter_version = "1",
+      .adapter_version = contract == RepresentativeCorpusContract::kV2 ? "2" : "1",
       .layers =
           {
               Layer{.ref = EntityRef{.id = 1, .generation = 0},
@@ -622,17 +845,21 @@ void AddPinFieldPortalLadder(const Phase4CaseDescriptor& descriptor, SyntheticGe
         .layers = {0},
     });
   }
-  board.routing_profile = ProfileFor(descriptor, board.nets.front().ref, 0);
+  board.routing_profile = ProfileFor(contract, descriptor, board.nets.front().ref, 0);
   return board;
 }
 
 [[nodiscard]] std::uint64_t ComputeCaseChecksum(
-    const Phase4CaseDescriptor& descriptor, const BoardSnapshot& board,
-    const allocator::MultiNetWorkload& workload, const allocator::ResourceCapacityModel& capacities,
+    RepresentativeCorpusContract contract, const Phase4CaseDescriptor& descriptor,
+    const BoardSnapshot& board, const allocator::MultiNetWorkload& workload,
+    const allocator::ResourceCapacityModel& capacities,
     std::span<const routing::EdgeResourceKey> contested_resources) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-PHASE4-REPRESENTATIVE-CASE-V1");
-  hash.AddU64(FingerprintPhase4CaseDescriptorV1(descriptor));
+  hash.AddString(InvariantFor(contract, "APGAR-PHASE4-REPRESENTATIVE-CASE-V1",
+                              "APGAR-PHASE4-REPRESENTATIVE-CASE-V2"));
+  hash.AddU64(contract == RepresentativeCorpusContract::kV2
+                  ? FingerprintPhase4CaseDescriptorV2(descriptor)
+                  : FingerprintPhase4CaseDescriptorV1(descriptor));
   hash.AddU64(board.content_hash());
   hash.AddU64(workload.workload_checksum());
   hash.AddU64(workload.compiled_node_count());
@@ -661,11 +888,12 @@ void AddPinFieldPortalLadder(const Phase4CaseDescriptor& descriptor, SyntheticGe
 }
 
 [[nodiscard]] std::variant<allocator::ResourceCapacityModel, Phase4RepresentativeCorpusError>
-BuildCapacities(std::uint32_t case_id, const BoardSnapshot& board,
-                const allocator::MultiNetWorkload& workload) {
+BuildCapacities(RepresentativeCorpusContract contract, std::uint32_t case_id,
+                const BoardSnapshot& board, const allocator::MultiNetWorkload& workload) {
   if (workload.nets().empty()) {
     return Error(Phase4RepresentativeCorpusErrorCode::kInternalInvariant,
-                 "benchmark.phase4_representative.empty_workload.v1",
+                 InvariantFor(contract, "benchmark.phase4_representative.empty_workload.v1",
+                              "benchmark.phase4_representative.empty_workload.v2"),
                  "Representative case produced an empty prepared workload", case_id);
   }
   allocator::ResourceCapacityModelResult result =
@@ -677,8 +905,11 @@ BuildCapacities(std::uint32_t case_id, const BoardSnapshot& board,
         capacity_error.code == allocator::AllocationErrorCode::kResourceExhausted;
     const std::string_view invariant_id =
         capacity_error.invariant_id.empty()
-            ? (resource_error ? "benchmark.phase4_representative.capacity_resource.v1"
-                              : "benchmark.phase4_representative.capacity.v1")
+            ? (resource_error
+                   ? InvariantFor(contract, "benchmark.phase4_representative.capacity_resource.v1",
+                                  "benchmark.phase4_representative.capacity_resource.v2")
+                   : InvariantFor(contract, "benchmark.phase4_representative.capacity.v1",
+                                  "benchmark.phase4_representative.capacity.v2"))
             : capacity_error.invariant_id;
     return Error(resource_error ? Phase4RepresentativeCorpusErrorCode::kResourceExhausted
                                 : Phase4RepresentativeCorpusErrorCode::kCapacityBuildFailed,
@@ -704,7 +935,8 @@ BuildCapacities(std::uint32_t case_id, const BoardSnapshot& board,
 }
 
 [[nodiscard]] std::optional<Phase4RepresentativeCorpusError> PreparedWorkBoundError(
-    std::uint32_t case_id, const allocator::MultiNetWorkload& workload,
+    RepresentativeCorpusContract contract, std::uint32_t case_id,
+    const allocator::MultiNetWorkload& workload,
     const Phase4RepresentativeCorpusLimits& limits) noexcept {
   const bool nodes_exceeded = workload.compiled_node_count() > limits.maximum_compiled_nodes;
   const bool host_exceeded = workload.compiled_host_bytes() > limits.maximum_compiled_host_bytes;
@@ -730,15 +962,16 @@ BuildCapacities(std::uint32_t case_id, const BoardSnapshot& board,
                           limits.maximum_compiled_nodes - accumulated_nodes;
   const bool host_stop = first_unpreparable.compiled_board.telemetry().estimated_host_bytes >
                          limits.maximum_compiled_host_bytes - accumulated_host_bytes;
-  return WorkBoundError(case_id, LimitingWorkBound(nodes_stop, host_stop), preparable,
+  return WorkBoundError(contract, case_id, LimitingWorkBound(nodes_stop, host_stop), preparable,
                         first_unpreparable.request.net, workload.compiled_node_count(),
                         limits.maximum_compiled_nodes, workload.compiled_host_bytes(),
                         limits.maximum_compiled_host_bytes);
 }
 
 [[nodiscard]] std::optional<Phase4RepresentativeCorpusError> UniformWorkBoundError(
-    std::uint32_t case_id, const Phase4CaseDescriptor& descriptor,
-    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled,
+    RepresentativeCorpusContract contract, std::uint32_t case_id,
+    const Phase4CaseDescriptor& descriptor, const board_ir::BoardSnapshot& board,
+    const geometry_compiler::CompiledBoard& compiled,
     const Phase4RepresentativeCorpusLimits& limits) noexcept {
   const std::uint64_t nodes_per_net = compiled.telemetry().represented_nodes;
   const std::uint64_t host_bytes_per_net = compiled.telemetry().estimated_host_bytes;
@@ -763,7 +996,7 @@ BuildCapacities(std::uint32_t case_id, const BoardSnapshot& board,
       std::min<std::uint64_t>({descriptor.requested_net_count, node_count, host_count});
   const bool nodes_stop = nodes_exceeded && node_count == preparable;
   const bool host_stop = host_exceeded && host_count == preparable;
-  return WorkBoundError(case_id, LimitingWorkBound(nodes_stop, host_stop), preparable,
+  return WorkBoundError(contract, case_id, LimitingWorkBound(nodes_stop, host_stop), preparable,
                         board.data().nets[preparable].ref, required_nodes,
                         limits.maximum_compiled_nodes, required_host_bytes,
                         limits.maximum_compiled_host_bytes);
@@ -823,9 +1056,52 @@ std::uint64_t Phase4RepresentativeCorpusChecksumV1() noexcept {
   return hash.Finish();
 }
 
+std::span<const Phase4CaseDescriptor> Phase4CaseDescriptorsV2() noexcept { return kDescriptorsV2; }
+
+const Phase4CaseDescriptor* FindPhase4CaseDescriptorV2(std::uint32_t case_id) noexcept {
+  const auto found = std::ranges::find(kDescriptorsV2, case_id, &Phase4CaseDescriptor::case_id);
+  return found == kDescriptorsV2.end() ? nullptr : &*found;
+}
+
+std::uint64_t FingerprintPhase4CaseDescriptorV2(const Phase4CaseDescriptor& descriptor) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-PHASE4-CASE-DESCRIPTOR-V2");
+  hash.AddU32(kPhase4RepresentativeCorpusVersionV2);
+  hash.AddU32(descriptor.case_id);
+  hash.AddByte(static_cast<std::uint8_t>(descriptor.source));
+  hash.AddByte(static_cast<std::uint8_t>(descriptor.family));
+  hash.AddByte(static_cast<std::uint8_t>(descriptor.role));
+  hash.AddU64(descriptor.deterministic_seed);
+  hash.AddU32(descriptor.requested_net_count);
+  hash.AddU32(descriptor.declared_reachable_net_count);
+  hash.AddByte(descriptor.requested_pool_size_count);
+  for (std::uint32_t pool_size : descriptor.requested_pool_sizes) {
+    hash.AddU32(pool_size);
+  }
+  hash.AddU32(descriptor.features);
+  hash.AddU64(descriptor.maximum_exact_candidate_products);
+  hash.AddU32(descriptor.declared_stress_target_nets);
+  hash.AddBool(descriptor.known_unmapped_exact_conflicts);
+  hash.AddBool(descriptor.globally_coupled_conflict_graph);
+  return hash.Finish();
+}
+
+std::uint64_t Phase4RepresentativeCorpusChecksumV2() noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-PHASE4-REPRESENTATIVE-CORPUS-V2");
+  hash.AddU32(kPhase4RepresentativeCorpusVersionV2);
+  hash.AddU64(static_cast<std::uint64_t>(kDescriptorsV2.size()));
+  for (const Phase4CaseDescriptor& descriptor : kDescriptorsV2) {
+    hash.AddU64(FingerprintPhase4CaseDescriptorV2(descriptor));
+  }
+  hash.AddU64(kPhase4ImportedMultiNetFixtureBytesV1);
+  hash.AddU64(kPhase4ImportedMultiNetFixtureFnv1a64V1);
+  return hash.Finish();
+}
+
 template <bool CaptureOperationalProfile>
 Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
-    std::uint32_t case_id, std::string_view imported_fixture,
+    RepresentativeCorpusContract contract, std::uint32_t case_id, std::string_view imported_fixture,
     const Phase4RepresentativeCorpusLimits& limits,
     Phase4RepresentativeCaseOperationalProfileV1* operational_profile) {
   ::apgar::internal::OperationalTimestamp<CaptureOperationalProfile, OperationalClock>
@@ -835,15 +1111,19 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
     descriptor_start =
         ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
   }
-  const Phase4CaseDescriptor* descriptor = FindPhase4CaseDescriptorV1(case_id);
+  const Phase4CaseDescriptor* descriptor = contract == RepresentativeCorpusContract::kV2
+                                               ? FindPhase4CaseDescriptorV2(case_id)
+                                               : FindPhase4CaseDescriptorV1(case_id);
   if (descriptor == nullptr) {
     return Error(Phase4RepresentativeCorpusErrorCode::kUnknownCase,
-                 "benchmark.phase4_representative.case_id.v1",
+                 InvariantFor(contract, "benchmark.phase4_representative.case_id.v1",
+                              "benchmark.phase4_representative.case_id.v2"),
                  "Representative corpus case ID is unknown", case_id);
   }
   if (!LimitsAreValid(limits)) {
     return Error(Phase4RepresentativeCorpusErrorCode::kInvalidLimits,
-                 "benchmark.phase4_representative.limits.v1",
+                 InvariantFor(contract, "benchmark.phase4_representative.limits.v1",
+                              "benchmark.phase4_representative.limits.v2"),
                  "Representative corpus limits are invalid", case_id);
   }
   const __uint128_t entity_count =
@@ -853,7 +1133,8 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
   if (descriptor->requested_net_count > limits.maximum_nets ||
       entity_count > limits.maximum_board_entities) {
     return Error(Phase4RepresentativeCorpusErrorCode::kInputBoundExceeded,
-                 "benchmark.phase4_representative.input_bound.v1",
+                 InvariantFor(contract, "benchmark.phase4_representative.input_bound.v1",
+                              "benchmark.phase4_representative.input_bound.v2"),
                  "Representative case exceeds the caller's net or Board-entity bound", case_id);
   }
   if constexpr (CaptureOperationalProfile) {
@@ -898,7 +1179,8 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
     if (descriptor->source == Phase4CaseSource::kImportedFixture) {
       if (imported_fixture.empty()) {
         return Error(Phase4RepresentativeCorpusErrorCode::kImportedFixtureRequired,
-                     "benchmark.phase4_representative.imported_fixture.v1",
+                     InvariantFor(contract, "benchmark.phase4_representative.imported_fixture.v1",
+                                  "benchmark.phase4_representative.imported_fixture.v2"),
                      "Imported guardrail case requires the authenticated fixture bytes", case_id);
       }
       Phase4ImportedCorpusOperationalProfileV1 imported_profile;
@@ -915,8 +1197,11 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
         const std::string_view invariant_id =
             imported_error.invariant_id.empty()
                 ? (imported_error.code == Phase4CorpusErrorCode::kResourceExhausted
-                       ? "benchmark.phase4_representative.imported_resource.v1"
-                       : "benchmark.phase4_representative.imported.v1")
+                       ? InvariantFor(contract,
+                                      "benchmark.phase4_representative.imported_resource.v1",
+                                      "benchmark.phase4_representative.imported_resource.v2")
+                       : InvariantFor(contract, "benchmark.phase4_representative.imported.v1",
+                                      "benchmark.phase4_representative.imported.v2"))
                 : imported_error.invariant_id;
         if (imported_error.code == Phase4CorpusErrorCode::kResourceExhausted) {
           return Error(Phase4RepresentativeCorpusErrorCode::kResourceExhausted, invariant_id,
@@ -939,18 +1224,19 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
         assembly_start =
             ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
       }
-      if (const auto work_bound = PreparedWorkBoundError(case_id, imported.workload, limits);
+      if (const auto work_bound =
+              PreparedWorkBoundError(contract, case_id, imported.workload, limits);
           work_bound.has_value()) {
         return *work_bound;
       }
-      auto capacity_result = BuildCapacities(case_id, imported.board, imported.workload);
+      auto capacity_result = BuildCapacities(contract, case_id, imported.board, imported.workload);
       if (std::holds_alternative<Phase4RepresentativeCorpusError>(capacity_result)) {
         return std::get<Phase4RepresentativeCorpusError>(capacity_result);
       }
       allocator::ResourceCapacityModel capacities =
           std::get<allocator::ResourceCapacityModel>(std::move(capacity_result));
-      const std::uint64_t checksum =
-          ComputeCaseChecksum(*descriptor, imported.board, imported.workload, capacities, {});
+      const std::uint64_t checksum = ComputeCaseChecksum(contract, *descriptor, imported.board,
+                                                         imported.workload, capacities, {});
       Phase4RepresentativeCase result{
           .descriptor = *descriptor,
           .board = std::move(imported.board),
@@ -972,18 +1258,21 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
       materialization_start =
           ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
     }
-    std::optional<SyntheticGeometry> geometry = BuildSyntheticGeometry(*descriptor, limits);
+    std::optional<SyntheticGeometry> geometry =
+        BuildSyntheticGeometry(contract, *descriptor, limits);
     if (!geometry.has_value()) {
       return Error(Phase4RepresentativeCorpusErrorCode::kInputBoundExceeded,
-                   "benchmark.phase4_representative.active_region_bound.v1",
+                   InvariantFor(contract, "benchmark.phase4_representative.active_region_bound.v1",
+                                "benchmark.phase4_representative.active_region_bound.v2"),
                    "Synthetic case exceeds its active-region bound", case_id);
     }
-    BoardData board_data = BuildSyntheticBoardData(*descriptor, *geometry);
+    BoardData board_data = BuildSyntheticBoardData(contract, *descriptor, *geometry);
     board_ir::BoardCreationResult board_result =
         board_ir::CreateBoardSnapshot(std::move(board_data));
     if (!std::holds_alternative<BoardSnapshot>(board_result)) {
       return Error(Phase4RepresentativeCorpusErrorCode::kBoardBuildFailed,
-                   "benchmark.phase4_representative.board.v1",
+                   InvariantFor(contract, "benchmark.phase4_representative.board.v1",
+                                "benchmark.phase4_representative.board.v2"),
                    "Synthetic representative Board IR construction failed", case_id);
     }
     BoardSnapshot board = std::get<BoardSnapshot>(std::move(board_result));
@@ -991,7 +1280,7 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
     specs.reserve(descriptor->requested_net_count);
     for (std::uint32_t index = 0; index < descriptor->requested_net_count; ++index) {
       specs.push_back(MultiNetRoutingSpec{
-          .routing_profile = ProfileFor(*descriptor, board.data().nets[index].ref, index),
+          .routing_profile = ProfileFor(contract, *descriptor, board.data().nets[index].ref, index),
           .start_layer = 0,
           .goal_layer = 0,
       });
@@ -1013,7 +1302,8 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
           geometry_compiler::CompileBoard(board, geometry->profile, specs.front().routing_profile);
       if (!std::holds_alternative<geometry_compiler::CompiledBoard>(probe_result)) {
         return Error(Phase4RepresentativeCorpusErrorCode::kWorkloadBuildFailed,
-                     "benchmark.phase4_representative.work_probe.v1",
+                     InvariantFor(contract, "benchmark.phase4_representative.work_probe.v1",
+                                  "benchmark.phase4_representative.work_probe.v2"),
                      "Synthetic compiled-work preflight could not compile its first net", case_id);
       }
       const geometry_compiler::CompiledBoard& probe =
@@ -1022,7 +1312,8 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
           probe.telemetry().represented_nodes * descriptor->requested_net_count;
       expected_compiled_host_bytes =
           probe.telemetry().estimated_host_bytes * descriptor->requested_net_count;
-      if (const auto work_bound = UniformWorkBoundError(case_id, *descriptor, board, probe, limits);
+      if (const auto work_bound =
+              UniformWorkBoundError(contract, case_id, *descriptor, board, probe, limits);
           work_bound.has_value()) {
         return *work_bound;
       }
@@ -1053,10 +1344,16 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
           workload_error.code == allocator::MultiNetWorkloadErrorCode::kWorkBoundExceeded;
       const std::string_view invariant_id =
           workload_error.invariant_id.empty()
-              ? (resource_error ? "benchmark.phase4_representative.workload_resource.v1"
+              ? (resource_error
+                     ? InvariantFor(contract,
+                                    "benchmark.phase4_representative.workload_resource.v1",
+                                    "benchmark.phase4_representative.workload_resource.v2")
                  : unexpected_work_bound
-                     ? "benchmark.phase4_representative.workload_preflight_drift.v1"
-                     : "benchmark.phase4_representative.workload.v1")
+                     ? InvariantFor(contract,
+                                    "benchmark.phase4_representative.workload_preflight_drift.v1",
+                                    "benchmark.phase4_representative.workload_preflight_drift.v2")
+                     : InvariantFor(contract, "benchmark.phase4_representative.workload.v1",
+                                    "benchmark.phase4_representative.workload.v2"))
               : workload_error.invariant_id;
       return Error(
           resource_error          ? Phase4RepresentativeCorpusErrorCode::kResourceExhausted
@@ -1076,14 +1373,17 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
     }
     if (workload.compiled_node_count() != expected_compiled_nodes ||
         workload.compiled_host_bytes() != expected_compiled_host_bytes) {
-      return Error(Phase4RepresentativeCorpusErrorCode::kInternalInvariant,
-                   "benchmark.phase4_representative.uniform_compiled_work.v1",
-                   "Synthetic per-net compiled-work accounting is not uniform", case_id);
+      return Error(
+          Phase4RepresentativeCorpusErrorCode::kInternalInvariant,
+          InvariantFor(contract, "benchmark.phase4_representative.uniform_compiled_work.v1",
+                       "benchmark.phase4_representative.uniform_compiled_work.v2"),
+          "Synthetic per-net compiled-work accounting is not uniform", case_id);
     }
     for (const routing::EdgeResourceKey& resource : geometry->contested_resources) {
       if (!routing::ResourceExists(workload.nets().front().compiled_board, resource)) {
         return Error(Phase4RepresentativeCorpusErrorCode::kInternalInvariant,
-                     "benchmark.phase4_representative.contested_resource.v1",
+                     InvariantFor(contract, "benchmark.phase4_representative.contested_resource.v1",
+                                  "benchmark.phase4_representative.contested_resource.v2"),
                      "Declared contested resource is absent from the compiled lattice", case_id);
       }
     }
@@ -1093,14 +1393,14 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
       assembly_start =
           ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
     }
-    auto capacity_result = BuildCapacities(case_id, board, workload);
+    auto capacity_result = BuildCapacities(contract, case_id, board, workload);
     if (std::holds_alternative<Phase4RepresentativeCorpusError>(capacity_result)) {
       return std::get<Phase4RepresentativeCorpusError>(capacity_result);
     }
     allocator::ResourceCapacityModel capacities =
         std::get<allocator::ResourceCapacityModel>(std::move(capacity_result));
-    const std::uint64_t checksum = ComputeCaseChecksum(*descriptor, board, workload, capacities,
-                                                       geometry->contested_resources);
+    const std::uint64_t checksum = ComputeCaseChecksum(contract, *descriptor, board, workload,
+                                                       capacities, geometry->contested_resources);
     Phase4RepresentativeCase result{
         .descriptor = *descriptor,
         .board = std::move(board),
@@ -1116,11 +1416,13 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
     return result;
   } catch (const std::bad_alloc&) {
     return Error(Phase4RepresentativeCorpusErrorCode::kResourceExhausted,
-                 "benchmark.phase4_representative.host_memory.v1",
+                 InvariantFor(contract, "benchmark.phase4_representative.host_memory.v1",
+                              "benchmark.phase4_representative.host_memory.v2"),
                  "Representative corpus host allocation failed", case_id);
   } catch (const std::length_error&) {
     return Error(Phase4RepresentativeCorpusErrorCode::kResourceExhausted,
-                 "benchmark.phase4_representative.host_container.v1",
+                 InvariantFor(contract, "benchmark.phase4_representative.host_container.v1",
+                              "benchmark.phase4_representative.host_container.v2"),
                  "Representative corpus host container bound was exhausted", case_id);
   }
 }
@@ -1128,7 +1430,8 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseImpl(
 Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV1(
     std::uint32_t case_id, std::string_view imported_fixture,
     const Phase4RepresentativeCorpusLimits& limits) {
-  return BuildPhase4RepresentativeCaseImpl<false>(case_id, imported_fixture, limits, nullptr);
+  return BuildPhase4RepresentativeCaseImpl<false>(RepresentativeCorpusContract::kV1, case_id,
+                                                  imported_fixture, limits, nullptr);
 }
 
 Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseWithOperationalProfileV1(
@@ -1137,7 +1440,37 @@ Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseWithOperationalProfi
     Phase4RepresentativeCaseOperationalProfileV1& operational_profile) {
   const OperationalClock::time_point component_start = OperationalClock::now();
   Phase4RepresentativeCaseResult result = BuildPhase4RepresentativeCaseImpl<true>(
-      case_id, imported_fixture, limits, &operational_profile);
+      RepresentativeCorpusContract::kV1, case_id, imported_fixture, limits, &operational_profile);
+  operational_profile.component_wall_nanoseconds = OperationalElapsed(component_start);
+  const __uint128_t classified =
+      static_cast<__uint128_t>(
+          operational_profile.descriptor_validation_and_bound_preflight_wall_nanoseconds) +
+      operational_profile.fixture_identity_and_import_wall_nanoseconds +
+      operational_profile.synthetic_geometry_and_board_materialization_wall_nanoseconds +
+      operational_profile.geometry_compilation_probe_wall_nanoseconds +
+      operational_profile.workload_geometry_compilation_wall_nanoseconds +
+      operational_profile.capacity_and_case_assembly_wall_nanoseconds;
+  operational_profile.unclassified_and_release_wall_nanoseconds =
+      classified <= operational_profile.component_wall_nanoseconds
+          ? operational_profile.component_wall_nanoseconds - static_cast<std::uint64_t>(classified)
+          : 0;
+  return result;
+}
+
+Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV2(
+    std::uint32_t case_id, std::string_view imported_fixture,
+    const Phase4RepresentativeCorpusLimits& limits) {
+  return BuildPhase4RepresentativeCaseImpl<false>(RepresentativeCorpusContract::kV2, case_id,
+                                                  imported_fixture, limits, nullptr);
+}
+
+Phase4RepresentativeCaseResult BuildPhase4RepresentativeCaseV2WithOperationalProfileV1(
+    std::uint32_t case_id, std::string_view imported_fixture,
+    const Phase4RepresentativeCorpusLimits& limits,
+    Phase4RepresentativeCaseOperationalProfileV1& operational_profile) {
+  const OperationalClock::time_point component_start = OperationalClock::now();
+  Phase4RepresentativeCaseResult result = BuildPhase4RepresentativeCaseImpl<true>(
+      RepresentativeCorpusContract::kV2, case_id, imported_fixture, limits, &operational_profile);
   operational_profile.component_wall_nanoseconds = OperationalElapsed(component_start);
   const __uint128_t classified =
       static_cast<__uint128_t>(
