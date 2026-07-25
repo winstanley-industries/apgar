@@ -1554,6 +1554,29 @@ acceleration.
   entry points are required before any H=4096 acquisition. The roster alone
   does not claim exact optimality, publish evidence, open another development
   cell, or authorize heldout execution.
+  The acquisition-free authority-only supersession is frozen by
+  `schemas/benchmark/phase4_confirmatory_decision_protocol_v2.md`. It
+  incorporates Confirmatory Decision Protocol v1 checksum
+  `7747512371013753061`, binds canonical budget roster v3 authority/schema,
+  its 102 cells and checksum `18429170436700418962`, and binds the complete
+  equal-arm `present=1,history=2250` to `present=1,history=4096`
+  configuration transition. The 104-cell matrix, evidence dispositions,
+  families, decision rules, thresholds, timing, guardrails, and nine
+  completion requirements MUST remain unchanged. Ten configuration-specific
+  v2 artifact authorities and
+  `phase4_confirmatory_matrix_decision_publication_v2` are reserved; their
+  authority versions MUST NOT implicitly select or change a payload or wire
+  schema. Protocol v2 alone authorizes no execution or acquisition. Future
+  separately reviewed development entry points MAY initially open only exact
+  `(10100,4)` through the same-run carrier and historical calibration identity
+  `(10200,8)` through the ordinary carrier; H=2250 evidence cannot be promoted
+  into either authority. Heldout, imported, fixed-query, stress, matrix, and
+  decision paths remain closed. Before heldout observation, a future separately
+  reviewed campaign-acquisition authority MUST bind one clean stamped source
+  commit containing the exact Protocol v2 and roster v3 authorities plus the
+  completed reviewed execution and publication chain; the protocol/roster-only
+  commit is insufficient. Premature H=4096 heldout observation invalidates the
+  roster and requires a fresh versioned authority.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully

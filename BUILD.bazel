@@ -1680,6 +1680,57 @@ py_test(
 )
 
 py_binary(
+    name = "phase4_confirmatory_decision_protocol_v2_validator",
+    srcs = ["tools/validate_phase4_confirmatory_decision_protocol_v2.py"],
+    data = ["schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json"],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_decision_protocol_v2.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_canonical_budget_roster_v3_validator_lib",
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_decision_protocol_v2_validator_lib",
+    srcs = ["tools/validate_phase4_confirmatory_decision_protocol_v2.py"],
+    data = ["schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json"],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_confirmatory_canonical_budget_roster_v3_validator_lib",
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_confirmatory_decision_protocol_v2_validator_test",
+    size = "small",
+    srcs = ["tests/tools/validate_phase4_confirmatory_decision_protocol_v2_test.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_confirmatory_decision_protocol_v2_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_canonical_budget_roster_v3_validator_lib",
+        ":phase4_confirmatory_decision_protocol_v2_validator_lib",
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_statistical_protocol_validator_lib",
+    ],
+)
+
+py_binary(
     name = "phase4_same_run_decision_telemetry_validator",
     srcs = ["tools/validate_phase4_same_run_decision_telemetry.py"],
     data = [
