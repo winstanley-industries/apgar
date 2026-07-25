@@ -44,13 +44,32 @@ Corpus v2 semantics; candidate witnesses must match field-for-field.
 Worker resolution is restricted to the Bazel runfiles tree containing the
 confirmatory authority itself; compiled public launchers clear ambient
 runfiles variables before entering Python, and caller working-directory
-fallbacks are forbidden. Capture and publication independently hash the
-bundled worker. The test worker always retains its actual unstamped or dirty
-build envelope, and only the separately named test publisher accepts it. An
-unstamped test build with no embedded commit identity publishes the all-zero
-40-character unavailable sentinel; it never relabels that envelope with the
-caller-supplied commit association. A test worker built from a publishable
-clean stamped source fails before replay and emits no artifact.
+fallbacks are forbidden. An inner Python authority must consume the one-use
+file-descriptor handshake established by that compiled launcher before it may
+parse arguments or emit an artifact; direct inner-target execution is not a
+publication path. In a containing Bazel test, the launcher accepts the
+declared enclosing runfiles tree only after the invoked path resolves to the
+launcher itself and the inner target resolves to its canonical Bazel output.
+The entire selected runfiles root, including every external repository
+subtree, must be traversed completely; traversal failure rejects the tree, and
+a rejected enclosing tree must not fall back to an adjacent standalone tree.
+The delegated Python authority must arm a parent-death relationship and close
+the fork race before exec so terminating the exact public launcher cannot leave
+capture or publication work running.
+The launcher must establish default `SIGCHLD` reaping semantics before
+delegation rather than inherit an ignored child signal that could permit
+authority output before an `ECHILD` launcher failure.
+Its isolated bytecode-cache path must be absent before delegation so launcher
+cancellation cannot leak the path.
+Capture and publication independently hash the bundled worker. The test worker
+always retains its actual unstamped or dirty build envelope, and only the
+separately named test publisher accepts it. An unstamped test build with no
+embedded commit identity publishes the all-zero 40-character unavailable
+sentinel; it never relabels that envelope with the caller-supplied commit
+association. A test worker determines whether it is a publishable clean build
+solely from embedded source state; caller commit mismatch cannot downgrade
+that state. A publishable clean test build fails before replay and emits no
+artifact.
 
 Raw remains the sole outcome and paired-timing authority. These operational
 replays are diagnostic and cannot be substituted into Raw.

@@ -14,6 +14,9 @@ from typing import Any
 
 from tools import capture_phase4_operational_measurement as capture_tool
 from tools import phase4_confirmatory_operational_authority as confirmatory_authority
+from tools import (
+    phase4_confirmatory_same_run_operational_authority as confirmatory_same_run_authority,
+)
 from tools import project_phase4_operational_evidence as projection_v1
 from tools import project_phase4_operational_evidence_v2 as projection_v2
 from tools import validate_phase4_raw_evidence as raw_validator
@@ -1606,6 +1609,33 @@ def _confirmatory_publication_source_checksum(value: Mapping[str, Any]) -> int:
     return hashed.finish()
 
 
+def _confirmatory_same_run_publication_checksum(value: Mapping[str, Any]) -> int:
+    payload = {
+        key: item
+        for key, item in value.items()
+        if key not in {"artifact_checksum", "source_envelope_checksum"}
+    }
+    hashed = raw_validator.StableHashBuilder()
+    hashed.string(
+        "APGAR-PHASE4-CONFIRMATORY-SAME-RUN-OPERATIONAL-MEASUREMENT-PUBLICATION-ARTIFACT-V1"
+    )
+    hashed.string(_canonical(payload))
+    return hashed.finish()
+
+
+def _confirmatory_same_run_publication_source_checksum(value: Mapping[str, Any]) -> int:
+    hashed = raw_validator.StableHashBuilder()
+    hashed.string(
+        "APGAR-PHASE4-CONFIRMATORY-SAME-RUN-OPERATIONAL-MEASUREMENT-PUBLICATION-SOURCE-V1"
+    )
+    hashed.u32(value["schema_version"])
+    hashed.string(value["source_commit"])
+    hashed.boolean(value["source_stamped"])
+    hashed.boolean(value["source_tree_dirty"])
+    hashed.u64(value["artifact_checksum"])
+    return hashed.finish()
+
+
 def _cell_role(case_id: int, pool: int) -> tuple[str, str]:
     protocol_v4.read_protocol()
     rows = {
@@ -1878,6 +1908,106 @@ def project_confirmatory_ordinary_document(
     return result
 
 
+def project_confirmatory_same_run_document(
+    raw: Mapping[str, Any],
+    sidecar: Mapping[str, Any],
+    capture: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the domain-separated same-run Corpus-v2 development publication."""
+    config = raw["config"]
+    if (
+        raw.get("raw_evidence_schema_version") != 2
+        or raw.get("wire_schema_version") != 2
+        or not confirmatory_same_run_authority.has_exact_config(config)
+    ):
+        raise EvidenceError(
+            "confirmatory same-run operational authority is restricted to Raw/Wire 2 (10100,4)"
+        )
+    if (
+        sidecar.get("raw_evidence_schema_version") != 2
+        or sidecar.get("raw_wire_schema_version") != 2
+        or sidecar.get("telemetry_wire_schema_version") != 2
+        or sidecar.get("config") != config
+        or sidecar.get("source_commit") != raw["source_commit"]
+        or sidecar.get("source_stamped") != raw["source_stamped"]
+        or sidecar.get("source_tree_dirty") != raw["source_tree_dirty"]
+        or sidecar.get("raw_cell_artifact_checksum") != raw["artifact_checksum"]
+        or sidecar.get("raw_source_envelope_checksum") != raw["source_envelope_checksum"]
+    ):
+        raise EvidenceError("confirmatory same-run telemetry does not join the Raw authority")
+    pair, arms = _joined_repetition_zero_arms(raw, capture)
+    baseline_semantics = pair["result"]["baseline"]["semantics"]
+    candidate_semantics = pair["result"]["candidate"]["semantics"]
+    if (
+        baseline_semantics.get("corpus_version") != 2
+        or candidate_semantics.get("corpus_version") != 2
+    ):
+        raise EvidenceError("confirmatory same-run operational replay must select Corpus 2")
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "source_commit": raw["source_commit"],
+        "source_stamped": raw["source_stamped"],
+        "source_tree_dirty": raw["source_tree_dirty"],
+        "campaign_id": "phase4_confirmatory_corpus_v2",
+        "eligible_input_to_phase4_aggregation": True,
+        "standalone_decision_eligible": False,
+        "statistical_timing_eligible": False,
+        "coverage_complete": False,
+        "cell_operational_telemetry_complete": True,
+        "cell_role": "exact",
+        "raw_authority_binding": {
+            "authority": "phase4_confirmatory_same_run_raw_evidence_v1",
+            "raw_evidence_schema_version": 2,
+            "wire_schema_version": 2,
+            "corpus_version": 2,
+            "corpus_checksum": raw["corpus_checksum"],
+            "cell_plan_checksum": raw["cell_plan_checksum"],
+            "environment_checksum": raw["environment"]["environment_checksum"],
+            "authority_run_identity": raw["authority_run_identity"],
+            "controller_identity": raw["controller_identity"],
+            "raw_artifact_checksum": raw["artifact_checksum"],
+            "raw_source_envelope_checksum": raw["source_envelope_checksum"],
+        },
+        "same_run_telemetry_binding": {
+            "authority": "phase4_confirmatory_same_run_decision_telemetry_v1",
+            "schema_version": sidecar["schema_version"],
+            "raw_evidence_schema_version": sidecar["raw_evidence_schema_version"],
+            "raw_wire_schema_version": sidecar["raw_wire_schema_version"],
+            "telemetry_wire_schema_version": 2,
+            "artifact_checksum": sidecar["artifact_checksum"],
+            "source_envelope_checksum": sidecar["source_envelope_checksum"],
+            "exact_rejection_guardrail_passed": (
+                same_run_validator.exact_rejection_guardrail_passes(sidecar)
+            ),
+        },
+        "cell_config": copy.deepcopy(config),
+        "cell_identity": {
+            "case_id": baseline_semantics["case_id"],
+            "descriptor_fingerprint": baseline_semantics["descriptor_fingerprint"],
+            "case_checksum": baseline_semantics["case_checksum"],
+            "board_content_hash": baseline_semantics["board_content_hash"],
+            "workload_checksum": baseline_semantics["workload_checksum"],
+            "capacity_model_checksum": baseline_semantics["capacity_model_checksum"],
+            "budget_checksum": baseline_semantics["budget_checksum"],
+            "workload_net_count": baseline_semantics["workload_net_count"],
+            "root_seed": baseline_semantics["root_seed"],
+        },
+        "reproducibility_provenance": copy.deepcopy(capture["reproducibility_provenance"]),
+        "capture_binding": {
+            "controller_identity": capture["controller_identity"],
+            "capture_run_identity": capture["capture_run_identity"],
+            "capture_artifact_checksum": capture["artifact_checksum"],
+            "capture_source_envelope_checksum": capture["source_envelope_checksum"],
+        },
+        "arms": arms,
+        "artifact_checksum": 0,
+        "source_envelope_checksum": 0,
+    }
+    result["artifact_checksum"] = _confirmatory_same_run_publication_checksum(result)
+    result["source_envelope_checksum"] = _confirmatory_same_run_publication_source_checksum(result)
+    return result
+
+
 def validate_publication(
     raw: Mapping[str, Any],
     capture: Mapping[str, Any],
@@ -1912,6 +2042,29 @@ def validate_confirmatory_ordinary_publication_against_expected(
         publication
     ):
         raise EvidenceError("publication source envelope checksum is invalid")
+
+
+def validate_confirmatory_same_run_publication(
+    raw: Mapping[str, Any],
+    sidecar: Mapping[str, Any],
+    capture: Mapping[str, Any],
+    publication: Mapping[str, Any],
+) -> None:
+    expected = project_confirmatory_same_run_document(raw, sidecar, capture)
+    validate_confirmatory_same_run_publication_against_expected(expected, publication)
+
+
+def validate_confirmatory_same_run_publication_against_expected(
+    expected: Mapping[str, Any],
+    publication: Mapping[str, Any],
+) -> None:
+    projection_v1.assert_exact_projection(expected, publication)
+    if publication["artifact_checksum"] != _confirmatory_same_run_publication_checksum(publication):
+        raise EvidenceError("same-run publication artifact checksum is invalid")
+    if publication["source_envelope_checksum"] != (
+        _confirmatory_same_run_publication_source_checksum(publication)
+    ):
+        raise EvidenceError("same-run publication source envelope checksum is invalid")
 
 
 def read_publication(path: pathlib.Path) -> Mapping[str, Any]:

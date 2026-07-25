@@ -1438,11 +1438,43 @@ acceleration.
   source envelope MUST use the all-zero 40-character unavailable sentinel
   rather than the caller-supplied commit association, and a test worker built
   from a publishable clean stamped source MUST fail without replay or output.
+  Inner Python targets MUST consume a one-use inherited handshake from the
+  compiled public launcher before parsing or emitting evidence. Nested Bazel
+  execution MAY use its enclosing declared runfiles tree only after the
+  invoked path resolves to that launcher and the fixed inner target resolves
+  to its canonical Bazel output. Runfiles traversal MUST cover the entire
+  selected tree, including external repository subtrees. A rejected enclosing
+  tree MUST NOT fall back to an adjacent standalone tree, the launcher MUST
+  establish default `SIGCHLD` reaping semantics rather than inherit an ignored
+  child signal, and the delegated authority MUST terminate when its exact
+  public launcher dies. Any isolated bytecode-cache path MUST be absent before
+  delegation so cancellation cannot leak it. Test-worker publishability MUST
+  be derived solely from embedded source state; caller commit mismatch MUST
+  NOT downgrade a clean stamped build.
   These stable hashes remain non-cryptographic association checks, not
   protection against arbitrary malicious artifact rewriting. Measured process
   resources remain diagnostic, Raw remains outcome/timing authority, and the
   confirmatory publication remains non-standalone, non-statistical, and
   incomplete coverage.
+  The separately versioned confirmatory same-run operational join is
+  `schemas/benchmark/phase4_confirmatory_same_run_operational_measurement_publication_v1.md`.
+  Its production and test-only workers MUST require explicit Corpus 2, Raw
+  Wire 2, and exactly exact cell `(10100,4)` before fixture access, case
+  construction, preparer creation, warmup, or replay. Its separately named
+  publisher MUST completely validate bounded regular Same-Run Raw first,
+  enforce that exact scope, then completely validate and join the bounded
+  regular Telemetry Wire 2 companion before resolving the bundled worker or
+  opening the bounded regular capture. Only after capture validation and the
+  complete Raw/telemetry/capture semantic join may it open a publication
+  validation input or install output. Worker selection, compiled-launcher
+  isolation, test-source handling, and independent digest binding retain the
+  ordinary confirmatory operational requirements but use a distinct worker
+  target and publication checksum domains. Raw remains outcome/timing
+  authority; the telemetry companion remains exact-rejection guardrail
+  authority. A structurally valid false guardrail MUST remain publishable
+  authentic negative evidence for complete aggregation rather than being
+  rejected or erased by this diagnostic join. The publication remains
+  non-standalone, non-statistical, and incomplete coverage.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully

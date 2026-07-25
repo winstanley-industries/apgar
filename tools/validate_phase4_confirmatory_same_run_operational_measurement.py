@@ -1,4 +1,4 @@
-"""Publish the frozen ordinary Corpus-v2 operational development cell."""
+"""Publish the frozen same-run Corpus-v2 operational development cell."""
 
 from __future__ import annotations
 
@@ -8,45 +8,55 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from tools import phase4_confirmatory_operational_authority as authority
+from tools import phase4_confirmatory_same_run_operational_authority as authority
 from tools import validate_phase4_operational_measurement as operational_validator
 from tools import validate_phase4_raw_evidence as raw_validator
+from tools import validate_phase4_same_run_decision_telemetry as same_run_validator
 
 
 def _raw_document(value: Any) -> Mapping[str, Any]:
     if not isinstance(value, dict):
-        raise raw_validator.EvidenceError("confirmatory operational Raw input must be an object")
+        raise raw_validator.EvidenceError(
+            "confirmatory same-run operational Raw input must be an object"
+        )
     return value
 
 
 def _require_scope(raw: Mapping[str, Any]) -> None:
     config = raw["config"]
     if (
-        raw.get("raw_evidence_schema_version", 1) != 1
-        or raw.get("wire_schema_version", 1) != 1
+        raw.get("raw_evidence_schema_version") != 2
+        or raw.get("wire_schema_version") != 2
         or not authority.has_exact_config(config)
     ):
         raise raw_validator.EvidenceError(
-            "confirmatory ordinary operational publication is restricted to Raw/Wire 1 (10200,4)"
+            "confirmatory same-run operational publication is restricted to Raw/Wire 2 (10100,4)"
         )
 
 
 def validate_join(
     raw: Any,
+    sidecar: Any,
     capture: Any,
     publication: Any,
     *,
     expected_commit: str,
     testing: bool = False,
 ) -> None:
-    """Validate one complete confirmatory ordinary operational publication."""
-    raw_validator.validate_confirmatory_document(
+    """Validate one complete confirmatory same-run operational publication."""
+    raw_validator.validate_confirmatory_same_run_document_v2(
         raw,
         allow_unstamped=testing,
         expected_commit=expected_commit,
     )
     raw_document = _raw_document(raw)
     _require_scope(raw_document)
+    validated_sidecar = same_run_validator.validate_confirmatory_join(
+        raw_document,
+        sidecar,
+        allow_unstamped=testing,
+        expected_commit=expected_commit,
+    )
     worker = authority.resolve_bundled_worker(
         authority.TEST_WORKER if testing else authority.PRODUCTION_WORKER
     )
@@ -62,8 +72,9 @@ def validate_join(
         ),
         expected_worker_sha256=authority.sha256_file(worker),
     )
-    operational_validator.validate_confirmatory_ordinary_publication(
+    operational_validator.validate_confirmatory_same_run_publication(
         raw_document,
+        validated_sidecar,
         validated_capture,
         publication,
     )
@@ -72,6 +83,7 @@ def validate_join(
 def main(argv: Sequence[str] | None = None, *, testing: bool = False) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw", required=True, type=pathlib.Path)
+    parser.add_argument("--same-run-telemetry", required=True, type=pathlib.Path)
     parser.add_argument("--capture", required=True, type=pathlib.Path)
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--validate", type=pathlib.Path)
@@ -83,16 +95,22 @@ def main(argv: Sequence[str] | None = None, *, testing: bool = False) -> int:
                 "--validate and --output are mutually exclusive"
             )
 
-        # Raw authority and the exact development scope are deliberately
-        # authenticated before the capture or publication path is opened.
         raw = raw_validator.read_document(options.raw)
-        raw_validator.validate_confirmatory_document(
+        raw_validator.validate_confirmatory_same_run_document_v2(
             raw,
             allow_unstamped=testing,
             expected_commit=options.expected_commit,
         )
         raw_document = _raw_document(raw)
         _require_scope(raw_document)
+
+        sidecar = same_run_validator.read_document(options.same_run_telemetry)
+        validated_sidecar = same_run_validator.validate_confirmatory_join(
+            raw_document,
+            sidecar,
+            allow_unstamped=testing,
+            expected_commit=options.expected_commit,
+        )
 
         worker = authority.resolve_bundled_worker(
             authority.TEST_WORKER if testing else authority.PRODUCTION_WORKER
@@ -109,13 +127,14 @@ def main(argv: Sequence[str] | None = None, *, testing: bool = False) -> int:
             ),
             expected_worker_sha256=authority.sha256_file(worker),
         )
-        publication = operational_validator.project_confirmatory_ordinary_document(
+        publication = operational_validator.project_confirmatory_same_run_document(
             raw_document,
+            validated_sidecar,
             capture,
         )
         if options.validate is not None:
             validated_publication = operational_validator.read_publication(options.validate)
-            operational_validator.validate_confirmatory_ordinary_publication_against_expected(
+            operational_validator.validate_confirmatory_same_run_publication_against_expected(
                 publication,
                 validated_publication,
             )
@@ -138,15 +157,18 @@ def main(argv: Sequence[str] | None = None, *, testing: bool = False) -> int:
         OSError,
         ValueError,
     ) as error:
-        print(f"Phase 4 confirmatory operational publication failed: {error}", file=sys.stderr)
+        print(
+            f"Phase 4 confirmatory same-run operational publication failed: {error}",
+            file=sys.stderr,
+        )
         return 1
     if options.validate is not None:
-        print("validated one Phase 4 confirmatory operational measurement publication")
+        print("validated one Phase 4 confirmatory same-run operational measurement publication")
     return 0
 
 
 if __name__ == "__main__":
     from tools.phase4_confirmatory_operational_launcher_handshake import require_launcher
 
-    require_launcher("phase4_confirmatory_operational_measurement_validator_py")
+    require_launcher("phase4_confirmatory_same_run_operational_measurement_validator_py")
     raise SystemExit(main())

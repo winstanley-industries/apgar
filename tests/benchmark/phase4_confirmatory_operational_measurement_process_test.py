@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
 import json
 import os
 import pathlib
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from tools import phase4_confirmatory_operational_authority as authority
 from tools import validate_phase4_confirmatory_operational_measurement as publication_validator
@@ -300,8 +303,10 @@ class Phase4ConfirmatoryOperationalMeasurementProcessTest(unittest.TestCase):
         self.assertFalse(self.publication["statistical_timing_eligible"])
         self.assertFalse(self.publication["coverage_complete"])
         self.assertFalse(self.capture["standalone_publication_eligible"])
-        self.assertFalse(self.capture["source_stamped"])
-        self.assertTrue(self.capture["source_tree_dirty"])
+        self.assertFalse(self.capture["source_stamped"] and not self.capture["source_tree_dirty"])
+        self.assertRegex(self.capture["source_commit"], r"[0-9a-f]{40}")
+        if self.capture["source_commit"] == "0" * 40:
+            self.assertFalse(self.capture["source_stamped"])
 
     def test_legacy_and_confirmatory_authorities_cross_reject(self) -> None:
         with self.assertRaisesRegex(
@@ -334,6 +339,34 @@ class Phase4ConfirmatoryOperationalMeasurementProcessTest(unittest.TestCase):
                 None,
                 self.publication,
             )
+
+    def test_worker_io_failure_uses_the_stable_publisher_error_boundary(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                publication_validator.authority,
+                "resolve_bundled_worker",
+                side_effect=OSError("missing fixed worker"),
+            ),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            result = publication_validator.main(
+                [
+                    f"--raw={self.raw_path}",
+                    f"--capture={self.capture_path}",
+                    f"--expected-commit={_COMMIT}",
+                ],
+                testing=True,
+            )
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn(
+            "Phase 4 confirmatory operational publication failed: missing fixed worker",
+            stderr.getvalue(),
+        )
+        self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_test_worker_never_mints_a_publishable_clean_source_envelope(self) -> None:
         changed = copy.deepcopy(self.capture)
@@ -446,8 +479,8 @@ class Phase4ConfirmatoryOperationalMeasurementProcessTest(unittest.TestCase):
             timeout=10,
             env=self.launcher_environment,
         )
-        self.assertEqual(completed.returncode, 1, completed.stderr)
-        self.assertIn("restricted to the frozen", completed.stderr)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("cannot authenticate its bundled runfiles", completed.stderr)
         self.assertFalse(self.python_canary.exists())
 
     def test_publisher_scope_rejects_frozen_budget_drift(self) -> None:

@@ -31,13 +31,26 @@ and cannot replace Raw outcome or paired-timing authority.
   production exposes neither worker substitution nor a testing escape. A
   caller-controlled working directory or ambient runfiles environment cannot
   select a worker: compiled public launchers clear runfiles variables before
-  entering Python. Publication independently rehashes its bundled production
-  worker. The separately compiled test worker never synthesizes a clean source
-  envelope or adopts the caller's commit association as its build identity.
-  An unstamped build with no embedded commit uses an all-zero 40-character
-  unavailable sentinel. A test worker built from publishable clean stamped
-  source fails before replay, and test-only publication explicitly permits only
-  the non-publishable envelope.
+  entering Python, and inner Python authorities require their launcher's
+  one-use inherited file-descriptor handshake. A nested Bazel invocation uses
+  its authenticated enclosing runfiles tree instead of an undeclared or stale
+  standalone tree; incomplete traversal of the entire selected root, including
+  external repository subtrees, fails authentication, and an invalid enclosing
+  tree cannot fall back to a standalone tree. The delegated authority is
+  parent-death-coupled to the exact public launcher so launcher termination
+  cannot leave publication work running. The launcher normalizes inherited
+  ignored `SIGCHLD` state before delegation so successful authority output
+  cannot be followed by an `ECHILD` reaping failure, and removes its isolated
+  bytecode-cache path before delegation so cancellation cannot leak it.
+  Publication independently rehashes its bundled production worker. The
+  separately compiled test worker never synthesizes a clean source envelope or
+  adopts the caller's commit association as its build identity.
+  Embedded source state alone determines whether that test build is
+  publishable, so a mismatched caller commit cannot downgrade it. An unstamped
+  build with no embedded commit uses an all-zero 40-character unavailable
+  sentinel. A test worker built from publishable clean stamped source fails
+  before replay, and test-only publication explicitly permits only the
+  non-publishable envelope.
 - Add the separately named and domain-separated
   `phase4_confirmatory_operational_measurement_publication_v1` validator. It
   completely validates bounded regular Raw first, requires ordinary

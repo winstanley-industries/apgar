@@ -27,11 +27,17 @@ inline constexpr std::size_t kMaximumDriverVersionLabelCharacters = 32;
          runtime_commit == built_commit;
 }
 
+[[nodiscard]] constexpr bool IsPublishableEmbeddedBenchmarkSource(
+    std::string_view built_commit, bool source_stamped, bool built_from_dirty_tree) noexcept {
+  return source_stamped && !built_from_dirty_tree && IsFullLowercaseGitCommit(built_commit);
+}
+
 [[nodiscard]] constexpr bool IsPublishableBenchmarkSource(std::string_view runtime_commit,
                                                           std::string_view built_commit,
                                                           bool source_stamped,
                                                           bool built_from_dirty_tree) noexcept {
-  return source_stamped && !built_from_dirty_tree &&
+  return IsPublishableEmbeddedBenchmarkSource(built_commit, source_stamped,
+                                              built_from_dirty_tree) &&
          CommitMatchesBuiltSource(runtime_commit, built_commit);
 }
 

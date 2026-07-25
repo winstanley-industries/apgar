@@ -38,6 +38,10 @@ TEST(Phase3CommitTest, RequiresRuntimeEvidenceLabelToMatchBuiltSource) {
 
 TEST(Phase3CommitTest, PublishableSourceMustBeStampedCleanAndMatching) {
   constexpr std::string_view kBuiltCommit = "0123456789abcdef0123456789abcdef01234567";
+  EXPECT_TRUE(IsPublishableEmbeddedBenchmarkSource(kBuiltCommit, true, false));
+  EXPECT_FALSE(IsPublishableEmbeddedBenchmarkSource(kBuiltCommit, false, false));
+  EXPECT_FALSE(IsPublishableEmbeddedBenchmarkSource(kBuiltCommit, true, true));
+  EXPECT_FALSE(IsPublishableEmbeddedBenchmarkSource("01234567", true, false));
   EXPECT_TRUE(IsPublishableBenchmarkSource(kBuiltCommit, kBuiltCommit, true, false));
   EXPECT_FALSE(IsPublishableBenchmarkSource(kBuiltCommit, kBuiltCommit, false, false));
   EXPECT_FALSE(IsPublishableBenchmarkSource(kBuiltCommit, kBuiltCommit, true, true));
