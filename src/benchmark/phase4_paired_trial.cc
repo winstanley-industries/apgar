@@ -192,6 +192,36 @@ template <typename Payload>
   const auto& baseline = spec.baseline_config;
   const auto& preparation = spec.preparation_config;
   const auto& session = spec.candidate_session_config;
+  if (authority == Phase4RepresentativeCorpusAuthority::kV2 &&
+      (baseline.price_config.present_step_per_overuse_unit !=
+           internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit ||
+       session.price_config.present_step_per_overuse_unit !=
+           internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit)) {
+    return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration,
+                 "P4PAIR-CORPUS-V2-BUDGET-AUTHORITY-001",
+                 "existing Corpus-v2 execution entry points require equal-arm Protocol-v1 "
+                 "present=1 pricing",
+                 arm, internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit,
+                 baseline.price_config.present_step_per_overuse_unit !=
+                         internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit
+                     ? baseline.price_config.present_step_per_overuse_unit
+                     : session.price_config.present_step_per_overuse_unit);
+  }
+  if (authority == Phase4RepresentativeCorpusAuthority::kV2 &&
+      (baseline.price_config.history_step_per_overuse_unit !=
+           internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit ||
+       session.price_config.history_step_per_overuse_unit !=
+           internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit)) {
+    return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration,
+                 "P4PAIR-CORPUS-V2-BUDGET-AUTHORITY-001",
+                 "existing Corpus-v2 execution entry points require equal-arm Protocol-v1 "
+                 "history=2250 pricing",
+                 arm, internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit,
+                 baseline.price_config.history_step_per_overuse_unit !=
+                         internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit
+                     ? baseline.price_config.history_step_per_overuse_unit
+                     : session.price_config.history_step_per_overuse_unit);
+  }
   if (spec.root_seed != baseline.deterministic_seed ||
       spec.root_seed != preparation.deterministic_seed ||
       spec.root_seed != session.regeneration_execution_config.deterministic_seed) {

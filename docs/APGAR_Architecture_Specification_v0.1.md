@@ -1523,6 +1523,37 @@ acceleration.
   development cell; its operational publication remains a sibling requirement,
   and it does not prove pool route completeness, publish timing evidence, open
   another cell, complete the confirmatory matrix, or decide Phase 4.
+  The acquisition-free H=4096 remediation configuration is separately frozen
+  by
+  `schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.md`.
+  It retains Representative Corpus v2, Representative Manifest v2, Workload
+  Roster Manifest v2, every case/workload/root-seed/opportunity/external-budget
+  identity, and every non-price canonical configuration field. Only
+  `history_step_per_overuse_unit` changes from 2250 to 4096, identically in the
+  sequential baseline and reusable-candidate session; present price remains
+  one. The fresh 102-cell roster checksum binds all H=4096 configuration
+  preimages and the superseded H=2250 roster. The H=2250 canonical
+  configuration and roster stdout, manifests, protocol, authority checksums,
+  and evidence remain stable; binary byte identity is not claimed.
+  This roster is inactive configuration authority only. Its fixed no-argument
+  generator MUST use a configuration-preimage-only link surface containing no
+  fixture, representative-case, worker, or allocator-execution symbol.
+  ASan and UBSan registration metadata roots otherwise-dead shared-source
+  sections and is therefore incompatible with that link-surface contract. The
+  generator target MUST reject those instrumented configurations rather than
+  produce a partially sanitized artifact. Sanitizer gates MUST still run the
+  independently instrumented H=4096 structural test and MUST link-inspect the
+  exact ordinary generator obtained through an explicit sanitizer-reset audit
+  transition.
+  Every existing Corpus-v2 execution entry point MUST positively require
+  equal-arm `present=1,history=2250` and reject any other price authority before
+  case, fixture, preparer, or worker access. Corpus version, case ID, cell-plan
+  checksum, wire schema, source commit, and opaque budget-checksum matching
+  MUST NOT select H=4096. A separately frozen Confirmatory Decision Protocol
+  v2 and separately named, adversarially reviewed execution and validation
+  entry points are required before any H=4096 acquisition. The roster alone
+  does not claim exact optimality, publish evidence, open another development
+  cell, or authorize heldout execution.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully

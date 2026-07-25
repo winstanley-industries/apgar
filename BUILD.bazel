@@ -5,6 +5,11 @@ load("@rules_cuda//cuda:defs.bzl", "cuda_library", "cuda_test")
 load("@rules_python//python:py_binary.bzl", "py_binary")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
+load(
+    "//bazel:phase4_h4096_generator_audit.bzl",
+    "phase4_h4096_generator_audit_artifact",
+    "phase4_h4096_generator_audit_contract",
+)
 load("//bazel:source_stamp.bzl", "source_stamp_header")
 load("//bazel:test_runfile.bzl", "test_runfile")
 
@@ -44,6 +49,20 @@ test_runfile(
 # instead of silently presenting a partially instrumented CUDA build as a
 # sanitizer result.
 CUDA_SANITIZER_COMPATIBILITY = select({
+    ":asan_enabled": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+}) + select({
+    ":ubsan_enabled": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+})
+
+# Sanitizer registration roots otherwise-dead sections in the shared-source
+# configuration-preimage graph, which violates the H4096 generator's
+# capability-minimal link contract. Reject an instrumented generator rather
+# than presenting a partially sanitized artifact. Sanitizer gates still run
+# the independently instrumented structural test and link-inspect the ordinary
+# generator through an explicit transition below.
+H4096_GENERATOR_SANITIZER_COMPATIBILITY = select({
     ":asan_enabled": ["@platforms//:incompatible"],
     "//conditions:default": [],
 }) + select({
@@ -693,6 +712,93 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "phase4_representative_corpus_preimage",
+    srcs = [
+        "src/benchmark/phase4_representative_corpus.cc",
+        "src/benchmark/phase4_representative_corpus_internal.h",
+        "src/operational_timestamp.h",
+    ],
+    hdrs = [
+        "include/apgar/benchmark/phase4_operational_types.h",
+        "include/apgar/benchmark/phase4_representative_corpus.h",
+    ],
+    copts = APGAR_COPTS + [
+        "-fdata-sections",
+        "-ffunction-sections",
+    ],
+    strip_include_prefix = "include",
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":geometry_compiler",
+        ":multi_net_workload",
+        ":one_world_allocator",
+        ":phase4_imported_multi_net_corpus",
+    ],
+)
+
+cc_library(
+    name = "phase4_paired_trial_preimage",
+    srcs = [
+        "src/benchmark/phase4_paired_trial.cc",
+        "src/benchmark/phase4_paired_trial_internal.h",
+        "src/operational_timestamp.h",
+    ],
+    hdrs = ["include/apgar/benchmark/phase4_paired_trial.h"],
+    copts = APGAR_COPTS + [
+        "-fdata-sections",
+        "-ffunction-sections",
+    ],
+    strip_include_prefix = "include",
+    deps = [
+        ":board_ir",
+        ":candidate_store",
+        ":cpu_candidate_allocation_session",
+        ":cpu_candidate_pool_preparation",
+        ":phase4_representative_corpus_preimage",
+        ":sequential_negotiated_baseline",
+    ],
+)
+
+cc_library(
+    name = "phase4_trial_harness_preimage",
+    srcs = [
+        "src/benchmark/phase4_trial_harness.cc",
+        "src/benchmark/phase4_trial_wire_internal.h",
+    ],
+    hdrs = ["include/apgar/benchmark/phase4_trial_harness.h"],
+    copts = APGAR_COPTS + [
+        "-fdata-sections",
+        "-ffunction-sections",
+    ],
+    strip_include_prefix = "include",
+    deps = [
+        ":board_ir",
+        ":negotiated_prices",
+        ":phase4_paired_trial_preimage",
+    ],
+)
+
+cc_library(
+    name = "phase4_h4096_canonical_budget_preimage",
+    hdrs = ["src/benchmark/phase4_h4096_canonical_budget_internal.h"],
+    deps = [
+        ":phase4_paired_trial_preimage",
+        ":phase4_trial_harness_preimage",
+    ],
+)
+
+cc_library(
+    name = "phase4_h4096_canonical_budget_firewall_test_support",
+    testonly = True,
+    hdrs = ["src/benchmark/phase4_h4096_canonical_budget_internal.h"],
+    deps = [
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
+    ],
+)
+
 cc_binary(
     name = "phase4_canonical_budget_roster",
     srcs = ["tools/phase4_canonical_budget_roster.cc"],
@@ -725,6 +831,27 @@ cc_binary(
         ":phase4_representative_corpus",
         ":phase4_trial_harness",
     ],
+)
+
+cc_binary(
+    name = "phase4_v2_h4096_canonical_budget_roster",
+    srcs = ["tools/phase4_v2_h4096_canonical_budget_roster.cc"],
+    copts = APGAR_COPTS,
+    linkopts = ["-Wl,--gc-sections"],
+    target_compatible_with = H4096_GENERATOR_SANITIZER_COMPATIBILITY,
+    deps = [
+        ":phase4_h4096_canonical_budget_preimage",
+        ":phase4_paired_trial_preimage",
+        ":phase4_representative_corpus_preimage",
+    ],
+)
+
+phase4_h4096_generator_audit_artifact(
+    name = "phase4_v2_h4096_canonical_budget_roster_unsanitized_artifact",
+)
+
+phase4_h4096_generator_audit_contract(
+    name = "phase4_v2_h4096_canonical_budget_roster_audit_contract",
 )
 
 cc_library(
@@ -1399,6 +1526,104 @@ py_library(
     imports = ["."],
     visibility = ["//visibility:private"],
     deps = [":phase4_raw_evidence_validator_lib"],
+)
+
+py_binary(
+    name = "phase4_confirmatory_canonical_budget_roster_v3_validator",
+    srcs = ["tools/validate_phase4_confirmatory_canonical_budget_roster_v3.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_canonical_budget_roster_v3.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_canonical_budget_roster_v3_validator_lib",
+    srcs = ["tools/validate_phase4_confirmatory_canonical_budget_roster_v3.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_confirmatory_canonical_budget_roster_v3_validator_test",
+    size = "small",
+    srcs = ["tests/tools/validate_phase4_confirmatory_canonical_budget_roster_v3_test.py"],
+    data = [
+        "include/apgar/benchmark/phase4_trial_harness.h",
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        "src/benchmark/phase4_h4096_canonical_budget_internal.h",
+        "tools/phase4_v2_h4096_canonical_budget_roster.cc",
+        ":phase4_v2_canonical_budget_roster",
+        ":phase4_v2_h4096_canonical_budget_roster",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_confirmatory_canonical_budget_roster_v3_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_canonical_budget_roster_v3_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_h4096_preimage_link_surface_test",
+    size = "small",
+    srcs = ["tests/tools/phase4_h4096_preimage_link_surface_test.py"],
+    args = select({
+        ":asan_enabled": [
+            "generator-only",
+            "$(rootpath @llvm//tools:llvm-nm)",
+            "$(rootpath :phase4_v2_h4096_canonical_budget_roster_unsanitized_artifact)",
+        ],
+        ":ubsan_enabled": [
+            "generator-only",
+            "$(rootpath @llvm//tools:llvm-nm)",
+            "$(rootpath :phase4_v2_h4096_canonical_budget_roster_unsanitized_artifact)",
+        ],
+        "//conditions:default": [
+            "generator-and-structural-test",
+            "$(rootpath @llvm//tools:llvm-nm)",
+            "$(rootpath :phase4_v2_h4096_canonical_budget_roster)",
+            "$(rootpath :phase4_h4096_canonical_budget_test)",
+        ],
+    }),
+    data = [
+        ":phase4_v2_h4096_canonical_budget_roster_audit_contract",
+        "@llvm//tools:llvm-nm",
+    ] + select({
+        ":asan_enabled": [
+            ":phase4_v2_h4096_canonical_budget_roster_unsanitized_artifact",
+        ],
+        ":ubsan_enabled": [
+            ":phase4_v2_h4096_canonical_budget_roster_unsanitized_artifact",
+        ],
+        "//conditions:default": [
+            ":phase4_h4096_canonical_budget_test",
+            ":phase4_v2_h4096_canonical_budget_roster",
+        ],
+    }),
+    legacy_create_init = 0,
+    main = "tests/tools/phase4_h4096_preimage_link_surface_test.py",
+    python_version = "3.13",
 )
 
 py_binary(
@@ -4219,6 +4444,39 @@ cc_test(
         ":phase4_paired_trial",
         ":phase4_trial_harness",
         ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_corpus_v2_budget_firewall_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_corpus_v2_budget_firewall_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":phase4_h4096_canonical_budget_firewall_test_support",
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_h4096_canonical_budget_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_h4096_canonical_budget_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    linkopts = ["-Wl,--gc-sections"],
+    deps = [
+        ":phase4_h4096_canonical_budget_preimage",
+        ":phase4_paired_trial_preimage",
+        ":phase4_representative_corpus_preimage",
         "@googletest//:gtest_main",
     ],
 )

@@ -153,6 +153,11 @@ template <typename Value, typename Error>
     Phase4TrialOrder order = Phase4TrialOrder::kBaselineFirst, std::uint32_t case_id = 10'100,
     std::uint64_t net_count = 6) {
   Phase4PairedTrialSpec spec = Spec(order, case_id, net_count);
+  spec.baseline_config.price_config.present_step_per_overuse_unit =
+      internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit;
+  spec.baseline_config.price_config.history_step_per_overuse_unit =
+      internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit;
+  spec.candidate_session_config.price_config = spec.baseline_config.price_config;
   spec.candidate_session_config.regeneration_plan_config.maximum_columns_per_net = 2;
   return spec;
 }

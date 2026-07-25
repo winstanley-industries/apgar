@@ -8,6 +8,10 @@
 
 namespace apgar::benchmark::internal {
 
+inline constexpr std::uint64_t kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit = 1;
+inline constexpr std::uint64_t kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit = 2'250;
+inline constexpr std::uint64_t kPhase4CorpusV2H4096HistoryStepPerOveruseUnit = 4'096;
+
 [[nodiscard]] Phase4TrialArmFailure PreservePhase4CandidateSessionFailureV1(
     Phase4RepresentativeCase case_state, allocator::PreparedCpuCandidatePools prepared,
     allocator::CpuCandidateAllocationSessionError error);

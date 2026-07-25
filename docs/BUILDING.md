@@ -52,6 +52,11 @@ runtime reserves roughly 14 TiB of virtual shadow address space before
 `main`. The ordinary and UBSan gates run those exact-envelope tests without
 weakening their resource contract; the ASan gate continues to run all
 compatible CPU targets.
+The inactive H=4096 canonical-budget generator is also explicitly incompatible
+with ASan and UBSan: sanitizer registration retains otherwise-dead
+shared-source sections and would violate its configuration-only link surface.
+Both gates still run the instrumented H=4096 structural test and link-inspect
+the exact ordinary generator through a narrowly scoped audit transition.
 CUDA targets are explicitly incompatible with either sanitizer configuration:
 the pinned CUDA compiler and NVIDIA driver boundary cannot currently be
 instrumented end-to-end by those runtimes. Bazel therefore rejects commands
