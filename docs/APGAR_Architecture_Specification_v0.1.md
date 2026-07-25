@@ -1397,7 +1397,11 @@ acceleration.
   accept only exact and calibration roles and MUST reject fixed-query, stress,
   heldout, and imported cases before worker launch. Legacy runner, wire, and
   validator entry points remain Corpus v1-only; V2 wire decoding and Raw joins
-  require an explicit out-of-band Corpus v2 entry point.
+  require an explicit out-of-band Corpus v2 entry point. The runner's internal
+  ordinary and same-run worker modes MUST independently repeat the frozen role
+  and protocol-assigned carrier check before fixture access, preparer creation,
+  warmup, or request decoding; caller-supplied worker descriptors do not inherit
+  controller authorization.
   The first confirmatory downstream join is versioned by
   `schemas/benchmark/phase4_confirmatory_per_net_report_publication_join_v1.md`.
   It retains Per-Net Report Artifact v1 as non-decision-eligible diagnostic

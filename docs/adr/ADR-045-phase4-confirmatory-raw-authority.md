@@ -36,9 +36,15 @@ unlocking heldout acquisition.
   Manifest v2, the Corpus v2 checksum/root/cell-plan/budget domains, and the
   Confirmatory Decision Protocol v1 scope. The legacy validators remain
   Corpus v1-only.
+- Require both internal worker modes to repeat the frozen development-role and
+  protocol-assigned ordinary/same-run check before fixture access, preparer
+  construction, warmup, or request decoding. A direct hidden-worker invocation
+  with caller-supplied descriptors cannot bypass the controller's observation
+  firewall.
 - Exercise one exact same-run cell and one calibration ordinary cell in tests,
   require V1/V2 cross-authority rejection, and require the development runner
-  to reject heldout cases before worker launch.
+  and both direct worker modes to reject heldout cases before fixture access or
+  worker setup.
 - Do not execute fixed-query, stress, heldout, or imported confirmatory cases
   in this slice. A later reviewed and committed campaign runner must
   authenticate the frozen clean commit and exact protocol role before those

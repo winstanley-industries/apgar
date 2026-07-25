@@ -138,6 +138,7 @@ class Phase4ConfirmatoryRawEvidenceTest(unittest.TestCase):
             )
 
     def test_confirmatory_runner_rejects_heldout_development_execution(self) -> None:
+        missing_fixture = pathlib.Path(self.temporary.name) / "controller-must-not-open.kicad_pcb"
         completed = subprocess.run(
             [
                 str(runfile("phase4_confirmatory_evidence_test_runner")),
@@ -145,6 +146,7 @@ class Phase4ConfirmatoryRawEvidenceTest(unittest.TestCase):
                 "--testing_allow_unstamped=1",
                 "--case_id=11000",
                 "--pool_size=4",
+                f"--fixture_path={missing_fixture}",
             ],
             check=False,
             text=True,
@@ -152,7 +154,50 @@ class Phase4ConfirmatoryRawEvidenceTest(unittest.TestCase):
             timeout=10,
         )
         self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.stdout, "")
         self.assertIn("restricted to frozen exact and calibration cases", completed.stderr)
+        self.assertNotIn("failed to read", completed.stderr)
+
+    def test_direct_confirmatory_workers_enforce_scope_before_fixture_access(self) -> None:
+        runner = str(runfile("phase4_confirmatory_evidence_test_runner"))
+        missing_fixture = pathlib.Path(self.temporary.name) / "must-not-be-opened.kicad_pcb"
+        common = [
+            runner,
+            "--corpus_version=2",
+            "--arm=baseline",
+            "--pool_size=4",
+            "--workers=4",
+            "--repetitions=20",
+            "--setup_ns=300000000000",
+            "--prepared_ns=300000000000",
+            "--cold_ns=300000000000",
+            "--address_space_bytes=68719476736",
+            "--peak_host_bytes=17179869184",
+            f"--fixture_path={missing_fixture}",
+            "--request_fd=0",
+            "--response_fd=1",
+        ]
+        for worker_mode, case_id in (
+            ("--phase4_worker=1", 10100),
+            ("--phase4_same_run_worker=1", 10200),
+            ("--phase4_worker=1", 11000),
+            ("--phase4_same_run_worker=1", 11000),
+        ):
+            with self.subTest(worker_mode=worker_mode, case_id=case_id):
+                completed = subprocess.run(
+                    common + [worker_mode, f"--case_id={case_id}"],
+                    check=False,
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertEqual(completed.stdout, "")
+                self.assertIn(
+                    "restricted to frozen exact and calibration cases",
+                    completed.stderr,
+                )
+                self.assertNotIn("failed to read", completed.stderr)
 
     def test_confirmatory_runner_enforces_protocol_assigned_raw_authority(self) -> None:
         runner = str(runfile("phase4_confirmatory_evidence_test_runner"))

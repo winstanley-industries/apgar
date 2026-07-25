@@ -255,6 +255,25 @@ void PrintUsage() {
 #endif
 }
 
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+[[nodiscard]] bool ConfirmatoryDevelopmentScopeAllowed(const Options& options,
+                                                       bool worker_process) noexcept {
+  const apgar::benchmark::Phase4CaseDescriptor* descriptor =
+      apgar::benchmark::FindPhase4CaseDescriptorForAuthority(kCorpusAuthority,
+                                                             options.cell.case_id);
+  const bool same_run_mode =
+      worker_process ? options.same_run_worker_mode : options.same_run_telemetry_output.has_value();
+  return descriptor != nullptr &&
+         ((descriptor->role == apgar::benchmark::Phase4CaseRole::kExactOracle && same_run_mode) ||
+          (descriptor->role == apgar::benchmark::Phase4CaseRole::kCalibration && !same_run_mode));
+}
+
+void PrintConfirmatoryDevelopmentScopeError() {
+  std::cerr << "confirmatory development acquisition is restricted to frozen exact and "
+               "calibration cases using their protocol-assigned raw authority\n";
+}
+#endif
+
 [[nodiscard]] bool WriteNewFile(std::string_view path, std::string_view contents) noexcept {
   try {
 #if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
@@ -356,12 +375,8 @@ int main(int argc, char** argv) {
     return 2;
   }
   Options& options = *parsed;
-  const std::optional<std::string> fixture = apgar::tooling::ReadFile(options.fixture_path);
-  if (!fixture.has_value()) {
-    std::cerr << "failed to read the imported Phase 4 fixture\n";
-    return 2;
-  }
-  if (options.worker_mode || options.same_run_worker_mode) {
+  const bool worker_process = options.worker_mode || options.same_run_worker_mode;
+  if (worker_process) {
     if (options.worker_mode == options.same_run_worker_mode) {
       PrintUsage();
       return 2;
@@ -372,6 +387,24 @@ int main(int argc, char** argv) {
       PrintUsage();
       return 2;
     }
+  } else if (options.arm.has_value() || options.request_descriptor >= 0 ||
+             options.response_descriptor >= 0 || options.cell.case_id == 0 ||
+             options.cell.requested_pool_size == 0) {
+    PrintUsage();
+    return 2;
+  }
+#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+  if (!ConfirmatoryDevelopmentScopeAllowed(options, worker_process)) {
+    PrintConfirmatoryDevelopmentScopeError();
+    return 2;
+  }
+#endif
+  const std::optional<std::string> fixture = apgar::tooling::ReadFile(options.fixture_path);
+  if (!fixture.has_value()) {
+    std::cerr << "failed to read the imported Phase 4 fixture\n";
+    return 2;
+  }
+  if (worker_process) {
     if (options.same_run_worker_mode) {
 #if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
       return apgar::benchmark::RunPhase4TrialWorkerWithSameRunTelemetryForCorpusV2(
@@ -393,12 +426,6 @@ int main(int argc, char** argv) {
                                                     options.response_descriptor);
 #endif
   }
-  if (options.arm.has_value() || options.request_descriptor >= 0 ||
-      options.response_descriptor >= 0 || options.cell.case_id == 0 ||
-      options.cell.requested_pool_size == 0) {
-    PrintUsage();
-    return 2;
-  }
   const bool publishable =
       options.runtime_commit.has_value() &&
       apgar::benchmark::IsPublishableBenchmarkSource(
@@ -408,21 +435,7 @@ int main(int argc, char** argv) {
     PrintUsage();
     return 2;
   }
-#if defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
-  const apgar::benchmark::Phase4CaseDescriptor* descriptor =
-      apgar::benchmark::FindPhase4CaseDescriptorForAuthority(kCorpusAuthority,
-                                                             options.cell.case_id);
-  const bool same_run_mode = options.same_run_telemetry_output.has_value();
-  if ((!publishable && !options.testing_allow_unstamped) || descriptor == nullptr ||
-      (descriptor->role != apgar::benchmark::Phase4CaseRole::kExactOracle &&
-       descriptor->role != apgar::benchmark::Phase4CaseRole::kCalibration) ||
-      (descriptor->role == apgar::benchmark::Phase4CaseRole::kExactOracle && !same_run_mode) ||
-      (descriptor->role == apgar::benchmark::Phase4CaseRole::kCalibration && same_run_mode)) {
-    std::cerr << "confirmatory development acquisition is restricted to frozen exact and "
-                 "calibration cases using their protocol-assigned raw authority\n";
-    return 2;
-  }
-#else
+#if !defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
   if (publishable) {
     std::cerr << "Phase 4 Raw-v1/Wire-v2 publication is frozen at the Session-v3 budget "
                  "authority; current Session-v4 execution is diagnostic-only until a new "
