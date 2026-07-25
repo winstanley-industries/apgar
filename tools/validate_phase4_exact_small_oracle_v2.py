@@ -362,6 +362,10 @@ def serialize_oracle_artifact(artifact: Mapping[str, Any]) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if __name__ == "__main__":
+        from tools.phase4_exact_small_oracle_launcher_handshake import require_launcher
+
+        require_launcher("phase4_exact_small_oracle_v2_validator_py")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--raw", required=True, type=pathlib.Path)

@@ -27,18 +27,23 @@ and cannot replace Raw outcome or paired-timing authority.
 - Reuse the reviewed four-exec containment controller: measured baseline,
   measured candidate, unmeasured baseline replay authority, then unmeasured
   candidate replay authority. The confirmatory entry point fixes the worker
-  target, exact digest from its own Bazel runfiles tree, and exact cell;
+  target, exact digest from its adjacent standalone runfiles tree, and exact cell;
   production exposes neither worker substitution nor a testing escape. A
   caller-controlled working directory or ambient runfiles environment cannot
   select a worker: compiled public launchers clear runfiles variables before
   entering Python, and inner Python authorities require their launcher's
-  one-use inherited file-descriptor handshake. A nested Bazel invocation uses
-  its authenticated enclosing runfiles tree instead of an undeclared or stale
-  standalone tree; incomplete traversal of the entire selected root, including
-  external repository subtrees, fails authentication, and an invalid enclosing
-  tree cannot fall back to a standalone tree. The delegated authority is
-  parent-death-coupled to the exact public launcher so launcher termination
-  cannot leave publication work running. The launcher normalizes inherited
+  one-use inherited file-descriptor handshake. The launcher's adjacent,
+  target-specific standalone runfiles tree is the sole Python/data authority.
+  A nested Bazel invocation may reach the canonical launcher through an
+  enclosing runfiles symlink, but that enclosing tree is ignored rather than
+  accepted as an authority or used as a fallback candidate. Authentication
+  traverses the complete standalone tree, including external repository
+  subtrees. The direct stage-one Python interpreter disables `site`
+  initialization until the rules_python bootstrap selects that tree; normal
+  stage-two site initialization occurs only after the standalone root is
+  established. The delegated authority is parent-death-coupled to the exact
+  public launcher so launcher termination cannot leave publication work
+  running. The launcher normalizes inherited
   ignored `SIGCHLD` state before delegation so successful authority output
   cannot be followed by an `ECHILD` reaping failure, and removes its isolated
   bytecode-cache path before delegation so cancellation cannot leak it.

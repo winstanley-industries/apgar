@@ -285,6 +285,54 @@ class Phase4ExactSmallOracleV2Test(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(completed.stdout)["case_id"], 100)
 
+        authority_command = [
+            str(_runfile("phase4_exact_small_oracle_v2_validator")),
+            "--expected-commit",
+            _COMMIT,
+            "--raw",
+            str(paths["raw"]),
+            "--same-run-telemetry",
+            str(paths["sidecar"]),
+            "--report",
+            str(paths["report"]),
+            "--snapshot",
+            str(paths["snapshot"]),
+        ]
+        authority = subprocess.run(
+            authority_command,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        self.assertEqual(authority.returncode, 1)
+        self.assertEqual(authority.stdout, "")
+        self.assertIn("associated with another command or cell", authority.stderr)
+        self.assertNotIn("compiled launcher", authority.stderr)
+
+        help_result = subprocess.run(
+            [authority_command[0], "--help"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn("--same-run-telemetry", help_result.stdout)
+
+        direct_inner = list(authority_command)
+        direct_inner[0] = str(_runfile("phase4_exact_small_oracle_v2_validator_py"))
+        rejected_inner = subprocess.run(
+            direct_inner,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertEqual(rejected_inner.returncode, 2)
+        self.assertEqual(rejected_inner.stdout, "")
+        self.assertIn("requires its compiled launcher", rejected_inner.stderr)
+
     def test_cli_rejects_foreign_sidecar_before_reading_later_inputs(self) -> None:
         raw, sidecar, _, _ = self.documents[100]
         _, _, foreign_report, _ = self.documents[101]

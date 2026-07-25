@@ -43,18 +43,21 @@ children carry the typed unmeasured-resource reason and recompute the complete
 live result preimage. Both replays for an arm must have identical complete
 Corpus v2 semantics; candidate witnesses must match field-for-field.
 
-Worker resolution is restricted to the Bazel runfiles tree containing this
-authority. Compiled public launchers clear ambient runfiles variables before
-entering isolated Python, and caller working-directory fallbacks are
-forbidden. An inner Python authority must consume the one-use file-descriptor
-handshake established by that compiled launcher before it may parse arguments
-or emit an artifact; direct inner-target execution is not a publication path.
-In a containing Bazel test, the launcher accepts the declared enclosing
-runfiles tree only after the invoked path resolves to the launcher itself and
-the inner target resolves to its canonical Bazel output. The entire selected
-runfiles root, including every external repository subtree, must be traversed
-completely; traversal failure rejects the tree, and a rejected enclosing tree
-must not fall back to an adjacent standalone tree.
+Worker resolution is restricted to the compiled public launcher's adjacent,
+target-specific standalone Bazel runfiles tree. Compiled public launchers
+clear ambient runfiles variables before entering isolated Python, and caller
+working-directory fallbacks are forbidden. An inner Python authority must
+consume the one-use file-descriptor handshake established by that compiled
+launcher before it may parse arguments or emit an artifact; direct
+inner-target execution is not a publication path. In a containing Bazel test,
+an invocation path may traverse an enclosing runfiles symlink only when it
+resolves to the canonical launcher; the enclosing tree is never an
+execution-authority candidate. The entire standalone runfiles root, including
+every external repository subtree, must be traversed completely before
+delegation. Direct stage-one Python execution must disable `site`
+initialization until the rules_python bootstrap establishes the authenticated
+standalone root; stage-two site initialization may run only after that
+selection.
 The delegated Python authority must arm a parent-death relationship and close
 the fork race before exec so terminating the exact public launcher cannot
 leave capture or publication work running. The launcher must establish default

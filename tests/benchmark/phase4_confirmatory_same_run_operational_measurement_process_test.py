@@ -705,30 +705,86 @@ class Phase4ConfirmatorySameRunOperationalMeasurementProcessTest(unittest.TestCa
         self.assertIn("requires its compiled launcher", completed.stderr)
         self.assertNotIn("Traceback", completed.stderr)
 
-    def test_launcher_accepts_a_complete_enclosing_runfiles_tree(self) -> None:
-        shadow = self.root / "complete-launcher.runfiles"
+    def test_launcher_skips_stage_one_site_initialization(self) -> None:
+        target = "phase4_confirmatory_operational_launcher_lifetime_probe"
+        canonical_launcher = runfile(target).resolve()
+        declared_sitecustomize = runfile("sitecustomize.py")
+        broad_sitecustomize = canonical_launcher.parent / "sitecustomize.py"
+        self.assertTrue(declared_sitecustomize.is_file())
+        self.assertTrue(broad_sitecustomize.is_file())
+        self.assertTrue(os.path.samefile(broad_sitecustomize, declared_sitecustomize))
+        marker = self.root / "stage-one-operational-sitecustomize-ran"
+        environment = self.launcher_environment.copy()
+        environment["APGAR_PHASE4_ENCLOSING_INIT_MARKER"] = str(marker)
+        probe_interpreter = (
+            pathlib.Path(f"{canonical_launcher}.runfiles")
+            / "_main"
+            / "_phase4_confirmatory_operational_launcher_lifetime_probe_py.venv"
+            / "bin"
+            / "python3"
+        )
+        probe = subprocess.run(
+            [str(probe_interpreter), "-I", "-B", "-c", "pass"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            env=environment,
+        )
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        self.assertTrue(marker.is_file())
+        marker.unlink()
+        completed = subprocess.run(
+            [str(runfile(target)), "--help"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            env=environment,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("usage:", completed.stdout)
+        self.assertFalse(marker.exists())
+
+    def test_launcher_ignores_manifest_declared_enclosing_package_init(self) -> None:
+        target = "phase4_confirmatory_operational_launcher_lifetime_probe"
+        shadow = self.root / "superset-launcher.runfiles"
         shutil.copytree(
             pathlib.Path(os.environ["TEST_SRCDIR"]),
             shadow,
             symlinks=True,
         )
-        launcher = (
-            shadow
-            / os.environ["TEST_WORKSPACE"]
-            / "phase4_confirmatory_operational_launcher_lifetime_probe"
+        marker = self.root / "enclosing-operational-package-init-ran"
+        main = shadow / os.environ["TEST_WORKSPACE"]
+        package_init = main / "tools" / "__init__.py"
+        self.assertTrue(package_init.is_file())
+        repository_mapping = (shadow / "_repo_mapping").resolve()
+        self.assertTrue(repository_mapping.name.endswith(".repo_mapping"))
+        manifest = repository_mapping.with_name(
+            repository_mapping.name.removesuffix(".repo_mapping") + ".runfiles_manifest"
         )
+        logical_init = f"{os.environ['TEST_WORKSPACE']}/tools/__init__.py "
+        self.assertTrue(
+            any(
+                line.startswith(logical_init)
+                for line in manifest.read_text(encoding="utf-8").splitlines()
+            )
+        )
+        environment = self.launcher_environment.copy()
+        environment["APGAR_PHASE4_ENCLOSING_INIT_MARKER"] = str(marker)
         completed = subprocess.run(
-            [str(launcher), "--help"],
+            [str(main / target), "--help"],
             check=False,
             text=True,
             capture_output=True,
             timeout=10,
-            env=self.launcher_environment,
+            env=environment,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("usage:", completed.stdout)
+        self.assertFalse(marker.exists())
 
-    def test_launcher_rejects_an_incompletely_traversable_runfiles_tree(self) -> None:
+    def test_launcher_ignores_an_incompletely_traversable_enclosing_tree(self) -> None:
         shadow = self.root / "unreadable-launcher.runfiles"
         shutil.copytree(
             pathlib.Path(os.environ["TEST_SRCDIR"]),
@@ -762,9 +818,8 @@ class Phase4ConfirmatorySameRunOperationalMeasurementProcessTest(unittest.TestCa
                     )
                 finally:
                     subtree.chmod(0o755)
-                self.assertEqual(completed.returncode, 2, completed.stderr)
-                self.assertEqual(completed.stdout, "")
-                self.assertIn("cannot authenticate its bundled runfiles", completed.stderr)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertIn("usage:", completed.stdout)
 
     def test_launcher_parent_death_terminates_the_delegated_authority(self) -> None:
         cache_directories_before = set(pathlib.Path("/tmp").glob("apgar-phase4-python-cache-*"))
@@ -839,6 +894,22 @@ class Phase4ConfirmatorySameRunOperationalMeasurementProcessTest(unittest.TestCa
             capture_output=True,
             timeout=10,
             preexec_fn=ignore_sigchld,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("usage:", completed.stdout)
+        self.assertEqual(completed.stderr, "")
+
+    def test_launcher_promotes_the_handshake_above_closed_stdin(self) -> None:
+        completed = subprocess.run(
+            [
+                str(runfile("phase4_confirmatory_operational_launcher_lifetime_probe")),
+                "--help",
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            preexec_fn=lambda: os.close(0),
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("usage:", completed.stdout)

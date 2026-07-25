@@ -1040,9 +1040,14 @@ def validate_config(value: Any) -> Mapping[str, Any]:
     return _config(value)
 
 
-def validate_semantics(value: Any, label: str) -> Mapping[str, Any]:
+def validate_semantics(
+    value: Any,
+    label: str,
+    *,
+    corpus_version: int = 1,
+) -> Mapping[str, Any]:
     """Validate one complete Phase 4 arm semantic object."""
-    return _semantics(value, label)
+    return _semantics(value, label, corpus_version=corpus_version)
 
 
 def read_report_document(path: pathlib.Path) -> Any:

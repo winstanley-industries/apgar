@@ -24,7 +24,9 @@ namespace {
 struct Options {
   bool testing_allow_unstamped = false;
   std::optional<std::string> runtime_commit;
+  std::uint32_t corpus_version = apgar::benchmark::kPhase4RepresentativeCorpusVersion;
   std::uint32_t raw_evidence_schema_version = 1;
+  std::uint32_t raw_wire_schema_version = apgar::benchmark::kPhase4TrialWireSchemaVersion;
   apgar::benchmark::Phase4CanonicalCellConfig cell;
   std::uint64_t raw_cell_plan_checksum = 0;
   std::uint64_t raw_cell_artifact_checksum = 0;
@@ -53,9 +55,9 @@ struct Options {
 
 [[nodiscard]] std::optional<Options> ParseOptions(int argc, char** argv) {
 #ifdef APGAR_PHASE4_EXACT_SNAPSHOT_RUNNER_TESTING
-  constexpr int kMaximumArgumentCount = 31;
+  constexpr int kMaximumArgumentCount = 33;
 #else
-  constexpr int kMaximumArgumentCount = 30;
+  constexpr int kMaximumArgumentCount = 32;
 #endif
   if (argc < 2 || argc > kMaximumArgumentCount) return std::nullopt;
   Options options;
@@ -87,9 +89,21 @@ struct Options {
 #endif
     } else if (key == "apgar_commit") {
       options.runtime_commit = std::string(value);
+    } else if (key == "corpus_version") {
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+      valid = ParseU32(value, &options.corpus_version);
+#else
+      valid = false;
+#endif
     } else if (key == "raw_evidence_schema_version")
       valid = ParseU32(value, &options.raw_evidence_schema_version);
-    else if (key == "case_id")
+    else if (key == "raw_wire_schema_version") {
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+      valid = ParseU32(value, &options.raw_wire_schema_version);
+#else
+      valid = false;
+#endif
+    } else if (key == "case_id")
       valid = ParseU32(value, &options.cell.case_id);
     else if (key == "pool_size")
       valid = ParseU32(value, &options.cell.requested_pool_size);
@@ -174,13 +188,26 @@ struct Options {
                                            "per_net_report_source_envelope_checksum"};
   for (const std::string_view key : required)
     if (!seen.contains(std::string(key))) return std::nullopt;
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+  if (!seen.contains("corpus_version") || !seen.contains("raw_evidence_schema_version") ||
+      !seen.contains("raw_wire_schema_version")) {
+    return std::nullopt;
+  }
+#endif
   return options;
 }
 
 void Usage() {
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+  std::cerr << "phase4_confirmatory_exact_small_snapshot_runner requires explicit Corpus 2, "
+               "Raw schema 2/Wire 2, exact development cell (10100,4), a clean stamped source, "
+               "complete Raw repetition-zero references, and the associated per-net report "
+               "artifact/envelope checksums.\n";
+#else
   std::cerr << "phase4_exact_small_snapshot_runner requires canonical exact case 100/101/102, "
                "pool 4, a clean stamped source, complete Raw repetition-zero references, and "
                "the associated per-net report artifact/envelope checksums.\n";
+#endif
 }
 
 }  // namespace
@@ -192,13 +219,37 @@ int main(int argc, char** argv) try {
     return 2;
   }
   Options& options = *parsed;
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+  const bool corpus_scope_valid =
+      options.corpus_version == apgar::benchmark::kPhase4RepresentativeCorpusVersionV2 &&
+      options.raw_evidence_schema_version ==
+          apgar::benchmark::kPhase4SameRunRawEvidenceSchemaVersion &&
+      options.raw_wire_schema_version == apgar::benchmark::kPhase4SameRunTrialWireSchemaVersion &&
+      options.cell.case_id == 10'100;
+#else
+  const bool corpus_scope_valid =
+      options.corpus_version == apgar::benchmark::kPhase4RepresentativeCorpusVersion &&
+      options.raw_wire_schema_version == apgar::benchmark::kPhase4TrialWireSchemaVersion &&
+      (options.cell.case_id == 100 || options.cell.case_id == 101 || options.cell.case_id == 102);
+#endif
   if (!options.runtime_commit.has_value() ||
-      !apgar::benchmark::IsFullLowercaseGitCommit(*options.runtime_commit) ||
-      (options.cell.case_id != 100 && options.cell.case_id != 101 && options.cell.case_id != 102) ||
+      !apgar::benchmark::IsFullLowercaseGitCommit(*options.runtime_commit) || !corpus_scope_valid ||
       options.cell.requested_pool_size != 4 ||
       options.cell.preparation_worker_count !=
           apgar::benchmark::kPhase4CanonicalPreparationWorkersV1 ||
-      options.cell.repetitions != apgar::benchmark::kPhase4CanonicalRepetitionsV1) {
+      options.cell.repetitions != apgar::benchmark::kPhase4CanonicalRepetitionsV1 ||
+      options.raw_cell_plan_checksum == 0 || options.raw_cell_artifact_checksum == 0 ||
+      options.raw_source_envelope_checksum == 0 || options.raw_reference.repetition_index != 0 ||
+      options.raw_reference.execution_order != apgar::benchmark::Phase4TrialOrder::kBaselineFirst ||
+      options.raw_reference.pair_attempt_checksum == 0 ||
+      options.raw_reference.paired_semantic_checksum == 0 ||
+      options.raw_reference.paired_artifact_checksum == 0 ||
+      options.raw_reference.baseline_semantic_checksum == 0 ||
+      options.raw_reference.baseline_arm_artifact_checksum == 0 ||
+      options.raw_reference.candidate_semantic_checksum == 0 ||
+      options.raw_reference.candidate_arm_artifact_checksum == 0 ||
+      options.per_net_report_artifact_checksum == 0 ||
+      options.per_net_report_source_envelope_checksum == 0) {
     Usage();
     return 2;
   }
@@ -223,8 +274,14 @@ int main(int argc, char** argv) try {
     Usage();
     return 2;
   }
-  if (options.raw_cell_plan_checksum !=
-          apgar::benchmark::ComputePhase4CanonicalCellPlanChecksumV1(options.cell) ||
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+  const std::uint64_t expected_cell_plan_checksum =
+      apgar::benchmark::ComputePhase4CanonicalCellPlanChecksumForCorpusV2(options.cell);
+#else
+  const std::uint64_t expected_cell_plan_checksum =
+      apgar::benchmark::ComputePhase4CanonicalCellPlanChecksumV1(options.cell);
+#endif
+  if (options.raw_cell_plan_checksum != expected_cell_plan_checksum ||
       options.raw_source_envelope_checksum !=
           (options.raw_evidence_schema_version ==
                    apgar::benchmark::kPhase4SameRunRawEvidenceSchemaVersion
@@ -250,8 +307,13 @@ int main(int argc, char** argv) try {
     std::cerr << "failed to authenticate fixture runfile\n";
     return 2;
   }
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+  auto spec_result = apgar::benchmark::BuildPhase4CanonicalTrialSpecForCorpusV2(
+      options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+#else
   auto spec_result = apgar::benchmark::BuildPhase4CanonicalTrialSpecV1(
       options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+#endif
   if (!std::holds_alternative<apgar::benchmark::Phase4PairedTrialSpec>(spec_result)) {
     const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(spec_result);
     std::cerr << error.invariant_id << ": " << error.detail << '\n';
@@ -268,14 +330,23 @@ int main(int argc, char** argv) try {
   }
   auto preparer = std::get<std::unique_ptr<apgar::allocator::PersistentCpuCandidatePoolPreparer>>(
       std::move(preparer_result));
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+  auto capture_result = apgar::benchmark::ExecutePhase4CandidatePoolSnapshotForCorpusV2(
+      std::get<apgar::benchmark::Phase4PairedTrialSpec>(spec_result), *fixture, preparer.get());
+#else
   auto capture_result = apgar::benchmark::ExecutePhase4CandidatePoolSnapshotV1(
       std::get<apgar::benchmark::Phase4PairedTrialSpec>(spec_result), *fixture, preparer.get());
+#endif
   if (std::holds_alternative<apgar::benchmark::Phase4TrialArmFailure>(capture_result)) {
     const auto& error = std::get<apgar::benchmark::Phase4TrialArmFailure>(capture_result).summary;
     std::cerr << error.invariant_id << ": " << error.detail << '\n';
     return 1;
   }
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+  auto artifact_result = apgar::benchmark::BuildPhase4ExactSmallSnapshotArtifactForCorpusV2(
+#else
   auto artifact_result = apgar::benchmark::BuildPhase4ExactSmallSnapshotArtifactV1(
+#endif
       options.cell, *options.runtime_commit, source_stamped, source_tree_dirty,
       options.raw_cell_plan_checksum, options.raw_cell_artifact_checksum,
       options.raw_source_envelope_checksum, options.raw_reference,

@@ -179,9 +179,26 @@ PreflightPhase4ExactSmallCartesianProductV1(std::span<const std::uint64_t> pool_
     Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture,
     std::uint32_t raw_evidence_schema_version = 1);
 
+// Corpus authority is selected by the entry point, never inferred from case ID.
+// The carrier and checksum domains remain snapshot v1 because corpus version,
+// corpus checksum, case identity, and complete arm semantics are already hashed.
+[[nodiscard]] Phase4ExactSmallSnapshotArtifactResultV1
+BuildPhase4ExactSmallSnapshotArtifactForCorpusV2(
+    const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
+    std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
+    Phase4PerNetReportRawReferenceV1 raw_reference, std::uint64_t per_net_report_artifact_checksum,
+    std::uint64_t per_net_report_source_envelope_checksum,
+    Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture,
+    std::uint32_t raw_evidence_schema_version);
+
 [[nodiscard]] std::variant<std::monostate, Phase4ExactSmallSnapshotError>
 ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifactV1& artifact,
                                            std::string_view imported_fixture);
+
+[[nodiscard]] std::variant<std::monostate, Phase4ExactSmallSnapshotError>
+ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(
+    const Phase4ExactSmallSnapshotArtifactV1& artifact, std::string_view imported_fixture);
 
 // Canonical compact UTF-8 JSON: one object, fixed key order, exactly one LF.
 [[nodiscard]] Phase4ExactSmallSnapshotSerializationResultV1

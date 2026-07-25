@@ -79,6 +79,41 @@ template <typename Value, typename Error>
       std::move(capture), {}, raw_evidence_schema_version));
 }
 
+[[nodiscard]] Phase4ExactSmallSnapshotArtifactV1 CorpusV2Artifact() {
+  const Phase4CanonicalCellConfig cell = Cell(10'100);
+  const Phase4PairedTrialSpec spec = ValueOf<Phase4PairedTrialSpec>(
+      BuildPhase4CanonicalTrialSpecForCorpusV2(cell, 0, Phase4TrialOrder::kBaselineFirst));
+  auto preparer = ValueOf<std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer>>(
+      allocator::CreatePersistentCpuCandidatePoolPreparer(
+          {.worker_count = kPhase4CanonicalPreparationWorkersV1}));
+  Phase4CandidatePoolSnapshotExecutionV1 capture = ValueOf<Phase4CandidatePoolSnapshotExecutionV1>(
+      ExecutePhase4CandidatePoolSnapshotForCorpusV2(spec, {}, preparer.get()));
+  const std::uint64_t raw_artifact_checksum = 201;
+  const std::uint64_t report_artifact_checksum = 203;
+  const Phase4PerNetReportRawReferenceV1 raw{
+      .repetition_index = 0,
+      .execution_order = Phase4TrialOrder::kBaselineFirst,
+      .pair_attempt_checksum = 207,
+      .paired_semantic_checksum = 209,
+      .paired_artifact_checksum = 211,
+      .baseline_semantic_checksum = 223,
+      .baseline_arm_artifact_checksum = 227,
+      .candidate_semantic_checksum = capture.semantics.semantic_checksum,
+      .candidate_arm_artifact_checksum = 229,
+  };
+  return ValueOf<Phase4ExactSmallSnapshotArtifactV1>(
+      BuildPhase4ExactSmallSnapshotArtifactForCorpusV2(
+          cell, kCommit, true, false, ComputePhase4CanonicalCellPlanChecksumForCorpusV2(cell),
+          raw_artifact_checksum,
+          ComputePhase4SourceEnvelopeChecksumV2(kPhase4SameRunRawEvidenceSchemaVersion,
+                                                kPhase4SameRunTrialWireSchemaVersion, kCommit, true,
+                                                false, raw_artifact_checksum),
+          raw, report_artifact_checksum,
+          ComputePhase4PerNetReportSourceEnvelopeChecksumV1(kCommit, true, false,
+                                                            report_artifact_checksum),
+          std::move(capture), {}, kPhase4SameRunRawEvidenceSchemaVersion));
+}
+
 void Reauthenticate(Phase4ExactSmallSnapshotArtifactV1* artifact) {
   artifact->artifact_checksum = ComputePhase4ExactSmallSnapshotArtifactChecksumV1(*artifact);
   artifact->source_envelope_checksum = ComputePhase4ExactSmallSnapshotSourceEnvelopeChecksumV1(
@@ -153,6 +188,45 @@ TEST(Phase4ExactSmallSnapshotTest, AcceptsOnlyVersionedRawSourceEnvelopeDomains)
   ++foreign.raw_source_envelope_checksum;
   Reauthenticate(&foreign);
   EXPECT_EQ(Rejected(foreign).invariant_id, "P4EXACT-SNAPSHOT-AUTHORITY-002");
+}
+
+TEST(Phase4ExactSmallSnapshotTest, CorpusV2AuthorityIsExplicitAndCrossRejecting) {
+  const Phase4ExactSmallSnapshotArtifactV1 corpus_v1 = Artifact();
+  const Phase4ExactSmallSnapshotArtifactV1 corpus_v2 = CorpusV2Artifact();
+  EXPECT_TRUE(std::holds_alternative<std::monostate>(
+      ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(corpus_v2, {})));
+  EXPECT_TRUE(std::holds_alternative<Phase4ExactSmallSnapshotError>(
+      ValidatePhase4ExactSmallSnapshotArtifactV1(corpus_v2, {})));
+  EXPECT_TRUE(std::holds_alternative<Phase4ExactSmallSnapshotError>(
+      ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(corpus_v1, {})));
+  EXPECT_EQ(corpus_v2.config.case_id, 10'100U);
+  EXPECT_EQ(corpus_v2.corpus_checksum, Phase4RepresentativeCorpusChecksumV2());
+}
+
+TEST(Phase4ExactSmallSnapshotTest, CorpusV2SnapshotAuthorityKeepsUnopenedCasesClosed) {
+  const Phase4ExactSmallSnapshotArtifactV1 open = CorpusV2Artifact();
+  for (const std::uint32_t case_id : {10'101U, 10'102U}) {
+    SCOPED_TRACE(case_id);
+    const Phase4CanonicalCellConfig cell = Cell(case_id);
+    auto build_result = BuildPhase4ExactSmallSnapshotArtifactForCorpusV2(
+        cell, kCommit, true, false, ComputePhase4CanonicalCellPlanChecksumForCorpusV2(cell),
+        open.raw_cell_artifact_checksum, open.raw_source_envelope_checksum, open.raw_reference,
+        open.per_net_report_artifact_checksum, open.per_net_report_source_envelope_checksum, {}, {},
+        kPhase4SameRunRawEvidenceSchemaVersion);
+    ASSERT_TRUE(std::holds_alternative<Phase4ExactSmallSnapshotError>(build_result));
+    const auto& build_error = std::get<Phase4ExactSmallSnapshotError>(build_result);
+    EXPECT_EQ(build_error.code, Phase4ExactSmallSnapshotErrorCode::kUnsupportedCase);
+    EXPECT_EQ(build_error.invariant_id, "P4EXACT-SNAPSHOT-CASE-001");
+
+    Phase4ExactSmallSnapshotArtifactV1 closed = open;
+    closed.config.case_id = case_id;
+    Reauthenticate(&closed);
+    auto validation = ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(closed, {});
+    ASSERT_TRUE(std::holds_alternative<Phase4ExactSmallSnapshotError>(validation));
+    const auto& validation_error = std::get<Phase4ExactSmallSnapshotError>(validation);
+    EXPECT_EQ(validation_error.code, Phase4ExactSmallSnapshotErrorCode::kUnsupportedCase);
+    EXPECT_EQ(validation_error.invariant_id, "P4EXACT-SNAPSHOT-CASE-003");
+  }
 }
 
 TEST(Phase4ExactSmallSnapshotTest, RejectsCartesianOverflowBeforeCandidateTraversal) {

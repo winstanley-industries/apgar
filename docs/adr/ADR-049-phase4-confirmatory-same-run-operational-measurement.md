@@ -24,16 +24,20 @@ outcome, Raw paired timing, or telemetry guardrail authority.
 - Reuse the reviewed four-exec containment controller: measured baseline,
   measured candidate, unmeasured baseline replay authority, then unmeasured
   candidate replay authority. The entry point fixes its separately named
-  worker target, worker digest from its own Bazel runfiles tree, exact cell,
+  worker target, worker digest from its adjacent standalone runfiles tree, exact cell,
   and complete budgets. Compiled public launchers clear ambient runfiles and
   Python environment selection before entering isolated Python. Inner Python
-  authorities require a one-use inherited file-descriptor handshake, and a
-  nested Bazel invocation accepts its enclosing declared runfiles tree only
-  after authenticating both the invoked launcher and canonical inner target.
-  Traversal of the entire selected runfiles root, including external repository
-  subtrees, must complete; invalid enclosing trees fail closed without
-  standalone fallback, and parent death terminates the delegated authority
-  before it can publish after launcher cancellation. The launcher normalizes
+  authorities require a one-use inherited file-descriptor handshake. The
+  launcher's adjacent, target-specific standalone runfiles tree is the sole
+  Python/data authority. A nested Bazel invocation may reach the canonical
+  launcher through an enclosing runfiles symlink, but that enclosing tree is
+  ignored rather than accepted as an authority or used as a fallback candidate.
+  Traversal of the entire standalone tree, including external repository
+  subtrees, must complete. Direct stage-one Python execution disables `site`
+  initialization until the rules_python bootstrap selects that tree; stage-two
+  site initialization occurs only after the standalone root is established.
+  Parent death terminates the delegated authority before it can publish after
+  launcher cancellation. The launcher normalizes
   inherited ignored `SIGCHLD` state before delegation so successful authority
   output cannot be followed by an `ECHILD` reaping failure, and removes its
   isolated bytecode-cache path before delegation so cancellation cannot leak

@@ -1430,9 +1430,10 @@ acceleration.
   open a publication validation input or install output. Corpus v2 authority
   MUST be selected explicitly in worker serialization and capture validation,
   while legacy entry points remain Corpus v1-only. Worker selection MUST come
-  only from the authority's own Bazel runfiles tree after a compiled launcher
-  clears ambient runfiles variables, and the publisher MUST independently bind
-  the canonical production-worker digest. The test worker MUST retain its
+  only from the compiled public launcher's adjacent, target-specific standalone
+  Bazel runfiles tree after the launcher clears ambient runfiles variables, and
+  the publisher MUST independently bind the canonical production-worker digest.
+  The test worker MUST retain its
   actual non-publishable source envelope; it MUST NOT synthesize clean source
   state. When an unstamped test build exposes no commit identity, its worker
   source envelope MUST use the all-zero 40-character unavailable sentinel
@@ -1440,15 +1441,18 @@ acceleration.
   from a publishable clean stamped source MUST fail without replay or output.
   Inner Python targets MUST consume a one-use inherited handshake from the
   compiled public launcher before parsing or emitting evidence. Nested Bazel
-  execution MAY use its enclosing declared runfiles tree only after the
-  invoked path resolves to that launcher and the fixed inner target resolves
-  to its canonical Bazel output. Runfiles traversal MUST cover the entire
-  selected tree, including external repository subtrees. A rejected enclosing
-  tree MUST NOT fall back to an adjacent standalone tree, the launcher MUST
-  establish default `SIGCHLD` reaping semantics rather than inherit an ignored
-  child signal, and the delegated authority MUST terminate when its exact
-  public launcher dies. Any isolated bytecode-cache path MUST be absent before
-  delegation so cancellation cannot leak it. Test-worker publishability MUST
+  execution MAY invoke the launcher through an enclosing runfiles symlink only
+  when that path resolves to the canonical launcher, but the enclosing tree is
+  never an execution-authority candidate. The launcher MUST authenticate and
+  traverse exactly its adjacent target-specific standalone tree, including
+  external repository subtrees, and MUST delegate only from that tree. Direct
+  stage-one Python execution MUST disable `site` initialization until the
+  rules_python bootstrap establishes that authenticated tree; stage-two site
+  initialization MAY run only with the standalone root already selected. The
+  launcher MUST establish default `SIGCHLD` reaping semantics rather than
+  inherit an ignored child signal, and the delegated authority MUST terminate
+  when its exact public launcher dies. Any isolated bytecode-cache path MUST be
+  absent before delegation so cancellation cannot leak it. Test-worker publishability MUST
   be derived solely from embedded source state; caller commit mismatch MUST
   NOT downgrade a clean stamped build.
   These stable hashes remain non-cryptographic association checks, not
@@ -1475,6 +1479,46 @@ acceleration.
   authentic negative evidence for complete aggregation rather than being
   rejected or erased by this diagnostic join. The publication remains
   non-standalone, non-statistical, and incomplete coverage.
+  The confirmatory exact-small authority is separately versioned by
+  `schemas/benchmark/phase4_confirmatory_exact_small_oracle_publication_v1.md`.
+  Its production and test-only snapshot runners MUST require explicit Corpus 2,
+  Raw Evidence schema 2, Raw Wire 2, and exactly `(10100,4)` before fixture
+  access, representative-case construction, preparer creation, or candidate
+  execution. Every claimed Raw/report artifact, source envelope, and complete
+  repetition-zero Raw reference MUST be nonzero at that pre-execution boundary.
+  The snapshot retains Exact-Small Snapshot v1's frozen payload,
+  bounds, canonical JSON, and checksum domains, but its separately selected
+  Corpus v2 builder and validator MUST rebuild the V2 cell plan, case, roster,
+  budget, and complete semantics; legacy snapshot publishers remain Corpus
+  v1-only. The publication CLI MUST completely validate bounded regular
+  Same-Run Raw and enforce that scope before opening bounded regular Telemetry
+  Wire 2, completely join telemetry before opening the bounded regular Wire-2
+  report, and completely join the report before opening the bounded regular
+  snapshot. Only then may it invoke the fixed separately compiled Corpus v2
+  admission-replay authority. The public publisher MUST be a compiled launcher
+  that authenticates its canonical executable, complete adjacent target-specific
+  standalone runfiles tree, and hermetic interpreter before delegating to a
+  fixed private Python target through a one-use parent-bound handshake. An
+  enclosing Bazel runfiles tree MAY contain an invocation symlink but MUST never
+  become the selected Python/data authority. The inner target MUST reject direct
+  execution, and replay MUST resolve only from the authenticated standalone tree
+  without ambient runfiles fallback. Direct stage-one Python execution MUST
+  disable `site` initialization until the rules_python bootstrap establishes
+  that tree; stage-two site initialization MAY run only after that selection.
+  Only then may the validator enumerate the complete bounded final-pool product.
+  The domain-separated output MUST bind campaign,
+  Corpus 2, every field of the frozen exact configuration, and the complete
+  Raw, telemetry, report, and snapshot artifact/source associations. A
+  rechecksummed configuration alias MUST be rejected. Production and exhaustive
+  objectives MUST be
+  exactly equal before an Oracle Artifact can be emitted; a mismatch produces
+  no exact completion authority and leaves the campaign incomplete, never an
+  allocator loss. A structurally valid false exact-rejection guardrail remains
+  publishable authentic negative evidence only when the fixed-pool proof
+  otherwise completes. This authority proves only fixed-pool optimality for one
+  development cell; its operational publication remains a sibling requirement,
+  and it does not prove pool route completeness, publish timing evidence, open
+  another cell, complete the confirmatory matrix, or decide Phase 4.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully

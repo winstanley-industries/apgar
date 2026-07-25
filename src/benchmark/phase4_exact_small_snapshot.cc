@@ -664,6 +664,61 @@ void WriteSemantics(JsonWriter* writer, const Phase4TrialArmSemantics& value) {
 
 }  // namespace
 
+namespace {
+
+[[nodiscard]] bool IsExactSmallCaseForAuthority(Phase4RepresentativeCorpusAuthority authority,
+                                                std::uint32_t case_id) noexcept {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return case_id == 100 || case_id == 101 || case_id == 102;
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return case_id == 10'100;
+  }
+  return false;
+}
+
+[[nodiscard]] std::uint64_t ComputeExactSmallCellPlanChecksum(
+    Phase4RepresentativeCorpusAuthority authority,
+    const Phase4CanonicalCellConfig& config) noexcept {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return ComputePhase4CanonicalCellPlanChecksumV1(config);
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return ComputePhase4CanonicalCellPlanChecksumForCorpusV2(config);
+  }
+  return 0;
+}
+
+[[nodiscard]] Phase4CanonicalSpecResult BuildExactSmallCanonicalSpec(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4CanonicalCellConfig& config) {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return BuildPhase4CanonicalTrialSpecV1(config, 0, Phase4TrialOrder::kBaselineFirst);
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return BuildPhase4CanonicalTrialSpecForCorpusV2(config, 0, Phase4TrialOrder::kBaselineFirst);
+  }
+  return Phase4TrialHarnessError{};
+}
+
+[[nodiscard]] std::uint64_t ComputeExactSmallWorkloadRosterChecksum(
+    Phase4RepresentativeCorpusAuthority authority,
+    const Phase4RepresentativeCase& representative_case) noexcept {
+  switch (authority) {
+    case Phase4RepresentativeCorpusAuthority::kV1:
+      return ComputePhase4WorkloadNetRosterChecksumV1(representative_case);
+    case Phase4RepresentativeCorpusAuthority::kV2:
+      return ComputePhase4WorkloadNetRosterChecksumV2(representative_case);
+  }
+  return 0;
+}
+
+[[nodiscard]] std::variant<std::monostate, Phase4ExactSmallSnapshotError>
+ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
+    Phase4RepresentativeCorpusAuthority authority,
+    const Phase4ExactSmallSnapshotArtifactV1& artifact, std::string_view imported_fixture);
+
+}  // namespace
+
 Phase4ExactSmallCartesianPreflightResultV1 PreflightPhase4ExactSmallCartesianProductV1(
     std::span<const std::uint64_t> pool_sizes, std::uint64_t declared_maximum) noexcept {
   if (pool_sizes.size() != kPhase4ExactSmallPoolCountV1) {
@@ -770,11 +825,14 @@ std::uint64_t ComputePhase4ExactSmallSnapshotSourceEnvelopeChecksumV1(
   return hash.Finish();
 }
 
-Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1(
-    const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
-    bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
-    std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
-    Phase4PerNetReportRawReferenceV1 raw_reference, std::uint64_t per_net_report_artifact_checksum,
+namespace {
+
+Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactForAuthority(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4CanonicalCellConfig& config,
+    std::string_view source_commit, bool source_stamped, bool source_tree_dirty,
+    std::uint64_t raw_cell_plan_checksum, std::uint64_t raw_cell_artifact_checksum,
+    std::uint64_t raw_source_envelope_checksum, Phase4PerNetReportRawReferenceV1 raw_reference,
+    std::uint64_t per_net_report_artifact_checksum,
     std::uint64_t per_net_report_source_envelope_checksum,
     Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture,
     std::uint32_t raw_evidence_schema_version) try {
@@ -783,9 +841,11 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
                  "P4EXACT-SNAPSHOT-SOURCE-001",
                  "a clean stamped 40-character lowercase source commit is required");
   }
-  if ((raw_evidence_schema_version != 1 &&
+  if ((authority == Phase4RepresentativeCorpusAuthority::kV2 &&
        raw_evidence_schema_version != kPhase4SameRunRawEvidenceSchemaVersion) ||
-      raw_cell_plan_checksum != ComputePhase4CanonicalCellPlanChecksumV1(config) ||
+      (raw_evidence_schema_version != 1 &&
+       raw_evidence_schema_version != kPhase4SameRunRawEvidenceSchemaVersion) ||
+      raw_cell_plan_checksum != ComputeExactSmallCellPlanChecksum(authority, config) ||
       raw_cell_artifact_checksum == 0 ||
       raw_source_envelope_checksum !=
           (raw_evidence_schema_version == kPhase4SameRunRawEvidenceSchemaVersion
@@ -804,12 +864,13 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
                  "Raw or per-net report claimed associations are absent or locally "
                  "inconsistent; publication must perform the external artifact join");
   }
-  const Phase4CaseDescriptor* descriptor = FindPhase4CaseDescriptorV1(config.case_id);
+  const Phase4CaseDescriptor* descriptor =
+      FindPhase4CaseDescriptorForAuthority(authority, config.case_id);
   if (descriptor == nullptr || descriptor->role != Phase4CaseRole::kExactOracle ||
-      (config.case_id != 100 && config.case_id != 101 && config.case_id != 102) ||
+      !IsExactSmallCaseForAuthority(authority, config.case_id) ||
       descriptor->maximum_exact_candidate_products == 0) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kUnsupportedCase, "P4EXACT-SNAPSHOT-CASE-001",
-                 "only canonical exact-oracle cases 100, 101, and 102 are supported");
+                 "the case is not exact-small under the explicitly selected corpus authority");
   }
   if (config.requested_pool_size != 4 ||
       capture.final_pools.size() != descriptor->requested_net_count) {
@@ -865,15 +926,14 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
     }
   }
 
-  Phase4CanonicalSpecResult spec_result =
-      BuildPhase4CanonicalTrialSpecV1(config, 0, Phase4TrialOrder::kBaselineFirst);
+  Phase4CanonicalSpecResult spec_result = BuildExactSmallCanonicalSpec(authority, config);
   if (std::holds_alternative<Phase4TrialHarnessError>(spec_result)) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kInvalidConfiguration,
                  "P4EXACT-SNAPSHOT-CONFIG-002", "the canonical cell configuration is invalid");
   }
   Phase4PairedTrialSpec spec = std::get<Phase4PairedTrialSpec>(std::move(spec_result));
-  Phase4RepresentativeCaseResult case_result =
-      BuildPhase4RepresentativeCaseV1(config.case_id, imported_fixture, config.corpus_limits);
+  Phase4RepresentativeCaseResult case_result = BuildPhase4RepresentativeCaseForAuthority(
+      authority, config.case_id, imported_fixture, config.corpus_limits);
   if (!std::holds_alternative<Phase4RepresentativeCase>(case_result)) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kInvalidConfiguration,
                  "P4EXACT-SNAPSHOT-CASE-002", "the exact representative case cannot be built");
@@ -881,13 +941,14 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
   Phase4RepresentativeCase representative_case =
       std::get<Phase4RepresentativeCase>(std::move(case_result));
   const Phase4TrialArmSemantics& semantics = capture.semantics;
-  if (internal::ValidatePhase4TrialArmSemanticsV1(semantics).has_value() ||
+  if (internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(authority, semantics).has_value() ||
       semantics.arm != Phase4TrialArm::kReusableCandidateAllocation ||
       semantics.execution_order != Phase4TrialOrder::kBaselineFirst ||
       semantics.case_id != config.case_id || semantics.requested_pool_size != 4 ||
       semantics.repetition_index != 0 || semantics.root_seed != spec.root_seed ||
-      semantics.corpus_checksum != Phase4RepresentativeCorpusChecksumV1() ||
-      semantics.descriptor_fingerprint != FingerprintPhase4CaseDescriptorV1(*descriptor) ||
+      semantics.corpus_checksum != Phase4RepresentativeCorpusChecksumForAuthority(authority) ||
+      semantics.descriptor_fingerprint !=
+          FingerprintPhase4CaseDescriptorForAuthority(authority, *descriptor) ||
       semantics.case_checksum != representative_case.case_checksum ||
       semantics.board_content_hash != representative_case.board.content_hash() ||
       semantics.workload_checksum != representative_case.workload.workload_checksum() ||
@@ -905,8 +966,8 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
                  "P4EXACT-SNAPSHOT-SEMANTIC-001",
                  "the captured candidate semantics do not authenticate this canonical cell");
   }
-  if (auto telemetry_error = internal::ValidatePhase4ArmReportTelemetryV1(
-          semantics, representative_case.workload, capture.telemetry);
+  if (auto telemetry_error = internal::ValidatePhase4ArmReportTelemetryForAuthorityV1(
+          authority, semantics, representative_case.workload, capture.telemetry);
       telemetry_error.has_value()) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
                  "P4EXACT-SNAPSHOT-TELEMETRY-001",
@@ -949,7 +1010,7 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
     artifact.workload_roster.push_back(context.request.net);
   }
   artifact.workload_net_roster_checksum =
-      ComputePhase4WorkloadNetRosterChecksumV1(representative_case);
+      ComputeExactSmallWorkloadRosterChecksum(authority, representative_case);
   artifact.budget_checksum = semantics.budget_checksum;
   artifact.raw_cell_plan_checksum = raw_cell_plan_checksum;
   artifact.raw_cell_artifact_checksum = raw_cell_artifact_checksum;
@@ -1031,7 +1092,8 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
   artifact.source_envelope_checksum = ComputePhase4ExactSmallSnapshotSourceEnvelopeChecksumV1(
       artifact.source_commit, artifact.source_stamped, artifact.source_tree_dirty,
       artifact.artifact_checksum);
-  if (auto error = ValidatePhase4ExactSmallSnapshotArtifactV1(artifact, imported_fixture);
+  if (auto error = ValidatePhase4ExactSmallSnapshotArtifactForAuthority(authority, artifact,
+                                                                        imported_fixture);
       std::holds_alternative<Phase4ExactSmallSnapshotError>(error)) {
     return std::get<Phase4ExactSmallSnapshotError>(std::move(error));
   }
@@ -1044,17 +1106,54 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
                "an unexpected exception escaped snapshot build");
 }
 
+}  // namespace
+
+Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1(
+    const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
+    std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
+    Phase4PerNetReportRawReferenceV1 raw_reference, std::uint64_t per_net_report_artifact_checksum,
+    std::uint64_t per_net_report_source_envelope_checksum,
+    Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture,
+    std::uint32_t raw_evidence_schema_version) {
+  return BuildPhase4ExactSmallSnapshotArtifactForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV1, config, source_commit, source_stamped,
+      source_tree_dirty, raw_cell_plan_checksum, raw_cell_artifact_checksum,
+      raw_source_envelope_checksum, raw_reference, per_net_report_artifact_checksum,
+      per_net_report_source_envelope_checksum, std::move(capture), imported_fixture,
+      raw_evidence_schema_version);
+}
+
+Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactForCorpusV2(
+    const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
+    std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
+    Phase4PerNetReportRawReferenceV1 raw_reference, std::uint64_t per_net_report_artifact_checksum,
+    std::uint64_t per_net_report_source_envelope_checksum,
+    Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture,
+    std::uint32_t raw_evidence_schema_version) {
+  return BuildPhase4ExactSmallSnapshotArtifactForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV2, config, source_commit, source_stamped,
+      source_tree_dirty, raw_cell_plan_checksum, raw_cell_artifact_checksum,
+      raw_source_envelope_checksum, raw_reference, per_net_report_artifact_checksum,
+      per_net_report_source_envelope_checksum, std::move(capture), imported_fixture,
+      raw_evidence_schema_version);
+}
+
+namespace {
+
 std::variant<std::monostate, Phase4ExactSmallSnapshotError>
-ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifactV1& artifact,
-                                           std::string_view imported_fixture) {
+ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
+    Phase4RepresentativeCorpusAuthority authority,
+    const Phase4ExactSmallSnapshotArtifactV1& artifact, std::string_view imported_fixture) {
   if (artifact.schema_version != kPhase4ExactSmallSnapshotSchemaVersion) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kUnsupportedSchema,
                  "P4EXACT-SNAPSHOT-SCHEMA-001", "unsupported exact-small snapshot schema");
   }
-  const Phase4CaseDescriptor* descriptor = FindPhase4CaseDescriptorV1(artifact.config.case_id);
+  const Phase4CaseDescriptor* descriptor =
+      FindPhase4CaseDescriptorForAuthority(authority, artifact.config.case_id);
   if (descriptor == nullptr || descriptor->role != Phase4CaseRole::kExactOracle ||
-      (artifact.config.case_id != 100 && artifact.config.case_id != 101 &&
-       artifact.config.case_id != 102)) {
+      !IsExactSmallCaseForAuthority(authority, artifact.config.case_id)) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kUnsupportedCase, "P4EXACT-SNAPSHOT-CASE-003",
                  "snapshot case is not a canonical exact case");
   }
@@ -1121,23 +1220,22 @@ ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifac
                  "P4EXACT-SNAPSHOT-POOL-MANIFEST-001",
                  "the serialized complete final pools do not reproduce the session manifest");
   }
-  Phase4RepresentativeCaseResult case_result = BuildPhase4RepresentativeCaseV1(
-      artifact.config.case_id, imported_fixture, artifact.config.corpus_limits);
+  Phase4RepresentativeCaseResult case_result = BuildPhase4RepresentativeCaseForAuthority(
+      authority, artifact.config.case_id, imported_fixture, artifact.config.corpus_limits);
   if (!std::holds_alternative<Phase4RepresentativeCase>(case_result)) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kInvalidConfiguration,
                  "P4EXACT-SNAPSHOT-CASE-004", "snapshot representative case cannot be rebuilt");
   }
   const Phase4RepresentativeCase& representative_case =
       std::get<Phase4RepresentativeCase>(case_result);
-  Phase4CanonicalSpecResult spec_result =
-      BuildPhase4CanonicalTrialSpecV1(artifact.config, 0, Phase4TrialOrder::kBaselineFirst);
+  Phase4CanonicalSpecResult spec_result = BuildExactSmallCanonicalSpec(authority, artifact.config);
   if (!std::holds_alternative<Phase4PairedTrialSpec>(spec_result)) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kInvalidConfiguration,
                  "P4EXACT-SNAPSHOT-CONFIG-003", "snapshot canonical cell is invalid");
   }
   const Phase4PairedTrialSpec& spec = std::get<Phase4PairedTrialSpec>(spec_result);
   const Phase4TrialArmSemantics& semantics = artifact.candidate_semantics;
-  if (internal::ValidatePhase4TrialArmSemanticsV1(semantics).has_value() ||
+  if (internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(authority, semantics).has_value() ||
       semantics.semantic_checksum != internal::ComputePhase4TrialArmSemanticChecksumV1(semantics) ||
       semantics.arm != Phase4TrialArm::kReusableCandidateAllocation ||
       semantics.execution_order != artifact.execution_order ||
@@ -1389,16 +1487,17 @@ ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifac
       artifact.capacity_overrides != representative_case.capacities.overrides() ||
       artifact.root_seed != spec.root_seed ||
       artifact.budget_checksum !=
-          internal::ComputePhase4PairedBudgetChecksumV1(
-              spec,
+          internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
+              authority, spec,
               Phase4RouteOpportunity{
                   .route_queries = spec.baseline_config.limits.maximum_route_queries,
                   .route_work_units = spec.baseline_config.limits.maximum_total_route_work_units},
               descriptor->requested_net_count,
               spec.candidate_session_config.regeneration_plan_config.maximum_total_columns,
               spec.candidate_session_config.schedules.back().maximum_selection_rounds) ||
-      artifact.corpus_checksum != Phase4RepresentativeCorpusChecksumV1() ||
-      artifact.descriptor_fingerprint != FingerprintPhase4CaseDescriptorV1(*descriptor) ||
+      artifact.corpus_checksum != Phase4RepresentativeCorpusChecksumForAuthority(authority) ||
+      artifact.descriptor_fingerprint !=
+          FingerprintPhase4CaseDescriptorForAuthority(authority, *descriptor) ||
       artifact.case_checksum != representative_case.case_checksum ||
       artifact.board_content_hash != representative_case.board.content_hash() ||
       artifact.workload_checksum != representative_case.workload.workload_checksum()) {
@@ -1406,6 +1505,20 @@ ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifac
                  "P4EXACT-SNAPSHOT-IDENTITY-001",
                  "snapshot cell, case, workload, capacity, budget, or seed identity is invalid");
   }
+  const bool raw_v1_source_envelope =
+      artifact.raw_source_envelope_checksum ==
+      ComputePhase4SourceEnvelopeChecksumV1(kPhase4TrialWireSchemaVersion, artifact.source_commit,
+                                            artifact.source_stamped, artifact.source_tree_dirty,
+                                            artifact.raw_cell_artifact_checksum);
+  const bool raw_v2_source_envelope =
+      artifact.raw_source_envelope_checksum ==
+      ComputePhase4SourceEnvelopeChecksumV2(
+          kPhase4SameRunRawEvidenceSchemaVersion, kPhase4SameRunTrialWireSchemaVersion,
+          artifact.source_commit, artifact.source_stamped, artifact.source_tree_dirty,
+          artifact.raw_cell_artifact_checksum);
+  const bool raw_source_envelope_valid = authority == Phase4RepresentativeCorpusAuthority::kV2
+                                             ? raw_v2_source_envelope
+                                             : (raw_v1_source_envelope || raw_v2_source_envelope);
   if (!IsLowerHexCommit(artifact.source_commit) || !artifact.source_stamped ||
       artifact.source_tree_dirty || !NonzeroRawReference(artifact.raw_reference) ||
       artifact.raw_reference.candidate_semantic_checksum != artifact.candidate_semantic_checksum ||
@@ -1419,22 +1532,14 @@ ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifac
            Phase4CandidateOutcomeSource::kCommonLineageOneWorld) ||
       artifact.production_outcome.world_checksum == 0 ||
       artifact.raw_cell_plan_checksum !=
-          ComputePhase4CanonicalCellPlanChecksumV1(artifact.config) ||
-      (artifact.raw_source_envelope_checksum !=
-           ComputePhase4SourceEnvelopeChecksumV1(
-               kPhase4TrialWireSchemaVersion, artifact.source_commit, artifact.source_stamped,
-               artifact.source_tree_dirty, artifact.raw_cell_artifact_checksum) &&
-       artifact.raw_source_envelope_checksum !=
-           ComputePhase4SourceEnvelopeChecksumV2(
-               kPhase4SameRunRawEvidenceSchemaVersion, kPhase4SameRunTrialWireSchemaVersion,
-               artifact.source_commit, artifact.source_stamped, artifact.source_tree_dirty,
-               artifact.raw_cell_artifact_checksum)) ||
+          ComputeExactSmallCellPlanChecksum(authority, artifact.config) ||
+      !raw_source_envelope_valid ||
       artifact.per_net_report_source_envelope_checksum !=
           ComputePhase4PerNetReportSourceEnvelopeChecksumV1(
               artifact.source_commit, artifact.source_stamped, artifact.source_tree_dirty,
               artifact.per_net_report_artifact_checksum) ||
       artifact.workload_net_roster_checksum !=
-          ComputePhase4WorkloadNetRosterChecksumV1(representative_case)) {
+          ComputeExactSmallWorkloadRosterChecksum(authority, representative_case)) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
                  "P4EXACT-SNAPSHOT-AUTHORITY-002",
                  "snapshot local authority projections or claimed external associations are "
@@ -1450,6 +1555,22 @@ ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifac
                  "P4EXACT-SNAPSHOT-CHECKSUM-001", "snapshot checksum or envelope is invalid");
   }
   return std::monostate{};
+}
+
+}  // namespace
+
+std::variant<std::monostate, Phase4ExactSmallSnapshotError>
+ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifactV1& artifact,
+                                           std::string_view imported_fixture) {
+  return ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV1, artifact, imported_fixture);
+}
+
+std::variant<std::monostate, Phase4ExactSmallSnapshotError>
+ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(
+    const Phase4ExactSmallSnapshotArtifactV1& artifact, std::string_view imported_fixture) {
+  return ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV2, artifact, imported_fixture);
 }
 
 Phase4ExactSmallSnapshotSerializationResultV1 SerializePhase4ExactSmallSnapshotArtifactJsonV1(

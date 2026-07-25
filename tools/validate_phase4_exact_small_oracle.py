@@ -14,10 +14,9 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from python.runfiles import runfiles as bazel_runfiles
-
 from tools import validate_phase4_per_net_report as report_validator
 from tools import validate_phase4_raw_evidence as raw_validator
+from tools.phase4_bounded_json_input import read_regular_file
 
 EvidenceError = raw_validator.EvidenceError
 StableHashBuilder = raw_validator.StableHashBuilder
@@ -40,7 +39,16 @@ _MAXIMUM_CAPACITY_OVERRIDES = 100_000
 _MAXIMUM_LOGICAL_BYTES = 32 * 1024 * 1024
 _MAXIMUM_CARTESIAN_PRODUCT = 4096
 _MAXIMUM_SERIALIZED_BYTES = 64 * 1024 * 1024
+_OVERLAP_PARTS_PER_MILLION = 1_000_000
 _ADMISSION_MAGIC = b"APGARP4E"
+_ADMISSION_REPLAY_TARGETS = {
+    1: "phase4_exact_small_candidate_admission_replay",
+    2: "phase4_confirmatory_exact_small_candidate_admission_replay",
+}
+_EXACT_SMALL_LATTICE_PROFILES = {
+    1: (0, 0, 1),
+    2: (0, 0, 8),
+}
 
 _TOP_FIELDS = (
     "source_commit",
@@ -361,8 +369,7 @@ def _check_nesting(value: Any, label: str) -> None:
 def read_snapshot_document(path: pathlib.Path) -> Mapping[str, Any]:
     """Read once under the frozen cap and require canonical JSON bytes."""
     try:
-        with path.open("rb") as stream:
-            encoded = stream.read(_MAXIMUM_SNAPSHOT_BYTES + 1)
+        encoded = read_regular_file(path, _MAXIMUM_SNAPSHOT_BYTES, label="exact-small snapshot")
         if len(encoded) > _MAXIMUM_SNAPSHOT_BYTES:
             raise EvidenceError("snapshot exceeds the 64 MiB input bound")
         text = encoded.decode("utf-8")
@@ -768,11 +775,21 @@ def _encode_span(encoder: _Encoder, span: Mapping[str, Any]) -> None:
     encoder.u32(span["usage_units"])
 
 
+def _exact_small_lattice_profile(corpus_version: int) -> tuple[int, int, int]:
+    try:
+        return _EXACT_SMALL_LATTICE_PROFILES[corpus_version]
+    except KeyError as error:
+        raise EvidenceError("unsupported exact-small lattice authority") from error
+
+
 def _derive_candidate_fields(
     geometry: Sequence[Mapping[str, Any]],
     policy: Mapping[str, Any],
     remaining: dict[str, int],
+    *,
+    corpus_version: int,
 ) -> tuple[list[dict[str, int]], dict[str, int]]:
+    origin_x, origin_y, lattice_step = _exact_small_lattice_profile(corpus_version)
     direction_for_delta = {
         (1, 0): 0,
         (1, 1): 1,
@@ -795,15 +812,30 @@ def _derive_candidate_fields(
     for primitive in geometry:
         start = primitive["start"]
         end = primitive["end"]
-        delta_x = end["x"] - start["x"]
-        delta_y = end["y"] - start["y"]
+        exact_points = (
+            start["x"] - origin_x,
+            start["y"] - origin_y,
+            end["x"] - origin_x,
+            end["y"] - origin_y,
+        )
+        if any(coordinate % lattice_step != 0 for coordinate in exact_points):
+            raise EvidenceError("candidate exact geometry is not aligned to its corpus lattice")
+        start_x = exact_points[0] // lattice_step
+        start_y = exact_points[1] // lattice_step
+        end_x = exact_points[2] // lattice_step
+        end_y = exact_points[3] // lattice_step
+        for coordinate in (start_x, start_y, end_x, end_y):
+            if not _I64_MIN <= coordinate <= _I64_MAX:
+                raise EvidenceError("candidate lattice coordinate overflows int64")
+        delta_x = end_x - start_x
+        delta_y = end_y - start_y
         step_count = max(abs(delta_x), abs(delta_y))
         _consume_budget(remaining, "geometry_steps", step_count)
         direction = direction_for_delta[
             ((delta_x > 0) - (delta_x < 0), (delta_y > 0) - (delta_y < 0))
         ]
         step_x, step_y = movement[direction]
-        source_x, source_y = start["x"], start["y"]
+        source_x, source_y = start_x, start_y
         for _ in range(step_count):
             canonical_direction = direction
             canonical_x, canonical_y = source_x, source_y
@@ -879,6 +911,10 @@ def _derive_candidate_fields(
                 "usage_units": 1,
             }
         )
+    axis_aligned_length = orthogonal * lattice_step
+    diagonal_projection = diagonal * lattice_step
+    if axis_aligned_length > _U64_MAX or diagonal_projection > _U64_MAX:
+        raise EvidenceError("candidate reconstructed length overflows uint64")
     metrics = {
         "scalar_policy_cost": scalar_cost,
         "intrinsic_base_cost": intrinsic_cost,
@@ -887,8 +923,8 @@ def _derive_candidate_fields(
         "bend_count": bends,
         "line_primitive_count": len(geometry),
         "via_count": 0,
-        "axis_aligned_length_dbu": orthogonal,
-        "diagonal_projection_dbu": diagonal,
+        "axis_aligned_length_dbu": axis_aligned_length,
+        "diagonal_projection_dbu": diagonal_projection,
     }
     return spans, metrics
 
@@ -913,6 +949,179 @@ def _resource_signature(spans: Sequence[Mapping[str, Any]]) -> tuple[int, int]:
             _encode_span(encoder, span)
         halves.append(encoder.finish())
     return halves[0], halves[1]
+
+
+def _same_candidate_context(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> bool:
+    return left["net"] == right["net"] and left["associations"] == right["associations"]
+
+
+def _expanded_resource_keys(
+    candidate: Mapping[str, Any],
+) -> set[tuple[int, int, int, int]]:
+    expanded: set[tuple[int, int, int, int]] = set()
+    for span in candidate["resource_spans"]:
+        dx, dy = ((1, 0), (1, 1), (0, 1), (1, -1))[span["direction"]]
+        expanded.update(
+            (
+                span["layer"],
+                span["lattice_x"] + dx * offset,
+                span["lattice_y"] + dy * offset,
+                span["direction"],
+            )
+            for offset in range(span["edge_count"])
+        )
+    return expanded
+
+
+def _quantize_overlap_ppm(numerator: int, denominator: int) -> int:
+    if denominator <= 0 or numerator < 0 or numerator > denominator:
+        raise EvidenceError("snapshot candidate overlap has an invalid exact ratio")
+    rounded = (numerator * _OVERLAP_PARTS_PER_MILLION + denominator // 2) // denominator
+    if rounded > _OVERLAP_PARTS_PER_MILLION:
+        raise EvidenceError("snapshot candidate overlap exceeds one")
+    return rounded
+
+
+def _resource_overlap_ppm(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> int:
+    if not _same_candidate_context(left, right):
+        return 0
+    left_resources = _expanded_resource_keys(left)
+    right_resources = _expanded_resource_keys(right)
+    union_count = len(left_resources | right_resources)
+    return _quantize_overlap_ppm(
+        len(left_resources & right_resources),
+        union_count,
+    )
+
+
+def _projected_intervals(
+    candidate: Mapping[str, Any],
+) -> tuple[list[tuple[int, int, int, int, int]], int]:
+    intervals: list[tuple[int, int, int, int, int]] = []
+    total_projection = 0
+    for primitive in candidate["geometry"]:
+        start_x = primitive["start"]["x"]
+        start_y = primitive["start"]["y"]
+        end_x = primitive["end"]["x"]
+        end_y = primitive["end"]["y"]
+        delta_x = end_x - start_x
+        delta_y = end_y - start_y
+        if delta_y == 0 and delta_x != 0:
+            family = 0
+            supporting_line = start_y
+            first_projection, second_projection = start_x, end_x
+        elif delta_x == 0 and delta_y != 0:
+            family = 1
+            supporting_line = start_x
+            first_projection, second_projection = start_y, end_y
+        elif abs(delta_x) == abs(delta_y) and delta_x != 0:
+            first_projection, second_projection = start_x, end_x
+            if (delta_x < 0) == (delta_y < 0):
+                family = 2
+                supporting_line = start_y - start_x
+            else:
+                family = 3
+                supporting_line = start_y + start_x
+        else:
+            raise EvidenceError("snapshot candidate geometry cannot be projected exactly")
+        begin = min(first_projection, second_projection)
+        end = max(first_projection, second_projection)
+        total_projection += end - begin
+        intervals.append((primitive["layer"], family, supporting_line, begin, end))
+    intervals.sort()
+    if total_projection <= 0:
+        raise EvidenceError("snapshot candidate geometry has zero projected length")
+    return intervals, total_projection
+
+
+def _shared_projected_length(
+    left: Sequence[tuple[int, int, int, int, int]],
+    right: Sequence[tuple[int, int, int, int, int]],
+) -> int:
+    shared = 0
+    left_index = 0
+    right_index = 0
+    while left_index < len(left) and right_index < len(right):
+        left_interval = left[left_index]
+        right_interval = right[right_index]
+        left_line = left_interval[:3]
+        right_line = right_interval[:3]
+        if left_line < right_line:
+            left_index += 1
+            continue
+        if right_line < left_line:
+            right_index += 1
+            continue
+        overlap_begin = max(left_interval[3], right_interval[3])
+        overlap_end = min(left_interval[4], right_interval[4])
+        if overlap_begin < overlap_end:
+            shared += overlap_end - overlap_begin
+        if left_interval[4] < right_interval[4]:
+            left_index += 1
+        elif right_interval[4] < left_interval[4]:
+            right_index += 1
+        else:
+            left_index += 1
+            right_index += 1
+    return shared
+
+
+def _geometric_overlap_ppm(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> int:
+    if not _same_candidate_context(left, right):
+        return 0
+    left_intervals, left_projection = _projected_intervals(left)
+    right_intervals, right_projection = _projected_intervals(right)
+    denominator = min(left_projection, right_projection)
+    shared = min(
+        _shared_projected_length(left_intervals, right_intervals),
+        denominator,
+    )
+    return _quantize_overlap_ppm(shared, denominator)
+
+
+def _final_pool_diagnostics(pool: Mapping[str, Any]) -> dict[str, int | None]:
+    candidates = pool["candidates"]
+    geometry_signatures = {_id_key(candidate["geometry_signature"]) for candidate in candidates}
+    resource_signatures = {_id_key(candidate["resource_signature"]) for candidate in candidates}
+    resource_overlaps: list[int] = []
+    geometric_overlaps: list[int] = []
+    for left, right in itertools.combinations(candidates, 2):
+        resource_overlaps.append(_resource_overlap_ppm(left, right))
+        geometric_overlaps.append(_geometric_overlap_ppm(left, right))
+    pair_count = len(resource_overlaps)
+    if pair_count:
+        resource_mean = (sum(resource_overlaps) + pair_count // 2) // pair_count
+        geometric_mean = (sum(geometric_overlaps) + pair_count // 2) // pair_count
+        resource_minimum = min(resource_overlaps)
+        geometric_minimum = min(geometric_overlaps)
+    else:
+        resource_mean = 0
+        geometric_mean = 0
+        resource_minimum = 0
+        geometric_minimum = 0
+    return {
+        "final_pool_size": len(candidates),
+        "unique_geometry_signature_count": len(geometry_signatures),
+        "unique_resource_signature_count": len(resource_signatures),
+        "candidate_pair_count": pair_count,
+        "mean_resource_overlap_ppm": resource_mean,
+        "minimum_resource_overlap_ppm": resource_minimum,
+        "mean_geometric_overlap_ppm": geometric_mean,
+        "minimum_geometric_overlap_ppm": geometric_minimum,
+        "pool_best_intrinsic_cost": min(
+            (candidate["metrics"]["intrinsic_base_cost"] for candidate in candidates),
+            default=None,
+        ),
+    }
 
 
 def _candidate_id(candidate: Mapping[str, Any]) -> tuple[int, int]:
@@ -972,6 +1181,8 @@ def _parse_candidate(
     expected_net: Mapping[str, Any],
     snapshot: Mapping[str, Any],
     remaining: dict[str, int],
+    *,
+    corpus_version: int,
 ) -> Mapping[str, Any]:
     _consume_budget(remaining, "candidates", 1)
     candidate = _object(value, label)
@@ -1037,7 +1248,12 @@ def _parse_candidate(
         sum(span["edge_count"] for span in candidate["resource_spans"]),
     )
     spans = _parse_spans(candidate["resource_spans"], f"{label}.resource_spans")
-    derived_spans, derived_metrics = _derive_candidate_fields(geometry, policy, remaining)
+    derived_spans, derived_metrics = _derive_candidate_fields(
+        geometry,
+        policy,
+        remaining,
+        corpus_version=corpus_version,
+    )
     if list(spans) != derived_spans:
         raise EvidenceError(f"{label}.resource_spans differ from exact geometry reconstruction")
     if metrics != derived_metrics:
@@ -1365,7 +1581,10 @@ def _consume_budget(remaining: dict[str, int], name: str, value: int) -> None:
 
 def _preflight_candidate_shapes(
     candidate_lists: Sequence[Sequence[Any]],
+    *,
+    corpus_version: int = 1,
 ) -> dict[str, int]:
+    origin_x, origin_y, lattice_step = _exact_small_lattice_profile(corpus_version)
     totals = {
         "candidates": 0,
         "geometry_rows": 0,
@@ -1428,8 +1647,16 @@ def _preflight_candidate_shapes(
                             _i64(point["y"], f"{point_label}.y"),
                         )
                     )
-                delta_x = points[1][0] - points[0][0]
-                delta_y = points[1][1] - points[0][1]
+                exact_points = (
+                    points[0][0] - origin_x,
+                    points[0][1] - origin_y,
+                    points[1][0] - origin_x,
+                    points[1][1] - origin_y,
+                )
+                if any(coordinate % lattice_step != 0 for coordinate in exact_points):
+                    raise EvidenceError(f"{primitive_label} is not aligned to its corpus lattice")
+                delta_x = exact_points[2] // lattice_step - exact_points[0] // lattice_step
+                delta_y = exact_points[3] // lattice_step - exact_points[1] // lattice_step
                 step_count = max(abs(delta_x), abs(delta_y))
                 totals["geometry_steps"] = _bounded_add(
                     totals["geometry_steps"],
@@ -1465,7 +1692,12 @@ def preflight_cartesian_product(pool_sizes: Sequence[int]) -> int:
     return product
 
 
-def _parse_snapshot(snapshot_value: Any) -> Mapping[str, Any]:
+def _parse_snapshot(
+    snapshot_value: Any,
+    *,
+    corpus_version: int = 1,
+    allowed_case_ids: frozenset[int] = frozenset({100, 101, 102}),
+) -> Mapping[str, Any]:
     snapshot = _object(snapshot_value, "snapshot")
     _fields(snapshot, _TOP_FIELDS, "snapshot")
     if _u32(snapshot["schema_version"], "snapshot.schema_version") != 1:
@@ -1475,8 +1707,8 @@ def _parse_snapshot(snapshot_value: Any) -> Mapping[str, Any]:
     if _enum(snapshot["execution_order"], {0, 1}, "snapshot.execution_order") != 0:
         raise EvidenceError("snapshot must be baseline-first")
     config = report_validator.validate_config(snapshot["config"])
-    if config["case_id"] not in {100, 101, 102} or config["requested_pool_size"] != 4:
-        raise EvidenceError("snapshot must be an exact case 100/101/102 at pool four")
+    if config["case_id"] not in allowed_case_ids or config["requested_pool_size"] != 4:
+        raise EvidenceError("snapshot is outside the explicitly selected exact-small scope")
     for field in (
         "root_seed",
         "corpus_checksum",
@@ -1531,7 +1763,9 @@ def _parse_snapshot(snapshot_value: Any) -> Mapping[str, Any]:
         if _u64(reference[field], f"snapshot.raw_reference.{field}") == 0:
             raise EvidenceError(f"snapshot.raw_reference.{field} must be nonzero")
     semantics = report_validator.validate_semantics(
-        snapshot["candidate_semantics"], "snapshot.candidate_semantics"
+        snapshot["candidate_semantics"],
+        "snapshot.candidate_semantics",
+        corpus_version=corpus_version,
     )
     _enum(snapshot["production_outcome_source"], {1, 2}, "snapshot.production_outcome_source")
     capacity = _object(snapshot["capacity"], "snapshot.capacity")
@@ -1581,7 +1815,10 @@ def _parse_snapshot(snapshot_value: Any) -> Mapping[str, Any]:
         parsed_pool_shapes.append((pool, net, candidates))
         pool_sizes.append(len(candidates))
     product = preflight_cartesian_product(pool_sizes)
-    remaining = _preflight_candidate_shapes([candidates for _, _, candidates in parsed_pool_shapes])
+    remaining = _preflight_candidate_shapes(
+        [candidates for _, _, candidates in parsed_pool_shapes],
+        corpus_version=corpus_version,
+    )
     candidate_count = geometry_count = span_count = policy_count = expanded_count = logical = 0
     candidate_ids: set[tuple[int, int]] = set()
     for pool_index, (pool, net, candidates) in enumerate(parsed_pool_shapes):
@@ -1594,6 +1831,7 @@ def _parse_snapshot(snapshot_value: Any) -> Mapping[str, Any]:
                 net,
                 snapshot,
                 remaining,
+                corpus_version=corpus_version,
             )
             identity = _id_key(candidate["id"])
             if previous_id is not None and previous_id >= identity:
@@ -1701,9 +1939,17 @@ def _admission_id(encoder: _AdmissionEncoder, identity: Mapping[str, Any]) -> No
     encoder.u64(identity["low"])
 
 
-def _candidate_admission_payload(snapshot: Mapping[str, Any]) -> bytes:
+def _candidate_admission_payload(
+    snapshot: Mapping[str, Any],
+    *,
+    corpus_version: int = 1,
+) -> bytes:
     encoder = _AdmissionEncoder()
-    encoder.u32(1)
+    if corpus_version not in _ADMISSION_REPLAY_TARGETS:
+        raise EvidenceError("unsupported exact candidate admission replay corpus authority")
+    encoder.u32(corpus_version)
+    if corpus_version == 2:
+        encoder.u32(corpus_version)
     encoder.u32(snapshot["config"]["case_id"])
     for field in _LIMIT_FIELDS:
         encoder.u64(snapshot["config"]["corpus_limits"][field])
@@ -1781,47 +2027,54 @@ def _candidate_admission_payload(snapshot: Mapping[str, Any]) -> bytes:
     return bytes(encoder.data)
 
 
-def _admission_replay_path() -> pathlib.Path:
+def _admission_replay_path(
+    target: str = "phase4_exact_small_candidate_admission_replay",
+) -> pathlib.Path:
+    if target not in _ADMISSION_REPLAY_TARGETS.values():
+        raise EvidenceError("exact candidate admission replay target is not fixed")
+    from tools.phase4_exact_small_oracle_launcher_handshake import (
+        authenticated_runfiles_main,
+    )
+
+    authenticated_main = authenticated_runfiles_main()
+    if authenticated_main is not None:
+        candidate = authenticated_main / target
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+        raise EvidenceError(
+            "the exact candidate admission replay is absent from authenticated runfiles"
+        )
+
+    # In-process library and py_test callers do not mint CLI publication
+    # authority. They retain a Bazel-only fallback for differential tests and
+    # legacy diagnostic composition.
     try:
-        resolver = bazel_runfiles.Create()
-    except (OSError, UnicodeError, ValueError) as error:
-        raise EvidenceError("cannot resolve exact candidate admission replay runfiles") from error
-    if resolver is not None:
-        resolved = resolver.Rlocation("_main/phase4_exact_small_candidate_admission_replay")
-        if resolved is not None:
-            candidate = pathlib.Path(resolved)
+        main_path = pathlib.Path(sys.argv[0]).absolute()
+    except (OSError, RuntimeError) as error:
+        raise EvidenceError("cannot resolve the exact-oracle main program") from error
+    for parent in main_path.parents:
+        if parent.name.endswith(".runfiles"):
+            candidate = parent / "_main" / target
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return candidate
-    try:
-        launcher = pathlib.Path(sys.argv[0]).resolve(strict=True)
-    except OSError:
-        launcher = None
-    if launcher is not None:
-        candidate = (
-            pathlib.Path(f"{launcher}.runfiles")
-            / "_main"
-            / "phase4_exact_small_candidate_admission_replay"
-        )
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
-    runfiles = os.environ.get("RUNFILES_DIR") or os.environ.get("TEST_SRCDIR")
-    workspace = os.environ.get("TEST_WORKSPACE") or "_main"
-    if runfiles:
-        candidate = (
-            pathlib.Path(runfiles) / workspace / "phase4_exact_small_candidate_admission_replay"
-        )
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
+            break
     raise EvidenceError(
-        "exact candidate admission replay is unavailable; build the validator with Bazel"
+        "the exact candidate admission replay is absent from the validator's bundled runfiles"
     )
 
 
-def _replay_exact_candidate_admission(snapshot: Mapping[str, Any]) -> None:
+def _replay_exact_candidate_admission(
+    snapshot: Mapping[str, Any],
+    *,
+    corpus_version: int = 1,
+    target: str = "phase4_exact_small_candidate_admission_replay",
+) -> None:
+    if _ADMISSION_REPLAY_TARGETS.get(corpus_version) != target:
+        raise EvidenceError("exact candidate admission replay authority does not match its target")
     try:
         completed = subprocess.run(
-            [_admission_replay_path()],
-            input=_candidate_admission_payload(snapshot),
+            [_admission_replay_path(target)],
+            input=_candidate_admission_payload(snapshot, corpus_version=corpus_version),
             capture_output=True,
             check=False,
             timeout=30,
@@ -1857,6 +2110,12 @@ def _score(
     choices: Sequence[Mapping[str, Any] | None],
     default_capacity: int,
     overrides: Mapping[tuple[int, int, int, int], int],
+    *,
+    expanded_candidates: Mapping[
+        tuple[int, int],
+        set[tuple[int, int, int, int]],
+    ]
+    | None = None,
 ) -> tuple[tuple[int, int, int], int]:
     usage: dict[tuple[int, int, int, int], int] = {}
     selected = 0
@@ -1866,7 +2125,12 @@ def _score(
             continue
         selected += 1
         cost += candidate["metrics"]["intrinsic_base_cost"]
-        for resource in _expand_candidate(candidate):
+        resources = (
+            _expand_candidate(candidate)
+            if expanded_candidates is None
+            else expanded_candidates[_id_key(candidate["id"])]
+        )
+        for resource in resources:
             usage[resource] = usage.get(resource, 0) + 1
     overuses = [
         units - overrides.get(resource, default_capacity)
@@ -1902,12 +2166,22 @@ def enumerate_exact_oracle(
     alternatives: list[Sequence[Mapping[str, Any] | None]] = [
         pool["candidates"] if pool["candidates"] else [None] for pool in snapshot["pools"]
     ]
+    expanded_candidates = {
+        _id_key(candidate["id"]): _expand_candidate(candidate)
+        for pool in snapshot["pools"]
+        for candidate in pool["candidates"]
+    }
     optimum: tuple[int, int, int] | None = None
     count = 0
     witness: tuple[Mapping[str, Any] | None, ...] | None = None
     for raw_choices in itertools.product(*alternatives):
         choices = tuple(raw_choices)
-        objective, _ = _score(choices, capacity["default_capacity_units"], overrides)
+        objective, _ = _score(
+            choices,
+            capacity["default_capacity_units"],
+            overrides,
+            expanded_candidates=expanded_candidates,
+        )
         if optimum is None or _objective_key(objective) < _objective_key(optimum):
             optimum = objective
             count = 1
@@ -1993,14 +2267,25 @@ def validate_publication(
 
 
 def validate_publication_against_validated_authorities(
-    raw_value: Any, report_value: Any, snapshot_value: Any, *, expected_commit: str
+    raw_value: Any,
+    report_value: Any,
+    snapshot_value: Any,
+    *,
+    expected_commit: str,
+    corpus_version: int = 1,
+    allowed_case_ids: frozenset[int] = frozenset({100, 101, 102}),
+    admission_replay_target: str = "phase4_exact_small_candidate_admission_replay",
 ) -> Mapping[str, Any]:
     """Build the oracle after the caller validates its versioned Raw/report authority."""
     if _COMMIT.fullmatch(expected_commit) is None:
         raise EvidenceError("publication requires an independently supplied expected commit")
     raw = _object(raw_value, "raw cell")
     report = _object(report_value, "per-net report")
-    snapshot = _parse_snapshot(snapshot_value)
+    snapshot = _parse_snapshot(
+        snapshot_value,
+        corpus_version=corpus_version,
+        allowed_case_ids=allowed_case_ids,
+    )
     if (
         snapshot["source_commit"] != expected_commit
         or snapshot["source_commit"] != raw["source_commit"]
@@ -2084,8 +2369,11 @@ def validate_publication_against_validated_authorities(
     for index, telemetry in enumerate(report_candidate["telemetry"]["per_net"]):
         pool = snapshot["pools"][index]
         selection = snapshot["production_selections"][index]
-        if telemetry["final_pool_size"] != len(pool["candidates"]):
-            raise EvidenceError("snapshot pool size differs from per-net candidate telemetry")
+        expected_diagnostics = _final_pool_diagnostics(pool)
+        if any(telemetry[field] != expected for field, expected in expected_diagnostics.items()):
+            raise EvidenceError(
+                "snapshot final-pool diagnostics differ from per-net candidate telemetry"
+            )
         if (
             telemetry["selected_status"] != selection["status"]
             or telemetry["selected_candidate_id"] != selection["candidate_id"]
@@ -2110,7 +2398,11 @@ def validate_publication_against_validated_authorities(
             telemetry["selected_candidate_metrics"] is not None or selection["intrinsic_cost"] != 0
         ):
             raise EvidenceError("snapshot no-candidate telemetry uses non-null selected fields")
-    _replay_exact_candidate_admission(snapshot)
+    _replay_exact_candidate_admission(
+        snapshot,
+        corpus_version=corpus_version,
+        target=admission_replay_target,
+    )
     optimum, optimum_count, witness = enumerate_exact_oracle(snapshot)
     capacity = snapshot["capacity"]
     override_map = {
@@ -2191,6 +2483,10 @@ def serialize_oracle_artifact(artifact_value: Any) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if __name__ == "__main__":
+        from tools.phase4_exact_small_oracle_launcher_handshake import require_launcher
+
+        require_launcher("phase4_exact_small_oracle_validator_py")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--raw", required=True, type=pathlib.Path)
@@ -2202,8 +2498,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             options.raw, expected_commit=options.expected_commit
         )
         report = report_validator.read_report_document(options.report)
+        report_validator.validate_join(raw, report, expected_commit=options.expected_commit)
         snapshot = read_snapshot_document(options.snapshot)
-        artifact = validate_publication(
+        artifact = validate_publication_against_validated_authorities(
             raw, report, snapshot, expected_commit=options.expected_commit
         )
         output = serialize_oracle_artifact(artifact)

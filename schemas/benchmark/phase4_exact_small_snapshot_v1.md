@@ -2,10 +2,13 @@
 
 Status: diagnostic evidence schema. `decision_eligible` is always `false`.
 
-This artifact is emitted only for canonical exact-oracle cases 100, 101, and
-102 at requested pool size 4 and repetition 0 in baseline-first order. It is a
-fresh diagnostic rerun associated with, but never substituted for, the
-version-matched Raw cell and per-net report named by its checksum fields.
+The legacy Corpus v1 artifact is emitted only for canonical exact-oracle cases
+100, 101, and 102 at requested pool size 4 and repetition 0 in baseline-first
+order. The separately selected confirmatory Corpus v2 path reuses this frozen
+payload shape only for development cell 10100 at pool 4 under
+`phase4_confirmatory_exact_small_oracle_v1`. Both are fresh diagnostic reruns
+associated with, but never substituted for, the version-matched Raw cell and
+per-net report named by their checksum fields.
 
 ## Proof boundary
 
@@ -36,22 +39,33 @@ writes stdout only after the complete bounded JSON string exists.
 
 The top-level object binds the complete canonical cell, source commit/envelope,
 case/board/workload identities, full EntityRef workload roster, root seed,
-execution order, paired budget checksum, preparation worker count, Raw v1 cell
-and repetition-zero pair references, and per-net report artifact/envelope. It
-also deep-copies and binds the complete candidate-arm semantics row, not only
-its projected semantic/session/manifest checksums. The full row includes work
-opportunity and actuals, preparation and regeneration partitions,
-requested/admitted/rejected columns, final candidate count, terminal reason,
-outcome source, complete outcome, and semantic checksum. Projected top-level
-fields must exactly equal that structurally validated row.
+execution order, paired budget checksum, preparation worker count,
+version-matched Raw cell and repetition-zero pair references, and per-net report
+artifact/envelope. It also deep-copies and binds the complete candidate-arm
+semantics row, not only its projected semantic/session/manifest checksums. The
+full row includes explicit corpus version, work opportunity and actuals,
+preparation and regeneration partitions, requested/admitted/rejected columns,
+final candidate count, terminal reason, outcome source, complete outcome, and
+semantic checksum. Projected top-level fields must exactly equal that
+structurally validated row.
 
-The producer accepts exactly a Raw-v1/Wire-v1 or Raw-v2/Wire-v2 carrier. Raw
-and per-net report checksum/envelope fields are claimed cross-artifact
-associations. This in-process producer checks their required nonzero and
-version-selected local source-envelope shape but does not possess either
-external artifact document; publication remains responsible for loading those
-documents and performing the full versioned join. The selector does not change
-the snapshot v1 shape or either snapshot checksum domain.
+Corpus authority is selected out of band by separate builder, validator, runner,
+and publication entry points; a case ID never selects or infers it. Legacy
+Corpus v1 producers accept exactly a Raw-v1/Wire-v1 or Raw-v2/Wire-v2 carrier
+for cases 100-102. The confirmatory Corpus v2 producer accepts only
+Raw-v2/Wire-v2 for case 10100 in this slice. Every legacy publisher and
+candidate-admission replay target remains Corpus v1-only; the confirmatory
+publication uses a fixed separately compiled Corpus v2 replay target.
+
+Raw and per-net report checksum/envelope fields are claimed cross-artifact
+associations. This in-process producer checks their required nonzero,
+authority-selected cell-plan, roster, semantics, and source-envelope shape but
+does not possess either external artifact document; publication remains
+responsible for loading those documents and performing the complete ordered
+join. The Corpus v2 selector does not change the snapshot v1 DTO, component
+bounds, canonical JSON, or either snapshot checksum domain because the corpus
+version, corpus checksum, case identity, and complete semantics are already
+hashed.
 
 The current capacity model is serialized as its schema and associations,
 default capacity, complete strict resource-key-ordered binary overrides, and

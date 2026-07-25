@@ -6,6 +6,7 @@
 #include <exception>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -170,8 +171,10 @@ template <typename Value>
   return true;
 }
 
-[[nodiscard]] bool ReadCandidate(Reader* reader, apgar::candidates::GeneratedRouteCandidate* value,
-                                 std::uint64_t* intrinsic_cost, Bounds* bounds) {
+[[nodiscard]] bool ReadCandidate(
+    Reader* reader, apgar::candidates::GeneratedRouteCandidate* value,
+    std::uint64_t* intrinsic_cost, Bounds* bounds,
+    const apgar::geometry_compiler::CompilerProfile& compiler_profile) {
   if (!AddWithin(&bounds->candidates, 1U, kMaximumCandidates) ||
       !reader->U16(&value->schema_major) || !reader->U16(&value->schema_minor) ||
       !ReadId(reader, &value->id) || !ReadEntity(reader, &value->net) ||
@@ -216,11 +219,14 @@ template <typename Value>
         !reader->I64(&line.centerline.end.x) || !reader->I64(&line.centerline.end.y)) {
       return false;
     }
+    const std::optional<apgar::geometry_compiler::LatticeIndex> start =
+        apgar::geometry_compiler::ExactPointToLatticeIndex(compiler_profile, line.centerline.start);
+    const std::optional<apgar::geometry_compiler::LatticeIndex> end =
+        apgar::geometry_compiler::ExactPointToLatticeIndex(compiler_profile, line.centerline.end);
+    if (!start.has_value() || !end.has_value()) return false;
     using SignedWide = __int128;
-    const SignedWide delta_x = static_cast<SignedWide>(line.centerline.end.x) -
-                               static_cast<SignedWide>(line.centerline.start.x);
-    const SignedWide delta_y = static_cast<SignedWide>(line.centerline.end.y) -
-                               static_cast<SignedWide>(line.centerline.start.y);
+    const SignedWide delta_x = static_cast<SignedWide>(end->x) - static_cast<SignedWide>(start->x);
+    const SignedWide delta_y = static_cast<SignedWide>(end->y) - static_cast<SignedWide>(start->y);
     const std::uint64_t step_count = static_cast<std::uint64_t>(
         std::max(delta_x < 0 ? -delta_x : delta_x, delta_y < 0 ? -delta_y : delta_y));
     if (!AddWithin(&bounds->geometry_steps, step_count, kMaximumExpandedEdges)) return false;
@@ -282,16 +288,30 @@ template <typename Value>
 [[nodiscard]] int Run(std::span<const std::uint8_t> input) {
   Reader reader(input);
   std::uint32_t version = 0;
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY
+  std::uint32_t corpus_version = 0;
+#endif
   std::uint32_t case_id = 0;
   apgar::benchmark::Phase4RepresentativeCorpusLimits limits;
-  if (!reader.Bytes(kMagic) || !reader.U32(&version) || version != 1 || !reader.U32(&case_id) ||
-      (case_id != 100 && case_id != 101 && case_id != 102) || !reader.U64(&limits.maximum_nets) ||
-      !reader.U64(&limits.maximum_compiled_nodes) ||
+  if (!reader.Bytes(kMagic) || !reader.U32(&version) ||
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY
+      version != 2 || !reader.U32(&corpus_version) ||
+      corpus_version != apgar::benchmark::kPhase4RepresentativeCorpusVersionV2 ||
+      !reader.U32(&case_id) || case_id != 10'100 ||
+#else
+      version != 1 || !reader.U32(&case_id) ||
+      (case_id != 100 && case_id != 101 && case_id != 102) ||
+#endif
+      !reader.U64(&limits.maximum_nets) || !reader.U64(&limits.maximum_compiled_nodes) ||
       !reader.U64(&limits.maximum_compiled_host_bytes) ||
       !reader.U64(&limits.maximum_active_regions) || !reader.U64(&limits.maximum_board_entities)) {
     return Fail("invalid magic, version, case, or corpus limits");
   }
+#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY
+  auto rebuilt = apgar::benchmark::BuildPhase4RepresentativeCaseV2(case_id, {}, limits);
+#else
   auto rebuilt = apgar::benchmark::BuildPhase4RepresentativeCaseV1(case_id, {}, limits);
+#endif
   if (!std::holds_alternative<apgar::benchmark::Phase4RepresentativeCase>(rebuilt)) {
     return Fail("representative exact case could not be rebuilt");
   }
@@ -313,7 +333,8 @@ template <typename Value>
     for (std::uint32_t candidate_index = 0; candidate_index < candidate_count; ++candidate_index) {
       apgar::candidates::GeneratedRouteCandidate candidate;
       std::uint64_t intrinsic_cost = 0;
-      if (!ReadCandidate(&reader, &candidate, &intrinsic_cost, &bounds)) {
+      if (!ReadCandidate(&reader, &candidate, &intrinsic_cost, &bounds,
+                         prepared.compiled_board.profile())) {
         return Fail("candidate wire payload is malformed or exceeds a bound");
       }
       apgar::routing::PlanarRouteRequest request = prepared.request;

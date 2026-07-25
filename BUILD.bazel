@@ -6,6 +6,7 @@ load("@rules_python//python:py_binary.bzl", "py_binary")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
 load("//bazel:source_stamp.bzl", "source_stamp_header")
+load("//bazel:test_runfile.bzl", "test_runfile")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -24,6 +25,18 @@ config_setting(
 config_setting(
     name = "ubsan_enabled",
     flag_values = {"@llvm//config:ubsan": "True"},
+)
+
+test_runfile(
+    name = "phase4_authority_shadow_tools_init",
+    src = "tests/benchmark/phase4_authority_shadow_import_marker.py",
+    path = "tools/__init__.py",
+)
+
+test_runfile(
+    name = "phase4_authority_shadow_sitecustomize",
+    src = "tests/benchmark/phase4_authority_shadow_import_marker.py",
+    path = "sitecustomize.py",
 )
 
 # The CUDA host/device boundary cannot currently be instrumented end-to-end by
@@ -1020,6 +1033,13 @@ py_library(
 )
 
 py_library(
+    name = "phase4_exact_small_oracle_launcher_handshake_lib",
+    srcs = ["tools/phase4_exact_small_oracle_launcher_handshake.py"],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+)
+
+py_library(
     name = "phase4_raw_evidence_validator_lib",
     srcs = ["tools/validate_phase4_raw_evidence.py"],
     data = ["schemas/benchmark/phase4_representative_manifest_v1.json"],
@@ -1786,6 +1806,17 @@ cc_binary(
 )
 
 cc_binary(
+    name = "phase4_confirmatory_exact_small_candidate_admission_replay",
+    srcs = ["tools/phase4_exact_small_candidate_admission_replay.cc"],
+    copts = APGAR_COPTS,
+    defines = ["APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY"],
+    deps = [
+        ":candidate_contract",
+        ":phase4_representative_corpus",
+    ],
+)
+
+cc_binary(
     name = "phase4_stress_work_bound_probe",
     srcs = ["tools/phase4_stress_work_bound_probe.cc"],
     copts = APGAR_COPTS,
@@ -1813,7 +1844,7 @@ cc_binary(
 )
 
 py_binary(
-    name = "phase4_exact_small_oracle_validator",
+    name = "phase4_exact_small_oracle_validator_py",
     srcs = ["tools/validate_phase4_exact_small_oracle.py"],
     data = [
         "schemas/benchmark/phase4_representative_manifest_v1.json",
@@ -1823,10 +1854,22 @@ py_binary(
     legacy_create_init = 0,
     main = "tools/validate_phase4_exact_small_oracle.py",
     python_version = "3.13",
+    visibility = ["//visibility:private"],
     deps = [
+        ":phase4_bounded_json_input_lib",
+        ":phase4_exact_small_oracle_launcher_handshake_lib",
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
-        "@rules_python//python/runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_exact_small_oracle_validator",
+    srcs = ["tools/phase4_confirmatory_operational_launcher.cc"],
+    copts = APGAR_COPTS,
+    data = [":phase4_exact_small_oracle_validator_py"],
+    defines = [
+        "APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER=\\\"phase4_exact_small_oracle_validator_py\\\"",
     ],
 )
 
@@ -1841,14 +1884,70 @@ py_library(
     imports = ["."],
     visibility = ["//visibility:private"],
     deps = [
+        ":phase4_bounded_json_input_lib",
+        ":phase4_exact_small_oracle_launcher_handshake_lib",
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
-        "@rules_python//python/runfiles",
     ],
 )
 
 py_binary(
-    name = "phase4_exact_small_oracle_v2_validator",
+    name = "phase4_confirmatory_exact_small_oracle_validator_py",
+    srcs = ["tools/validate_phase4_confirmatory_exact_small_oracle.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_confirmatory_exact_small_candidate_admission_replay",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_exact_small_oracle.py",
+    python_version = "3.13",
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_exact_small_oracle_launcher_handshake_lib",
+        ":phase4_exact_small_oracle_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_exact_small_oracle_validator",
+    srcs = ["tools/phase4_confirmatory_operational_launcher.cc"],
+    copts = APGAR_COPTS,
+    data = [":phase4_confirmatory_exact_small_oracle_validator_py"],
+    defines = [
+        "APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER=\\\"phase4_confirmatory_exact_small_oracle_validator_py\\\"",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_exact_small_oracle_validator_lib",
+    srcs = ["tools/validate_phase4_confirmatory_exact_small_oracle.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_confirmatory_exact_small_candidate_admission_replay",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_exact_small_oracle_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_binary(
+    name = "phase4_exact_small_oracle_v2_validator_py",
     srcs = ["tools/validate_phase4_exact_small_oracle_v2.py"],
     data = [
         "schemas/benchmark/phase4_representative_manifest_v1.json",
@@ -1859,11 +1958,23 @@ py_binary(
     legacy_create_init = 0,
     main = "tools/validate_phase4_exact_small_oracle_v2.py",
     python_version = "3.13",
+    visibility = ["//visibility:private"],
     deps = [
+        ":phase4_exact_small_oracle_launcher_handshake_lib",
         ":phase4_exact_small_oracle_validator_lib",
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+cc_binary(
+    name = "phase4_exact_small_oracle_v2_validator",
+    srcs = ["tools/phase4_confirmatory_operational_launcher.cc"],
+    copts = APGAR_COPTS,
+    data = [":phase4_exact_small_oracle_v2_validator_py"],
+    defines = [
+        "APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER=\\\"phase4_exact_small_oracle_v2_validator_py\\\"",
     ],
 )
 
@@ -1897,6 +2008,8 @@ py_test(
         ":phase4_current_v1_diagnostic_cli",
         ":phase4_evidence_runner",
         ":phase4_exact_small_candidate_admission_replay",
+        ":phase4_exact_small_oracle_validator",
+        ":phase4_exact_small_oracle_validator_py",
         ":phase4_exact_small_snapshot_test_runner",
         ":phase4_per_net_report_test_runner",
     ],
@@ -1912,6 +2025,16 @@ py_test(
 )
 
 py_test(
+    name = "phase4_exact_small_oracle_library_runfiles_test",
+    size = "small",
+    srcs = ["tests/tools/phase4_exact_small_oracle_library_runfiles_test.py"],
+    legacy_create_init = 0,
+    main = "tests/tools/phase4_exact_small_oracle_library_runfiles_test.py",
+    python_version = "3.13",
+    deps = [":phase4_exact_small_oracle_validator_lib"],
+)
+
+py_test(
     name = "phase4_exact_small_oracle_v2_test",
     size = "medium",
     srcs = ["tests/benchmark/phase4_exact_small_oracle_v2_test.py"],
@@ -1923,6 +2046,8 @@ py_test(
         ":phase4_current_v1_diagnostic_cli",
         ":phase4_evidence_runner",
         ":phase4_exact_small_candidate_admission_replay",
+        ":phase4_exact_small_oracle_v2_validator",
+        ":phase4_exact_small_oracle_v2_validator_py",
         ":phase4_exact_small_snapshot_test_runner",
         ":phase4_per_net_report_test_runner",
     ],
@@ -2358,6 +2483,47 @@ cc_binary(
     copts = APGAR_COPTS,
     data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
     defines = ["APGAR_PHASE4_EXACT_SNAPSHOT_RUNNER_TESTING"],
+    linkopts = ["-pthread"],
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_exact_small_snapshot",
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_exact_small_snapshot_runner",
+    srcs = ["tools/phase4_exact_small_snapshot_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    defines = ["APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER"],
+    linkopts = ["-pthread"],
+    tags = ["manual"],
+    deps = [
+        ":cpu_candidate_pool_preparation",
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_exact_small_snapshot",
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_exact_small_snapshot_test_runner",
+    testonly = True,
+    srcs = ["tools/phase4_exact_small_snapshot_runner.cc"],
+    copts = APGAR_COPTS,
+    data = ["tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"],
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER",
+        "APGAR_PHASE4_EXACT_SNAPSHOT_RUNNER_TESTING",
+    ],
     linkopts = ["-pthread"],
     deps = [
         ":cpu_candidate_pool_preparation",
@@ -3114,6 +3280,47 @@ py_test(
 )
 
 py_test(
+    name = "phase4_confirmatory_exact_small_oracle_process_test",
+    size = "medium",
+    srcs = ["tests/benchmark/phase4_confirmatory_exact_small_oracle_process_test.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_authority_shadow_sitecustomize",
+        ":phase4_authority_shadow_tools_init",
+        ":phase4_confirmatory_evidence_test_runner",
+        ":phase4_confirmatory_exact_small_candidate_admission_replay",
+        ":phase4_confirmatory_exact_small_oracle_validator",
+        ":phase4_confirmatory_exact_small_oracle_validator_py",
+        ":phase4_confirmatory_exact_small_snapshot_runner",
+        ":phase4_confirmatory_exact_small_snapshot_test_runner",
+        ":phase4_confirmatory_same_run_per_net_report_test_runner",
+        ":phase4_evidence_runner",
+        ":phase4_exact_small_candidate_admission_replay",
+        ":phase4_exact_small_oracle_v2_validator",
+        ":phase4_exact_small_oracle_validator",
+        ":phase4_exact_small_snapshot_test_runner",
+        ":phase4_per_net_report_test_runner",
+    ],
+    legacy_create_init = 0,
+    main = "tests/benchmark/phase4_confirmatory_exact_small_oracle_process_test.py",
+    python_version = "3.13",
+    tags = ["exact-address-space-envelope"],
+    deps = [
+        ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_confirmatory_exact_small_oracle_validator_lib",
+        ":phase4_exact_small_oracle_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_test(
     name = "phase4_confirmatory_operational_measurement_process_test",
     size = "large",
     srcs = ["tests/benchmark/phase4_confirmatory_operational_measurement_process_test.py"],
@@ -3154,6 +3361,8 @@ py_test(
         "schemas/benchmark/phase4_representative_manifest_v2.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_authority_shadow_sitecustomize",
+        ":phase4_authority_shadow_tools_init",
         ":phase4_confirmatory_evidence_test_runner",
         ":phase4_confirmatory_operational_launcher_lifetime_probe",
         ":phase4_confirmatory_operational_launcher_lifetime_probe_py",

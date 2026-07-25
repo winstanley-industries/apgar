@@ -404,6 +404,52 @@ class Phase4ExactSmallOracleTest(unittest.TestCase):
             self.assertEqual(valid.stderr, "")
             self.assertTrue(json.loads(valid.stdout)["production_is_optimal"])
 
+            authority_command = [
+                str(runfile("phase4_exact_small_oracle_validator")),
+                "--expected-commit",
+                _COMMIT,
+                "--raw",
+                str(paths["raw"]),
+                "--report",
+                str(paths["report"]),
+                "--snapshot",
+                str(paths["snapshot"]),
+            ]
+            authority = subprocess.run(
+                authority_command,
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+            self.assertEqual(authority.returncode, 1)
+            self.assertEqual(authority.stdout, "")
+            self.assertIn("associated with another command or cell", authority.stderr)
+            self.assertNotIn("compiled launcher", authority.stderr)
+
+            help_result = subprocess.run(
+                [authority_command[0], "--help"],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=10,
+            )
+            self.assertEqual(help_result.returncode, 0, help_result.stderr)
+            self.assertIn("--expected-commit", help_result.stdout)
+
+            direct_inner = list(authority_command)
+            direct_inner[0] = str(runfile("phase4_exact_small_oracle_validator_py"))
+            rejected_inner = subprocess.run(
+                direct_inner,
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=10,
+            )
+            self.assertEqual(rejected_inner.returncode, 2)
+            self.assertEqual(rejected_inner.stdout, "")
+            self.assertIn("requires its compiled launcher", rejected_inner.stderr)
+
             failures = (
                 b"{\n",
                 b'{"source_commit":"a","source_commit":"b"}\n',
