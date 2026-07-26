@@ -11,7 +11,7 @@ load(
     "phase4_h4096_generator_audit_contract",
 )
 load("//bazel:source_stamp.bzl", "source_stamp_header")
-load("//bazel:test_runfile.bzl", "test_runfile")
+load("//bazel:test_runfile.bzl", "test_runfile", "test_standalone_runfiles")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -2538,41 +2538,18 @@ py_library(
     ],
 )
 
-py_binary(
-    name = "phase4_confirmatory_h4096_exact_small_oracle_test_clean_validator_py",
-    testonly = True,
-    srcs = ["tests/benchmark/phase4_confirmatory_h4096_exact_small_oracle_test_entry.py"],
-    legacy_create_init = 0,
-    main = "tests/benchmark/phase4_confirmatory_h4096_exact_small_oracle_test_entry.py",
-    python_version = "3.13",
-    visibility = ["//visibility:private"],
-    deps = [":phase4_exact_small_oracle_launcher_handshake_lib"],
-)
-
 cc_binary(
     name = "phase4_confirmatory_h4096_exact_small_oracle_test_clean_validator",
     testonly = True,
     srcs = ["tools/phase4_confirmatory_operational_launcher.cc"],
     copts = APGAR_COPTS,
-    data = [":phase4_confirmatory_h4096_exact_small_oracle_test_clean_validator_py"],
     defines = [
-        "APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER=\\\"phase4_confirmatory_h4096_exact_small_oracle_test_clean_validator_py\\\"",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_SOURCE_BOUND",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_COMMIT=\\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\"",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_STAMPED=1",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_DIRTY=0",
+        "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_PREFLIGHT_ONLY",
     ],
-)
-
-py_binary(
-    name = "phase4_confirmatory_h4096_exact_small_oracle_test_dirty_validator_py",
-    testonly = True,
-    srcs = ["tests/benchmark/phase4_confirmatory_h4096_exact_small_oracle_test_entry.py"],
-    legacy_create_init = 0,
-    main = "tests/benchmark/phase4_confirmatory_h4096_exact_small_oracle_test_entry.py",
-    python_version = "3.13",
-    visibility = ["//visibility:private"],
-    deps = [":phase4_exact_small_oracle_launcher_handshake_lib"],
 )
 
 cc_binary(
@@ -2580,25 +2557,13 @@ cc_binary(
     testonly = True,
     srcs = ["tools/phase4_confirmatory_operational_launcher.cc"],
     copts = APGAR_COPTS,
-    data = [":phase4_confirmatory_h4096_exact_small_oracle_test_dirty_validator_py"],
     defines = [
-        "APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER=\\\"phase4_confirmatory_h4096_exact_small_oracle_test_dirty_validator_py\\\"",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_SOURCE_BOUND",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_COMMIT=\\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\"",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_STAMPED=1",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_DIRTY=1",
+        "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_PREFLIGHT_ONLY",
     ],
-)
-
-py_binary(
-    name = "phase4_confirmatory_h4096_exact_small_oracle_test_unstamped_validator_py",
-    testonly = True,
-    srcs = ["tests/benchmark/phase4_confirmatory_h4096_exact_small_oracle_test_entry.py"],
-    legacy_create_init = 0,
-    main = "tests/benchmark/phase4_confirmatory_h4096_exact_small_oracle_test_entry.py",
-    python_version = "3.13",
-    visibility = ["//visibility:private"],
-    deps = [":phase4_exact_small_oracle_launcher_handshake_lib"],
 )
 
 cc_binary(
@@ -2606,14 +2571,34 @@ cc_binary(
     testonly = True,
     srcs = ["tools/phase4_confirmatory_operational_launcher.cc"],
     copts = APGAR_COPTS,
-    data = [":phase4_confirmatory_h4096_exact_small_oracle_test_unstamped_validator_py"],
     defines = [
-        "APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER=\\\"phase4_confirmatory_h4096_exact_small_oracle_test_unstamped_validator_py\\\"",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_SOURCE_BOUND",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_COMMIT=\\\"\\\"",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_STAMPED=0",
         "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_DIRTY=1",
+        "APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_PREFLIGHT_ONLY",
     ],
+)
+
+test_standalone_runfiles(
+    name = "phase4_confirmatory_exact_small_oracle_validator_test_runfiles",
+    src = ":phase4_confirmatory_exact_small_oracle_validator",
+)
+
+test_standalone_runfiles(
+    name = "phase4_confirmatory_exact_small_oracle_validator_py_test_runfiles",
+    src = ":phase4_confirmatory_exact_small_oracle_validator_py",
+    probe = False,
+)
+
+test_standalone_runfiles(
+    name = "phase4_exact_small_oracle_v2_validator_test_runfiles",
+    src = ":phase4_exact_small_oracle_v2_validator",
+)
+
+test_standalone_runfiles(
+    name = "phase4_exact_small_oracle_validator_test_runfiles",
+    src = ":phase4_exact_small_oracle_validator",
 )
 
 py_binary(
@@ -4528,6 +4513,8 @@ py_test(
         ":phase4_confirmatory_exact_small_candidate_admission_replay",
         ":phase4_confirmatory_exact_small_oracle_validator",
         ":phase4_confirmatory_exact_small_oracle_validator_py",
+        ":phase4_confirmatory_exact_small_oracle_validator_py_test_runfiles",
+        ":phase4_confirmatory_exact_small_oracle_validator_test_runfiles",
         ":phase4_confirmatory_exact_small_snapshot_runner",
         ":phase4_confirmatory_exact_small_snapshot_test_runner",
         ":phase4_confirmatory_h4096_exact_small_candidate_admission_replay",
@@ -4536,7 +4523,9 @@ py_test(
         ":phase4_evidence_runner",
         ":phase4_exact_small_candidate_admission_replay",
         ":phase4_exact_small_oracle_v2_validator",
+        ":phase4_exact_small_oracle_v2_validator_test_runfiles",
         ":phase4_exact_small_oracle_validator",
+        ":phase4_exact_small_oracle_validator_test_runfiles",
         ":phase4_exact_small_snapshot_test_runner",
         ":phase4_per_net_report_test_runner",
     ],

@@ -107,10 +107,11 @@ compiled boundary rejects abbreviated expected-commit prefixes and the Python
 publisher disables long-option abbreviation, so an alternate spelling cannot
 replace the commit checked before delegation.
 Fixed-source clean, dirty, and unstamped test launchers are test-only,
-preflight-only authorities. Their lightweight inner targets stop immediately
-after handshake and argument parsing, depend on neither this validator nor the
-replay helper, and cannot open an input, replay, enumerate, construct, or emit
-an Oracle Artifact. They do not relax or replace the production source stamp.
+preflight-only authorities. They terminate inside the compiled boundary after
+source and argument preflight, declare no inner Python target or runfiles
+authority, depend on neither this validator nor the replay helper, and cannot
+open an input, replay, enumerate, construct, or emit an Oracle Artifact. They
+do not relax or replace the production source stamp.
 
 The join requires exact equality of clean source, complete canonical
 configuration, corpus and built-case identities, cell plan, Raw artifact and

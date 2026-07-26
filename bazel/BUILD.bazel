@@ -17,3 +17,12 @@ py_binary(
     python_version = "3.13",
     visibility = ["//visibility:private"],
 )
+
+py_binary(
+    name = "test_standalone_runfiles_marker",
+    srcs = ["test_standalone_runfiles_marker.py"],
+    legacy_create_init = 0,
+    main = "test_standalone_runfiles_marker.py",
+    python_version = "3.13",
+    visibility = ["//:__pkg__"],
+)

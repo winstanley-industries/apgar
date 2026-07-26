@@ -25,9 +25,24 @@
 #include "apgar/benchmark/phase3_source_stamp.h"
 #endif
 
+#if defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_PREFLIGHT_ONLY) && \
+    (!defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_SOURCE_BOUND) ||      \
+     !defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_COMMIT))
+#error "Test-only Oracle preflight requires a fixed source-bound test launcher"
+#endif
+
 namespace {
 
-#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_INNER) && \
+#if defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_PREFLIGHT_ONLY)
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_INNER) || \
+    defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER)
+#error "Test-only Oracle preflight cannot declare an inner target"
+#endif
+constexpr char kInnerTarget[] = "";
+constexpr char kLauncherName[] = "exact-small oracle";
+constexpr char kHandshakeEnvironment[] = "";
+constexpr char kHandshakePrefix[] = "";
+#elif defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_INNER) && \
     defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER)
 #error "Python authority launcher requires exactly one fixed inner target"
 #elif defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_INNER)
@@ -45,7 +60,8 @@ constexpr char kHandshakePrefix[] = "APGAR-PHASE4-EXACT-SMALL-ORACLE-LAUNCH-V1\n
 #endif
 
 #if defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_SOURCE_BOUND)
-#if !defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER)
+#if !defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER) && \
+    !defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_PREFLIGHT_ONLY)
 #error "Source binding is restricted to an exact-small Oracle launcher"
 #elif defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_COMMIT)
 #if !defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_STAMPED) || \
@@ -482,6 +498,22 @@ int main(int argc, char** argv) {
   if (!ValidateSourceBinding(argc, argv)) {
     return 2;
   }
+#if defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_PREFLIGHT_ONLY)
+  // Fixed-source launchers exist only to exercise the source firewall. Stop
+  // inside the compiled boundary so a Bazel test never needs an ambient
+  // adjacent runfiles tree and these targets cannot acquire Python, input,
+  // replay, enumeration, or artifact-emission capability.
+  for (int index = 1; index < argc; ++index) {
+    if (argv[index] != nullptr && std::string_view(argv[index]) == "--help") {
+      std::cout << "usage: exact-small oracle source-firewall preflight "
+                   "--expected-commit COMMIT\n";
+      return 0;
+    }
+  }
+  std::cerr << "exact-small oracle test launcher is preflight-only and cannot access inputs or "
+               "emit an Oracle Artifact\n";
+  return 2;
+#endif
 #endif
   for (const char* name : {"LD_PRELOAD", "LD_AUDIT"}) {
     const char* value = std::getenv(name);

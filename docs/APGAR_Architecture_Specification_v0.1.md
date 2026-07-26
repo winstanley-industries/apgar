@@ -1506,9 +1506,16 @@ acceleration.
   enclosing Bazel runfiles tree MAY contain an invocation symlink but MUST never
   become the selected Python/data authority. The inner target MUST reject direct
   execution, and replay MUST resolve only from the authenticated standalone tree
-  without ambient runfiles fallback. Direct stage-one Python execution MUST
-  disable `site` initialization until the rules_python bootstrap establishes
-  that tree; stage-two site initialization MAY run only after that selection.
+  without ambient runfiles fallback. A nested process test MUST declare a
+  build-only marker action that receives each launcher through its
+  `FilesToRunProvider`, forcing Bazel to materialize that exact target-specific
+  standalone tree before the test begins. The marker, not the standalone tree,
+  is test data; neither the marker nor the enclosing test tree is an execution
+  authority. The process test MUST pass from a fresh Bazel output root in both
+  normal and stamped benchmark configurations. Direct stage-one Python
+  execution MUST disable `site` initialization until the rules_python bootstrap
+  establishes that tree; stage-two site initialization MAY run only after that
+  selection.
   Only then may the validator enumerate the complete bounded final-pool product.
   The domain-separated output MUST bind campaign,
   Corpus 2, every field of the frozen exact configuration, and the complete
@@ -1746,12 +1753,13 @@ acceleration.
   delegation. Missing, duplicate, abbreviated, malformed, unstamped, dirty, or
   mismatched source identity MUST fail without input access.
   Fixed-source test-only launcher variants MAY exercise this firewall
-  deterministically, but their inner targets MUST stop immediately after
-  handshake and argument parsing, MUST NOT depend on the production validator
-  or replay helper, and MUST remain incapable of opening inputs, executing
-  replay or enumeration, constructing an artifact, or emitting an Oracle
-  Artifact. Existing H=2250 and ordinary compiled launchers retain their
-  current source behavior.
+  deterministically, but they MUST terminate inside the compiled boundary
+  immediately after source and argument preflight. They MUST declare no inner
+  Python target or runfiles authority, MUST NOT depend on the production
+  validator or replay helper, and MUST remain incapable of opening inputs,
+  executing replay or enumeration, constructing an artifact, or emitting an
+  Oracle Artifact. Existing H=2250 and ordinary compiled launchers retain
+  their current source behavior.
   The publisher MUST completely authenticate bounded regular H=4096 Raw first,
   then open and completely join its bounded regular H=4096 same-run telemetry
   companion. Only then may it open and completely join the bounded regular

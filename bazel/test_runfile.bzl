@@ -27,3 +27,43 @@ def test_runfile(name, src, path):
         path = path,
         testonly = True,
     )
+
+def _test_standalone_runfiles_impl(ctx):
+    files_to_run = ctx.attr.src[DefaultInfo].files_to_run
+    if files_to_run == None or files_to_run.executable == None:
+        fail("target-specific runfiles require an executable")
+    marker = ctx.actions.declare_file(ctx.label.name + ".runfiles_ready")
+    ctx.actions.run(
+        arguments = [
+            files_to_run.executable.path,
+            marker.path,
+            "probe" if ctx.attr.probe else "materialize",
+        ],
+        executable = ctx.executable._marker_tool,
+        mnemonic = "MaterializeTestStandaloneRunfiles",
+        outputs = [marker],
+        tools = [files_to_run],
+    )
+    return [DefaultInfo(files = depset([marker]))]
+
+_test_standalone_runfiles = rule(
+    implementation = _test_standalone_runfiles_impl,
+    attrs = {
+        "_marker_tool": attr.label(
+            default = "//bazel:test_standalone_runfiles_marker",
+            executable = True,
+            cfg = "exec",
+        ),
+        "probe": attr.bool(default = True),
+        "src": attr.label(mandatory = True),
+    },
+)
+
+def test_standalone_runfiles(name, src, probe = True):
+    """Force one executable's target-specific runfiles tree for a nested test."""
+    _test_standalone_runfiles(
+        name = name,
+        probe = probe,
+        src = src,
+        testonly = True,
+    )

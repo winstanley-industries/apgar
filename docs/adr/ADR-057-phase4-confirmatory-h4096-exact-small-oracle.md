@@ -89,11 +89,12 @@ freshly establish objective equality before publication.
   Replay resolves only to the fixed H=4096 target in that authenticated tree;
   ambient or enclosing runfiles state cannot substitute another helper.
   Fixed clean, dirty, and unstamped test-only launchers make the source
-  firewall deterministic in any worktree state. Their lightweight inner
-  targets stop immediately after the handshake and argument parse, depend on
-  neither the production validator nor the replay helper, and cannot open an
-  input, execute replay or enumeration, construct an artifact, or emit an
-  Oracle Artifact. Existing H=2250 and ordinary launchers remain unchanged.
+  firewall deterministic in any worktree state. They terminate inside the
+  compiled boundary immediately after source and argument preflight, declare
+  no inner Python target or runfiles authority, depend on neither the
+  production validator nor the replay helper, and cannot open an input,
+  execute replay or enumeration, construct an artifact, or emit an Oracle
+  Artifact. Existing H=2250 and ordinary launchers remain unchanged.
 - Require the H=4096 publisher to fail closed in this exact authority order:
   1. open and completely authenticate bounded regular H=4096 Same-Run Raw;
   2. only then open and completely join bounded regular H=4096 telemetry;

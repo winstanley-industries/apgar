@@ -102,10 +102,15 @@ Bazel runfiles tree may contain an invocation symlink but is never a
 Python/data authority. The inner target cannot run directly. The publisher
 resolves replay only from the authenticated standalone `.runfiles/_main` tree;
 ambient runfiles directories and manifests are never replay authorities. The
-direct stage-one Python interpreter disables `site` initialization until the
-rules_python bootstrap selects that standalone root; stage-two site
-initialization occurs only after that selection. The legacy replay target
-remains Corpus v1-only and uses the same compiled-launcher boundary.
+nested process test uses a build-only marker action with each launcher's
+`FilesToRunProvider` to materialize that exact target-specific standalone tree
+before execution. Only the marker enters test data; the enclosing test tree is
+never selected as authority. The process test passes from a fresh Bazel output
+root in normal and stamped benchmark configurations. The direct stage-one
+Python interpreter disables `site` initialization until the rules_python
+bootstrap selects that standalone root; stage-two site initialization occurs
+only after that selection. The legacy replay target remains Corpus v1-only and
+uses the same compiled-launcher boundary.
 
 The independent oracle enumerates every world in
 `prod(max(1, pool.candidates.size()))`, expands compressed spans to atomic

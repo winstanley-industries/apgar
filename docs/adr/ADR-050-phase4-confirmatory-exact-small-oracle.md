@@ -61,11 +61,16 @@ Artifact.
   invocation symlink but is never selected as the Python/data authority.
   Resolve replay only from the authenticated standalone `.runfiles/_main`
   tree; ambient runfiles directories and manifests are not authorities, and
-  the private inner target cannot run directly. Direct stage-one Python
-  execution disables `site` initialization until the rules_python bootstrap
-  selects the standalone root; stage-two site initialization occurs only after
-  that selection. The legacy replay target remains Corpus v1-only behind the
-  same launcher boundary.
+  the private inner target cannot run directly. Nested process tests use a
+  build-only marker action with each launcher's `FilesToRunProvider` so Bazel
+  materializes the exact target-specific standalone tree before the test. Only
+  the marker enters test data; the enclosing tree remains non-authoritative.
+  The process test must pass from a fresh output root in normal and stamped
+  benchmark configurations. Direct stage-one Python execution disables `site`
+  initialization until the rules_python bootstrap selects the standalone
+  root; stage-two site initialization occurs only after that selection. The
+  legacy replay target remains Corpus v1-only behind the same launcher
+  boundary.
 - Add the domain-separated
   `phase4_confirmatory_exact_small_oracle_v1` publisher. Its CLI reads bounded
   regular files in fail-closed order: fully validate Same-Run Raw and enforce
