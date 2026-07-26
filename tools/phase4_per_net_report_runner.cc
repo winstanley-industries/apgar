@@ -19,10 +19,25 @@
 #include "apgar/benchmark/phase3_source_stamp.h"
 #include "apgar/benchmark/phase4_per_net_report_artifact.h"
 #include "apgar/tooling/runfiles.h"
+#include "src/benchmark/phase4_confirmatory_h4096_per_net_report_internal.h"
+#include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
+#include "src/benchmark/phase4_paired_trial_internal.h"
 
 #if defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER) && \
     !defined(APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER)
 #error "same-run confirmatory report runner requires the Corpus V2 runner authority"
+#endif
+
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER) && \
+    (!defined(APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER) ||     \
+     defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER))
+#error "the H4096 ordinary report runner requires its distinct Corpus V2 authority"
+#endif
+
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_FORCE_UNPUBLISHABLE_SOURCE_FOR_TESTING) && \
+    (!defined(APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER) ||                               \
+     defined(APGAR_PHASE4_REPORT_RUNNER_TESTING))
+#error "the forced-unpublishable probe requires a production-shaped H4096 report runner"
 #endif
 
 namespace {
@@ -257,7 +272,12 @@ struct Options {
 
 void PrintUsage() {
 #ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
-#ifdef APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER
+  std::cerr << "phase4_confirmatory_h4096_per_net_report_runner requires explicit "
+               "--corpus_version=2, calibration cell (10200,8), ordinary Wire 1, the complete "
+               "canonical H=4096 cell, clean --apgar_commit=<40 lowercase hex>, and every "
+               "repetition-zero Raw reference checksum as strict --name=decimal arguments.\n";
+#elif defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER)
   std::cerr << "phase4_confirmatory_same_run_per_net_report_runner requires explicit "
                "--corpus_version=2, the frozen development cell (10100,4), same-run Wire 2, a "
                "complete canonical cell, clean --apgar_commit=<40 lowercase hex>, and every "
@@ -294,7 +314,10 @@ int main(int argc, char** argv) try {
       apgar::benchmark::FindPhase4WorkloadNetRosterManifestEntryV2(options.cell.case_id) != nullptr;
   const bool corpus_scope_valid =
       options.corpus_version == apgar::benchmark::kPhase4RepresentativeCorpusVersionV2 &&
-#ifdef APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER
+      options.cell.case_id == 10200 && options.cell.requested_pool_size == 8 &&
+      options.raw_wire_schema_version == apgar::benchmark::kPhase4TrialWireSchemaVersion;
+#elif defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_REPORT_RUNNER)
       options.cell.case_id == 10100 && options.cell.requested_pool_size == 4 &&
       options.raw_wire_schema_version == apgar::benchmark::kPhase4SameRunTrialWireSchemaVersion;
 #else
@@ -329,12 +352,57 @@ int main(int argc, char** argv) try {
     PrintUsage();
     return 2;
   }
+  apgar::benchmark::Phase4CanonicalSpecResult spec_result =
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER
+      apgar::benchmark::internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
+          options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+#elif defined(APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER)
+      apgar::benchmark::BuildPhase4CanonicalTrialSpecForCorpusV2(
+          options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+#else
+      apgar::benchmark::BuildPhase4CanonicalTrialSpecV1(
+          options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+#endif
+  if (!std::holds_alternative<apgar::benchmark::Phase4PairedTrialSpec>(spec_result)) {
+    const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(spec_result);
+    std::cerr << error.invariant_id << ": " << error.detail << '\n';
+    return 2;
+  }
+  const auto& spec = std::get<apgar::benchmark::Phase4PairedTrialSpec>(spec_result);
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER
+  for (const apgar::benchmark::Phase4TrialArm arm :
+       {apgar::benchmark::Phase4TrialArm::kSequentialBaseline,
+        apgar::benchmark::Phase4TrialArm::kReusableCandidateAllocation}) {
+    if (std::optional<apgar::benchmark::Phase4PairedTrialError> error =
+            apgar::benchmark::internal::PreflightPhase4ConfirmatoryH4096OrdinarySpec(spec, arm);
+        error.has_value()) {
+      std::cerr << error->invariant_id << ": " << error->detail << '\n';
+      return 2;
+    }
+  }
+#endif
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_FORCE_UNPUBLISHABLE_SOURCE_FOR_TESTING)
+  bool source_stamped = false;
+  bool source_tree_dirty = true;
+#else
   bool source_stamped = apgar::benchmark::kPhase3SourceStamped;
   bool source_tree_dirty = apgar::benchmark::kPhase3BuiltFromDirtyTree;
+#endif
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER) && \
+    defined(APGAR_PHASE4_REPORT_RUNNER_TESTING)
+  if (!options.testing_allow_unstamped) {
+    PrintUsage();
+    return 2;
+  }
+  std::cerr << "the H4096 per-net report test runner is preflight-only and cannot access a board "
+               "fixture or emit a report\n";
+  return 2;
+#endif
   const bool publishable = apgar::benchmark::IsPublishableBenchmarkSource(
       *options.runtime_commit, apgar::benchmark::kPhase3BuiltCommit, source_stamped,
       source_tree_dirty);
-#ifdef APGAR_PHASE4_REPORT_RUNNER_TESTING
+#if defined(APGAR_PHASE4_REPORT_RUNNER_TESTING) && \
+    !defined(APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER)
   if (!publishable && options.testing_allow_unstamped) {
     source_stamped = true;
     source_tree_dirty = false;
@@ -364,27 +432,23 @@ int main(int argc, char** argv) try {
     return 2;
   }
 
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER
+  // Case 10200 is a generated representative case. This authority deliberately
+  // has no fixture path or runfile capability.
+  const std::optional<std::string> fixture = std::string{};
+#else
   const std::optional<std::string> fixture = apgar::tooling::ReadFile(
       apgar::tooling::ResolveRunfile("tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"));
   if (!fixture.has_value()) {
-    std::cerr << "failed to authenticate the imported Phase 4 fixture runfile\n";
+    std::cerr << "failed to authenticate the imported Phase 4 fixture\n";
     return 2;
   }
-  apgar::benchmark::Phase4CanonicalSpecResult spec_result =
-#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
-      apgar::benchmark::BuildPhase4CanonicalTrialSpecForCorpusV2(
-          options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
-#else
-      apgar::benchmark::BuildPhase4CanonicalTrialSpecV1(
-          options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
 #endif
-  if (!std::holds_alternative<apgar::benchmark::Phase4PairedTrialSpec>(spec_result)) {
-    const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(spec_result);
-    std::cerr << error.invariant_id << ": " << error.detail << '\n';
-    return 2;
-  }
-  const auto& spec = std::get<apgar::benchmark::Phase4PairedTrialSpec>(spec_result);
-#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER
+  auto baseline_result =
+      apgar::benchmark::internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmDiagnostic(
+          apgar::benchmark::Phase4TrialArm::kSequentialBaseline, spec, *fixture);
+#elif defined(APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER)
   auto baseline_result = apgar::benchmark::ExecutePhase4TrialArmDiagnosticForCorpusV2(
       apgar::benchmark::Phase4TrialArm::kSequentialBaseline, spec, *fixture);
 #else
@@ -405,7 +469,12 @@ int main(int argc, char** argv) try {
   std::unique_ptr<apgar::allocator::PersistentCpuCandidatePoolPreparer> preparer =
       std::get<std::unique_ptr<apgar::allocator::PersistentCpuCandidatePoolPreparer>>(
           std::move(preparer_result));
-#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER
+  auto candidate_result =
+      apgar::benchmark::internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmDiagnostic(
+          apgar::benchmark::Phase4TrialArm::kReusableCandidateAllocation, spec, *fixture,
+          preparer.get());
+#elif defined(APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER)
   auto candidate_result = apgar::benchmark::ExecutePhase4TrialArmDiagnosticForCorpusV2(
       apgar::benchmark::Phase4TrialArm::kReusableCandidateAllocation, spec, *fixture,
       preparer.get());
@@ -421,7 +490,14 @@ int main(int argc, char** argv) try {
       std::get<apgar::benchmark::Phase4TrialArmDiagnosticExecutionV1>(std::move(baseline_result)),
       std::get<apgar::benchmark::Phase4TrialArmDiagnosticExecutionV1>(std::move(candidate_result)),
   };
-#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER
+  auto artifact_result =
+      apgar::benchmark::internal::BuildPhase4ConfirmatoryH4096OrdinaryPerNetReportArtifact(
+          options.cell, *options.runtime_commit, source_stamped, source_tree_dirty,
+          options.raw_cell_plan_checksum, options.raw_cell_artifact_checksum,
+          options.raw_source_envelope_checksum, options.raw_reference, std::move(diagnostics),
+          *fixture);
+#elif defined(APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER)
   auto artifact_result = apgar::benchmark::BuildPhase4PerNetReportArtifactForCorpusV2(
       options.cell, *options.runtime_commit, source_stamped, source_tree_dirty,
       options.raw_cell_plan_checksum, options.raw_cell_artifact_checksum,

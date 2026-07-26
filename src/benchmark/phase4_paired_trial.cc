@@ -3653,6 +3653,33 @@ Phase4TrialArmExecutionResult ExecutePhase4ConfirmatoryH4096OrdinaryTrialArm(
   return std::get<ArmExecutionWithOptionalTelemetry>(std::move(result)).execution;
 }
 
+Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmDiagnostic(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  if (std::optional<Phase4PairedTrialError> error =
+          PreflightPhase4ConfirmatoryH4096OrdinarySpec(spec, arm);
+      error.has_value()) {
+    return ArmFailure(*error);
+  }
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, arm, spec, imported_fixture,
+      candidate_preparer, true, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.telemetry.has_value()) {
+    return ArmFailure(
+        Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4REPORT-H4096-INTERNAL-001",
+              "H=4096 diagnostic execution completed without per-net telemetry", arm));
+  }
+  return Phase4TrialArmDiagnosticExecutionV1{
+      .semantics = std::move(output.execution.semantics),
+      .telemetry = std::move(*output.telemetry),
+  };
+}
+
 Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4ConfirmatoryH4096SameRunTrialArm(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {

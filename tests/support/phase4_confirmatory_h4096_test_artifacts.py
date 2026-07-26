@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from tools import validate_phase4_confirmatory_canonical_budget_roster_v3 as budget_v3
+from tools import validate_phase4_per_net_report as report_validator
 from tools import validate_phase4_raw_evidence as raw_validator
 from tools import validate_phase4_representative_manifest_v2 as corpus_v2
 from tools import validate_phase4_same_run_decision_telemetry as telemetry_validator
@@ -502,6 +503,135 @@ def make_sidecar(raw: Mapping[str, Any]) -> dict[str, object]:
     }
     result["artifact_checksum"] = telemetry_validator.compute_cell_capture_checksum(result)
     result["source_envelope_checksum"] = telemetry_validator.compute_source_envelope_checksum(
+        result
+    )
+    return result
+
+
+def mark_raw_clean(value: dict[str, object], commit: str = _SOURCE_COMMIT) -> None:
+    """Give one synthetic Raw artifact a clean test provenance."""
+    value["source_commit"] = commit
+    value["source_stamped"] = True
+    value["source_tree_dirty"] = False
+    value["source_envelope_checksum"] = raw_validator.compute_source_envelope_checksum(value)
+
+
+def _selected_metrics(intrinsic_cost: int) -> dict[str, int]:
+    return {
+        "scalar_policy_cost": intrinsic_cost,
+        "intrinsic_base_cost": intrinsic_cost,
+        "orthogonal_step_count": 0,
+        "diagonal_step_count": 0,
+        "bend_count": 0,
+        "line_primitive_count": 0,
+        "via_count": 0,
+        "axis_aligned_length_dbu": 0,
+        "diagonal_projection_dbu": 0,
+    }
+
+
+def _report_telemetry(
+    semantics: Mapping[str, Any],
+    roster: tuple[tuple[int, int], ...],
+) -> dict[str, object]:
+    per_net: list[dict[str, object]] = []
+    for index, (net_id, generation) in enumerate(roster):
+        intrinsic_cost = semantics["outcome"]["total_intrinsic_cost"] if index == 0 else 0
+        per_net.append(
+            {
+                "schema_version": 1,
+                "net": {"id": net_id, "generation": generation},
+                "columns": {
+                    "requested_columns": 1,
+                    "executed_route_queries": 1,
+                    "admitted_candidates": 1,
+                    "duplicate_candidates": 0,
+                    "disconnected_columns": 0,
+                    "unsupported_columns": 0,
+                    "skipped_columns": 0,
+                    "exact_validation_rejections": 0,
+                    "other_rejections": 0,
+                },
+                "final_pool_size": 1,
+                "unique_geometry_signature_count": 1,
+                "unique_resource_signature_count": 1,
+                "candidate_pair_count": 0,
+                "mean_resource_overlap_ppm": 0,
+                "minimum_resource_overlap_ppm": 0,
+                "mean_geometric_overlap_ppm": 0,
+                "minimum_geometric_overlap_ppm": 0,
+                "selected_status": 0,
+                "selected_candidate_id": {
+                    "high": net_id,
+                    "low": generation + 1,
+                },
+                "selected_candidate_payload_checksum": net_id,
+                "selected_candidate_metrics": _selected_metrics(intrinsic_cost),
+                "pool_best_intrinsic_cost": intrinsic_cost,
+            }
+        )
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "associated_semantic_checksum": semantics["semantic_checksum"],
+        "per_net": per_net,
+        "telemetry_checksum": 0,
+    }
+    result["telemetry_checksum"] = report_validator.compute_telemetry_checksum(result)
+    return result
+
+
+def make_report(raw: Mapping[str, Any]) -> dict[str, object]:
+    """Build a pure synthetic Per-Net Report Artifact v1 for ordinary Raw."""
+    if raw["wire_schema_version"] != 1:
+        raise ValueError("synthetic report helper requires ordinary Raw Wire 1")
+    pair = raw["attempts"][0]
+    paired = pair["result"]
+    baseline = pair["baseline"]["record"]
+    candidate = pair["candidate"]["record"]
+    roster_row, roster = corpus_v2.validated_successful_case_roster(raw["config"]["case_id"])
+    arms = []
+    for arm_index, record in enumerate((baseline, candidate)):
+        semantics = copy.deepcopy(record["semantics"])
+        arms.append(
+            {
+                "arm": arm_index,
+                "raw_semantic_checksum": semantics["semantic_checksum"],
+                "diagnostic": {
+                    "semantics": semantics,
+                    "telemetry": _report_telemetry(semantics, roster),
+                },
+            }
+        )
+    result: dict[str, object] = {
+        "source_commit": raw["source_commit"],
+        "source_stamped": raw["source_stamped"],
+        "source_tree_dirty": raw["source_tree_dirty"],
+        "source_envelope_checksum": 0,
+        "schema_version": 1,
+        "raw_wire_schema_version": 1,
+        "config": copy.deepcopy(raw["config"]),
+        "corpus_checksum": raw["corpus_checksum"],
+        "raw_cell_plan_checksum": raw["cell_plan_checksum"],
+        "raw_cell_artifact_checksum": raw["artifact_checksum"],
+        "raw_source_envelope_checksum": raw["source_envelope_checksum"],
+        "raw_reference": {
+            "repetition_index": 0,
+            "execution_order": 0,
+            "pair_attempt_checksum": pair["attempt_checksum"],
+            "paired_semantic_checksum": paired["semantic_checksum"],
+            "paired_artifact_checksum": paired["artifact_checksum"],
+            "baseline_semantic_checksum": baseline["semantics"]["semantic_checksum"],
+            "baseline_arm_artifact_checksum": baseline["artifact_checksum"],
+            "candidate_semantic_checksum": candidate["semantics"]["semantic_checksum"],
+            "candidate_arm_artifact_checksum": candidate["artifact_checksum"],
+        },
+        "decision_eligible": False,
+        "workload_net_roster_checksum": roster_row["roster_checksum"],
+        "arms": arms,
+        "artifact_checksum": 0,
+    }
+    result["artifact_checksum"] = report_validator.compute_report_artifact_checksum(result)
+    result["source_envelope_checksum"] = report_validator.compute_report_source_envelope_checksum(
         result
     )
     return result

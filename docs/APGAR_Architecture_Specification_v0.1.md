@@ -1633,6 +1633,30 @@ acceleration.
   aggregation, matrix, decision, heldout, and imported paths remain closed
   pending their own separately reviewed authorities; Raw development execution
   does not authorize campaign acquisition or complete Phase 4.
+  The first downstream H=4096 authority is the ordinary per-net publication
+  join frozen by
+  `docs/adr/ADR-054-phase4-confirmatory-h4096-per-net-report.md` and
+  `schemas/benchmark/phase4_confirmatory_per_net_report_publication_join_v2.md`.
+  Its separately compiled production runner MUST select H=4096 out of band,
+  accept only Corpus 2 ordinary `(10200,8)` over Raw Wire 1, positively require
+  equal-arm `present=1,history=4096` and canonical algorithm-budget checksum
+  `8230401457668518004`, and expose no fixture path or fixture runfile
+  capability. Existing V1 and Corpus-v2/H=2250 report entry points MUST remain
+  unchanged and reject H=4096 semantics.
+  Per-Net Report Artifact schema 1, its checksum domains, complete 64-net
+  telemetry, and permanent `decision_eligible=false` value remain unchanged;
+  the Protocol-v2 `v2` name versions the configuration-specific publication
+  authority rather than the payload. The test runner MUST be permanently
+  preflight-only and unable to emit a report.
+  The publication validator MUST positively bind the reserved Protocol-v2
+  ordinary per-net authority, completely authenticate H=4096 Raw `(10200,8)`
+  before opening the bounded regular report, and then require exact source,
+  configuration, Raw, repetition-zero arm, complete semantic, telemetry, and
+  ordered workload-roster equality. Raw, report, and independently supplied
+  expected commit MUST name the same clean source; earlier Raw evidence cannot
+  be relabeled or joined across commits. H=4096 same-run report, operational,
+  replay, snapshot, exact-small Oracle, fixed-query, stress, aggregation,
+  matrix, decision, heldout, and imported paths remain closed.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully
