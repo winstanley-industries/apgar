@@ -18,13 +18,23 @@
 #include "apgar/benchmark/phase4_trial_harness.h"
 #include "apgar/tooling/runfiles.h"
 
-#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER) && \
-    defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_OPERATIONAL_WORKER)
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
+#include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
+#include "src/benchmark/phase4_paired_trial_internal.h"
+#endif
+
+#if (defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER) &&                 \
+     defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_OPERATIONAL_WORKER)) ||       \
+    (defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER) &&                 \
+     defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)) || \
+    (defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_OPERATIONAL_WORKER) &&        \
+     defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER))
 #error "The confirmatory operational worker must select exactly one Raw authority"
 #endif
 
-#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER) || \
-    defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_OPERATIONAL_WORKER)
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER) ||          \
+    defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_OPERATIONAL_WORKER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
 #define APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_ACTIVE
 #endif
 
@@ -41,7 +51,8 @@ enum class Mode : std::uint8_t {
 };
 
 #if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_ACTIVE)
-#if defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_OPERATIONAL_WORKER)
+#if defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_OPERATIONAL_WORKER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
 inline constexpr std::uint32_t kConfirmatoryCaseId = 10'100;
 inline constexpr std::uint32_t kConfirmatoryRawWireSchemaVersion = 2;
 #else
@@ -269,7 +280,12 @@ struct Options {
 }
 
 void PrintUsage() {
-#if defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_OPERATIONAL_WORKER)
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
+  std::cerr << "phase4_confirmatory_h4096_same_run_operational_replay_worker requires "
+               "--corpus_version=2 --raw_wire_schema_version=2 --mode=measured|authority "
+               "--arm=baseline|candidate --case_id=10100 --pool_size=4 --workers=4 and a clean "
+               "--apgar_commit=<40 lowercase hex>; numeric bounds use strict decimal\n";
+#elif defined(APGAR_PHASE4_CONFIRMATORY_SAME_RUN_OPERATIONAL_WORKER)
   std::cerr << "phase4_confirmatory_same_run_operational_replay_worker requires "
                "--corpus_version=2 --raw_wire_schema_version=2 --mode=measured|authority "
                "--arm=baseline|candidate --case_id=10100 --pool_size=4 --workers=4 and a clean "
@@ -308,6 +324,23 @@ int main(int argc, char** argv) {
     return 2;
   }
   Options& options = *parsed;
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
+  auto spec_result = apgar::benchmark::internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
+      options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+  if (std::holds_alternative<apgar::benchmark::Phase4TrialHarnessError>(spec_result)) {
+    const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(spec_result);
+    std::cerr << error.invariant_id << ": " << error.detail << '\n';
+    return 1;
+  }
+  const auto& spec = std::get<apgar::benchmark::Phase4PairedTrialSpec>(spec_result);
+  if (const std::optional<apgar::benchmark::Phase4PairedTrialError> error =
+          apgar::benchmark::internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(spec,
+                                                                                  *options.arm);
+      error.has_value()) {
+    std::cerr << error->invariant_id << ": " << error->detail << '\n';
+    return 1;
+  }
+#endif
   const bool publishable =
       options.runtime_commit.has_value() &&
       apgar::benchmark::IsPublishableBenchmarkSource(
@@ -341,6 +374,7 @@ int main(int argc, char** argv) {
   }
   const std::string_view imported_fixture = *fixture;
 #endif
+#if !defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
 #if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_ACTIVE)
   auto spec_result = apgar::benchmark::BuildPhase4CanonicalTrialSpecForCorpusV2(
       options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
@@ -354,6 +388,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   const auto& spec = std::get<apgar::benchmark::Phase4PairedTrialSpec>(spec_result);
+#endif
   std::unique_ptr<apgar::allocator::PersistentCpuCandidatePoolPreparer> preparer;
   if (*options.arm == apgar::benchmark::Phase4TrialArm::kReusableCandidateAllocation) {
     auto created = apgar::allocator::CreatePersistentCpuCandidatePoolPreparer(
@@ -366,7 +401,11 @@ int main(int argc, char** argv) {
     preparer = std::get<std::unique_ptr<apgar::allocator::PersistentCpuCandidatePoolPreparer>>(
         std::move(created));
   }
-#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_ACTIVE)
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
+  auto warmup =
+      apgar::benchmark::internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmForOperationalWarmup(
+          *options.arm, spec, imported_fixture, preparer.get());
+#elif defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_ACTIVE)
   auto warmup = apgar::benchmark::ExecutePhase4TrialArmForCorpusV2(
       *options.arm, spec, imported_fixture, preparer.get());
 #else
@@ -393,7 +432,11 @@ int main(int argc, char** argv) {
   constexpr bool source_tree_dirty = apgar::benchmark::kPhase3BuiltFromDirtyTree;
   std::optional<std::string> serialized;
   if (*options.mode == Mode::kMeasured) {
-#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_ACTIVE)
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
+    auto result =
+        apgar::benchmark::internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmOperationalProfile(
+            *options.arm, spec, imported_fixture, preparer.get());
+#elif defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_ACTIVE)
     auto result = apgar::benchmark::ExecutePhase4TrialArmOperationalProfileForCorpusV2(
         *options.arm, spec, imported_fixture, preparer.get());
 #else
@@ -415,7 +458,11 @@ int main(int argc, char** argv) {
         source_stamped, source_tree_dirty);
 #endif
   } else {
-#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_ACTIVE)
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
+    auto result =
+        apgar::benchmark::internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmReplayAuthority(
+            *options.arm, spec, imported_fixture, preparer.get());
+#elif defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_ACTIVE)
     auto result = apgar::benchmark::ExecutePhase4TrialArmReplayAuthorityForCorpusV2(
         *options.arm, spec, imported_fixture, preparer.get());
 #else

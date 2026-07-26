@@ -55,6 +55,24 @@ ExecutePhase4ConfirmatoryH4096SameRunTrialArm(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
 
+// Private operational-replay surfaces for the exact same-run H=4096
+// development authority. The public Corpus-v2 operational entry points remain
+// fixed to H=2250.
+[[nodiscard]] Phase4TrialArmExecutionResult
+ExecutePhase4ConfirmatoryH4096SameRunTrialArmForOperationalWarmup(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+[[nodiscard]] Phase4TrialArmOperationalProfileResultV1
+ExecutePhase4ConfirmatoryH4096SameRunTrialArmOperationalProfile(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+[[nodiscard]] Phase4TrialArmReplayAuthorityResultV1
+ExecutePhase4ConfirmatoryH4096SameRunTrialArmReplayAuthority(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
 // Finalization and assembly require the independently reconstructed canonical
 // spec so a structurally valid Corpus-v2/H=2250 wire result cannot cross into
 // either H=4096 artifact authority.

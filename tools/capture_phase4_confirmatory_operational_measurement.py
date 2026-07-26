@@ -94,6 +94,13 @@ def _require_scope(
     authority_module: ModuleType = authority,
     authority_label: str = "ordinary",
 ) -> None:
+    require_frozen_authority = getattr(
+        authority_module,
+        "require_frozen_authority",
+        None,
+    )
+    if require_frozen_authority is not None:
+        require_frozen_authority()
     config = {
         "schema_version": 1,
         "case_id": options.case_id,

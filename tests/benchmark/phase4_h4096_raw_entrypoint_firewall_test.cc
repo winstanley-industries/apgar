@@ -158,6 +158,32 @@ TEST(Phase4H4096RawEntrypointFirewallTest, RejectsH2250AndCanonicalBudgetDrift) 
                            kCanonicalBudget);
 }
 
+TEST(Phase4H4096RawEntrypointFirewallTest,
+     OperationalSurfacesRejectH2250BeforeWarmupProfileOrReplay) {
+  constexpr std::string_view kPriceAuthority = "P4PAIR-CORPUS-V2-H4096-BUDGET-AUTHORITY-001";
+  constexpr std::string_view kMustNotBeRead =
+      "apgar-phase4-h4096-operational-firewall-must-not-be-read.kicad_pcb";
+  const Phase4PairedTrialSpec h2250 = H2250Spec(10'100, 4);
+
+  const Phase4TrialArmExecutionResult warmup =
+      internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmForOperationalWarmup(
+          Phase4TrialArm::kSequentialBaseline, h2250, kMustNotBeRead);
+  ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(warmup));
+  EXPECT_EQ(std::get<Phase4TrialArmFailure>(warmup).summary.invariant_id, kPriceAuthority);
+
+  const Phase4TrialArmOperationalProfileResultV1 profile =
+      internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmOperationalProfile(
+          Phase4TrialArm::kSequentialBaseline, h2250, kMustNotBeRead);
+  ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(profile));
+  EXPECT_EQ(std::get<Phase4TrialArmFailure>(profile).summary.invariant_id, kPriceAuthority);
+
+  const Phase4TrialArmReplayAuthorityResultV1 replay =
+      internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmReplayAuthority(
+          Phase4TrialArm::kSequentialBaseline, h2250, kMustNotBeRead);
+  ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(replay));
+  EXPECT_EQ(std::get<Phase4TrialArmFailure>(replay).summary.invariant_id, kPriceAuthority);
+}
+
 TEST(Phase4H4096RawEntrypointFirewallTest, RejectsScopeAndCarrierDrift) {
   constexpr std::string_view kOrdinaryScope = "P4PAIR-CORPUS-V2-H4096-ORDINARY-SCOPE-001";
   constexpr std::string_view kSameRunScope = "P4PAIR-CORPUS-V2-H4096-SAME-RUN-SCOPE-001";

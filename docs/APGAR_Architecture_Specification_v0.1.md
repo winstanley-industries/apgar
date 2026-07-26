@@ -1673,9 +1673,45 @@ acceleration.
   MUST name the same clean source. Raw remains outcome/timing authority,
   same-run telemetry remains exact-rejection guardrail authority, and a valid
   failed guardrail cannot be repaired or offset by the diagnostic report.
-  H=4096 operational, replay, snapshot, exact-small Oracle, fixed-query,
-  stress, aggregation, matrix, decision, heldout, and imported paths remain
-  closed.
+  The H=4096 exact same-run operational authority is separately frozen by
+  `docs/adr/ADR-056-phase4-confirmatory-h4096-same-run-operational-measurement.md`
+  and
+  `schemas/benchmark/phase4_confirmatory_same_run_operational_measurement_publication_v2.md`.
+  Its separately compiled capture, worker, and publication validator MUST
+  select H=4096 out of band and accept only explicit Corpus 2 exact
+  `(10100,4)`, Raw Evidence schema 2 over Raw Wire 2, Same-Run Decision
+  Telemetry schema 1 over Telemetry Wire 2, four workers, 20 repetitions,
+  equal-arm `present=1,history=4096`, and canonical algorithm-budget checksum
+  `8829615204625848656`. Existing H=2250 and ordinary operational entry points
+  MUST reject that authority before fixture access, case construction,
+  preparer creation, warmup, or replay.
+  Worker Output v1, Operational Measurement Capture v1, Operational Profile
+  v1, Replay Authority v1, and final publication payload schema 1 remain
+  unchanged. The Protocol-v2 `v2` name selects only the H=4096 authority
+  binding and domain-separated V2 publication artifact/source checksums;
+  Protocol-v2 JSON MUST remain byte-unchanged, and the frozen payload formats
+  MUST retain their existing schemas.
+  The capture MUST retain the reviewed four-exec order, exact-child and
+  descendant containment, process/provenance checks, launcher handshake,
+  standalone-runfiles authority, and pinned H=4096 worker digest.
+  The publisher MUST completely authenticate bounded regular H=4096 Raw first,
+  then open and completely join its bounded regular H=4096 same-run telemetry
+  companion. Only then may it resolve and hash the pinned worker or open and
+  validate the bounded regular capture; only after that complete
+  Raw/sidecar/capture source, configuration, and semantic join may it open a
+  publication validation input or install output.
+  Raw remains outcome/timing authority, same-run telemetry remains
+  exact-rejection guardrail authority, and a structurally valid false
+  guardrail remains publishable authentic negative evidence. The operational
+  publication remains diagnostic, non-standalone, non-statistical, and
+  incomplete coverage.
+  After this implementation is adversarially reviewed and committed, exact
+  Raw, sidecar, sibling per-net report, and operational capture/publication
+  MUST be reacquired from that same clean commit. Earlier artifacts cannot be
+  relabeled or joined across commits.
+  Ordinary H=4096 operational measurement, every other development cell,
+  standalone replay, snapshot, exact-small Oracle, fixed-query, stress,
+  aggregation, matrix, decision, heldout, and imported paths remain closed.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully

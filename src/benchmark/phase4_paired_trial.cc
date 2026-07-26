@@ -3734,6 +3734,73 @@ Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4ConfirmatoryH40
   };
 }
 
+Phase4TrialArmExecutionResult ExecutePhase4ConfirmatoryH4096SameRunTrialArmForOperationalWarmup(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  if (std::optional<Phase4PairedTrialError> error =
+          PreflightPhase4ConfirmatoryH4096SameRunSpec(spec, arm);
+      error.has_value()) {
+    return ArmFailure(*error);
+  }
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  return std::get<ArmExecutionWithOptionalTelemetry>(std::move(result)).execution;
+}
+
+Phase4TrialArmOperationalProfileResultV1
+ExecutePhase4ConfirmatoryH4096SameRunTrialArmOperationalProfile(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  if (std::optional<Phase4PairedTrialError> error =
+          PreflightPhase4ConfirmatoryH4096SameRunSpec(spec, arm);
+      error.has_value()) {
+    return ArmFailure(*error);
+  }
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<true, false>(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.operational_profile.has_value()) {
+    return ArmFailure(
+        Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4OP-H4096-SAME-RUN-INTERNAL-001",
+              "H=4096 same-run operational execution completed without its profile", arm));
+  }
+  return std::move(*output.operational_profile);
+}
+
+Phase4TrialArmReplayAuthorityResultV1 ExecutePhase4ConfirmatoryH4096SameRunTrialArmReplayAuthority(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  if (std::optional<Phase4PairedTrialError> error =
+          PreflightPhase4ConfirmatoryH4096SameRunSpec(spec, arm);
+      error.has_value()) {
+    return ArmFailure(*error);
+  }
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, true>(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.replay_authority.has_value()) {
+    return ArmFailure(
+        Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+              "P4OP-H4096-SAME-RUN-AUTHORITY-INTERNAL-001",
+              "H=4096 same-run unmeasured replay completed without full-preimage authority", arm));
+  }
+  return std::move(*output.replay_authority);
+}
+
 Phase4TrialArmRecordResult FinalizePhase4ConfirmatoryH4096OrdinaryTrialArm(
     const Phase4PairedTrialSpec& expected_spec, Phase4TrialArmExecution execution,
     const Phase4ExternalResourceObservation& observation) {
