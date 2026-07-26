@@ -1654,9 +1654,28 @@ acceleration.
   configuration, Raw, repetition-zero arm, complete semantic, telemetry, and
   ordered workload-roster equality. Raw, report, and independently supplied
   expected commit MUST name the same clean source; earlier Raw evidence cannot
-  be relabeled or joined across commits. H=4096 same-run report, operational,
-  replay, snapshot, exact-small Oracle, fixed-query, stress, aggregation,
-  matrix, decision, heldout, and imported paths remain closed.
+  be relabeled or joined across commits.
+  The H=4096 exact same-run per-net publication join is separately frozen by
+  `docs/adr/ADR-055-phase4-confirmatory-h4096-same-run-per-net-report.md` and
+  `schemas/benchmark/phase4_confirmatory_same_run_per_net_report_publication_join_v2.md`.
+  Its production runner MUST select H=4096 out of band, accept only Corpus 2
+  exact `(10100,4)` over Raw Wire 2, positively require equal-arm
+  `present=1,history=4096` and canonical algorithm-budget checksum
+  `8829615204625848656`, and expose no fixture path or fixture runfile
+  capability. Existing H=2250 same-run and H=4096 ordinary report entry points
+  MUST reject its semantics. The H=4096 same-run test runner MUST be
+  permanently preflight-only and unable to emit a report.
+  The three-way publication validator MUST positively bind the reserved
+  Protocol-v2 same-run per-net authority, completely authenticate exact
+  H=4096 Raw-v2/Wire-2 `(10100,4)`, then completely join its bounded regular
+  H=4096 same-run telemetry companion, and only then open the bounded regular
+  report. Raw, sidecar, report, and independently supplied expected commit
+  MUST name the same clean source. Raw remains outcome/timing authority,
+  same-run telemetry remains exact-rejection guardrail authority, and a valid
+  failed guardrail cannot be repaired or offset by the diagnostic report.
+  H=4096 operational, replay, snapshot, exact-small Oracle, fixed-query,
+  stress, aggregation, matrix, decision, heldout, and imported paths remain
+  closed.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully

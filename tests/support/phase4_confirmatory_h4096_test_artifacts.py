@@ -581,9 +581,9 @@ def _report_telemetry(
 
 
 def make_report(raw: Mapping[str, Any]) -> dict[str, object]:
-    """Build a pure synthetic Per-Net Report Artifact v1 for ordinary Raw."""
-    if raw["wire_schema_version"] != 1:
-        raise ValueError("synthetic report helper requires ordinary Raw Wire 1")
+    """Build a pure synthetic Per-Net Report Artifact v1 for Raw Wire 1 or 2."""
+    if raw["wire_schema_version"] not in (1, 2):
+        raise ValueError("synthetic report helper requires Raw Wire 1 or 2")
     pair = raw["attempts"][0]
     paired = pair["result"]
     baseline = pair["baseline"]["record"]
@@ -608,7 +608,7 @@ def make_report(raw: Mapping[str, Any]) -> dict[str, object]:
         "source_tree_dirty": raw["source_tree_dirty"],
         "source_envelope_checksum": 0,
         "schema_version": 1,
-        "raw_wire_schema_version": 1,
+        "raw_wire_schema_version": raw["wire_schema_version"],
         "config": copy.deepcopy(raw["config"]),
         "corpus_checksum": raw["corpus_checksum"],
         "raw_cell_plan_checksum": raw["cell_plan_checksum"],

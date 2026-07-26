@@ -30,14 +30,20 @@ enum class Phase4PerNetReportAuthority : std::uint8_t {
   kCorpusV1 = 0,
   kCorpusV2H2250 = 1,
   kCorpusV2H4096Ordinary = 2,
+  kCorpusV2H4096SameRun = 3,
 };
 
 [[nodiscard]] bool IsCorpusV2(Phase4PerNetReportAuthority authority) noexcept {
   return authority != Phase4PerNetReportAuthority::kCorpusV1;
 }
 
-[[nodiscard]] bool IsH4096Ordinary(Phase4PerNetReportAuthority authority) noexcept {
-  return authority == Phase4PerNetReportAuthority::kCorpusV2H4096Ordinary;
+[[nodiscard]] bool IsH4096(Phase4PerNetReportAuthority authority) noexcept {
+  return authority == Phase4PerNetReportAuthority::kCorpusV2H4096Ordinary ||
+         authority == Phase4PerNetReportAuthority::kCorpusV2H4096SameRun;
+}
+
+[[nodiscard]] bool IsH4096SameRun(Phase4PerNetReportAuthority authority) noexcept {
+  return authority == Phase4PerNetReportAuthority::kCorpusV2H4096SameRun;
 }
 
 constexpr std::array<Phase4WorkloadNetRosterManifestEntryV1, 38> kRosterManifestV1 = {{
@@ -951,7 +957,8 @@ ValidatePhase4PerNetReportArtifactForAuthority(const Phase4PerNetReportArtifactV
                                                Phase4PerNetReportAuthority report_authority) {
   try {
     const bool corpus_v2 = IsCorpusV2(report_authority);
-    const bool h4096_ordinary = IsH4096Ordinary(report_authority);
+    const bool h4096 = IsH4096(report_authority);
+    const bool h4096_same_run = IsH4096SameRun(report_authority);
     if (artifact.schema_version != kPhase4PerNetReportArtifactSchemaVersion ||
         (artifact.raw_wire_schema_version != kPhase4TrialWireSchemaVersion &&
          artifact.raw_wire_schema_version != kPhase4SameRunTrialWireSchemaVersion) ||
@@ -960,15 +967,21 @@ ValidatePhase4PerNetReportArtifactForAuthority(const Phase4PerNetReportArtifactV
       return Error("P4REPORT-ARTIFACT-ENVELOPE-001",
                    "report schema, clean stamped source, or diagnostic eligibility is invalid");
     }
-    if (h4096_ordinary &&
-        (artifact.raw_wire_schema_version != kPhase4TrialWireSchemaVersion ||
-         artifact.config.case_id != 10'200 || artifact.config.requested_pool_size != 8)) {
-      return Error("P4REPORT-H4096-SCOPE-001",
-                   "H=4096 ordinary report authority is restricted to (10200,8) over Raw Wire 1");
+    if (h4096 &&
+        (h4096_same_run
+             ? artifact.raw_wire_schema_version != kPhase4SameRunTrialWireSchemaVersion ||
+                   artifact.config.case_id != 10'100 || artifact.config.requested_pool_size != 4
+             : artifact.raw_wire_schema_version != kPhase4TrialWireSchemaVersion ||
+                   artifact.config.case_id != 10'200 || artifact.config.requested_pool_size != 8)) {
+      return Error(
+          "P4REPORT-H4096-SCOPE-001",
+          h4096_same_run
+              ? "H=4096 same-run report authority is restricted to (10100,4) over Raw Wire 2"
+              : "H=4096 ordinary report authority is restricted to (10200,8) over Raw Wire 1");
     }
     Phase4CanonicalSpecResult spec_result =
-        h4096_ordinary ? internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
-                             artifact.config, 0, Phase4TrialOrder::kBaselineFirst)
+        h4096 ? internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
+                    artifact.config, 0, Phase4TrialOrder::kBaselineFirst)
         : corpus_v2
             ? BuildPhase4CanonicalTrialSpecForCorpusV2(artifact.config, 0,
                                                        Phase4TrialOrder::kBaselineFirst)
@@ -977,11 +990,12 @@ ValidatePhase4PerNetReportArtifactForAuthority(const Phase4PerNetReportArtifactV
       return Error("P4REPORT-CONFIG-002", "report cell configuration is not canonical");
     }
     const Phase4PairedTrialSpec spec = std::get<Phase4PairedTrialSpec>(std::move(spec_result));
-    if (h4096_ordinary) {
+    if (h4096) {
       for (const Phase4TrialArm arm :
            {Phase4TrialArm::kSequentialBaseline, Phase4TrialArm::kReusableCandidateAllocation}) {
         if (std::optional<Phase4PairedTrialError> error =
-                internal::PreflightPhase4ConfirmatoryH4096OrdinarySpec(spec, arm);
+                h4096_same_run ? internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(spec, arm)
+                               : internal::PreflightPhase4ConfirmatoryH4096OrdinarySpec(spec, arm);
             error.has_value()) {
           return Error(error->invariant_id, error->detail);
         }
@@ -1273,6 +1287,28 @@ internal::BuildPhase4ConfirmatoryH4096OrdinaryPerNetReportArtifact(
       raw_cell_artifact_checksum, raw_source_envelope_checksum, raw_reference,
       std::move(diagnostics), imported_fixture, kPhase4TrialWireSchemaVersion,
       Phase4PerNetReportAuthority::kCorpusV2H4096Ordinary);
+}
+
+std::variant<std::monostate, Phase4PerNetReportArtifactError>
+internal::ValidatePhase4ConfirmatoryH4096SameRunPerNetReportArtifact(
+    const Phase4PerNetReportArtifactV1& artifact, std::string_view imported_fixture) {
+  return ValidatePhase4PerNetReportArtifactForAuthority(
+      artifact, imported_fixture, Phase4PerNetReportAuthority::kCorpusV2H4096SameRun);
+}
+
+Phase4PerNetReportArtifactResultV1
+internal::BuildPhase4ConfirmatoryH4096SameRunPerNetReportArtifact(
+    const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
+    std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
+    Phase4PerNetReportRawReferenceV1 raw_reference,
+    std::array<Phase4TrialArmDiagnosticExecutionV1, 2> diagnostics,
+    std::string_view imported_fixture) {
+  return BuildPhase4PerNetReportArtifactForAuthority(
+      config, source_commit, source_stamped, source_tree_dirty, raw_cell_plan_checksum,
+      raw_cell_artifact_checksum, raw_source_envelope_checksum, raw_reference,
+      std::move(diagnostics), imported_fixture, kPhase4SameRunTrialWireSchemaVersion,
+      Phase4PerNetReportAuthority::kCorpusV2H4096SameRun);
 }
 
 std::string SerializePhase4PerNetReportArtifactJsonV1(

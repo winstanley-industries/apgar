@@ -45,6 +45,11 @@ ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmDiagnostic(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
 
+[[nodiscard]] Phase4TrialArmDiagnosticExecutionResultV1
+ExecutePhase4ConfirmatoryH4096SameRunTrialArmDiagnostic(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
 [[nodiscard]] Phase4TrialArmWithSameRunTelemetryExecutionResultV1
 ExecutePhase4ConfirmatoryH4096SameRunTrialArm(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,

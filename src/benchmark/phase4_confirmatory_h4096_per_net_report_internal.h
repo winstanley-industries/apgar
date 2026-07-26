@@ -10,9 +10,10 @@
 
 namespace apgar::benchmark::internal {
 
-// Fixed Protocol-v2 ordinary diagnostic authority. These entry points select
-// H=4096 out of band and accept only calibration cell (10200,8) over Raw
-// Wire 1. Existing public Corpus-v2 report entry points remain H=2250-only.
+// Fixed Protocol-v2 diagnostic authorities. These entry points select H=4096
+// out of band and accept only calibration cell (10200,8) over Raw Wire 1 or
+// exact cell (10100,4) over Raw Wire 2. Existing public Corpus-v2 report entry
+// points remain H=2250-only.
 [[nodiscard]] Phase4PerNetReportArtifactResultV1
 BuildPhase4ConfirmatoryH4096OrdinaryPerNetReportArtifact(
     const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
@@ -24,6 +25,19 @@ BuildPhase4ConfirmatoryH4096OrdinaryPerNetReportArtifact(
 
 [[nodiscard]] std::variant<std::monostate, Phase4PerNetReportArtifactError>
 ValidatePhase4ConfirmatoryH4096OrdinaryPerNetReportArtifact(
+    const Phase4PerNetReportArtifactV1& artifact, std::string_view imported_fixture);
+
+[[nodiscard]] Phase4PerNetReportArtifactResultV1
+BuildPhase4ConfirmatoryH4096SameRunPerNetReportArtifact(
+    const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
+    std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
+    Phase4PerNetReportRawReferenceV1 raw_reference,
+    std::array<Phase4TrialArmDiagnosticExecutionV1, 2> diagnostics,
+    std::string_view imported_fixture);
+
+[[nodiscard]] std::variant<std::monostate, Phase4PerNetReportArtifactError>
+ValidatePhase4ConfirmatoryH4096SameRunPerNetReportArtifact(
     const Phase4PerNetReportArtifactV1& artifact, std::string_view imported_fixture);
 
 }  // namespace apgar::benchmark::internal
