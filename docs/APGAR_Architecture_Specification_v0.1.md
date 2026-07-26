@@ -1218,6 +1218,24 @@ acceleration.
   diagnostic tests may use
   `schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.md`; that
   roster cannot authorize Corpus-v2 execution or publication.
+- ADR-061 freezes the inactive acquisition-free Session-v5/H=4096 canonical
+  budget contract in
+  `schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.md`.
+  Roster v4 MUST retain the complete ordered 102-cell roster-v3 authority and
+  change exactly the nested candidate-allocation Session schema from v4 to v5.
+  Its aggregate authority MUST explicitly bind the Plan-v2-to-v3 and
+  Execution-v5-to-v6 child transition composed by Session v5, while every
+  baseline, preparation, non-schema session, price, query/work, stopping, and
+  external-budget field remains unchanged. The separately named preimage
+  builder MUST derive the frozen H=4096/Session-v4 preimage, positively require
+  Session v4, and replace only that schema field with an explicit fixed
+  Session-v5 constant. It MUST remain private, configuration-only, and absent
+  from every execution-authority switch. Roster v4 alone authorizes no
+  fixture, preparer, allocator, worker, Raw, telemetry, report, operational,
+  snapshot, oracle, matrix, decision, publication, or acquisition path.
+  Confirmatory Decision Protocol v2 remains bound to roster v3; a separately
+  reviewed Protocol v3 and separately reviewed consuming authorities are
+  required before any Session-v5 Corpus-v2 execution.
 
 #### Equal-budget decision evidence
 
