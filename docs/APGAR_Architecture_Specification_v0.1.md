@@ -1835,6 +1835,34 @@ acceleration.
   imported execution, confirmatory matrix completion, Phase 4 completion, nor
   M1 completion. Fixed-query, stress, aggregation, matrix, decision, heldout,
   imported, and every other development path remain closed.
+  The reviewed H=4096 development observation and remediation boundary are
+  recorded by
+  `docs/adr/ADR-059-phase4-confirmatory-h4096-development-observation.md` and
+  `docs/evidence/phase4-confirmatory-h4096-development-b57f885.md`. Exact
+  development cell `(10100,4)` proves production equality with one unique
+  optimum only inside its captured pools and still retains one overuse unit.
+  Independently acquired ordinary calibration cell `(10200,8)` prefers the
+  zero-resource-overuse baseline in all 20 balanced pairs because the candidate
+  introduces 16 overuse units. The two observations bind different clean
+  source commits and MUST NOT be cross-joined, relabeled, rechecksummed, or
+  treated as one timing population.
+  This negative result keeps the confirmatory campaign closed. Protocol v2,
+  canonical algorithm-budget roster v3, and all observed artifacts remain
+  byte-unchanged. Remediation MUST address general candidate generation,
+  retention, pricing, regeneration, or allocation behavior through open
+  development cells; authenticated thin-pool and rejection diagnostics MUST
+  NOT be presented as unique causal proof. Any checksum-bound configuration,
+  case, budget, role, carrier, threshold, or authority-preimage change requires
+  a separately versioned contract before execution. Each implementation
+  remediation MUST pass adversarial review and be committed before fresh
+  source-bound acquisition. Before any heldout-acquisition authority is
+  proposed, the exact cell MUST retain independent production/fixed-pool
+  objective equality and the calibration candidate MUST no longer
+  lexicographically regress its baseline. That condition is remediation
+  readiness only; it proves neither campaign success, resource feasibility,
+  Phase 4 completion, nor M1 completion. Fixed-query, stress, aggregation,
+  matrix, decision, heldout, imported, and every other development path remain
+  closed pending separately reviewed authority.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully
