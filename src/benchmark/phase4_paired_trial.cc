@@ -94,6 +94,23 @@ template <typename Payload>
   return role == Phase4CaseRole::kExactOracle || role == Phase4CaseRole::kCalibration;
 }
 
+[[nodiscard]] std::optional<Phase4RepresentativeCorpusAuthority> CorpusAuthority(
+    internal::Phase4TrialExecutionAuthority authority) noexcept {
+  switch (authority) {
+    case internal::Phase4TrialExecutionAuthority::kCorpusV1:
+      return Phase4RepresentativeCorpusAuthority::kV1;
+    case internal::Phase4TrialExecutionAuthority::kCorpusV2H2250:
+    case internal::Phase4TrialExecutionAuthority::kCorpusV2H4096:
+      return Phase4RepresentativeCorpusAuthority::kV2;
+  }
+  return std::nullopt;
+}
+
+enum class Phase4ConfirmatoryH4096Carrier : std::uint8_t {
+  kOrdinary,
+  kSameRun,
+};
+
 [[nodiscard]] bool ValidArm(Phase4TrialArm arm) noexcept {
   return arm == Phase4TrialArm::kSequentialBaseline ||
          arm == Phase4TrialArm::kReusableCandidateAllocation;
@@ -144,16 +161,20 @@ template <typename Payload>
   return descriptor.known_unmapped_exact_conflicts ? 1U : 0U;
 }
 
-[[nodiscard]] ValidationResult ValidateSpec(Phase4RepresentativeCorpusAuthority authority,
-                                            const Phase4PairedTrialSpec& spec, Phase4TrialArm arm) {
+[[nodiscard]] ValidationResult ValidateSpec(
+    internal::Phase4TrialExecutionAuthority execution_authority, const Phase4PairedTrialSpec& spec,
+    Phase4TrialArm arm) {
   if (!ValidArm(arm) || !ValidOrder(spec.execution_order)) {
     return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration, "P4PAIR-ENUM-001",
                  "the trial arm and prescribed execution order must be known v1 values", arm);
   }
-  if (!IsPhase4RepresentativeCorpusAuthorityValid(authority)) {
+  const std::optional<Phase4RepresentativeCorpusAuthority> selected_corpus =
+      CorpusAuthority(execution_authority);
+  if (!selected_corpus.has_value()) {
     return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration, "P4PAIR-CORPUS-001",
                  "the trusted corpus authority selected by the entry point is invalid", arm);
   }
+  const Phase4RepresentativeCorpusAuthority authority = *selected_corpus;
   if (spec.schema_version != kPhase4PairedTrialSchemaVersion ||
       spec.baseline_config.schema_version !=
           allocator::kSequentialNegotiatedBaselineSchemaVersion ||
@@ -192,7 +213,7 @@ template <typename Payload>
   const auto& baseline = spec.baseline_config;
   const auto& preparation = spec.preparation_config;
   const auto& session = spec.candidate_session_config;
-  if (authority == Phase4RepresentativeCorpusAuthority::kV2 &&
+  if (execution_authority == internal::Phase4TrialExecutionAuthority::kCorpusV2H2250 &&
       (baseline.price_config.present_step_per_overuse_unit !=
            internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit ||
        session.price_config.present_step_per_overuse_unit !=
@@ -207,7 +228,7 @@ template <typename Payload>
                      ? baseline.price_config.present_step_per_overuse_unit
                      : session.price_config.present_step_per_overuse_unit);
   }
-  if (authority == Phase4RepresentativeCorpusAuthority::kV2 &&
+  if (execution_authority == internal::Phase4TrialExecutionAuthority::kCorpusV2H2250 &&
       (baseline.price_config.history_step_per_overuse_unit !=
            internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit ||
        session.price_config.history_step_per_overuse_unit !=
@@ -221,6 +242,35 @@ template <typename Payload>
                          internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit
                      ? baseline.price_config.history_step_per_overuse_unit
                      : session.price_config.history_step_per_overuse_unit);
+  }
+  if (execution_authority == internal::Phase4TrialExecutionAuthority::kCorpusV2H4096 &&
+      (baseline.price_config.present_step_per_overuse_unit !=
+           internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit ||
+       session.price_config.present_step_per_overuse_unit !=
+           internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit ||
+       baseline.price_config.history_step_per_overuse_unit !=
+           internal::kPhase4CorpusV2H4096HistoryStepPerOveruseUnit ||
+       session.price_config.history_step_per_overuse_unit !=
+           internal::kPhase4CorpusV2H4096HistoryStepPerOveruseUnit)) {
+    const bool present_mismatch =
+        baseline.price_config.present_step_per_overuse_unit !=
+            internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit ||
+        session.price_config.present_step_per_overuse_unit !=
+            internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit;
+    return Error(
+        Phase4PairedTrialErrorCode::kInvalidConfiguration,
+        "P4PAIR-CORPUS-V2-H4096-BUDGET-AUTHORITY-001",
+        "H=4096 development execution requires equal-arm present=1,history=4096 pricing", arm,
+        present_mismatch ? internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit
+                         : internal::kPhase4CorpusV2H4096HistoryStepPerOveruseUnit,
+        present_mismatch ? (baseline.price_config.present_step_per_overuse_unit !=
+                                    internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit
+                                ? baseline.price_config.present_step_per_overuse_unit
+                                : session.price_config.present_step_per_overuse_unit)
+                         : (baseline.price_config.history_step_per_overuse_unit !=
+                                    internal::kPhase4CorpusV2H4096HistoryStepPerOveruseUnit
+                                ? baseline.price_config.history_step_per_overuse_unit
+                                : session.price_config.history_step_per_overuse_unit));
   }
   if (spec.root_seed != baseline.deterministic_seed ||
       spec.root_seed != preparation.deterministic_seed ||
@@ -385,6 +435,115 @@ template <typename Payload>
           authority, spec, opportunity, descriptor->requested_net_count, ToU64(columns_per_epoch),
           terminal_rounds),
   };
+}
+
+[[nodiscard]] std::optional<Phase4PairedTrialError> PreflightH4096Spec(
+    Phase4ConfirmatoryH4096Carrier carrier, const Phase4PairedTrialSpec& spec, Phase4TrialArm arm) {
+  if (!ValidArm(arm) || !ValidOrder(spec.execution_order)) {
+    return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration, "P4PAIR-ENUM-001",
+                 "the trial arm and prescribed execution order must be known v1 values", arm);
+  }
+  const std::uint32_t expected_case =
+      carrier == Phase4ConfirmatoryH4096Carrier::kOrdinary ? 10'200U : 10'100U;
+  const std::uint32_t expected_pool =
+      carrier == Phase4ConfirmatoryH4096Carrier::kOrdinary ? 8U : 4U;
+  if (spec.case_id != expected_case || spec.requested_pool_size != expected_pool) {
+    return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration,
+                 carrier == Phase4ConfirmatoryH4096Carrier::kOrdinary
+                     ? "P4PAIR-CORPUS-V2-H4096-ORDINARY-SCOPE-001"
+                     : "P4PAIR-CORPUS-V2-H4096-SAME-RUN-SCOPE-001",
+                 carrier == Phase4ConfirmatoryH4096Carrier::kOrdinary
+                     ? "H=4096 ordinary execution is restricted to calibration cell (10200,8)"
+                     : "H=4096 same-run execution is restricted to exact cell (10100,4)",
+                 arm, expected_case, spec.case_id);
+  }
+  if (spec.schema_version != kPhase4PairedTrialSchemaVersion ||
+      spec.baseline_config.schema_version !=
+          allocator::kSequentialNegotiatedBaselineSchemaVersion ||
+      spec.preparation_config.schema_version !=
+          allocator::kCpuCandidatePoolPreparationSchemaVersion ||
+      spec.candidate_session_config.schema_version !=
+          allocator::kCpuCandidateAllocationSessionSchemaVersion) {
+    return Error(Phase4PairedTrialErrorCode::kUnsupportedSchema, "P4PAIR-SCHEMA-001",
+                 "the trial or one of its contender configurations has an unsupported schema", arm);
+  }
+  const auto& baseline_price = spec.baseline_config.price_config;
+  const auto& candidate_price = spec.candidate_session_config.price_config;
+  if (baseline_price.present_step_per_overuse_unit !=
+          internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit ||
+      candidate_price.present_step_per_overuse_unit !=
+          internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit ||
+      baseline_price.history_step_per_overuse_unit !=
+          internal::kPhase4CorpusV2H4096HistoryStepPerOveruseUnit ||
+      candidate_price.history_step_per_overuse_unit !=
+          internal::kPhase4CorpusV2H4096HistoryStepPerOveruseUnit ||
+      !(baseline_price == candidate_price)) {
+    return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration,
+                 "P4PAIR-CORPUS-V2-H4096-BUDGET-AUTHORITY-001",
+                 "H=4096 development execution requires the exact equal-arm "
+                 "present=1,history=4096 price authority",
+                 arm);
+  }
+  const std::uint64_t expected_budget =
+      carrier == Phase4ConfirmatoryH4096Carrier::kOrdinary
+          ? internal::kPhase4ConfirmatoryH4096CalibrationCanonicalAlgorithmBudgetChecksum
+          : internal::kPhase4ConfirmatoryH4096ExactCanonicalAlgorithmBudgetChecksum;
+  const std::uint64_t actual_budget =
+      internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(spec);
+  if (actual_budget != expected_budget) {
+    return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration,
+                 "P4PAIR-CORPUS-V2-H4096-CANONICAL-BUDGET-001",
+                 "the H=4096 development spec differs from its frozen canonical algorithm budget",
+                 arm, expected_budget, actual_budget);
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] std::optional<Phase4PairedTrialError> ValidateH4096ExecutionAssociation(
+    Phase4ConfirmatoryH4096Carrier carrier, const Phase4PairedTrialSpec& expected_spec,
+    const Phase4TrialArmSemantics& semantics) {
+  if (std::optional<Phase4PairedTrialError> error =
+          PreflightH4096Spec(carrier, expected_spec, semantics.arm);
+      error.has_value()) {
+    return error;
+  }
+  ValidationResult validation = ValidateSpec(
+      internal::Phase4TrialExecutionAuthority::kCorpusV2H4096, expected_spec, semantics.arm);
+  if (std::holds_alternative<Phase4PairedTrialError>(validation)) {
+    return std::get<Phase4PairedTrialError>(std::move(validation));
+  }
+  const ValidatedTrialSpec& validated = std::get<ValidatedTrialSpec>(validation);
+  const bool associated =
+      semantics.execution_order == expected_spec.execution_order &&
+      semantics.corpus_version ==
+          Phase4RepresentativeCorpusVersionForAuthority(Phase4RepresentativeCorpusAuthority::kV2) &&
+      semantics.corpus_checksum == Phase4RepresentativeCorpusChecksumForAuthority(
+                                       Phase4RepresentativeCorpusAuthority::kV2) &&
+      semantics.case_id == expected_spec.case_id &&
+      semantics.descriptor_fingerprint ==
+          FingerprintPhase4CaseDescriptorForAuthority(Phase4RepresentativeCorpusAuthority::kV2,
+                                                      *validated.descriptor) &&
+      semantics.budget_checksum == validated.budget_checksum &&
+      semantics.workload_net_count == validated.descriptor->requested_net_count &&
+      semantics.requested_pool_size == expected_spec.requested_pool_size &&
+      semantics.repetition_index == expected_spec.repetition_index &&
+      semantics.root_seed == expected_spec.root_seed &&
+      semantics.preparation_worker_count == expected_spec.preparation_worker_count &&
+      semantics.baseline_sweeps == expected_spec.baseline_config.maximum_sweeps &&
+      semantics.candidate_regeneration_epochs ==
+          expected_spec.candidate_session_config.maximum_regeneration_epochs &&
+      semantics.candidate_columns_per_epoch == validated.candidate_columns_per_epoch &&
+      semantics.candidate_terminal_selection_rounds ==
+          validated.candidate_terminal_selection_rounds &&
+      semantics.external_budget == expected_spec.external_budget &&
+      semantics.opportunity == validated.opportunity;
+  if (!associated) {
+    return Error(Phase4PairedTrialErrorCode::kMeasurementAssociation,
+                 "P4PAIR-CORPUS-V2-H4096-ASSOCIATION-001",
+                 "the arm semantics do not bind the expected H=4096 development spec",
+                 semantics.arm, validated.budget_checksum, semantics.budget_checksum);
+  }
+  return std::nullopt;
 }
 
 [[nodiscard]] Phase4BoardOutcome Outcome(const allocator::OneWorldAllocation& world) noexcept {
@@ -2817,7 +2976,7 @@ struct ReplayAuthorityCaptureState<true> {
 
 template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
 [[nodiscard]] ArmExecutionWithOptionalTelemetryResult ExecutePhase4TrialArmImpl(
-    Phase4RepresentativeCorpusAuthority authority, Phase4TrialArm arm,
+    internal::Phase4TrialExecutionAuthority execution_authority, Phase4TrialArm arm,
     const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer, bool capture_telemetry,
     bool capture_same_run_telemetry, bool capture_snapshot) {
@@ -2827,7 +2986,15 @@ template <bool CaptureOperationalProfile, bool CaptureReplayAuthority>
                               "P4SNAPSHOT-ARM-001",
                               "pool snapshots are candidate-arm diagnostics only", arm));
     }
-    const ValidationResult validation = ValidateSpec(authority, spec, arm);
+    const std::optional<Phase4RepresentativeCorpusAuthority> selected_corpus =
+        CorpusAuthority(execution_authority);
+    if (!selected_corpus.has_value()) {
+      return ArmFailure(
+          Error(Phase4PairedTrialErrorCode::kInvalidConfiguration, "P4PAIR-CORPUS-001",
+                "the trusted corpus authority selected by the entry point is invalid", arm));
+    }
+    const Phase4RepresentativeCorpusAuthority authority = *selected_corpus;
+    const ValidationResult validation = ValidateSpec(execution_authority, spec, arm);
     if (std::holds_alternative<Phase4PairedTrialError>(validation)) {
       return ArmFailure(std::get<Phase4PairedTrialError>(validation));
     }
@@ -3116,8 +3283,8 @@ Phase4TrialArmExecutionResult ExecutePhase4TrialArmV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      Phase4RepresentativeCorpusAuthority::kV1, arm, spec, imported_fixture, candidate_preparer,
-      false, false, false);
+      internal::Phase4TrialExecutionAuthority::kCorpusV1, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3128,8 +3295,8 @@ Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      Phase4RepresentativeCorpusAuthority::kV1, arm, spec, imported_fixture, candidate_preparer,
-      true, false, false);
+      internal::Phase4TrialExecutionAuthority::kCorpusV1, arm, spec, imported_fixture,
+      candidate_preparer, true, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3149,8 +3316,8 @@ Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4TrialArmWithSam
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      Phase4RepresentativeCorpusAuthority::kV1, arm, spec, imported_fixture, candidate_preparer,
-      false, true, false);
+      internal::Phase4TrialExecutionAuthority::kCorpusV1, arm, spec, imported_fixture,
+      candidate_preparer, false, true, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3171,8 +3338,8 @@ Phase4TrialArmOperationalProfileResultV1 ExecutePhase4TrialArmOperationalProfile
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<true, false>(
-      Phase4RepresentativeCorpusAuthority::kV1, arm, spec, imported_fixture, candidate_preparer,
-      false, false, false);
+      internal::Phase4TrialExecutionAuthority::kCorpusV1, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3189,8 +3356,8 @@ Phase4TrialArmReplayAuthorityResultV1 ExecutePhase4TrialArmReplayAuthorityV1(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, true>(
-      Phase4RepresentativeCorpusAuthority::kV1, arm, spec, imported_fixture, candidate_preparer,
-      false, false, false);
+      internal::Phase4TrialExecutionAuthority::kCorpusV1, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3208,8 +3375,9 @@ Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotV
     const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      Phase4RepresentativeCorpusAuthority::kV1, Phase4TrialArm::kReusableCandidateAllocation, spec,
-      imported_fixture, candidate_preparer, true, false, true);
+      internal::Phase4TrialExecutionAuthority::kCorpusV1,
+      Phase4TrialArm::kReusableCandidateAllocation, spec, imported_fixture, candidate_preparer,
+      true, false, true);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3287,6 +3455,35 @@ namespace {
   return result;
 }
 
+[[nodiscard]] Phase4TrialArmRecordResult FinalizeH4096TrialArmImpl(
+    Phase4ConfirmatoryH4096Carrier carrier, const Phase4PairedTrialSpec& expected_spec,
+    Phase4TrialArmExecution execution, const Phase4ExternalResourceObservation& observation) {
+  if (std::optional<Phase4PairedTrialError> error =
+          ValidateH4096ExecutionAssociation(carrier, expected_spec, execution.semantics);
+      error.has_value()) {
+    return *error;
+  }
+  return FinalizePhase4TrialArmImpl(Phase4RepresentativeCorpusAuthority::kV2, std::move(execution),
+                                    observation);
+}
+
+[[nodiscard]] Phase4PairedTrialAssemblyResult AssembleH4096PairedTrialImpl(
+    Phase4ConfirmatoryH4096Carrier carrier, const Phase4PairedTrialSpec& expected_spec,
+    Phase4TrialArmRecord baseline, Phase4TrialArmRecord candidate) {
+  if (std::optional<Phase4PairedTrialError> error =
+          ValidateH4096ExecutionAssociation(carrier, expected_spec, baseline.semantics);
+      error.has_value()) {
+    return *error;
+  }
+  if (std::optional<Phase4PairedTrialError> error =
+          ValidateH4096ExecutionAssociation(carrier, expected_spec, candidate.semantics);
+      error.has_value()) {
+    return *error;
+  }
+  return AssemblePhase4PairedTrialImpl(Phase4RepresentativeCorpusAuthority::kV2,
+                                       std::move(baseline), std::move(candidate));
+}
+
 }  // namespace
 
 Phase4TrialArmRecordResult FinalizePhase4TrialArmV1(
@@ -3317,8 +3514,8 @@ Phase4TrialArmExecutionResult ExecutePhase4TrialArmForCorpusV2(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      Phase4RepresentativeCorpusAuthority::kV2, arm, spec, imported_fixture, candidate_preparer,
-      false, false, false);
+      internal::Phase4TrialExecutionAuthority::kCorpusV2H2250, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3329,8 +3526,8 @@ Phase4TrialArmDiagnosticExecutionResultV1 ExecutePhase4TrialArmDiagnosticForCorp
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      Phase4RepresentativeCorpusAuthority::kV2, arm, spec, imported_fixture, candidate_preparer,
-      true, false, false);
+      internal::Phase4TrialExecutionAuthority::kCorpusV2H2250, arm, spec, imported_fixture,
+      candidate_preparer, true, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3351,8 +3548,8 @@ ExecutePhase4TrialArmWithSameRunTelemetryForCorpusV2(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      Phase4RepresentativeCorpusAuthority::kV2, arm, spec, imported_fixture, candidate_preparer,
-      false, true, false);
+      internal::Phase4TrialExecutionAuthority::kCorpusV2H2250, arm, spec, imported_fixture,
+      candidate_preparer, false, true, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3373,8 +3570,8 @@ Phase4TrialArmOperationalProfileResultV1 ExecutePhase4TrialArmOperationalProfile
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<true, false>(
-      Phase4RepresentativeCorpusAuthority::kV2, arm, spec, imported_fixture, candidate_preparer,
-      false, false, false);
+      internal::Phase4TrialExecutionAuthority::kCorpusV2H2250, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3391,8 +3588,8 @@ Phase4TrialArmReplayAuthorityResultV1 ExecutePhase4TrialArmReplayAuthorityForCor
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, true>(
-      Phase4RepresentativeCorpusAuthority::kV2, arm, spec, imported_fixture, candidate_preparer,
-      false, false, false);
+      internal::Phase4TrialExecutionAuthority::kCorpusV2H2250, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3410,8 +3607,9 @@ Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotF
     const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
   ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
-      Phase4RepresentativeCorpusAuthority::kV2, Phase4TrialArm::kReusableCandidateAllocation, spec,
-      imported_fixture, candidate_preparer, true, false, true);
+      internal::Phase4TrialExecutionAuthority::kCorpusV2H2250,
+      Phase4TrialArm::kReusableCandidateAllocation, spec, imported_fixture, candidate_preparer,
+      true, false, true);
   if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
     return std::get<Phase4TrialArmFailure>(std::move(result));
   }
@@ -3425,5 +3623,91 @@ Phase4CandidatePoolSnapshotExecutionResultV1 ExecutePhase4CandidatePoolSnapshotF
   }
   return std::move(*output.snapshot);
 }
+
+namespace internal {
+
+std::optional<Phase4PairedTrialError> PreflightPhase4ConfirmatoryH4096OrdinarySpec(
+    const Phase4PairedTrialSpec& spec, Phase4TrialArm arm) {
+  return PreflightH4096Spec(Phase4ConfirmatoryH4096Carrier::kOrdinary, spec, arm);
+}
+
+std::optional<Phase4PairedTrialError> PreflightPhase4ConfirmatoryH4096SameRunSpec(
+    const Phase4PairedTrialSpec& spec, Phase4TrialArm arm) {
+  return PreflightH4096Spec(Phase4ConfirmatoryH4096Carrier::kSameRun, spec, arm);
+}
+
+Phase4TrialArmExecutionResult ExecutePhase4ConfirmatoryH4096OrdinaryTrialArm(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  if (std::optional<Phase4PairedTrialError> error =
+          PreflightPhase4ConfirmatoryH4096OrdinarySpec(spec, arm);
+      error.has_value()) {
+    return ArmFailure(*error);
+  }
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  return std::get<ArmExecutionWithOptionalTelemetry>(std::move(result)).execution;
+}
+
+Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4ConfirmatoryH4096SameRunTrialArm(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  if (std::optional<Phase4PairedTrialError> error =
+          PreflightPhase4ConfirmatoryH4096SameRunSpec(spec, arm);
+      error.has_value()) {
+    return ArmFailure(*error);
+  }
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, arm, spec, imported_fixture,
+      candidate_preparer, false, true, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.same_run_telemetry.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                            "P4SAMERUN-H4096-INTERNAL-001",
+                            "H=4096 same-run execution completed without decision telemetry", arm));
+  }
+  return Phase4TrialArmWithSameRunTelemetryExecutionV1{
+      .execution = std::move(output.execution),
+      .telemetry = std::move(*output.same_run_telemetry),
+  };
+}
+
+Phase4TrialArmRecordResult FinalizePhase4ConfirmatoryH4096OrdinaryTrialArm(
+    const Phase4PairedTrialSpec& expected_spec, Phase4TrialArmExecution execution,
+    const Phase4ExternalResourceObservation& observation) {
+  return FinalizeH4096TrialArmImpl(Phase4ConfirmatoryH4096Carrier::kOrdinary, expected_spec,
+                                   std::move(execution), observation);
+}
+
+Phase4TrialArmRecordResult FinalizePhase4ConfirmatoryH4096SameRunTrialArm(
+    const Phase4PairedTrialSpec& expected_spec, Phase4TrialArmExecution execution,
+    const Phase4ExternalResourceObservation& observation) {
+  return FinalizeH4096TrialArmImpl(Phase4ConfirmatoryH4096Carrier::kSameRun, expected_spec,
+                                   std::move(execution), observation);
+}
+
+Phase4PairedTrialAssemblyResult AssemblePhase4ConfirmatoryH4096OrdinaryPairedTrial(
+    const Phase4PairedTrialSpec& expected_spec, Phase4TrialArmRecord baseline,
+    Phase4TrialArmRecord candidate) {
+  return AssembleH4096PairedTrialImpl(Phase4ConfirmatoryH4096Carrier::kOrdinary, expected_spec,
+                                      std::move(baseline), std::move(candidate));
+}
+
+Phase4PairedTrialAssemblyResult AssemblePhase4ConfirmatoryH4096SameRunPairedTrial(
+    const Phase4PairedTrialSpec& expected_spec, Phase4TrialArmRecord baseline,
+    Phase4TrialArmRecord candidate) {
+  return AssembleH4096PairedTrialImpl(Phase4ConfirmatoryH4096Carrier::kSameRun, expected_spec,
+                                      std::move(baseline), std::move(candidate));
+}
+
+}  // namespace internal
 
 }  // namespace apgar::benchmark

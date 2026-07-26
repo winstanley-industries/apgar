@@ -11,6 +11,58 @@ namespace apgar::benchmark::internal {
 inline constexpr std::uint64_t kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit = 1;
 inline constexpr std::uint64_t kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit = 2'250;
 inline constexpr std::uint64_t kPhase4CorpusV2H4096HistoryStepPerOveruseUnit = 4'096;
+inline constexpr std::uint64_t kPhase4ConfirmatoryH4096ExactCanonicalAlgorithmBudgetChecksum =
+    8'829'615'204'625'848'656ULL;
+inline constexpr std::uint64_t kPhase4ConfirmatoryH4096CalibrationCanonicalAlgorithmBudgetChecksum =
+    8'230'401'457'668'518'004ULL;
+
+// Trusted, out-of-band execution authority. Public Corpus-v2 entry points
+// always select kCorpusV2H2250; only separately named internal development
+// entry points may select kCorpusV2H4096.
+enum class Phase4TrialExecutionAuthority : std::uint8_t {
+  kCorpusV1 = 0,
+  kCorpusV2H2250 = 1,
+  kCorpusV2H4096 = 2,
+};
+
+// Pure configuration preflights. These do not construct a representative case
+// or touch a fixture, preparer, or worker.
+[[nodiscard]] std::optional<Phase4PairedTrialError> PreflightPhase4ConfirmatoryH4096OrdinarySpec(
+    const Phase4PairedTrialSpec& spec, Phase4TrialArm arm);
+
+[[nodiscard]] std::optional<Phase4PairedTrialError> PreflightPhase4ConfirmatoryH4096SameRunSpec(
+    const Phase4PairedTrialSpec& spec, Phase4TrialArm arm);
+
+// The only H=4096 arm-execution surfaces opened by the initial development
+// slice: calibration (10200,8) over ordinary Raw/Wire1 and exact (10100,4)
+// over same-run Raw/Wire2.
+[[nodiscard]] Phase4TrialArmExecutionResult ExecutePhase4ConfirmatoryH4096OrdinaryTrialArm(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+[[nodiscard]] Phase4TrialArmWithSameRunTelemetryExecutionResultV1
+ExecutePhase4ConfirmatoryH4096SameRunTrialArm(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);
+
+// Finalization and assembly require the independently reconstructed canonical
+// spec so a structurally valid Corpus-v2/H=2250 wire result cannot cross into
+// either H=4096 artifact authority.
+[[nodiscard]] Phase4TrialArmRecordResult FinalizePhase4ConfirmatoryH4096OrdinaryTrialArm(
+    const Phase4PairedTrialSpec& expected_spec, Phase4TrialArmExecution execution,
+    const Phase4ExternalResourceObservation& observation);
+
+[[nodiscard]] Phase4TrialArmRecordResult FinalizePhase4ConfirmatoryH4096SameRunTrialArm(
+    const Phase4PairedTrialSpec& expected_spec, Phase4TrialArmExecution execution,
+    const Phase4ExternalResourceObservation& observation);
+
+[[nodiscard]] Phase4PairedTrialAssemblyResult AssemblePhase4ConfirmatoryH4096OrdinaryPairedTrial(
+    const Phase4PairedTrialSpec& expected_spec, Phase4TrialArmRecord baseline,
+    Phase4TrialArmRecord candidate);
+
+[[nodiscard]] Phase4PairedTrialAssemblyResult AssemblePhase4ConfirmatoryH4096SameRunPairedTrial(
+    const Phase4PairedTrialSpec& expected_spec, Phase4TrialArmRecord baseline,
+    Phase4TrialArmRecord candidate);
 
 [[nodiscard]] Phase4TrialArmFailure PreservePhase4CandidateSessionFailureV1(
     Phase4RepresentativeCase case_state, allocator::PreparedCpuCandidatePools prepared,

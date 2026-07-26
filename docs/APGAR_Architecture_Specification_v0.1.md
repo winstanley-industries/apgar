@@ -1577,6 +1577,62 @@ acceleration.
   completed reviewed execution and publication chain; the protocol/roster-only
   commit is insufficient. Premature H=4096 heldout observation invalidates the
   roster and requires a fresh versioned authority.
+  The first separately reviewed H=4096 executable authority is frozen by
+  `docs/adr/ADR-053-phase4-confirmatory-h4096-raw-authority.md`. The compiled
+  production `phase4_confirmatory_h4096_evidence_runner`, never a caller
+  option, MUST select configuration authority
+  `phase4_confirmatory_corpus_v2_h4096`, require explicit Corpus 2, and accept
+  exactly exact cell `(10100,4)` through atomic same-run Raw Wire 2 with its
+  Telemetry Wire 2 companion or calibration cell `(10200,8)` through ordinary
+  Raw Wire 1. The separately named
+  `phase4_confirmatory_h4096_raw_evidence_validator` MUST accept only the
+  ordinary calibration identity. The separately named
+  `phase4_confirmatory_h4096_same_run_decision_telemetry_validator` MUST
+  completely authenticate exact-cell Raw before opening, authenticating, and
+  joining its same-invocation telemetry companion. Both validators MUST bind
+  Protocol v2, canonical algorithm-budget roster v3, the unchanged
+  Representative Corpus v2 case and workload authorities, and one
+  independently supplied expected clean source commit.
+  The frozen Raw schemas provide no separately authenticated authority for an
+  H=4096 cell containing only failed arm attempts. H=4096 Raw authentication
+  MUST require at least one completely authenticated successful arm witness;
+  an all-failure capture is deliberately non-authenticatable. This requirement
+  MUST NOT weaken complete ordinary publication or the exact Raw-plus-telemetry
+  join.
+  The public controller and both hidden worker modes MUST independently reject
+  every other configuration, case, pool, and carrier assignment before fixture
+  access. The runner MUST invoke the complete pure carrier-specific H=4096
+  preflight for the controller and each hidden worker before source or fixture
+  checks. The controller library MUST repeat the literal two-cell carrier
+  boundary and positively require equal-arm `present=1,history=4096` before
+  worker launch or representative-case construction. Each worker MUST repeat
+  that configuration and canonical-spec validation before preparer creation,
+  warmup, allocator access, or request decoding. Existing Corpus-v2 execution
+  entry points remain H=2250-only and MUST continue to reject H=4096 at the
+  same pre-access boundary; the new H=4096 entry points MUST reject H=2250.
+  The test-only `phase4_confirmatory_h4096_evidence_test_runner` MUST be
+  permanently nonpublishable and fixtureless. It declares no board fixture,
+  cannot enter either authorized execution path, and may exercise only parsing
+  and pre-access firewall rejection. It MUST reject before fixture resolution,
+  case construction, preparer creation, worker launch, or artifact
+  serialization even when its embedded source is clean and stamped; no testing
+  option, caller commit, or source state may make its output publishable.
+  A production-shaped test-only source-firewall target MAY compile-force only
+  its embedded source gate to an unpublishable state for deterministic
+  clean-build hidden-worker probes. It MUST declare no fixture data, MUST NOT
+  alter the production target's actual embedded source fields, and MUST NOT
+  emit evidence.
+  Ordinary evidence retains Raw Evidence schema 1 and Raw Wire 1. Same-run
+  evidence retains Raw Evidence schema 2 and Raw Wire 2, and its companion
+  retains Same-Run Decision Telemetry schema 1 and Telemetry Wire 2. The
+  reserved H=4096 `v2` artifact authorities do not select or revise those
+  payload or carrier schemas. Production evidence MUST bind a clean stamped
+  source whose explicit runtime commit equals the embedded commit, and H=2250
+  evidence cannot be promoted, relabeled, or rechecksummed. H=4096 report,
+  operational, replay, snapshot, exact-small Oracle, fixed-query, stress,
+  aggregation, matrix, decision, heldout, and imported paths remain closed
+  pending their own separately reviewed authorities; Raw development execution
+  does not authorize campaign acquisition or complete Phase 4.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully

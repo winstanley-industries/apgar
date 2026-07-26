@@ -10,10 +10,17 @@
 #include <vector>
 
 #include "apgar/board_ir/stable_hash.h"
+#include "src/benchmark/phase4_confirmatory_h4096_execution_internal.h"
 #include "src/benchmark/phase4_trial_wire_internal.h"
 
 namespace apgar::benchmark {
 namespace {
+
+enum class SameRunPublicationAuthority : std::uint8_t {
+  kCorpusV1,
+  kCorpusV2,
+  kConfirmatoryH4096,
+};
 
 class JsonWriter {
  public:
@@ -300,16 +307,26 @@ std::uint64_t ComputePhase4SameRunDecisionTelemetrySourceEnvelopeChecksumV1(
 
 [[nodiscard]] static std::optional<std::string>
 SerializePhase4SameRunDecisionTelemetryForAuthorityJsonV1(
-    Phase4RepresentativeCorpusAuthority corpus_authority,
+    SameRunPublicationAuthority publication_authority,
     const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
     std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty) {
   try {
     const Phase4IsolatedCellResult& raw = capture.raw_cell;
-    const bool capture_valid =
-        corpus_authority == Phase4RepresentativeCorpusAuthority::kV1
-            ? ValidatePhase4IsolatedSameRunCellCaptureV1(capture, imported_fixture)
-            : ValidatePhase4IsolatedSameRunCellCaptureForCorpusV2(capture, imported_fixture);
+    bool capture_valid = false;
+    switch (publication_authority) {
+      case SameRunPublicationAuthority::kCorpusV1:
+        capture_valid = ValidatePhase4IsolatedSameRunCellCaptureV1(capture, imported_fixture);
+        break;
+      case SameRunPublicationAuthority::kCorpusV2:
+        capture_valid =
+            ValidatePhase4IsolatedSameRunCellCaptureForCorpusV2(capture, imported_fixture);
+        break;
+      case SameRunPublicationAuthority::kConfirmatoryH4096:
+        capture_valid =
+            internal::ValidatePhase4ConfirmatoryH4096SameRunCellCapture(capture, imported_fixture);
+        break;
+    }
     if (!capture_valid) {
       return std::nullopt;
     }
@@ -380,7 +397,7 @@ std::optional<std::string> SerializePhase4SameRunDecisionTelemetryJsonV1(
     std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty) {
   return SerializePhase4SameRunDecisionTelemetryForAuthorityJsonV1(
-      Phase4RepresentativeCorpusAuthority::kV1, capture, imported_fixture, source_commit,
+      SameRunPublicationAuthority::kCorpusV1, capture, imported_fixture, source_commit,
       source_stamped, source_tree_dirty);
 }
 
@@ -389,8 +406,21 @@ std::optional<std::string> SerializePhase4SameRunDecisionTelemetryForCorpusV2Jso
     std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty) {
   return SerializePhase4SameRunDecisionTelemetryForAuthorityJsonV1(
-      Phase4RepresentativeCorpusAuthority::kV2, capture, imported_fixture, source_commit,
+      SameRunPublicationAuthority::kCorpusV2, capture, imported_fixture, source_commit,
       source_stamped, source_tree_dirty);
 }
+
+namespace internal {
+
+std::optional<std::string> SerializePhase4ConfirmatoryH4096SameRunDecisionTelemetryJsonV1(
+    const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
+    std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty) {
+  return SerializePhase4SameRunDecisionTelemetryForAuthorityJsonV1(
+      SameRunPublicationAuthority::kConfirmatoryH4096, capture, imported_fixture, source_commit,
+      source_stamped, source_tree_dirty);
+}
+
+}  // namespace internal
 
 }  // namespace apgar::benchmark

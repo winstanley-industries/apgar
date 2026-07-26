@@ -690,6 +690,8 @@ cc_library(
 cc_library(
     name = "phase4_trial_harness",
     srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_execution_internal.h",
+        "src/benchmark/phase4_h4096_canonical_budget_internal.h",
         "src/benchmark/phase4_same_run_decision_telemetry.cc",
         "src/benchmark/phase4_trial_artifact.cc",
         "src/benchmark/phase4_trial_harness.cc",
@@ -893,6 +895,8 @@ cc_library(
     name = "phase4_trial_harness_fault_test_variant",
     testonly = True,
     srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_execution_internal.h",
+        "src/benchmark/phase4_h4096_canonical_budget_internal.h",
         "src/benchmark/phase4_same_run_decision_telemetry.cc",
         "src/benchmark/phase4_trial_artifact.cc",
         "src/benchmark/phase4_trial_harness.cc",
@@ -1173,6 +1177,47 @@ py_library(
     imports = ["."],
     visibility = ["//visibility:private"],
     deps = [":phase4_bounded_json_input_lib"],
+)
+
+py_binary(
+    name = "phase4_confirmatory_h4096_raw_evidence_validator",
+    srcs = ["tools/validate_phase4_confirmatory_h4096_raw_evidence.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_h4096_raw_evidence.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_canonical_budget_roster_v3_validator_lib",
+        ":phase4_confirmatory_decision_protocol_v2_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_h4096_raw_evidence_validator_lib",
+    srcs = ["tools/validate_phase4_confirmatory_h4096_raw_evidence.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_confirmatory_canonical_budget_roster_v3_validator_lib",
+        ":phase4_confirmatory_decision_protocol_v2_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+    ],
 )
 
 py_binary(
@@ -1768,6 +1813,49 @@ py_library(
 )
 
 py_binary(
+    name = "phase4_confirmatory_h4096_same_run_decision_telemetry_validator",
+    srcs = [
+        "tools/validate_phase4_confirmatory_h4096_same_run_decision_telemetry.py",
+    ],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_h4096_same_run_decision_telemetry.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_h4096_raw_evidence_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_h4096_same_run_decision_telemetry_validator_lib",
+    srcs = [
+        "tools/validate_phase4_confirmatory_h4096_same_run_decision_telemetry.py",
+    ],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_confirmatory_h4096_raw_evidence_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_binary(
     name = "phase4_confirmatory_same_run_decision_telemetry_validator",
     srcs = ["tools/validate_phase4_confirmatory_same_run_decision_telemetry.py"],
     data = [
@@ -1898,6 +1986,49 @@ py_test(
         ":phase4_confirmatory_decision_protocol_validator_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_h4096_test_artifacts_lib",
+    testonly = True,
+    srcs = ["tests/support/phase4_confirmatory_h4096_test_artifacts.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    imports = ["."],
+    deps = [
+        ":phase4_confirmatory_canonical_budget_roster_v3_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_confirmatory_h4096_raw_evidence_validator_test",
+    size = "small",
+    srcs = ["tests/tools/validate_phase4_confirmatory_h4096_raw_evidence_test.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_confirmatory_h4096_raw_evidence_validator",
+        ":phase4_confirmatory_h4096_same_run_decision_telemetry_validator",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_confirmatory_h4096_raw_evidence_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_h4096_raw_evidence_validator_lib",
+        ":phase4_confirmatory_h4096_same_run_decision_telemetry_validator_lib",
+        ":phase4_confirmatory_h4096_test_artifacts_lib",
+        ":phase4_raw_evidence_validator_lib",
         ":phase4_same_run_decision_telemetry_validator_lib",
     ],
 )
@@ -2613,6 +2744,103 @@ cc_binary(
         ":phase3_commit",
         ":phase3_source_stamp",
         ":phase4_trial_harness_fault_test_variant",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_v1_fixtureless_parser_test_runner",
+    testonly = True,
+    srcs = ["tools/phase4_evidence_runner.cc"],
+    copts = APGAR_COPTS,
+    linkopts = ["-pthread"],
+    deps = [
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_fixtureless_parser_test_runner",
+    testonly = True,
+    srcs = ["tools/phase4_evidence_runner.cc"],
+    copts = APGAR_COPTS,
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_RUNNER",
+        "APGAR_PHASE4_CONFIRMATORY_RUNNER_TESTING",
+    ],
+    linkopts = ["-pthread"],
+    deps = [
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_h4096_evidence_runner",
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_execution_internal.h",
+        "tools/phase4_evidence_runner.cc",
+    ],
+    copts = APGAR_COPTS,
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_H4096_RUNNER",
+        "APGAR_PHASE4_CONFIRMATORY_RUNNER",
+    ],
+    linkopts = ["-pthread"],
+    tags = ["manual"],
+    deps = [
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_h4096_unpublishable_source_test_runner",
+    testonly = True,
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_execution_internal.h",
+        "tools/phase4_evidence_runner.cc",
+    ],
+    copts = APGAR_COPTS,
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_H4096_FORCE_UNPUBLISHABLE_SOURCE_FOR_TESTING",
+        "APGAR_PHASE4_CONFIRMATORY_H4096_RUNNER",
+        "APGAR_PHASE4_CONFIRMATORY_RUNNER",
+    ],
+    linkopts = ["-pthread"],
+    deps = [
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_trial_harness",
+        ":tool_runfiles",
+    ],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_h4096_evidence_test_runner",
+    testonly = True,
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_execution_internal.h",
+        "tools/phase4_evidence_runner.cc",
+    ],
+    copts = APGAR_COPTS,
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_H4096_RUNNER",
+        "APGAR_PHASE4_CONFIRMATORY_RUNNER",
+        "APGAR_PHASE4_CONFIRMATORY_RUNNER_TESTING",
+    ],
+    linkopts = ["-pthread"],
+    deps = [
+        ":phase3_commit",
+        ":phase3_source_stamp",
+        ":phase4_trial_harness",
         ":tool_runfiles",
     ],
 )
@@ -3465,10 +3693,27 @@ py_test(
     srcs = ["tests/benchmark/phase4_trial_process_test.py"],
     data = [
         "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
+        ":phase4_confirmatory_h4096_evidence_test_runner",
         ":phase4_evidence_fault_runner",
         ":phase4_evidence_runner",
     ],
     legacy_create_init = 0,
+)
+
+py_test(
+    name = "phase4_confirmatory_h4096_preflight_process_test",
+    size = "small",
+    srcs = ["tests/benchmark/phase4_confirmatory_h4096_preflight_process_test.py"],
+    data = [
+        ":phase4_confirmatory_fixtureless_parser_test_runner",
+        ":phase4_confirmatory_h4096_evidence_runner",
+        ":phase4_confirmatory_h4096_evidence_test_runner",
+        ":phase4_confirmatory_h4096_unpublishable_source_test_runner",
+        ":phase4_v1_fixtureless_parser_test_runner",
+    ],
+    legacy_create_init = 0,
+    main = "tests/benchmark/phase4_confirmatory_h4096_preflight_process_test.py",
+    python_version = "3.13",
 )
 
 py_test(
@@ -4504,6 +4749,23 @@ cc_test(
     size = "small",
     srcs = [
         "tests/benchmark/phase4_corpus_v2_budget_firewall_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":phase4_h4096_canonical_budget_firewall_test_support",
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_h4096_raw_entrypoint_firewall_test",
+    size = "small",
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_execution_internal.h",
+        "tests/benchmark/phase4_h4096_raw_entrypoint_firewall_test.cc",
         "tests/support/google_test.h",
     ],
     copts = APGAR_COPTS,

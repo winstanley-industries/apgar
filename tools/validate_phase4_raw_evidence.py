@@ -9,7 +9,7 @@ import os
 import pathlib
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from tools.phase4_bounded_json_input import read_regular_file
@@ -2181,7 +2181,7 @@ def _validate_total_attempts(
     return complete
 
 
-def validate_document(
+def _validate_document_with_authority(
     value: Any,
     *,
     allow_unstamped: bool = False,
@@ -2191,8 +2191,16 @@ def validate_document(
     _expected_raw_evidence_schema_version: int | None = None,
     _total_attempt_mode: bool = False,
     _expected_corpus_version: int = 1,
+    authority_provider: Callable[
+        [int],
+        tuple[
+            int,
+            Mapping[int, Mapping[str, Any]],
+            Mapping[tuple[int, int], int],
+        ],
+    ],
 ) -> None:
-    """Validate one complete Raw-v1 cell; testing relaxations must be explicit."""
+    """Validate Raw evidence through one fixed, independently selected authority."""
     if (
         isinstance(expected_repetitions, bool)
         or not 1 <= expected_repetitions <= _CANONICAL_REPETITIONS
@@ -2246,7 +2254,7 @@ def validate_document(
     ):
         if _u64(document[field], field) == 0:
             raise EvidenceError(f"{field} must be nonzero")
-    manifest_checksum, manifest_cases, manifest_budgets = _representative_manifest_for_corpus(
+    manifest_checksum, manifest_cases, manifest_budgets = authority_provider(
         _expected_corpus_version
     )
     if document["corpus_checksum"] != manifest_checksum:
@@ -2493,6 +2501,31 @@ def validate_document(
         )
 
     _validate_root_checksums(document, source_envelope_checksum)
+
+
+def validate_document(
+    value: Any,
+    *,
+    allow_unstamped: bool = False,
+    expected_commit: str | None = None,
+    expected_repetitions: int = _CANONICAL_REPETITIONS,
+    expected_workers: int = _CANONICAL_WORKERS,
+    _expected_raw_evidence_schema_version: int | None = None,
+    _total_attempt_mode: bool = False,
+    _expected_corpus_version: int = 1,
+) -> None:
+    """Validate one complete Raw-v1 cell; testing relaxations must be explicit."""
+    _validate_document_with_authority(
+        value,
+        allow_unstamped=allow_unstamped,
+        expected_commit=expected_commit,
+        expected_repetitions=expected_repetitions,
+        expected_workers=expected_workers,
+        _expected_raw_evidence_schema_version=_expected_raw_evidence_schema_version,
+        _total_attempt_mode=_total_attempt_mode,
+        _expected_corpus_version=_expected_corpus_version,
+        authority_provider=_representative_manifest_for_corpus,
+    )
 
 
 def validate_same_run_document_v2(

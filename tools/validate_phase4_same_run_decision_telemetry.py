@@ -7,7 +7,7 @@ import json
 import pathlib
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from tools import validate_phase4_raw_evidence as raw_validator
@@ -449,7 +449,7 @@ def _arm_capture(
     return capture
 
 
-def _validate_join(
+def _validate_join_with_authority(
     raw: Any,
     sidecar: Any,
     *,
@@ -457,26 +457,19 @@ def _validate_join(
     expected_commit: str | None = None,
     expected_repetitions: int = 20,
     expected_workers: int = 4,
-    confirmatory: bool,
+    raw_document_validator: Callable[..., None],
+    decision_cells_provider: Callable[[], frozenset[tuple[int, int]]],
+    workload_roster_provider: Callable[[int], tuple[tuple[int, int], ...]],
 ) -> Mapping[str, Any]:
     if not allow_unstamped and (expected_repetitions != 20 or expected_workers != 4):
         raise EvidenceError("testing cardinality overrides require --testing-allow-unstamped")
-    if confirmatory:
-        raw_validator.validate_confirmatory_same_run_document_v2(
-            raw,
-            allow_unstamped=allow_unstamped,
-            expected_commit=expected_commit,
-            expected_repetitions=expected_repetitions,
-            expected_workers=expected_workers,
-        )
-    else:
-        raw_validator.validate_same_run_document_v2(
-            raw,
-            allow_unstamped=allow_unstamped,
-            expected_commit=expected_commit,
-            expected_repetitions=expected_repetitions,
-            expected_workers=expected_workers,
-        )
+    raw_document_validator(
+        raw,
+        allow_unstamped=allow_unstamped,
+        expected_commit=expected_commit,
+        expected_repetitions=expected_repetitions,
+        expected_workers=expected_workers,
+    )
     raw_document = _object(raw, "raw cell")
     document = _object(sidecar, "same-run telemetry")
     _fields(document, _TOP_FIELDS, "same-run telemetry")
@@ -526,51 +519,11 @@ def _validate_join(
         actual = _u64(document[field], field)
         if actual == 0 or actual != expected:
             raise EvidenceError(f"{field} differs from Raw")
-    if confirmatory:
-        from tools import validate_phase4_confirmatory_decision_protocol as confirmatory_protocol
-
-        try:
-            confirmatory_protocol.read_protocol()
-            cells = {
-                (case_id, pool): role
-                for case_id, pool, role, disposition in confirmatory_protocol.expanded_cells()
-                if disposition == "confirmatory_raw_success"
-                and role in {"exact", "heldout", "imported"}
-            }
-        except ValueError as error:
-            raise EvidenceError(
-                f"cannot authenticate the frozen confirmatory protocol: {error}"
-            ) from error
-    else:
-        try:
-            protocol_validator.read_protocol()
-            cells = {
-                (case_id, pool): role
-                for case_id, pool, role, disposition in protocol_validator.expanded_cells()
-                if disposition == "same_run_raw_success"
-                and role in {"exact", "heldout", "imported"}
-            }
-        except ValueError as error:
-            raise EvidenceError(
-                f"cannot authenticate the frozen decision protocol: {error}"
-            ) from error
+    cells = decision_cells_provider()
     config = raw_document["config"]
-    if cells.get((config["case_id"], config["requested_pool_size"])) is None:
+    if (config["case_id"], config["requested_pool_size"]) not in cells:
         raise EvidenceError("same-run telemetry cell is outside the frozen decision scope")
-    if confirmatory:
-        from tools import validate_phase4_representative_manifest_v2 as confirmatory_authorities
-
-        try:
-            _, roster = confirmatory_authorities.validated_successful_case_roster(config["case_id"])
-        except confirmatory_authorities.AuthorityError as error:
-            raise EvidenceError(
-                f"cannot authenticate the confirmatory workload roster: {error}"
-            ) from error
-    else:
-        try:
-            _, roster = roster_validator.validated_successful_case_roster(config["case_id"])
-        except roster_validator.ManifestError as error:
-            raise EvidenceError(f"cannot authenticate the workload roster: {error}") from error
+    roster = workload_roster_provider(config["case_id"])
     attempts = _array(document["attempts"], "attempts")
     raw_attempts = raw_document["attempts"]
     if len(attempts) != expected_repetitions or len(attempts) != len(raw_attempts):
@@ -629,6 +582,90 @@ def _validate_join(
     if source_checksum == 0 or source_checksum != compute_source_envelope_checksum(document):
         raise EvidenceError("source_envelope_checksum does not authenticate the source envelope")
     return document
+
+
+def _current_decision_cells() -> frozenset[tuple[int, int]]:
+    try:
+        protocol_validator.read_protocol()
+        return frozenset(
+            (case_id, pool)
+            for case_id, pool, role, disposition in protocol_validator.expanded_cells()
+            if disposition == "same_run_raw_success" and role in {"exact", "heldout", "imported"}
+        )
+    except ValueError as error:
+        raise EvidenceError(f"cannot authenticate the frozen decision protocol: {error}") from error
+
+
+def _confirmatory_decision_cells() -> frozenset[tuple[int, int]]:
+    from tools import validate_phase4_confirmatory_decision_protocol as confirmatory_protocol
+
+    try:
+        confirmatory_protocol.read_protocol()
+        return frozenset(
+            (case_id, pool)
+            for case_id, pool, role, disposition in confirmatory_protocol.expanded_cells()
+            if disposition == "confirmatory_raw_success"
+            and role in {"exact", "heldout", "imported"}
+        )
+    except ValueError as error:
+        raise EvidenceError(
+            f"cannot authenticate the frozen confirmatory protocol: {error}"
+        ) from error
+
+
+def _current_workload_roster(case_id: int) -> tuple[tuple[int, int], ...]:
+    try:
+        _, roster = roster_validator.validated_successful_case_roster(case_id)
+        return roster
+    except roster_validator.ManifestError as error:
+        raise EvidenceError(f"cannot authenticate the workload roster: {error}") from error
+
+
+def _confirmatory_workload_roster(case_id: int) -> tuple[tuple[int, int], ...]:
+    from tools import validate_phase4_representative_manifest_v2 as confirmatory_authorities
+
+    try:
+        _, roster = confirmatory_authorities.validated_successful_case_roster(case_id)
+        return roster
+    except confirmatory_authorities.AuthorityError as error:
+        raise EvidenceError(
+            f"cannot authenticate the confirmatory workload roster: {error}"
+        ) from error
+
+
+def _validate_join(
+    raw: Any,
+    sidecar: Any,
+    *,
+    allow_unstamped: bool = False,
+    expected_commit: str | None = None,
+    expected_repetitions: int = 20,
+    expected_workers: int = 4,
+    confirmatory: bool,
+) -> Mapping[str, Any]:
+    if confirmatory:
+        return _validate_join_with_authority(
+            raw,
+            sidecar,
+            allow_unstamped=allow_unstamped,
+            expected_commit=expected_commit,
+            expected_repetitions=expected_repetitions,
+            expected_workers=expected_workers,
+            raw_document_validator=raw_validator.validate_confirmatory_same_run_document_v2,
+            decision_cells_provider=_confirmatory_decision_cells,
+            workload_roster_provider=_confirmatory_workload_roster,
+        )
+    return _validate_join_with_authority(
+        raw,
+        sidecar,
+        allow_unstamped=allow_unstamped,
+        expected_commit=expected_commit,
+        expected_repetitions=expected_repetitions,
+        expected_workers=expected_workers,
+        raw_document_validator=raw_validator.validate_same_run_document_v2,
+        decision_cells_provider=_current_decision_cells,
+        workload_roster_provider=_current_workload_roster,
+    )
 
 
 def validate_join(

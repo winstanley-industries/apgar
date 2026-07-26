@@ -33,6 +33,8 @@
 #include "apgar/benchmark/phase4_trial_harness.h"
 #include "apgar/board_ir/stable_hash.h"
 #include "src/allocator/negotiated_prices_internal.h"
+#include "src/benchmark/phase4_confirmatory_h4096_execution_internal.h"
+#include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
 #include "src/benchmark/phase4_paired_trial_internal.h"
 #include "src/benchmark/phase4_trial_wire_internal.h"
 
@@ -55,38 +57,221 @@ enum class WorkerWireMode : std::uint8_t {
   kSameRunTelemetryV2,
 };
 
+using Phase4TrialExecutionAuthority = internal::Phase4TrialExecutionAuthority;
+
+[[nodiscard]] std::optional<Phase4RepresentativeCorpusAuthority> CorpusAuthority(
+    Phase4TrialExecutionAuthority authority) noexcept {
+  switch (authority) {
+    case Phase4TrialExecutionAuthority::kCorpusV1:
+      return Phase4RepresentativeCorpusAuthority::kV1;
+    case Phase4TrialExecutionAuthority::kCorpusV2H2250:
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096:
+      return Phase4RepresentativeCorpusAuthority::kV2;
+  }
+  return std::nullopt;
+}
+
 [[nodiscard]] Phase4CanonicalSpecResult BuildCanonicalSpecForAuthority(
-    Phase4RepresentativeCorpusAuthority authority, const Phase4CanonicalCellConfig& cell,
+    Phase4TrialExecutionAuthority authority, const Phase4CanonicalCellConfig& cell,
     std::uint32_t repetition, Phase4TrialOrder order) noexcept {
-  return authority == Phase4RepresentativeCorpusAuthority::kV1
-             ? BuildPhase4CanonicalTrialSpecV1(cell, repetition, order)
-             : BuildPhase4CanonicalTrialSpecForCorpusV2(cell, repetition, order);
+  switch (authority) {
+    case Phase4TrialExecutionAuthority::kCorpusV1:
+      return BuildPhase4CanonicalTrialSpecV1(cell, repetition, order);
+    case Phase4TrialExecutionAuthority::kCorpusV2H2250:
+      return BuildPhase4CanonicalTrialSpecForCorpusV2(cell, repetition, order);
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096:
+      return internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(cell, repetition, order);
+  }
+  return Phase4TrialHarnessError{
+      .invariant_id = "P4HARNESS-EXECUTION-AUTHORITY-001",
+      .detail = "the private trial execution authority is invalid",
+      .raw_cell = std::nullopt,
+  };
+}
+
+[[nodiscard]] std::optional<Phase4TrialHarnessError> PreflightConfirmatoryH4096Cell(
+    Phase4TrialExecutionAuthority authority, WorkerWireMode wire_mode,
+    const Phase4CanonicalCellConfig& cell, std::optional<Phase4TrialArm> worker_arm) {
+  if (authority != Phase4TrialExecutionAuthority::kCorpusV2H4096) {
+    return Phase4TrialHarnessError{
+        .invariant_id = "P4HARNESS-H4096-AUTHORITY-001",
+        .detail = "the fixed H=4096 preflight requires its private execution authority",
+        .raw_cell = std::nullopt,
+    };
+  }
+  const bool ordinary = wire_mode == WorkerWireMode::kRawV1;
+  const std::uint32_t expected_case = ordinary ? 10'200U : 10'100U;
+  const std::uint32_t expected_pool = ordinary ? 8U : 4U;
+  if (cell.case_id != expected_case || cell.requested_pool_size != expected_pool) {
+    return Phase4TrialHarnessError{
+        .invariant_id =
+            ordinary ? "P4HARNESS-H4096-ORDINARY-SCOPE-001" : "P4HARNESS-H4096-SAME-RUN-SCOPE-001",
+        .detail = ordinary ? "H=4096 ordinary execution is restricted to calibration cell (10200,8)"
+                           : "H=4096 same-run execution is restricted to exact cell (10100,4)",
+        .raw_cell = std::nullopt,
+    };
+  }
+  if (cell.repetitions != kPhase4CanonicalRepetitionsV1 ||
+      cell.preparation_worker_count != kPhase4CanonicalPreparationWorkersV1) {
+    return Phase4TrialHarnessError{
+        .invariant_id = "P4HARNESS-H4096-CANONICAL-CARDINALITY-001",
+        .detail = "H=4096 execution requires exactly twenty repetitions and four preparer workers",
+        .raw_cell = std::nullopt,
+    };
+  }
+  for (std::uint32_t repetition = 0; repetition < cell.repetitions; ++repetition) {
+    const Phase4TrialOrder order = repetition % 2U == 0U ? Phase4TrialOrder::kBaselineFirst
+                                                         : Phase4TrialOrder::kCandidateFirst;
+    Phase4CanonicalSpecResult built =
+        BuildCanonicalSpecForAuthority(authority, cell, repetition, order);
+    if (std::holds_alternative<Phase4TrialHarnessError>(built)) {
+      return std::get<Phase4TrialHarnessError>(std::move(built));
+    }
+    const Phase4PairedTrialSpec& spec = std::get<Phase4PairedTrialSpec>(built);
+    const auto preflight_arm = [&](Phase4TrialArm arm) {
+      return ordinary ? internal::PreflightPhase4ConfirmatoryH4096OrdinarySpec(spec, arm)
+                      : internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(spec, arm);
+    };
+    const auto convert = [](const Phase4PairedTrialError& error) {
+      return Phase4TrialHarnessError{
+          .invariant_id = std::string(error.invariant_id),
+          .detail = std::string(error.detail),
+          .raw_cell = std::nullopt,
+      };
+    };
+    if (worker_arm.has_value()) {
+      if (std::optional<Phase4PairedTrialError> error = preflight_arm(*worker_arm);
+          error.has_value()) {
+        return convert(*error);
+      }
+    } else {
+      for (Phase4TrialArm arm :
+           {Phase4TrialArm::kSequentialBaseline, Phase4TrialArm::kReusableCandidateAllocation}) {
+        if (std::optional<Phase4PairedTrialError> error = preflight_arm(arm); error.has_value()) {
+          return convert(*error);
+        }
+      }
+    }
+  }
+  return std::nullopt;
 }
 
 [[nodiscard]] Phase4TrialArmExecutionResult ExecuteArmForAuthority(
-    Phase4RepresentativeCorpusAuthority authority, Phase4TrialArm arm,
-    const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
-    allocator::PersistentCpuCandidatePoolPreparer* preparer) {
-  return authority == Phase4RepresentativeCorpusAuthority::kV1
-             ? ExecutePhase4TrialArmV1(arm, spec, imported_fixture, preparer)
-             : ExecutePhase4TrialArmForCorpusV2(arm, spec, imported_fixture, preparer);
+    Phase4TrialExecutionAuthority authority, Phase4TrialArm arm, const Phase4PairedTrialSpec& spec,
+    std::string_view imported_fixture, allocator::PersistentCpuCandidatePoolPreparer* preparer) {
+  switch (authority) {
+    case Phase4TrialExecutionAuthority::kCorpusV1:
+      return ExecutePhase4TrialArmV1(arm, spec, imported_fixture, preparer);
+    case Phase4TrialExecutionAuthority::kCorpusV2H2250:
+      return ExecutePhase4TrialArmForCorpusV2(arm, spec, imported_fixture, preparer);
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096:
+      return internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArm(arm, spec, imported_fixture,
+                                                                      preparer);
+  }
+  return Phase4TrialArmFailure{
+      .summary =
+          Phase4PairedTrialError{
+              .code = Phase4PairedTrialErrorCode::kInvalidConfiguration,
+              .invariant_id = "P4HARNESS-EXECUTION-AUTHORITY-001",
+              .detail = "the private trial execution authority is invalid",
+              .arm = arm,
+          },
+      .payload = std::monostate{},
+  };
 }
 
 [[nodiscard]] Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecuteSameRunArmForAuthority(
-    Phase4RepresentativeCorpusAuthority authority, Phase4TrialArm arm,
-    const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
-    allocator::PersistentCpuCandidatePoolPreparer* preparer) {
-  return authority == Phase4RepresentativeCorpusAuthority::kV1
-             ? ExecutePhase4TrialArmWithSameRunTelemetryV1(arm, spec, imported_fixture, preparer)
-             : ExecutePhase4TrialArmWithSameRunTelemetryForCorpusV2(arm, spec, imported_fixture,
-                                                                    preparer);
+    Phase4TrialExecutionAuthority authority, Phase4TrialArm arm, const Phase4PairedTrialSpec& spec,
+    std::string_view imported_fixture, allocator::PersistentCpuCandidatePoolPreparer* preparer) {
+  switch (authority) {
+    case Phase4TrialExecutionAuthority::kCorpusV1:
+      return ExecutePhase4TrialArmWithSameRunTelemetryV1(arm, spec, imported_fixture, preparer);
+    case Phase4TrialExecutionAuthority::kCorpusV2H2250:
+      return ExecutePhase4TrialArmWithSameRunTelemetryForCorpusV2(arm, spec, imported_fixture,
+                                                                  preparer);
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096:
+      return internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArm(arm, spec, imported_fixture,
+                                                                     preparer);
+  }
+  return Phase4TrialArmFailure{
+      .summary =
+          Phase4PairedTrialError{
+              .code = Phase4PairedTrialErrorCode::kInvalidConfiguration,
+              .invariant_id = "P4HARNESS-EXECUTION-AUTHORITY-001",
+              .detail = "the private trial execution authority is invalid",
+              .arm = arm,
+          },
+      .payload = std::monostate{},
+  };
 }
 
 [[nodiscard]] Phase4DurableArmFailure ReconcileFailureForAuthority(
-    Phase4RepresentativeCorpusAuthority authority, Phase4TrialArmFailure failure) {
-  return authority == Phase4RepresentativeCorpusAuthority::kV1
+    Phase4TrialExecutionAuthority authority, Phase4TrialArmFailure failure) {
+  return authority == Phase4TrialExecutionAuthority::kCorpusV1
              ? ReconcilePhase4TrialArmFailureV1(std::move(failure))
              : ReconcilePhase4TrialArmFailureForCorpusV2(std::move(failure));
+}
+
+[[nodiscard]] Phase4TrialArmRecordResult FinalizeArmForAuthority(
+    Phase4TrialExecutionAuthority authority, WorkerWireMode wire_mode,
+    const Phase4PairedTrialSpec* expected_spec, Phase4TrialArmExecution execution,
+    const Phase4ExternalResourceObservation& observation) {
+  switch (authority) {
+    case Phase4TrialExecutionAuthority::kCorpusV1:
+      return FinalizePhase4TrialArmV1(std::move(execution), observation);
+    case Phase4TrialExecutionAuthority::kCorpusV2H2250:
+      return FinalizePhase4TrialArmForCorpusV2(std::move(execution), observation);
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096:
+      if (expected_spec == nullptr) {
+        return Phase4PairedTrialError{
+            .code = Phase4PairedTrialErrorCode::kMeasurementAssociation,
+            .invariant_id = "P4HARNESS-H4096-EXPECTED-SPEC-001",
+            .detail = "H=4096 finalization requires the rebuilt expected canonical spec",
+            .arm = execution.semantics.arm,
+        };
+      }
+      return wire_mode == WorkerWireMode::kRawV1
+                 ? internal::FinalizePhase4ConfirmatoryH4096OrdinaryTrialArm(
+                       *expected_spec, std::move(execution), observation)
+                 : internal::FinalizePhase4ConfirmatoryH4096SameRunTrialArm(
+                       *expected_spec, std::move(execution), observation);
+  }
+  return Phase4PairedTrialError{
+      .code = Phase4PairedTrialErrorCode::kInvalidConfiguration,
+      .invariant_id = "P4HARNESS-EXECUTION-AUTHORITY-001",
+      .detail = "the private trial execution authority is invalid",
+      .arm = execution.semantics.arm,
+  };
+}
+
+[[nodiscard]] Phase4PairedTrialAssemblyResult AssemblePairForAuthority(
+    Phase4TrialExecutionAuthority authority, WorkerWireMode wire_mode,
+    const Phase4PairedTrialSpec* expected_spec, Phase4TrialArmRecord baseline,
+    Phase4TrialArmRecord candidate) {
+  switch (authority) {
+    case Phase4TrialExecutionAuthority::kCorpusV1:
+      return AssemblePhase4PairedTrialV1(std::move(baseline), std::move(candidate));
+    case Phase4TrialExecutionAuthority::kCorpusV2H2250:
+      return AssemblePhase4PairedTrialForCorpusV2(std::move(baseline), std::move(candidate));
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096:
+      if (expected_spec == nullptr) {
+        return Phase4PairedTrialError{
+            .code = Phase4PairedTrialErrorCode::kMeasurementAssociation,
+            .invariant_id = "P4HARNESS-H4096-EXPECTED-SPEC-001",
+            .detail = "H=4096 assembly requires the rebuilt expected canonical spec",
+        };
+      }
+      return wire_mode == WorkerWireMode::kRawV1
+                 ? internal::AssemblePhase4ConfirmatoryH4096OrdinaryPairedTrial(
+                       *expected_spec, std::move(baseline), std::move(candidate))
+                 : internal::AssemblePhase4ConfirmatoryH4096SameRunPairedTrial(
+                       *expected_spec, std::move(baseline), std::move(candidate));
+  }
+  return Phase4PairedTrialError{
+      .code = Phase4PairedTrialErrorCode::kInvalidConfiguration,
+      .invariant_id = "P4HARNESS-EXECUTION-AUTHORITY-001",
+      .detail = "the private trial execution authority is invalid",
+  };
 }
 
 #if defined(__linux__) && defined(__x86_64__) && !defined(__ILP32__)
@@ -290,16 +475,28 @@ void CloseWorkerDescriptors(WorkerProcess* worker) noexcept {
   return error == std::errc{} ? std::string(bytes.data(), end) : std::string();
 }
 
-[[nodiscard]] std::vector<std::string> BuildWorkerArguments(
-    std::string_view executable, Phase4RepresentativeCorpusAuthority authority, Phase4TrialArm arm,
-    const Phase4CanonicalCellConfig& cell, std::string_view imported_fixture_path,
-    WorkerWireMode wire_mode) {
+[[nodiscard]] std::vector<std::string> BuildWorkerArguments(std::string_view executable,
+                                                            Phase4TrialExecutionAuthority authority,
+                                                            Phase4TrialArm arm,
+                                                            const Phase4CanonicalCellConfig& cell,
+                                                            std::string_view imported_fixture_path,
+                                                            WorkerWireMode wire_mode) {
   std::vector<std::string> arguments;
   arguments.reserve(21);
   arguments.emplace_back(executable);
-  arguments.emplace_back(wire_mode == WorkerWireMode::kRawV1 ? "--phase4_worker=1"
-                                                             : "--phase4_same_run_worker=1");
-  arguments.emplace_back(authority == Phase4RepresentativeCorpusAuthority::kV1
+  if (authority == Phase4TrialExecutionAuthority::kCorpusV2H4096) {
+    arguments.emplace_back(wire_mode == WorkerWireMode::kRawV1
+                               ? "--phase4_h4096_ordinary_worker=1"
+                               : "--phase4_h4096_same_run_worker=1");
+  } else {
+    arguments.emplace_back(wire_mode == WorkerWireMode::kRawV1 ? "--phase4_worker=1"
+                                                               : "--phase4_same_run_worker=1");
+  }
+  const std::optional<Phase4RepresentativeCorpusAuthority> corpus = CorpusAuthority(authority);
+  if (!corpus.has_value()) {
+    return {};
+  }
+  arguments.emplace_back(*corpus == Phase4RepresentativeCorpusAuthority::kV1
                              ? "--corpus_version=1"
                              : "--corpus_version=2");
   arguments.emplace_back(arm == Phase4TrialArm::kSequentialBaseline ? "--arm=baseline"
@@ -392,7 +589,7 @@ void TerminateLaunchChild(pid_t pid, int* pid_descriptor) noexcept {
 }
 
 [[nodiscard]] LaunchResult LaunchWorker(std::string_view executable, Phase4TrialArm arm,
-                                        Phase4RepresentativeCorpusAuthority authority,
+                                        Phase4TrialExecutionAuthority authority,
                                         const Phase4CanonicalCellConfig& cell,
                                         std::string_view imported_fixture_path,
                                         std::uint64_t run_identity, Clock::time_point deadline,
@@ -409,6 +606,10 @@ void TerminateLaunchChild(pid_t pid, int* pid_descriptor) noexcept {
   }
   const std::vector<std::string> arguments =
       BuildWorkerArguments(executable, authority, arm, cell, imported_fixture_path, wire_mode);
+  if (arguments.empty()) {
+    return LaunchError{.invariant_id = "P4HARNESS-EXECUTION-AUTHORITY-001",
+                       .detail = "the private trial execution authority is invalid"};
+  }
   std::vector<char*> argument_pointers;
   argument_pointers.reserve(arguments.size() + 1);
   for (const std::string& argument : arguments) {
@@ -878,22 +1079,38 @@ template <typename Message, typename InspectFrame, typename DecodeFrame>
 
 [[nodiscard]] AwaitResult AwaitMessage(WorkerProcess* worker, Clock::time_point start,
                                        Clock::time_point deadline,
-                                       Phase4RepresentativeCorpusAuthority authority) {
+                                       Phase4TrialExecutionAuthority authority) {
+  const std::optional<Phase4RepresentativeCorpusAuthority> corpus = CorpusAuthority(authority);
+  if (!corpus.has_value()) {
+    return AwaitResult{.kind = AwaitKind::kProtocol,
+                       .message = std::nullopt,
+                       .invariant_id = "P4HARNESS-EXECUTION-AUTHORITY-001",
+                       .detail = "the private trial execution authority is invalid",
+                       .elapsed_nanoseconds = ElapsedNanoseconds(start, Clock::now())};
+  }
   return AwaitMessageImpl<Phase4TrialWireMessage>(
       worker, start, deadline, internal::kPhase4TrialWireMaxFrameBytesV1,
       internal::Phase4TrialWireExpectedFrameSizeV1,
-      authority == Phase4RepresentativeCorpusAuthority::kV1
+      *corpus == Phase4RepresentativeCorpusAuthority::kV1
           ? internal::DecodePhase4TrialWireMessageV1
           : internal::DecodePhase4TrialWireMessageForCorpusV2);
 }
 
 [[nodiscard]] AwaitResultV2 AwaitMessageV2(WorkerProcess* worker, Clock::time_point start,
                                            Clock::time_point deadline,
-                                           Phase4RepresentativeCorpusAuthority authority) {
+                                           Phase4TrialExecutionAuthority authority) {
+  const std::optional<Phase4RepresentativeCorpusAuthority> corpus = CorpusAuthority(authority);
+  if (!corpus.has_value()) {
+    return AwaitResultV2{.kind = AwaitKind::kProtocol,
+                         .message = std::nullopt,
+                         .invariant_id = "P4HARNESS-EXECUTION-AUTHORITY-001",
+                         .detail = "the private trial execution authority is invalid",
+                         .elapsed_nanoseconds = ElapsedNanoseconds(start, Clock::now())};
+  }
   return AwaitMessageImpl<internal::Phase4TrialWireMessageV2>(
       worker, start, deadline, internal::kPhase4TrialWireMaxFrameBytesV2,
       internal::Phase4TrialWireExpectedFrameSizeV2,
-      authority == Phase4RepresentativeCorpusAuthority::kV1
+      *corpus == Phase4RepresentativeCorpusAuthority::kV1
           ? internal::DecodePhase4TrialWireMessageV2
           : internal::DecodePhase4TrialWireMessageV2ForCorpusV2);
 }
@@ -1153,14 +1370,18 @@ template <typename Message>
   return value == 0 ? 1 : value;
 }
 
-[[nodiscard]] std::uint64_t CellPlanChecksum(Phase4RepresentativeCorpusAuthority authority,
+[[nodiscard]] std::uint64_t CellPlanChecksum(Phase4TrialExecutionAuthority authority,
                                              const Phase4CanonicalCellConfig& cell) noexcept {
+  const std::optional<Phase4RepresentativeCorpusAuthority> corpus = CorpusAuthority(authority);
+  if (!corpus.has_value()) {
+    return 0;
+  }
   board_ir::StableHashBuilder hash;
-  hash.AddString(authority == Phase4RepresentativeCorpusAuthority::kV1
+  hash.AddString(*corpus == Phase4RepresentativeCorpusAuthority::kV1
                      ? "APGAR-PHASE4-CANONICAL-CELL-PLAN-V1"
                      : "APGAR-PHASE4-CANONICAL-CELL-PLAN-V2");
   hash.AddU32(cell.schema_version);
-  hash.AddU64(Phase4RepresentativeCorpusChecksumForAuthority(authority));
+  hash.AddU64(Phase4RepresentativeCorpusChecksumForAuthority(*corpus));
   hash.AddU32(cell.case_id);
   hash.AddU32(cell.requested_pool_size);
   hash.AddU32(cell.preparation_worker_count);
@@ -1178,8 +1399,7 @@ template <typename Message>
   return hash.Finish();
 }
 
-void InitializeAttempts(Phase4RepresentativeCorpusAuthority authority,
-                        Phase4IsolatedCellResult* result) {
+void InitializeAttempts(Phase4TrialExecutionAuthority authority, Phase4IsolatedCellResult* result) {
   result->attempts.reserve(result->config.repetitions);
   for (std::uint32_t repetition = 0; repetition < result->config.repetitions; ++repetition) {
     const Phase4TrialOrder order =
@@ -1416,9 +1636,9 @@ void ApplyProcessExit(Phase4IsolatedCellResult* result, WorkerProcess* worker,
 }
 
 [[nodiscard]] Phase4DurableArmFailure SummaryFailure(
-    Phase4RepresentativeCorpusAuthority authority, Phase4TrialArm arm,
-    Phase4PairedTrialErrorCode code, std::string_view invariant, std::string_view detail,
-    std::uint64_t required = 0, std::uint64_t configured = 0) {
+    Phase4TrialExecutionAuthority authority, Phase4TrialArm arm, Phase4PairedTrialErrorCode code,
+    std::string_view invariant, std::string_view detail, std::uint64_t required = 0,
+    std::uint64_t configured = 0) {
   return ReconcileFailureForAuthority(
       authority, Phase4TrialArmFailure{
                      .summary = Phase4PairedTrialError{.code = code,
@@ -1464,31 +1684,39 @@ void ApplyProcessExit(Phase4IsolatedCellResult* result, WorkerProcess* worker,
          failure.capacity_model_checksum == ready.capacity_model_checksum;
 }
 
-[[nodiscard]] bool ReadyMatchesCell(Phase4RepresentativeCorpusAuthority authority,
+[[nodiscard]] bool ReadyMatchesCell(Phase4TrialExecutionAuthority authority,
                                     const internal::Phase4TrialWireReady& ready,
                                     const Phase4CanonicalCellConfig& cell) noexcept {
+  const std::optional<Phase4RepresentativeCorpusAuthority> corpus = CorpusAuthority(authority);
+  if (!corpus.has_value()) {
+    return false;
+  }
   const Phase4CaseDescriptor* descriptor =
-      FindPhase4CaseDescriptorForAuthority(authority, cell.case_id);
+      FindPhase4CaseDescriptorForAuthority(*corpus, cell.case_id);
   return descriptor != nullptr && ready.case_id == cell.case_id &&
          ready.descriptor_fingerprint ==
-             FingerprintPhase4CaseDescriptorForAuthority(authority, *descriptor);
+             FingerprintPhase4CaseDescriptorForAuthority(*corpus, *descriptor);
 }
 
-[[nodiscard]] bool FailureMatchesCell(Phase4RepresentativeCorpusAuthority authority,
+[[nodiscard]] bool FailureMatchesCell(Phase4TrialExecutionAuthority authority,
                                       const Phase4DurableArmFailure& failure,
                                       const Phase4CanonicalCellConfig& cell,
                                       const internal::Phase4TrialWireReady* peer_ready) noexcept {
   if (failure.payload_kind == Phase4DurableFailurePayloadKind::kSummaryOnly) {
     return true;
   }
+  const std::optional<Phase4RepresentativeCorpusAuthority> corpus = CorpusAuthority(authority);
+  if (!corpus.has_value()) {
+    return false;
+  }
   const Phase4CaseDescriptor* descriptor =
-      FindPhase4CaseDescriptorForAuthority(authority, cell.case_id);
+      FindPhase4CaseDescriptorForAuthority(*corpus, cell.case_id);
   const bool matches_active_cell =
       failure.case_id == cell.case_id &&
       (failure.payload_kind == Phase4DurableFailurePayloadKind::kCorpus ||
        (failure.has_case_identity && descriptor != nullptr &&
         failure.descriptor_fingerprint ==
-            FingerprintPhase4CaseDescriptorForAuthority(authority, *descriptor)));
+            FingerprintPhase4CaseDescriptorForAuthority(*corpus, *descriptor)));
   return matches_active_cell &&
          (peer_ready == nullptr || MatchesReadyIdentity(*peer_ready, failure));
 }
@@ -1509,6 +1737,74 @@ struct ControllerArmExecution {
   Phase4TrialArmExecution execution;
   std::optional<Phase4SameRunArmDecisionTelemetryV1> same_run_telemetry;
 };
+
+[[nodiscard]] bool H4096SemanticsMatchExpectedSpec(WorkerWireMode wire_mode,
+                                                   const Phase4PairedTrialSpec& expected_spec,
+                                                   const Phase4TrialArmSemantics& semantics) {
+  const bool ordinary = wire_mode == WorkerWireMode::kRawV1;
+  const std::optional<Phase4PairedTrialError> preflight =
+      ordinary
+          ? internal::PreflightPhase4ConfirmatoryH4096OrdinarySpec(expected_spec, semantics.arm)
+          : internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(expected_spec, semantics.arm);
+  if (preflight.has_value() ||
+      internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(
+          Phase4RepresentativeCorpusAuthority::kV2, semantics)
+          .has_value() ||
+      expected_spec.candidate_session_config.schedules.size() != 2) {
+    return false;
+  }
+  const Phase4CaseDescriptor* descriptor = FindPhase4CaseDescriptorForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV2, expected_spec.case_id);
+  if (descriptor == nullptr) {
+    return false;
+  }
+  const Phase4RouteOpportunity expected_opportunity{
+      .route_queries = expected_spec.baseline_config.limits.maximum_route_queries,
+      .route_work_units = expected_spec.baseline_config.limits.maximum_total_route_work_units,
+  };
+  const std::uint64_t expected_columns_per_epoch =
+      expected_spec.candidate_session_config.regeneration_execution_config.maximum_route_queries;
+  const std::uint32_t expected_terminal_rounds =
+      expected_spec.candidate_session_config.schedules[1].maximum_selection_rounds;
+  const std::uint64_t expected_budget_checksum =
+      internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
+          Phase4RepresentativeCorpusAuthority::kV2, expected_spec, expected_opportunity,
+          descriptor->requested_net_count, expected_columns_per_epoch, expected_terminal_rounds);
+  return semantics.execution_order == expected_spec.execution_order &&
+         semantics.corpus_version == Phase4RepresentativeCorpusVersionForAuthority(
+                                         Phase4RepresentativeCorpusAuthority::kV2) &&
+         semantics.corpus_checksum == Phase4RepresentativeCorpusChecksumForAuthority(
+                                          Phase4RepresentativeCorpusAuthority::kV2) &&
+         semantics.case_id == expected_spec.case_id &&
+         semantics.descriptor_fingerprint ==
+             FingerprintPhase4CaseDescriptorForAuthority(Phase4RepresentativeCorpusAuthority::kV2,
+                                                         *descriptor) &&
+         semantics.budget_checksum == expected_budget_checksum &&
+         semantics.workload_net_count == descriptor->requested_net_count &&
+         semantics.requested_pool_size == expected_spec.requested_pool_size &&
+         semantics.repetition_index == expected_spec.repetition_index &&
+         semantics.root_seed == expected_spec.root_seed &&
+         semantics.preparation_worker_count == expected_spec.preparation_worker_count &&
+         semantics.baseline_sweeps == expected_spec.baseline_config.maximum_sweeps &&
+         semantics.candidate_regeneration_epochs ==
+             expected_spec.candidate_session_config.maximum_regeneration_epochs &&
+         semantics.candidate_columns_per_epoch == expected_columns_per_epoch &&
+         semantics.candidate_terminal_selection_rounds == expected_terminal_rounds &&
+         semantics.external_budget == expected_spec.external_budget &&
+         semantics.opportunity == expected_opportunity;
+}
+
+[[nodiscard]] bool DecodedH4096SuccessMatchesExpectedSpec(
+    WorkerWireMode wire_mode, const Phase4PairedTrialSpec& expected_spec,
+    const ControllerArmExecution& execution) {
+  const Phase4TrialArmSemantics& semantics = execution.execution.semantics;
+  return H4096SemanticsMatchExpectedSpec(wire_mode, expected_spec, semantics) &&
+         (wire_mode == WorkerWireMode::kRawV1
+              ? !execution.same_run_telemetry.has_value()
+              : execution.same_run_telemetry.has_value() &&
+                    execution.same_run_telemetry->associated_semantic_checksum ==
+                        semantics.semantic_checksum);
+}
 
 struct ControllerWireSuccess {
   ControllerArmExecution execution;
@@ -1571,7 +1867,7 @@ using ControllerAwaitResult = BasicAwaitResult<ControllerWireMessage>;
 
 [[nodiscard]] ControllerAwaitResult AwaitControllerMessage(
     WorkerProcess* worker, Clock::time_point start, Clock::time_point deadline,
-    WorkerWireMode wire_mode, Phase4RepresentativeCorpusAuthority authority) {
+    WorkerWireMode wire_mode, Phase4TrialExecutionAuthority authority) {
   return wire_mode == WorkerWireMode::kRawV1
              ? NormalizeAwaitResult(AwaitMessage(worker, start, deadline, authority))
              : NormalizeAwaitResult(AwaitMessageV2(worker, start, deadline, authority));
@@ -1619,14 +1915,18 @@ using ControllerWireReadResult =
 
 [[nodiscard]] bool SendControllerSuccess(int descriptor, ControllerArmExecution execution,
                                          WorkerWireMode wire_mode,
-                                         Phase4RepresentativeCorpusAuthority authority) noexcept {
+                                         Phase4TrialExecutionAuthority authority) noexcept {
+  const std::optional<Phase4RepresentativeCorpusAuthority> corpus = CorpusAuthority(authority);
+  if (!corpus.has_value()) {
+    return false;
+  }
   if (wire_mode == WorkerWireMode::kRawV1) {
     if (execution.same_run_telemetry.has_value()) {
       return false;
     }
     const Phase4TrialWireMessage message =
         internal::Phase4TrialWireSuccess{std::move(execution.execution)};
-    const auto result = authority == Phase4RepresentativeCorpusAuthority::kV1
+    const auto result = *corpus == Phase4RepresentativeCorpusAuthority::kV1
                             ? internal::WritePhase4TrialWireMessageV1(descriptor, message)
                             : internal::WritePhase4TrialWireMessageForCorpusV2(descriptor, message);
     return std::holds_alternative<std::monostate>(result);
@@ -1639,7 +1939,7 @@ using ControllerWireReadResult =
           .execution = std::move(execution.execution),
           .telemetry = std::move(*execution.same_run_telemetry),
       }};
-  const auto result = authority == Phase4RepresentativeCorpusAuthority::kV1
+  const auto result = *corpus == Phase4RepresentativeCorpusAuthority::kV1
                           ? internal::WritePhase4TrialWireMessageV2(descriptor, message)
                           : internal::WritePhase4TrialWireMessageV2ForCorpusV2(descriptor, message);
   return std::holds_alternative<std::monostate>(result);
@@ -1848,18 +2148,29 @@ void RehashNondeterministicPhase4SameRunRecordForTesting(
 #endif
 
 [[nodiscard]] static bool ValidatePhase4IsolatedSameRunCellCaptureForAuthority(
-    Phase4RepresentativeCorpusAuthority corpus_authority,
+    Phase4TrialExecutionAuthority execution_authority,
     const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
     std::string_view imported_fixture) {
   const Phase4IsolatedCellResult& raw = capture.raw_cell;
+  const std::optional<Phase4RepresentativeCorpusAuthority> corpus =
+      CorpusAuthority(execution_authority);
+  if (!corpus.has_value()) {
+    return false;
+  }
+  if (execution_authority == Phase4TrialExecutionAuthority::kCorpusV2H4096 &&
+      PreflightConfirmatoryH4096Cell(execution_authority, WorkerWireMode::kSameRunTelemetryV2,
+                                     raw.config, std::nullopt)
+          .has_value()) {
+    return false;
+  }
   if (capture.schema_version != kPhase4IsolatedSameRunTelemetrySchemaVersion ||
       raw.schema_version != kPhase4TrialHarnessSchemaVersion ||
       raw.carrier != Phase4IsolatedCellCarrier::kSameRunWireV2 ||
       raw.config.schema_version != kPhase4TrialHarnessSchemaVersion ||
       raw.config.repetitions != kPhase4CanonicalRepetitionsV1 ||
       raw.config.preparation_worker_count != kPhase4CanonicalPreparationWorkersV1 ||
-      raw.corpus_checksum != Phase4RepresentativeCorpusChecksumForAuthority(corpus_authority) ||
-      raw.cell_plan_checksum != CellPlanChecksum(corpus_authority, raw.config) ||
+      raw.corpus_checksum != Phase4RepresentativeCorpusChecksumForAuthority(*corpus) ||
+      raw.cell_plan_checksum != CellPlanChecksum(execution_authority, raw.config) ||
       raw.environment.environment_checksum == 0 ||
       raw.environment.environment_checksum != HostEnvironmentChecksum(raw.environment) ||
       raw.controller_identity == 0 || raw.authority_run_identity == 0 ||
@@ -1871,7 +2182,7 @@ void RehashNondeterministicPhase4SameRunRecordForTesting(
     return false;
   }
   Phase4RepresentativeCaseResult built_case = BuildPhase4RepresentativeCaseForAuthority(
-      corpus_authority, raw.config.case_id, imported_fixture, raw.config.corpus_limits);
+      *corpus, raw.config.case_id, imported_fixture, raw.config.corpus_limits);
   if (!std::holds_alternative<Phase4RepresentativeCase>(built_case)) {
     return false;
   }
@@ -1934,7 +2245,7 @@ void RehashNondeterministicPhase4SameRunRecordForTesting(
         spec.candidate_session_config.schedules[1].maximum_selection_rounds;
     const std::uint64_t expected_budget_checksum =
         internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
-            corpus_authority, spec, expected_opportunity,
+            *corpus, spec, expected_opportunity,
             static_cast<std::uint32_t>(representative_case.workload.nets().size()),
             expected_columns_per_epoch, expected_terminal_rounds);
     const Phase4PreparerLifecycleObservation expected_lifecycle =
@@ -1949,15 +2260,13 @@ void RehashNondeterministicPhase4SameRunRecordForTesting(
                   .invocations_completed_after = static_cast<std::uint64_t>(repetition) + 2U,
               };
     if (record != paired_record ||
-        internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(corpus_authority, semantics)
-            .has_value() ||
+        internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(*corpus, semantics).has_value() ||
         semantics.arm != expected_arm || semantics.execution_order != order ||
-        semantics.corpus_version !=
-            Phase4RepresentativeCorpusVersionForAuthority(corpus_authority) ||
+        semantics.corpus_version != Phase4RepresentativeCorpusVersionForAuthority(*corpus) ||
         semantics.corpus_checksum != raw.corpus_checksum ||
         semantics.case_id != raw.config.case_id ||
-        semantics.descriptor_fingerprint != FingerprintPhase4CaseDescriptorForAuthority(
-                                                corpus_authority, representative_case.descriptor) ||
+        semantics.descriptor_fingerprint !=
+            FingerprintPhase4CaseDescriptorForAuthority(*corpus, representative_case.descriptor) ||
         semantics.case_checksum != representative_case.case_checksum ||
         semantics.board_content_hash != representative_case.board.content_hash() ||
         semantics.workload_checksum != representative_case.workload.workload_checksum() ||
@@ -2015,7 +2324,7 @@ void RehashNondeterministicPhase4SameRunRecordForTesting(
         arm_capture.associated_authority_checksum != authority.authority_checksum ||
         arm_capture.associated_arm_attempt_checksum != attempt.attempt_checksum ||
         internal::ValidatePhase4SameRunArmDecisionTelemetryForAuthorityV1(
-            corpus_authority, semantics, representative_case.workload, telemetry)
+            *corpus, semantics, representative_case.workload, telemetry)
             .has_value() ||
         arm_capture.capture_checksum == 0 ||
         arm_capture.capture_checksum !=
@@ -2041,7 +2350,7 @@ void RehashNondeterministicPhase4SameRunRecordForTesting(
     const Phase4TrialOrder order = repetition % 2U == 0U ? Phase4TrialOrder::kBaselineFirst
                                                          : Phase4TrialOrder::kCandidateFirst;
     Phase4CanonicalSpecResult spec_result =
-        BuildCanonicalSpecForAuthority(corpus_authority, raw.config, repetition, order);
+        BuildCanonicalSpecForAuthority(execution_authority, raw.config, repetition, order);
     if (!std::holds_alternative<Phase4PairedTrialSpec>(spec_result)) {
       return false;
     }
@@ -2103,26 +2412,42 @@ bool ValidatePhase4IsolatedSameRunCellCaptureV1(
     const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
     std::string_view imported_fixture) {
   return ValidatePhase4IsolatedSameRunCellCaptureForAuthority(
-      Phase4RepresentativeCorpusAuthority::kV1, capture, imported_fixture);
+      Phase4TrialExecutionAuthority::kCorpusV1, capture, imported_fixture);
 }
 
 bool ValidatePhase4IsolatedSameRunCellCaptureForCorpusV2(
     const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
     std::string_view imported_fixture) {
   return ValidatePhase4IsolatedSameRunCellCaptureForAuthority(
-      Phase4RepresentativeCorpusAuthority::kV2, capture, imported_fixture);
+      Phase4TrialExecutionAuthority::kCorpusV2H2250, capture, imported_fixture);
 }
 
 namespace {
 
 [[nodiscard]] Phase4IsolatedCellExecution RunPhase4IsolatedCellImpl(
-    Phase4RepresentativeCorpusAuthority corpus_authority, const Phase4CanonicalCellConfig& cell,
+    Phase4TrialExecutionAuthority execution_authority, const Phase4CanonicalCellConfig& cell,
     std::string_view worker_executable, std::string_view imported_fixture_path,
     WorkerWireMode wire_mode,
     std::vector<std::optional<Phase4SameRunArmDecisionTelemetryV1>>* baseline_telemetry,
     std::vector<std::optional<Phase4SameRunArmDecisionTelemetryV1>>* candidate_telemetry) {
-  auto initial_spec =
-      BuildCanonicalSpecForAuthority(corpus_authority, cell, 0, Phase4TrialOrder::kBaselineFirst);
+  const std::optional<Phase4RepresentativeCorpusAuthority> corpus =
+      CorpusAuthority(execution_authority);
+  if (!corpus.has_value()) {
+    return Phase4TrialHarnessError{
+        .invariant_id = "P4HARNESS-EXECUTION-AUTHORITY-001",
+        .detail = "the private trial execution authority is invalid",
+        .raw_cell = std::nullopt,
+    };
+  }
+  if (execution_authority == Phase4TrialExecutionAuthority::kCorpusV2H4096) {
+    if (std::optional<Phase4TrialHarnessError> error =
+            PreflightConfirmatoryH4096Cell(execution_authority, wire_mode, cell, std::nullopt);
+        error.has_value()) {
+      return *error;
+    }
+  }
+  auto initial_spec = BuildCanonicalSpecForAuthority(execution_authority, cell, 0,
+                                                     Phase4TrialOrder::kBaselineFirst);
   if (std::holds_alternative<Phase4TrialHarnessError>(initial_spec)) {
     return std::get<Phase4TrialHarnessError>(std::move(initial_spec));
   }
@@ -2168,11 +2493,11 @@ namespace {
                                  : Phase4IsolatedCellCarrier::kRawWireV1;
   result.config = cell;
   result.environment = CaptureHostEnvironment();
-  result.corpus_checksum = Phase4RepresentativeCorpusChecksumForAuthority(corpus_authority);
-  result.cell_plan_checksum = CellPlanChecksum(corpus_authority, cell);
+  result.corpus_checksum = Phase4RepresentativeCorpusChecksumForAuthority(*corpus);
+  result.cell_plan_checksum = CellPlanChecksum(execution_authority, cell);
   result.controller_identity = ControllerIdentity();
   result.authority_run_identity = RunIdentity(cell, result.controller_identity);
-  InitializeAttempts(corpus_authority, &result);
+  InitializeAttempts(execution_authority, &result);
   std::vector<std::optional<ControllerArmExecution>> baseline_executions(cell.repetitions);
   std::vector<std::optional<ControllerArmExecution>> candidate_executions(cell.repetitions);
 
@@ -2187,7 +2512,7 @@ namespace {
     const Clock::time_point deadline =
         start + std::chrono::nanoseconds(cell.maximum_setup_elapsed_nanoseconds);
     LaunchResult launched =
-        LaunchWorker(worker_executable, arm, corpus_authority, cell, imported_fixture_path,
+        LaunchWorker(worker_executable, arm, execution_authority, cell, imported_fixture_path,
                      result.authority_run_identity, deadline, wire_mode);
     if (Clock::now() >= deadline) {
       attempt->disposition = Phase4IsolatedAttemptDisposition::kSetupTimeout;
@@ -2210,12 +2535,12 @@ namespace {
     }
     destination->emplace(std::get<WorkerProcess>(std::move(launched)));
     ControllerAwaitResult ready =
-        AwaitControllerMessage(&**destination, start, deadline, wire_mode, corpus_authority);
+        AwaitControllerMessage(&**destination, start, deadline, wire_mode, execution_authority);
     if (ready.kind == AwaitKind::kMessage && ready.message.has_value() &&
         std::holds_alternative<internal::Phase4TrialWireReady>(*ready.message)) {
       const internal::Phase4TrialWireReady identity =
           std::get<internal::Phase4TrialWireReady>(*ready.message);
-      if (!ReadyMatchesCell(corpus_authority, identity, cell)) {
+      if (!ReadyMatchesCell(execution_authority, identity, cell)) {
         attempt->disposition = Phase4IsolatedAttemptDisposition::kProtocolFailure;
         attempt->process_instance_identity = (*destination)->process_instance_identity;
         attempt->outer_elapsed_nanoseconds = ready.elapsed_nanoseconds;
@@ -2239,7 +2564,7 @@ namespace {
         peer_ready = &*candidate->ready_identity;
       }
       const bool associated =
-          failure.arm == arm && FailureMatchesCell(corpus_authority, failure, cell, peer_ready);
+          failure.arm == arm && FailureMatchesCell(execution_authority, failure, cell, peer_ready);
       attempt->disposition = associated ? Phase4IsolatedAttemptDisposition::kTypedChildFailure
                                         : Phase4IsolatedAttemptDisposition::kProtocolFailure;
       attempt->process_instance_identity = (*destination)->process_instance_identity;
@@ -2320,12 +2645,21 @@ namespace {
       ControllerAwaitResult response = AwaitControllerMessage(
           worker, start,
           start + std::chrono::nanoseconds(cell.external_budget.maximum_cold_elapsed_nanoseconds),
-          wire_mode, corpus_authority);
+          wire_mode, execution_authority);
       attempt->outer_elapsed_nanoseconds = response.elapsed_nanoseconds;
       if (response.kind == AwaitKind::kMessage && response.message.has_value() &&
           std::holds_alternative<ControllerWireSuccess>(*response.message)) {
         ControllerArmExecution execution =
             std::get<ControllerWireSuccess>(std::move(*response.message)).execution;
+        bool fixed_authority_associated = true;
+        if (execution_authority == Phase4TrialExecutionAuthority::kCorpusV2H4096) {
+          Phase4CanonicalSpecResult expected = BuildCanonicalSpecForAuthority(
+              execution_authority, cell, repetition, pair.execution_order);
+          fixed_authority_associated =
+              std::holds_alternative<Phase4PairedTrialSpec>(expected) &&
+              DecodedH4096SuccessMatchesExpectedSpec(
+                  wire_mode, std::get<Phase4PairedTrialSpec>(expected), execution);
+        }
         if (!worker->ready_identity.has_value() ||
             !MatchesReadyIdentity(*worker->ready_identity, execution.execution.semantics) ||
             execution.execution.semantics.arm != arm ||
@@ -2337,7 +2671,8 @@ namespace {
                 execution.same_run_telemetry.has_value() ||
             (execution.same_run_telemetry.has_value() &&
              execution.same_run_telemetry->associated_semantic_checksum !=
-                 execution.execution.semantics.semantic_checksum)) {
+                 execution.execution.semantics.semantic_checksum) ||
+            !fixed_authority_associated) {
           attempt->disposition = Phase4IsolatedAttemptDisposition::kProtocolFailure;
           attempt->controller_invariant_id = "P4HARNESS-ASSOCIATION-001";
           attempt->controller_detail = "worker success is associated with another command";
@@ -2425,7 +2760,7 @@ namespace {
       }
       ControllerAwaitResult stopped = AwaitControllerMessage(
           worker, start, start + std::chrono::nanoseconds(cell.maximum_setup_elapsed_nanoseconds),
-          wire_mode, corpus_authority);
+          wire_mode, execution_authority);
       if (stopped.kind == AwaitKind::kMessage && stopped.message.has_value() &&
           std::holds_alternative<internal::Phase4TrialWireStopped>(*stopped.message)) {
         worker->stop_acknowledged = true;
@@ -2504,6 +2839,24 @@ namespace {
 
   for (std::uint32_t repetition = 0; repetition < cell.repetitions; ++repetition) {
     Phase4IsolatedPairAttempt& pair = result.attempts[repetition];
+    std::optional<Phase4PairedTrialSpec> expected_spec;
+    if (execution_authority == Phase4TrialExecutionAuthority::kCorpusV2H4096) {
+      Phase4CanonicalSpecResult rebuilt = BuildCanonicalSpecForAuthority(
+          execution_authority, cell, repetition, pair.execution_order);
+      if (!std::holds_alternative<Phase4PairedTrialSpec>(rebuilt)) {
+        for (Phase4IsolatedArmAttempt* attempt : {&pair.baseline, &pair.candidate}) {
+          attempt->disposition = Phase4IsolatedAttemptDisposition::kProtocolFailure;
+          attempt->controller_invariant_id = "P4HARNESS-H4096-EXPECTED-SPEC-001";
+          attempt->controller_detail =
+              "the controller could not rebuild the expected H=4096 canonical spec";
+          attempt->record.reset();
+        }
+        baseline_executions[repetition].reset();
+        candidate_executions[repetition].reset();
+        continue;
+      }
+      expected_spec = std::get<Phase4PairedTrialSpec>(std::move(rebuilt));
+    }
     auto finalize = [&](Phase4IsolatedArmAttempt* attempt,
                         std::optional<ControllerArmExecution>* execution,
                         std::optional<Phase4SameRunArmDecisionTelemetryV1>* telemetry) {
@@ -2513,10 +2866,9 @@ namespace {
       }
       const Phase4ExternalResourceObservation observation =
           MakeObservation(result, *attempt, (*execution)->execution);
-      auto finalized =
-          corpus_authority == Phase4RepresentativeCorpusAuthority::kV1
-              ? FinalizePhase4TrialArmV1(std::move((*execution)->execution), observation)
-              : FinalizePhase4TrialArmForCorpusV2(std::move((*execution)->execution), observation);
+      Phase4TrialArmRecordResult finalized = FinalizeArmForAuthority(
+          execution_authority, wire_mode, expected_spec.has_value() ? &*expected_spec : nullptr,
+          std::move((*execution)->execution), observation);
       if (std::holds_alternative<Phase4TrialArmRecord>(finalized)) {
         if (decision_mode) {
           if (telemetry == nullptr || !(*execution)->same_run_telemetry.has_value()) {
@@ -2546,12 +2898,9 @@ namespace {
     finalize(&pair.candidate, &candidate_executions[repetition],
              decision_mode ? &(*candidate_telemetry)[repetition] : nullptr);
     if (pair.baseline.record.has_value() && pair.candidate.record.has_value()) {
-      auto assembled =
-          corpus_authority == Phase4RepresentativeCorpusAuthority::kV1
-              ? AssemblePhase4PairedTrialV1(std::move(*pair.baseline.record),
-                                            std::move(*pair.candidate.record))
-              : AssemblePhase4PairedTrialForCorpusV2(std::move(*pair.baseline.record),
-                                                     std::move(*pair.candidate.record));
+      Phase4PairedTrialAssemblyResult assembled = AssemblePairForAuthority(
+          execution_authority, wire_mode, expected_spec.has_value() ? &*expected_spec : nullptr,
+          std::move(*pair.baseline.record), std::move(*pair.candidate.record));
       if (std::holds_alternative<Phase4PairedTrialResult>(assembled)) {
         pair.result = std::get<Phase4PairedTrialResult>(std::move(assembled));
         pair.baseline.record = pair.result->baseline;
@@ -2578,7 +2927,7 @@ namespace {
 Phase4IsolatedCellExecution RunPhase4IsolatedCellV1(const Phase4CanonicalCellConfig& cell,
                                                     std::string_view worker_executable,
                                                     std::string_view imported_fixture_path) {
-  return RunPhase4IsolatedCellImpl(Phase4RepresentativeCorpusAuthority::kV1, cell,
+  return RunPhase4IsolatedCellImpl(Phase4TrialExecutionAuthority::kCorpusV1, cell,
                                    worker_executable, imported_fixture_path, WorkerWireMode::kRawV1,
                                    nullptr, nullptr);
 }
@@ -2586,19 +2935,19 @@ Phase4IsolatedCellExecution RunPhase4IsolatedCellV1(const Phase4CanonicalCellCon
 Phase4IsolatedCellExecution RunPhase4IsolatedCellForCorpusV2(
     const Phase4CanonicalCellConfig& cell, std::string_view worker_executable,
     std::string_view imported_fixture_path) {
-  return RunPhase4IsolatedCellImpl(Phase4RepresentativeCorpusAuthority::kV2, cell,
+  return RunPhase4IsolatedCellImpl(Phase4TrialExecutionAuthority::kCorpusV2H2250, cell,
                                    worker_executable, imported_fixture_path, WorkerWireMode::kRawV1,
                                    nullptr, nullptr);
 }
 
 [[nodiscard]] static Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1
 RunPhase4IsolatedCellWithSameRunDecisionTelemetryForAuthority(
-    Phase4RepresentativeCorpusAuthority corpus_authority, const Phase4CanonicalCellConfig& cell,
+    Phase4TrialExecutionAuthority execution_authority, const Phase4CanonicalCellConfig& cell,
     std::string_view worker_executable, std::string_view imported_fixture_path) {
   std::vector<std::optional<Phase4SameRunArmDecisionTelemetryV1>> baseline_telemetry;
   std::vector<std::optional<Phase4SameRunArmDecisionTelemetryV1>> candidate_telemetry;
   Phase4IsolatedCellExecution executed = RunPhase4IsolatedCellImpl(
-      corpus_authority, cell, worker_executable, imported_fixture_path,
+      execution_authority, cell, worker_executable, imported_fixture_path,
       WorkerWireMode::kSameRunTelemetryV2, &baseline_telemetry, &candidate_telemetry);
   if (std::holds_alternative<Phase4TrialHarnessError>(executed)) {
     return std::get<Phase4TrialHarnessError>(std::move(executed));
@@ -2712,7 +3061,7 @@ RunPhase4IsolatedCellWithSameRunDecisionTelemetryV1(const Phase4CanonicalCellCon
                                                     std::string_view worker_executable,
                                                     std::string_view imported_fixture_path) {
   return RunPhase4IsolatedCellWithSameRunDecisionTelemetryForAuthority(
-      Phase4RepresentativeCorpusAuthority::kV1, cell, worker_executable, imported_fixture_path);
+      Phase4TrialExecutionAuthority::kCorpusV1, cell, worker_executable, imported_fixture_path);
 }
 
 Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1
@@ -2720,18 +3069,31 @@ RunPhase4IsolatedCellWithSameRunDecisionTelemetryForCorpusV2(
     const Phase4CanonicalCellConfig& cell, std::string_view worker_executable,
     std::string_view imported_fixture_path) {
   return RunPhase4IsolatedCellWithSameRunDecisionTelemetryForAuthority(
-      Phase4RepresentativeCorpusAuthority::kV2, cell, worker_executable, imported_fixture_path);
+      Phase4TrialExecutionAuthority::kCorpusV2H2250, cell, worker_executable,
+      imported_fixture_path);
 }
 
 namespace {
 
 [[nodiscard]] int RunPhase4TrialWorkerImpl(Phase4TrialArm arm,
-                                           Phase4RepresentativeCorpusAuthority corpus_authority,
+                                           Phase4TrialExecutionAuthority execution_authority,
                                            const Phase4CanonicalCellConfig& cell,
                                            std::string_view imported_fixture,
                                            int request_descriptor, int response_descriptor,
                                            WorkerWireMode wire_mode) noexcept {
   try {
+    if (execution_authority == Phase4TrialExecutionAuthority::kCorpusV2H4096) {
+      if (std::optional<Phase4TrialHarnessError> error =
+              PreflightConfirmatoryH4096Cell(execution_authority, wire_mode, cell, arm);
+          error.has_value()) {
+        const Phase4DurableArmFailure failure = SummaryFailure(
+            execution_authority, arm, Phase4PairedTrialErrorCode::kInvalidConfiguration,
+            error->invariant_id, error->detail);
+        (void)SendControllerMessage(response_descriptor, internal::Phase4TrialWireFailure{failure},
+                                    wire_mode);
+        return 10;
+      }
+    }
 #if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
     const char* const fault_mode = std::getenv("APGAR_PHASE4_TRIAL_FAULT_MODE");
     const std::string_view fault = fault_mode == nullptr ? std::string_view{} : fault_mode;
@@ -2777,7 +3139,7 @@ namespace {
         static_cast<std::uint64_t>(address_space_limit.rlim_cur) !=
             cell.external_budget.maximum_address_space_bytes) {
       const auto failure = SummaryFailure(
-          corpus_authority, arm, Phase4PairedTrialErrorCode::kExternalAuthorityUnavailable,
+          execution_authority, arm, Phase4PairedTrialErrorCode::kExternalAuthorityUnavailable,
           "P4HARNESS-WORKER-RLIMIT-001", "worker did not observe the exact RLIMIT_AS contract",
           cell.external_budget.maximum_address_space_bytes,
           static_cast<std::uint64_t>(address_space_limit.rlim_cur));
@@ -2814,8 +3176,9 @@ namespace {
             error.code == allocator::CpuCandidatePoolPreparationErrorCode::kResourceExhausted
                 ? Phase4PairedTrialErrorCode::kResourceExhausted
                 : Phase4PairedTrialErrorCode::kInvalidConfiguration;
-        const auto failure = SummaryFailure(corpus_authority, arm, summary_code, error.invariant_id,
-                                            error.detail, error.required, error.configured);
+        const auto failure =
+            SummaryFailure(execution_authority, arm, summary_code, error.invariant_id, error.detail,
+                           error.required, error.configured);
         (void)SendControllerMessage(response_descriptor, internal::Phase4TrialWireFailure{failure},
                                     wire_mode);
         return 10;
@@ -2823,23 +3186,36 @@ namespace {
       preparer = std::get<std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer>>(
           std::move(created));
     }
-    auto warmup_spec =
-        BuildCanonicalSpecForAuthority(corpus_authority, cell, 0, Phase4TrialOrder::kBaselineFirst);
+    auto warmup_spec = BuildCanonicalSpecForAuthority(execution_authority, cell, 0,
+                                                      Phase4TrialOrder::kBaselineFirst);
     if (std::holds_alternative<Phase4TrialHarnessError>(warmup_spec)) {
       const auto& error = std::get<Phase4TrialHarnessError>(warmup_spec);
-      const auto failure =
-          SummaryFailure(corpus_authority, arm, Phase4PairedTrialErrorCode::kInvalidConfiguration,
-                         error.invariant_id, error.detail);
+      const auto failure = SummaryFailure(execution_authority, arm,
+                                          Phase4PairedTrialErrorCode::kInvalidConfiguration,
+                                          error.invariant_id, error.detail);
       (void)SendControllerMessage(response_descriptor, internal::Phase4TrialWireFailure{failure},
                                   wire_mode);
       return 10;
     }
-    auto warmup =
-        ExecuteArmForAuthority(corpus_authority, arm, std::get<Phase4PairedTrialSpec>(warmup_spec),
-                               imported_fixture, preparer.get());
+    Phase4TrialArmExecutionResult warmup = [&]() -> Phase4TrialArmExecutionResult {
+      const Phase4PairedTrialSpec& spec = std::get<Phase4PairedTrialSpec>(warmup_spec);
+      if (execution_authority == Phase4TrialExecutionAuthority::kCorpusV2H4096 &&
+          wire_mode == WorkerWireMode::kSameRunTelemetryV2) {
+        Phase4TrialArmWithSameRunTelemetryExecutionResultV1 decision =
+            ExecuteSameRunArmForAuthority(execution_authority, arm, spec, imported_fixture,
+                                          preparer.get());
+        if (std::holds_alternative<Phase4TrialArmFailure>(decision)) {
+          return std::get<Phase4TrialArmFailure>(std::move(decision));
+        }
+        return std::get<Phase4TrialArmWithSameRunTelemetryExecutionV1>(std::move(decision))
+            .execution;
+      }
+      return ExecuteArmForAuthority(execution_authority, arm, spec, imported_fixture,
+                                    preparer.get());
+    }();
     if (std::holds_alternative<Phase4TrialArmFailure>(warmup)) {
       const auto failure = ReconcileFailureForAuthority(
-          corpus_authority, std::get<Phase4TrialArmFailure>(std::move(warmup)));
+          execution_authority, std::get<Phase4TrialArmFailure>(std::move(warmup)));
       (void)SendControllerMessage(response_descriptor, internal::Phase4TrialWireFailure{failure},
                                   wire_mode);
       return 10;
@@ -2935,22 +3311,22 @@ namespace {
         return 11;
       }
       const auto command = std::get<internal::Phase4TrialWireRunCommand>(message);
-      auto spec = BuildCanonicalSpecForAuthority(corpus_authority, cell, command.repetition_index,
-                                                 command.execution_order);
+      auto spec = BuildCanonicalSpecForAuthority(execution_authority, cell,
+                                                 command.repetition_index, command.execution_order);
       if (std::holds_alternative<Phase4TrialHarnessError>(spec)) {
         const auto& error = std::get<Phase4TrialHarnessError>(spec);
-        const auto failure =
-            SummaryFailure(corpus_authority, arm, Phase4PairedTrialErrorCode::kInvalidConfiguration,
-                           error.invariant_id, error.detail);
+        const auto failure = SummaryFailure(execution_authority, arm,
+                                            Phase4PairedTrialErrorCode::kInvalidConfiguration,
+                                            error.invariant_id, error.detail);
         (void)SendControllerMessage(response_descriptor, internal::Phase4TrialWireFailure{failure},
                                     wire_mode);
         return 10;
       }
       std::variant<ControllerArmExecution, Phase4TrialArmFailure> execution = [&] {
         if (wire_mode == WorkerWireMode::kRawV1) {
-          Phase4TrialArmExecutionResult raw =
-              ExecuteArmForAuthority(corpus_authority, arm, std::get<Phase4PairedTrialSpec>(spec),
-                                     imported_fixture, preparer.get());
+          Phase4TrialArmExecutionResult raw = ExecuteArmForAuthority(
+              execution_authority, arm, std::get<Phase4PairedTrialSpec>(spec), imported_fixture,
+              preparer.get());
           if (std::holds_alternative<Phase4TrialArmFailure>(raw)) {
             return std::variant<ControllerArmExecution, Phase4TrialArmFailure>{
                 std::get<Phase4TrialArmFailure>(std::move(raw))};
@@ -2961,7 +3337,7 @@ namespace {
           }};
         }
         Phase4TrialArmWithSameRunTelemetryExecutionResultV1 decision =
-            ExecuteSameRunArmForAuthority(corpus_authority, arm,
+            ExecuteSameRunArmForAuthority(execution_authority, arm,
                                           std::get<Phase4PairedTrialSpec>(spec), imported_fixture,
                                           preparer.get());
         if (std::holds_alternative<Phase4TrialArmFailure>(decision)) {
@@ -2977,7 +3353,7 @@ namespace {
       }();
       if (std::holds_alternative<Phase4TrialArmFailure>(execution)) {
         const auto failure = ReconcileFailureForAuthority(
-            corpus_authority, std::get<Phase4TrialArmFailure>(std::move(execution)));
+            execution_authority, std::get<Phase4TrialArmFailure>(std::move(execution)));
         (void)SendControllerMessage(response_descriptor, internal::Phase4TrialWireFailure{failure},
                                     wire_mode);
         return 10;
@@ -3016,7 +3392,7 @@ namespace {
       }
 #endif
       if (!SendControllerSuccess(response_descriptor, std::move(successful_execution), wire_mode,
-                                 corpus_authority)) {
+                                 execution_authority)) {
         return 11;
       }
 #if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
@@ -3034,7 +3410,7 @@ namespace {
     }
   } catch (...) {
     const auto failure =
-        SummaryFailure(corpus_authority, arm, Phase4PairedTrialErrorCode::kInternalInvariant,
+        SummaryFailure(execution_authority, arm, Phase4PairedTrialErrorCode::kInternalInvariant,
                        "P4HARNESS-WORKER-EXCEPTION-001",
                        "unexpected exception escaped the isolated worker controller");
     (void)SendControllerMessage(response_descriptor, internal::Phase4TrialWireFailure{failure},
@@ -3048,7 +3424,7 @@ namespace {
 int RunPhase4TrialWorkerV1(Phase4TrialArm arm, const Phase4CanonicalCellConfig& cell,
                            std::string_view imported_fixture, int request_descriptor,
                            int response_descriptor) noexcept {
-  return RunPhase4TrialWorkerImpl(arm, Phase4RepresentativeCorpusAuthority::kV1, cell,
+  return RunPhase4TrialWorkerImpl(arm, Phase4TrialExecutionAuthority::kCorpusV1, cell,
                                   imported_fixture, request_descriptor, response_descriptor,
                                   WorkerWireMode::kRawV1);
 }
@@ -3056,7 +3432,7 @@ int RunPhase4TrialWorkerV1(Phase4TrialArm arm, const Phase4CanonicalCellConfig& 
 int RunPhase4TrialWorkerForCorpusV2(Phase4TrialArm arm, const Phase4CanonicalCellConfig& cell,
                                     std::string_view imported_fixture, int request_descriptor,
                                     int response_descriptor) noexcept {
-  return RunPhase4TrialWorkerImpl(arm, Phase4RepresentativeCorpusAuthority::kV2, cell,
+  return RunPhase4TrialWorkerImpl(arm, Phase4TrialExecutionAuthority::kCorpusV2H2250, cell,
                                   imported_fixture, request_descriptor, response_descriptor,
                                   WorkerWireMode::kRawV1);
 }
@@ -3066,7 +3442,7 @@ int RunPhase4TrialWorkerWithSameRunTelemetryV1(Phase4TrialArm arm,
                                                std::string_view imported_fixture,
                                                int request_descriptor,
                                                int response_descriptor) noexcept {
-  return RunPhase4TrialWorkerImpl(arm, Phase4RepresentativeCorpusAuthority::kV1, cell,
+  return RunPhase4TrialWorkerImpl(arm, Phase4TrialExecutionAuthority::kCorpusV1, cell,
                                   imported_fixture, request_descriptor, response_descriptor,
                                   WorkerWireMode::kSameRunTelemetryV2);
 }
@@ -3076,9 +3452,273 @@ int RunPhase4TrialWorkerWithSameRunTelemetryForCorpusV2(Phase4TrialArm arm,
                                                         std::string_view imported_fixture,
                                                         int request_descriptor,
                                                         int response_descriptor) noexcept {
-  return RunPhase4TrialWorkerImpl(arm, Phase4RepresentativeCorpusAuthority::kV2, cell,
+  return RunPhase4TrialWorkerImpl(arm, Phase4TrialExecutionAuthority::kCorpusV2H2250, cell,
                                   imported_fixture, request_descriptor, response_descriptor,
                                   WorkerWireMode::kSameRunTelemetryV2);
 }
+
+namespace {
+
+[[nodiscard]] bool IsCleanSourceCommit(std::string_view source_commit, bool source_stamped,
+                                       bool source_tree_dirty) noexcept {
+  if (!source_stamped || source_tree_dirty || source_commit.size() != 40) {
+    return false;
+  }
+  return std::all_of(source_commit.begin(), source_commit.end(), [](char character) {
+    return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
+  });
+}
+
+[[nodiscard]] bool H4096RecordMatchesExpectedSpec(WorkerWireMode wire_mode,
+                                                  const Phase4IsolatedCellResult& cell,
+                                                  const Phase4PairedTrialSpec& spec,
+                                                  const Phase4IsolatedArmAttempt& attempt,
+                                                  const Phase4TrialArmRecord& record) {
+  const Phase4TrialArmSemantics& semantics = record.semantics;
+  const Phase4ExternalResourceObservation& observation = record.external_observation;
+  const bool candidate = semantics.arm == Phase4TrialArm::kReusableCandidateAllocation;
+  const Phase4PreparerLifecycleObservation expected_lifecycle =
+      candidate ? Phase4PreparerLifecycleObservation{
+                      .workers_started_before = spec.preparation_worker_count,
+                      .workers_started_after = spec.preparation_worker_count,
+                      .invocations_started_before =
+                          static_cast<std::uint64_t>(spec.repetition_index) + 1U,
+                      .invocations_started_after =
+                          static_cast<std::uint64_t>(spec.repetition_index) + 2U,
+                      .invocations_completed_before =
+                          static_cast<std::uint64_t>(spec.repetition_index) + 1U,
+                      .invocations_completed_after =
+                          static_cast<std::uint64_t>(spec.repetition_index) + 2U,
+                  }
+                : Phase4PreparerLifecycleObservation{};
+  const bool nested_intervals =
+      record.case_build_elapsed_nanoseconds <=
+          std::numeric_limits<std::uint64_t>::max() - record.prepared_elapsed_nanoseconds &&
+      record.case_build_elapsed_nanoseconds + record.prepared_elapsed_nanoseconds <=
+          record.cold_elapsed_nanoseconds &&
+      observation.outer_elapsed_nanoseconds >= record.cold_elapsed_nanoseconds;
+  return H4096SemanticsMatchExpectedSpec(wire_mode, spec, semantics) &&
+         semantics.arm == attempt.arm && record.preparer_lifecycle == expected_lifecycle &&
+         record.case_build_elapsed_nanoseconds + record.prepared_elapsed_nanoseconds >=
+             record.case_build_elapsed_nanoseconds &&
+         record.prepared_elapsed_nanoseconds <=
+             spec.external_budget.maximum_prepared_elapsed_nanoseconds &&
+         record.cold_elapsed_nanoseconds <= spec.external_budget.maximum_cold_elapsed_nanoseconds &&
+         observation.schema_version == kPhase4ExternalAuthoritySchemaVersion &&
+         observation.authority_kind ==
+             Phase4ExternalAuthorityKind::kLinuxParentWatchdogRlimitAndWait4 &&
+         observation.authority_run_identity == cell.authority_run_identity &&
+         observation.controller_identity == cell.controller_identity &&
+         observation.process_instance_identity == attempt.process_instance_identity &&
+         observation.associated_semantic_checksum == semantics.semantic_checksum &&
+         observation.configured_wall_limit_nanoseconds ==
+             spec.external_budget.maximum_cold_elapsed_nanoseconds &&
+         observation.configured_address_space_limit_bytes ==
+             spec.external_budget.maximum_address_space_bytes &&
+         observation.configured_peak_host_limit_bytes ==
+             spec.external_budget.maximum_peak_host_bytes &&
+         observation.outer_elapsed_nanoseconds == attempt.outer_elapsed_nanoseconds &&
+         observation.peak_host_bytes == attempt.process_lifetime_peak_host_bytes &&
+         observation.peak_host_bytes != 0 &&
+         observation.peak_host_bytes <= spec.external_budget.maximum_peak_host_bytes &&
+         observation.process_exit_code == 0 && observation.isolated_process &&
+         observation.wall_authority_enforced && observation.memory_authority_enforced &&
+         observation.persistent_preparer_reused == candidate &&
+         observation.preparer_lifecycle == expected_lifecycle &&
+         observation.authority_checksum != 0 &&
+         observation.authority_checksum ==
+             internal::ComputePhase4ExternalAuthorityChecksumV1(observation) &&
+         nested_intervals && record.artifact_checksum != 0 &&
+         record.artifact_checksum == internal::ComputePhase4TrialArmArtifactChecksumV1(record);
+}
+
+[[nodiscard]] bool H4096ArmAttemptMatchesExpectedSpec(WorkerWireMode wire_mode,
+                                                      const Phase4IsolatedCellResult& cell,
+                                                      const Phase4PairedTrialSpec& spec,
+                                                      const Phase4IsolatedArmAttempt& attempt,
+                                                      Phase4TrialArm expected_arm) {
+  if (attempt.schema_version != kPhase4TrialHarnessSchemaVersion || attempt.arm != expected_arm ||
+      attempt.repetition_index != spec.repetition_index ||
+      attempt.execution_order != spec.execution_order || attempt.attempt_checksum == 0 ||
+      attempt.attempt_checksum != ArmAttemptChecksum(attempt)) {
+    return false;
+  }
+  if (attempt.record.has_value()) {
+    return attempt.disposition == Phase4IsolatedAttemptDisposition::kSuccess &&
+           attempt.process_instance_identity != 0 &&
+           attempt.process_lifetime_peak_host_bytes != 0 && attempt.raw_wait_status == 0 &&
+           attempt.process_exit_code == 0 && attempt.terminating_signal == 0 &&
+           !attempt.watchdog_kill_sent && attempt.controller_invariant_id.empty() &&
+           attempt.controller_detail.empty() && !attempt.child_failure.has_value() &&
+           H4096RecordMatchesExpectedSpec(wire_mode, cell, spec, attempt, *attempt.record);
+  }
+  if (attempt.disposition == Phase4IsolatedAttemptDisposition::kSuccess) {
+    return false;
+  }
+  if (!attempt.child_failure.has_value()) {
+    return true;
+  }
+  return attempt.disposition == Phase4IsolatedAttemptDisposition::kTypedChildFailure &&
+         attempt.child_failure->arm == expected_arm &&
+         attempt.child_failure->payload_checksum != 0 &&
+         attempt.child_failure->payload_checksum ==
+             ComputePhase4DurableArmFailureChecksumV1(*attempt.child_failure);
+}
+
+[[nodiscard]] bool AuthenticatePhase4ConfirmatoryH4096RawCell(
+    const Phase4IsolatedCellResult& result, WorkerWireMode wire_mode) {
+  constexpr Phase4TrialExecutionAuthority kAuthority =
+      Phase4TrialExecutionAuthority::kCorpusV2H4096;
+  if (PreflightConfirmatoryH4096Cell(kAuthority, wire_mode, result.config, std::nullopt)
+          .has_value()) {
+    return false;
+  }
+  const Phase4IsolatedCellCarrier expected_carrier =
+      wire_mode == WorkerWireMode::kRawV1 ? Phase4IsolatedCellCarrier::kRawWireV1
+                                          : Phase4IsolatedCellCarrier::kSameRunWireV2;
+  const std::uint64_t expected_artifact_checksum =
+      wire_mode == WorkerWireMode::kRawV1
+          ? ComputePhase4IsolatedCellArtifactChecksumV1(result)
+          : ComputePhase4SameRunIsolatedCellArtifactChecksumV2(result);
+  if (result.schema_version != kPhase4TrialHarnessSchemaVersion ||
+      result.carrier != expected_carrier ||
+      result.corpus_checksum != Phase4RepresentativeCorpusChecksumForAuthority(
+                                    Phase4RepresentativeCorpusAuthority::kV2) ||
+      result.cell_plan_checksum != CellPlanChecksum(kAuthority, result.config) ||
+      result.environment.environment_checksum == 0 ||
+      result.environment.environment_checksum != HostEnvironmentChecksum(result.environment) ||
+      result.controller_identity == 0 || result.authority_run_identity == 0 ||
+      result.authority_run_identity != RunIdentity(result.config, result.controller_identity) ||
+      result.attempts.size() != kPhase4CanonicalRepetitionsV1 || result.artifact_checksum == 0 ||
+      result.artifact_checksum != expected_artifact_checksum) {
+    return false;
+  }
+  bool has_authenticated_success = false;
+  for (std::uint32_t repetition = 0; repetition < kPhase4CanonicalRepetitionsV1; ++repetition) {
+    const Phase4TrialOrder order = repetition % 2U == 0U ? Phase4TrialOrder::kBaselineFirst
+                                                         : Phase4TrialOrder::kCandidateFirst;
+    Phase4CanonicalSpecResult rebuilt =
+        BuildCanonicalSpecForAuthority(kAuthority, result.config, repetition, order);
+    if (!std::holds_alternative<Phase4PairedTrialSpec>(rebuilt)) {
+      return false;
+    }
+    const Phase4PairedTrialSpec& spec = std::get<Phase4PairedTrialSpec>(rebuilt);
+    const Phase4IsolatedPairAttempt& pair = result.attempts[repetition];
+    const bool baseline_matches = H4096ArmAttemptMatchesExpectedSpec(
+        wire_mode, result, spec, pair.baseline, Phase4TrialArm::kSequentialBaseline);
+    const bool candidate_matches = H4096ArmAttemptMatchesExpectedSpec(
+        wire_mode, result, spec, pair.candidate, Phase4TrialArm::kReusableCandidateAllocation);
+    if (pair.schema_version != kPhase4TrialHarnessSchemaVersion || pair.case_id != spec.case_id ||
+        pair.requested_pool_size != spec.requested_pool_size ||
+        pair.repetition_index != repetition || pair.root_seed != spec.root_seed ||
+        pair.execution_order != order || !baseline_matches || !candidate_matches ||
+        pair.attempt_checksum == 0 || pair.attempt_checksum != PairAttemptChecksum(pair)) {
+      return false;
+    }
+    has_authenticated_success = has_authenticated_success || pair.baseline.record.has_value() ||
+                                pair.candidate.record.has_value();
+    if (!pair.result.has_value()) {
+      if (pair.baseline.record.has_value() && pair.candidate.record.has_value()) {
+        return false;
+      }
+      continue;
+    }
+    if (!pair.baseline.record.has_value() || !pair.candidate.record.has_value() ||
+        pair.result->baseline != *pair.baseline.record ||
+        pair.result->candidate != *pair.candidate.record) {
+      return false;
+    }
+    Phase4PairedTrialAssemblyResult assembled = AssemblePairForAuthority(
+        kAuthority, wire_mode, &spec, *pair.baseline.record, *pair.candidate.record);
+    if (!std::holds_alternative<Phase4PairedTrialResult>(assembled) ||
+        std::get<Phase4PairedTrialResult>(assembled) != *pair.result) {
+      return false;
+    }
+  }
+  return has_authenticated_success;
+}
+
+}  // namespace
+
+namespace internal {
+
+std::optional<Phase4TrialHarnessError> PreflightPhase4ConfirmatoryH4096OrdinaryCell(
+    const Phase4CanonicalCellConfig& cell) {
+  return PreflightConfirmatoryH4096Cell(Phase4TrialExecutionAuthority::kCorpusV2H4096,
+                                        WorkerWireMode::kRawV1, cell, std::nullopt);
+}
+
+std::optional<Phase4TrialHarnessError> PreflightPhase4ConfirmatoryH4096SameRunCell(
+    const Phase4CanonicalCellConfig& cell) {
+  return PreflightConfirmatoryH4096Cell(Phase4TrialExecutionAuthority::kCorpusV2H4096,
+                                        WorkerWireMode::kSameRunTelemetryV2, cell, std::nullopt);
+}
+
+Phase4IsolatedCellExecution RunPhase4ConfirmatoryH4096OrdinaryCell(
+    const Phase4CanonicalCellConfig& cell, std::string_view worker_executable,
+    std::string_view imported_fixture_path) {
+  return RunPhase4IsolatedCellImpl(Phase4TrialExecutionAuthority::kCorpusV2H4096, cell,
+                                   worker_executable, imported_fixture_path, WorkerWireMode::kRawV1,
+                                   nullptr, nullptr);
+}
+
+Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1 RunPhase4ConfirmatoryH4096SameRunCell(
+    const Phase4CanonicalCellConfig& cell, std::string_view worker_executable,
+    std::string_view imported_fixture_path) {
+  return RunPhase4IsolatedCellWithSameRunDecisionTelemetryForAuthority(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, cell, worker_executable,
+      imported_fixture_path);
+}
+
+int RunPhase4ConfirmatoryH4096OrdinaryWorker(Phase4TrialArm arm,
+                                             const Phase4CanonicalCellConfig& cell,
+                                             std::string_view imported_fixture,
+                                             int request_descriptor,
+                                             int response_descriptor) noexcept {
+  return RunPhase4TrialWorkerImpl(arm, Phase4TrialExecutionAuthority::kCorpusV2H4096, cell,
+                                  imported_fixture, request_descriptor, response_descriptor,
+                                  WorkerWireMode::kRawV1);
+}
+
+int RunPhase4ConfirmatoryH4096SameRunWorker(Phase4TrialArm arm,
+                                            const Phase4CanonicalCellConfig& cell,
+                                            std::string_view imported_fixture,
+                                            int request_descriptor,
+                                            int response_descriptor) noexcept {
+  return RunPhase4TrialWorkerImpl(arm, Phase4TrialExecutionAuthority::kCorpusV2H4096, cell,
+                                  imported_fixture, request_descriptor, response_descriptor,
+                                  WorkerWireMode::kSameRunTelemetryV2);
+}
+
+bool ValidatePhase4ConfirmatoryH4096SameRunCellCapture(
+    const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
+    std::string_view imported_fixture) {
+  return ValidatePhase4IsolatedSameRunCellCaptureForAuthority(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, capture, imported_fixture);
+}
+
+std::optional<std::string> SerializePhase4ConfirmatoryH4096OrdinaryCellJsonV1(
+    const Phase4IsolatedCellResult& result, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty) {
+  if (!IsCleanSourceCommit(source_commit, source_stamped, source_tree_dirty) ||
+      !AuthenticatePhase4ConfirmatoryH4096RawCell(result, WorkerWireMode::kRawV1)) {
+    return std::nullopt;
+  }
+  return SerializePhase4IsolatedCellJsonV1(result, source_commit, source_stamped,
+                                           source_tree_dirty);
+}
+
+std::optional<std::string> SerializePhase4ConfirmatoryH4096SameRunCellJsonV2(
+    const Phase4IsolatedCellResult& result, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty) {
+  if (!IsCleanSourceCommit(source_commit, source_stamped, source_tree_dirty) ||
+      !AuthenticatePhase4ConfirmatoryH4096RawCell(result, WorkerWireMode::kSameRunTelemetryV2)) {
+    return std::nullopt;
+  }
+  return SerializePhase4SameRunIsolatedCellJsonV2(result, source_commit, source_stamped,
+                                                  source_tree_dirty);
+}
+
+}  // namespace internal
 
 }  // namespace apgar::benchmark

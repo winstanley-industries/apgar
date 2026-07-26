@@ -2,8 +2,11 @@ import fcntl
 import json
 import os
 import pathlib
+import shutil
 import signal
 import subprocess
+import tempfile
+import time
 import unittest
 
 
@@ -39,6 +42,65 @@ def base_command(
 
 
 class Phase4TrialProcessTest(unittest.TestCase):
+    def test_workers_reexecute_the_controller_inode_after_path_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = pathlib.Path(temporary)
+            controller_path = temporary_path / "phase4_evidence_fault_runner"
+            replacement_path = temporary_path / "replacement_runner"
+            shutil.copy2(runfile("phase4_evidence_fault_runner"), controller_path)
+            shutil.copy2(
+                runfile("phase4_confirmatory_h4096_evidence_test_runner"),
+                replacement_path,
+            )
+            command = base_command(1, 60_000_000_000)
+            command[0] = str(controller_path)
+            environment = os.environ.copy()
+            environment["APGAR_PHASE4_TRIAL_FAULT_MODE"] = "executable_path_replacement"
+            process = subprocess.Popen(
+                command,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+            )
+            try:
+                stopped_status = None
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    waited_pid, status = os.waitpid(
+                        process.pid,
+                        os.WNOHANG | os.WUNTRACED,
+                    )
+                    if waited_pid == process.pid:
+                        stopped_status = status
+                        break
+                    time.sleep(0.01)
+                self.assertIsNotNone(stopped_status)
+                self.assertTrue(os.WIFSTOPPED(stopped_status))
+                self.assertEqual(os.WSTOPSIG(stopped_status), signal.SIGSTOP)
+
+                os.replace(replacement_path, controller_path)
+                os.kill(process.pid, signal.SIGCONT)
+                stdout, stderr = process.communicate(timeout=30)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=10)
+
+            self.assertEqual(process.returncode, 0, stderr)
+            artifact = json.loads(stdout)
+            self.assertIsNotNone(artifact["attempts"][0]["result"])
+
+            replacement = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=10,
+                env=environment,
+            )
+            self.assertEqual(replacement.returncode, 2)
+
     def test_two_repetitions_reuse_distinct_long_lived_workers(self) -> None:
         completed = subprocess.run(
             base_command(2, 60_000_000_000),
@@ -259,8 +321,27 @@ class Phase4TrialProcessTest(unittest.TestCase):
         self.assertEqual(second["disposition"], 6)
         self.assertEqual(first["controller_invariant_id"], "P4HARNESS-ASSOCIATION-001")
         self.assertEqual(second["controller_invariant_id"], "P4HARNESS-ASSOCIATION-001")
-        self.assertEqual(first["process_exit_code"], 0)
-        self.assertEqual(first["terminating_signal"], 0)
+        for field in (
+            "process_instance_identity",
+            "process_lifetime_peak_host_bytes",
+            "raw_wait_status",
+            "process_exit_code",
+            "terminating_signal",
+        ):
+            self.assertEqual(first[field], second[field])
+        exit_identity = (
+            first["process_exit_code"],
+            first["terminating_signal"],
+        )
+        self.assertIn(exit_identity, {(0, 0), (-1, signal.SIGKILL)})
+        if os.WIFEXITED(first["raw_wait_status"]):
+            self.assertEqual(exit_identity, (os.WEXITSTATUS(first["raw_wait_status"]), 0))
+        else:
+            self.assertTrue(os.WIFSIGNALED(first["raw_wait_status"]))
+            self.assertEqual(
+                exit_identity,
+                (-1, os.WTERMSIG(first["raw_wait_status"])),
+            )
         self.assertIsNone(artifact["attempts"][0]["result"])
 
     def test_non_cloexec_sentinel_is_not_inherited_by_worker(self) -> None:
