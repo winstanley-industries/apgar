@@ -1,6 +1,6 @@
 # ADR-060: Phase 4 Primary-Conflict Coverage
 
-**Status:** Accepted as an inactive Phase 4 remediation contract
+**Status:** Accepted and active for production
 **Date:** July 26, 2026
 **Applies to:** The next targeted-regeneration planner, executor, and reusable
 CPU candidate-allocation session authorities
@@ -28,10 +28,10 @@ coverage, and ADR-059 explicitly does not authorize it as a causal signal.
 
 ## Decision
 
-- Preserve Targeted Regeneration Plan v2 byte-for-byte and reserve Plan v3 as
-  its policy successor. Plan v3 keeps the v2 action and target severity orders
-  but first retains each eligible target's highest-ranked current conflict
-  action.
+- Preserve Targeted Regeneration Plan v2 wire fields, checksum behavior, and
+  replay bytes exactly, and adopt Plan v3 as its policy successor. Plan v3
+  keeps the v2 action and target severity orders but first retains each
+  eligible target's highest-ranked current conflict action.
 - Define a bounded coverage capacity from the target, action, two-column, and
   source-candidate-headroom limits. For each distinct primary conflict
   resource, retain its best severity-ranked representative, then retain the
@@ -54,25 +54,27 @@ coverage, and ADR-059 explicitly does not authorize it as a causal signal.
   retention by the existing possible-target bound. The result must be
   independent of pool order. Unordered iteration and an unbounded
   resource-to-target roster are not conforming implementations.
-- Preserve Targeted Regeneration Execution v5 and reserve Execution v6. V6
+- Preserve Targeted Regeneration Execution v5 and adopt Execution v6. V6
   accepts only Plan v3, validates the coverage prefix before query one, and
   uses new batch, success, and failed-observation checksum domains.
-- Preserve CPU Candidate-Allocation Session v4 and reserve Session v5. V5
+- Preserve CPU Candidate-Allocation Session v4 and adopt Session v5. V5
   composes Plan v3 and Execution v6 under a new session checksum domain while
   preserving the v4 ownership, preflight, epoch, fixed-point, and terminal
   Multi-World boundaries.
-- Keep the current production factories on Plan v2, Execution v5, and Session
-  v4 until a separate implementation slice passes adversarial review and the
-  complete repository gates. The reserved schemas do not authorize execution
-  by themselves.
-- Preserve every historical checksum helper and golden. After activation,
-  production will accept only Plan v3, Execution v6, and Session v5; historical
-  factories remain rejected before routing, mutation, or input consumption.
+- Production factories accept only Plan v3, Execution v6, and Session v5.
+  Plan v1/v2, Execution v1-v5, and Session v1-v4 remain historical and are
+  rejected before routing, publication, mutation, or input consumption.
+- Preserve every historical checksum helper and golden. Historical factories
+  remain rejected before routing, mutation, or input consumption.
 - Do not modify canonical algorithm-budget roster v3, Confirmatory Decision
   Protocol v2, or any existing exact, Raw, report, operational, or publication
-  artifact. A future acquisition requires separately reviewed successor
-  budget and consuming authorities.
-- Before activation, add discriminating tests for distinct-resource coverage,
+  artifact. Their Corpus-v2/H=4096 budget preimages remain bound to Session v4,
+  so all corresponding execution, controller, and hidden-worker entry points
+  fail closed before fixture or preparer access. A future acquisition requires
+  separately reviewed Session-v5 budget and consuming authorities. A separate
+  nondecision Representative-Corpus-v1 diagnostic roster v2 may cover live
+  Session-v5 tests but cannot authorize Corpus-v2 execution or publication.
+- Activation includes discriminating tests for distinct-resource coverage,
   duplicate-resource representative choice, bounded eviction and re-entry,
   input permutations, cap/headroom edges, primary-action replay drift,
   cross-version rejection, unchanged historical goldens, new successor
@@ -93,8 +95,9 @@ session-owned attempt ledger.
 
 No improvement, feasibility, performance, heldout, confirmatory, Phase 4, or
 M1 claim follows from this contract. Those claims remain closed until the
-implementation is reviewed and the designated development cells are freshly
-reacquired from its exact clean source commit.
+designated development cells are freshly reacquired under separately reviewed
+Session-v5 acquisition and publication authorities from their exact clean
+source commit.
 
 ## Rejected alternatives
 

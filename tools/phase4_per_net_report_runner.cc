@@ -428,6 +428,23 @@ int main(int argc, char** argv) try {
                "fixture or emit a report\n";
   return 2;
 #endif
+#ifdef APGAR_PHASE4_CONFIRMATORY_REPORT_RUNNER
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_REPORT_RUNNER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_REPORT_RUNNER)
+  constexpr auto kExecutionAuthority =
+      apgar::benchmark::internal::Phase4TrialExecutionAuthority::kCorpusV2H4096;
+#else
+  constexpr auto kExecutionAuthority =
+      apgar::benchmark::internal::Phase4TrialExecutionAuthority::kCorpusV2H2250;
+#endif
+  if (const std::optional<apgar::benchmark::Phase4PairedTrialError> authority_error =
+          apgar::benchmark::internal::PreflightPhase4CorpusV2SessionExecutionAuthority(
+              kExecutionAuthority, apgar::benchmark::Phase4TrialArm::kSequentialBaseline);
+      authority_error.has_value()) {
+    std::cerr << authority_error->invariant_id << ": " << authority_error->detail << '\n';
+    return 2;
+  }
+#endif
   const bool publishable = apgar::benchmark::IsPublishableBenchmarkSource(
       *options.runtime_commit, apgar::benchmark::kPhase3BuiltCommit, source_stamped,
       source_tree_dirty);

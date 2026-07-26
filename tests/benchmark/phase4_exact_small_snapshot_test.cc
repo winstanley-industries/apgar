@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "apgar/allocator/cpu_candidate_pool_preparation.h"
+#include "src/allocator/negotiated_prices_internal.h"
+#include "src/allocator/one_world_internal.h"
 #include "src/benchmark/phase4_confirmatory_h4096_exact_small_snapshot_internal.h"
 #include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
 #include "src/benchmark/phase4_paired_trial_internal.h"
@@ -81,15 +83,99 @@ template <typename Value, typename Error>
       std::move(capture), {}, raw_evidence_schema_version));
 }
 
+[[nodiscard]] Phase4CandidatePoolSnapshotExecutionV1 SyntheticCorpusV2Capture(
+    const Phase4PairedTrialSpec& spec) {
+  const Phase4RepresentativeCase representative = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV2(spec.case_id, {}, spec.corpus_limits));
+  Phase4CandidatePoolSnapshotExecutionV1 capture;
+  capture.capacity_schema_version = representative.capacities.schema_version();
+  capture.capacity_associations = representative.capacities.associations();
+  capture.default_capacity_units = representative.capacities.default_capacity_units();
+  capture.capacity_overrides = representative.capacities.overrides();
+  capture.final_pools.reserve(representative.workload.nets().size());
+  capture.production_world.selections.reserve(representative.workload.nets().size());
+  for (const allocator::PreparedNetRoutingContext& context : representative.workload.nets()) {
+    allocator::CandidatePool pool;
+    pool.net = context.request.net;
+    capture.final_pools.push_back(std::move(pool));
+    allocator::NetSelection selection;
+    selection.net = context.request.net;
+    selection.status = allocator::NetSelectionStatus::kNoAdmissibleCandidate;
+    capture.production_world.selections.push_back(std::move(selection));
+  }
+
+  const std::uint64_t columns_per_epoch =
+      spec.candidate_session_config.regeneration_plan_config.maximum_total_columns;
+  const std::uint32_t terminal_rounds =
+      spec.candidate_session_config.schedules.back().maximum_selection_rounds;
+  const Phase4RouteOpportunity opportunity{
+      .route_queries = spec.baseline_config.limits.maximum_route_queries,
+      .route_work_units = spec.baseline_config.limits.maximum_total_route_work_units,
+  };
+  Phase4TrialArmSemantics& semantics = capture.semantics;
+  semantics.arm = Phase4TrialArm::kReusableCandidateAllocation;
+  semantics.execution_order = spec.execution_order;
+  semantics.corpus_version = kPhase4RepresentativeCorpusVersionV2;
+  semantics.corpus_checksum = Phase4RepresentativeCorpusChecksumV2();
+  semantics.case_id = spec.case_id;
+  semantics.descriptor_fingerprint = FingerprintPhase4CaseDescriptorV2(representative.descriptor);
+  semantics.case_checksum = representative.case_checksum;
+  semantics.board_content_hash = representative.board.content_hash();
+  semantics.workload_checksum = representative.workload.workload_checksum();
+  semantics.capacity_model_checksum =
+      allocator::internal::RecomputeResourceCapacityModelChecksumV1(representative.capacities);
+  semantics.budget_checksum = internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
+      Phase4RepresentativeCorpusAuthority::kV2, spec, opportunity,
+      representative.descriptor.requested_net_count, columns_per_epoch, terminal_rounds);
+  semantics.workload_net_count = representative.descriptor.requested_net_count;
+  semantics.requested_pool_size = spec.requested_pool_size;
+  semantics.repetition_index = spec.repetition_index;
+  semantics.root_seed = spec.root_seed;
+  semantics.preparation_worker_count = spec.preparation_worker_count;
+  semantics.baseline_sweeps = spec.baseline_config.maximum_sweeps;
+  semantics.candidate_regeneration_epochs =
+      spec.candidate_session_config.maximum_regeneration_epochs;
+  semantics.candidate_columns_per_epoch = columns_per_epoch;
+  semantics.candidate_terminal_selection_rounds = terminal_rounds;
+  semantics.external_budget = spec.external_budget;
+  semantics.opportunity = opportunity;
+  semantics.preparation_checksum = 101;
+  semantics.algorithm_session_checksum = 103;
+  semantics.final_pool_manifest_checksum =
+      allocator::internal::RecomputeOneWorldPoolManifestChecksumV1(capture.final_pools);
+  semantics.final_rejection_manifest_checksum = 107;
+  semantics.terminal_reason = Phase4NormalizedTerminalReason::kNoAdmissibleCandidate;
+  semantics.candidate_outcome_source = Phase4CandidateOutcomeSource::kCommonLineageOneWorld;
+  semantics.outcome.no_candidate_net_count = representative.workload.nets().size();
+  semantics.outcome.world_checksum = 109;
+  semantics.semantic_checksum = internal::ComputePhase4TrialArmSemanticChecksumV1(semantics);
+  EXPECT_FALSE(internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(
+                   Phase4RepresentativeCorpusAuthority::kV2, semantics)
+                   .has_value());
+
+  capture.telemetry.associated_semantic_checksum = semantics.semantic_checksum;
+  capture.telemetry.per_net.reserve(representative.workload.nets().size());
+  for (const allocator::PreparedNetRoutingContext& context : representative.workload.nets()) {
+    Phase4PerNetReportV1 report;
+    report.net = context.request.net;
+    capture.telemetry.per_net.push_back(std::move(report));
+  }
+  capture.telemetry.telemetry_checksum =
+      internal::ComputePhase4ArmReportTelemetryChecksumV1(capture.telemetry);
+  EXPECT_FALSE(internal::ValidatePhase4ArmReportTelemetryForAuthorityV1(
+                   Phase4RepresentativeCorpusAuthority::kV2, semantics, representative.workload,
+                   capture.telemetry)
+                   .has_value());
+  capture.production_world.no_candidate_net_count = representative.workload.nets().size();
+  capture.production_world.world_checksum = semantics.outcome.world_checksum;
+  return capture;
+}
+
 [[nodiscard]] Phase4ExactSmallSnapshotArtifactV1 CorpusV2Artifact() {
   const Phase4CanonicalCellConfig cell = Cell(10'100);
   const Phase4PairedTrialSpec spec = ValueOf<Phase4PairedTrialSpec>(
       BuildPhase4CanonicalTrialSpecForCorpusV2(cell, 0, Phase4TrialOrder::kBaselineFirst));
-  auto preparer = ValueOf<std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer>>(
-      allocator::CreatePersistentCpuCandidatePoolPreparer(
-          {.worker_count = kPhase4CanonicalPreparationWorkersV1}));
-  Phase4CandidatePoolSnapshotExecutionV1 capture = ValueOf<Phase4CandidatePoolSnapshotExecutionV1>(
-      ExecutePhase4CandidatePoolSnapshotForCorpusV2(spec, {}, preparer.get()));
+  Phase4CandidatePoolSnapshotExecutionV1 capture = SyntheticCorpusV2Capture(spec);
   const std::uint64_t raw_artifact_checksum = 201;
   const std::uint64_t report_artifact_checksum = 203;
   const Phase4PerNetReportRawReferenceV1 raw{
@@ -131,12 +217,7 @@ template <typename Value, typename Error>
   EXPECT_FALSE(internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(
                    spec, Phase4TrialArm::kReusableCandidateAllocation)
                    .has_value());
-  auto preparer = ValueOf<std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer>>(
-      allocator::CreatePersistentCpuCandidatePoolPreparer(
-          {.worker_count = kPhase4CanonicalPreparationWorkersV1}));
-  Phase4CandidatePoolSnapshotExecutionV1 capture = ValueOf<Phase4CandidatePoolSnapshotExecutionV1>(
-      internal::ExecutePhase4ConfirmatoryH4096SameRunCandidatePoolSnapshot(spec, {},
-                                                                           preparer.get()));
+  Phase4CandidatePoolSnapshotExecutionV1 capture = SyntheticCorpusV2Capture(spec);
   const std::uint64_t raw_artifact_checksum = 301;
   const std::uint64_t report_artifact_checksum = 307;
   const Phase4PerNetReportRawReferenceV1 raw{
@@ -245,17 +326,35 @@ TEST(Phase4ExactSmallSnapshotTest, AcceptsOnlyVersionedRawSourceEnvelopeDomains)
   EXPECT_EQ(Rejected(foreign).invariant_id, "P4EXACT-SNAPSHOT-AUTHORITY-002");
 }
 
-TEST(Phase4ExactSmallSnapshotTest, CorpusV2AuthorityIsExplicitAndCrossRejecting) {
-  const Phase4ExactSmallSnapshotArtifactV1 corpus_v1 = Artifact();
-  const Phase4ExactSmallSnapshotArtifactV1 corpus_v2 = CorpusV2Artifact();
-  EXPECT_TRUE(std::holds_alternative<std::monostate>(
-      ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(corpus_v2, {})));
-  EXPECT_TRUE(std::holds_alternative<Phase4ExactSmallSnapshotError>(
-      ValidatePhase4ExactSmallSnapshotArtifactV1(corpus_v2, {})));
-  EXPECT_TRUE(std::holds_alternative<Phase4ExactSmallSnapshotError>(
-      ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(corpus_v1, {})));
-  EXPECT_EQ(corpus_v2.config.case_id, 10'100U);
-  EXPECT_EQ(corpus_v2.corpus_checksum, Phase4RepresentativeCorpusChecksumV2());
+TEST(Phase4ExactSmallSnapshotTest, CorpusV2SnapshotExecutionIsClosedBeforeWork) {
+  const Phase4CanonicalCellConfig cell = Cell(10'100);
+  const Phase4PairedTrialSpec spec = ValueOf<Phase4PairedTrialSpec>(
+      BuildPhase4CanonicalTrialSpecForCorpusV2(cell, 0, Phase4TrialOrder::kBaselineFirst));
+  auto result = ExecutePhase4CandidatePoolSnapshotForCorpusV2(spec, "must-not-be-read", nullptr);
+  ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(result));
+  const Phase4PairedTrialError& error = std::get<Phase4TrialArmFailure>(result).summary;
+  EXPECT_EQ(error.code, Phase4PairedTrialErrorCode::kUnsupportedSchema);
+  EXPECT_EQ(error.invariant_id, "P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001");
+}
+
+TEST(Phase4ExactSmallSnapshotTest, H4096SnapshotExecutionIsClosedBeforeWork) {
+  Phase4CanonicalCellConfig cell = Cell(10'100);
+  cell.maximum_setup_elapsed_nanoseconds = 300'000'000'000ULL;
+  cell.external_budget = {
+      .maximum_prepared_elapsed_nanoseconds = 300'000'000'000ULL,
+      .maximum_cold_elapsed_nanoseconds = 300'000'000'000ULL,
+      .maximum_address_space_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL,
+      .maximum_peak_host_bytes = 16ULL * 1024ULL * 1024ULL * 1024ULL,
+  };
+  const Phase4PairedTrialSpec spec =
+      ValueOf<Phase4PairedTrialSpec>(internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
+          cell, 0, Phase4TrialOrder::kBaselineFirst));
+  auto result = internal::ExecutePhase4ConfirmatoryH4096SameRunCandidatePoolSnapshot(
+      spec, "must-not-be-read", nullptr);
+  ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(result));
+  const Phase4PairedTrialError& error = std::get<Phase4TrialArmFailure>(result).summary;
+  EXPECT_EQ(error.code, Phase4PairedTrialErrorCode::kUnsupportedSchema);
+  EXPECT_EQ(error.invariant_id, "P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001");
 }
 
 TEST(Phase4ExactSmallSnapshotTest, H4096AuthorityPinsBudgetOutcomeAndCrossRejectsH2250) {
@@ -272,42 +371,57 @@ TEST(Phase4ExactSmallSnapshotTest, H4096AuthorityPinsBudgetOutcomeAndCrossReject
 
   EXPECT_EQ(h4096.budget_checksum, kH4096ExactPairedBudgetChecksum);
   EXPECT_EQ(h4096.candidate_semantics.budget_checksum, kH4096ExactPairedBudgetChecksum);
-  EXPECT_EQ(h4096.cartesian_product, 8U);
+  EXPECT_EQ(h4096.cartesian_product, 1U);
   ASSERT_EQ(h4096.pools.size(), 6U);
-  EXPECT_EQ(h4096.pools[0].candidates.size(), 2U);
-  EXPECT_EQ(h4096.pools[1].candidates.size(), 2U);
-  EXPECT_EQ(h4096.pools[2].candidates.size(), 2U);
-  EXPECT_EQ(h4096.pools[3].candidates.size(), 1U);
-  EXPECT_EQ(h4096.pools[4].candidates.size(), 1U);
-  EXPECT_EQ(h4096.pools[5].candidates.size(), 1U);
+  EXPECT_TRUE(
+      std::ranges::all_of(h4096.pools, [](const auto& pool) { return pool.candidates.empty(); }));
+  EXPECT_TRUE(std::ranges::all_of(h4096.production_selections, [](const auto& selection) {
+    return selection.status == allocator::NetSelectionStatus::kNoAdmissibleCandidate;
+  }));
   EXPECT_EQ(h4096.production_outcome, (Phase4BoardOutcome{
-                                          .selected_net_count = 6,
-                                          .no_candidate_net_count = 0,
-                                          .overused_resource_count = 1,
-                                          .total_overuse_units = 1,
-                                          .total_intrinsic_cost = 159'000,
-                                          .world_checksum = 6'504'433'565'156'884'771ULL,
+                                          .selected_net_count = 0,
+                                          .no_candidate_net_count = 6,
+                                          .overused_resource_count = 0,
+                                          .total_overuse_units = 0,
+                                          .total_intrinsic_cost = 0,
+                                          .world_checksum = 109,
                                       }));
 }
 
 TEST(Phase4ExactSmallSnapshotTest, CorpusV2SnapshotAuthorityKeepsUnopenedCasesClosed) {
-  const Phase4ExactSmallSnapshotArtifactV1 open = CorpusV2Artifact();
   for (const std::uint32_t case_id : {10'101U, 10'102U}) {
     SCOPED_TRACE(case_id);
     const Phase4CanonicalCellConfig cell = Cell(case_id);
+    constexpr std::uint64_t kRawArtifactChecksum = 201;
+    constexpr std::uint64_t kReportArtifactChecksum = 203;
+    const Phase4PerNetReportRawReferenceV1 raw{
+        .repetition_index = 0,
+        .execution_order = Phase4TrialOrder::kBaselineFirst,
+        .pair_attempt_checksum = 207,
+        .paired_semantic_checksum = 209,
+        .paired_artifact_checksum = 211,
+        .baseline_semantic_checksum = 223,
+        .baseline_arm_artifact_checksum = 227,
+        .candidate_semantic_checksum = 229,
+        .candidate_arm_artifact_checksum = 233,
+    };
     auto build_result = BuildPhase4ExactSmallSnapshotArtifactForCorpusV2(
         cell, kCommit, true, false, ComputePhase4CanonicalCellPlanChecksumForCorpusV2(cell),
-        open.raw_cell_artifact_checksum, open.raw_source_envelope_checksum, open.raw_reference,
-        open.per_net_report_artifact_checksum, open.per_net_report_source_envelope_checksum, {}, {},
-        kPhase4SameRunRawEvidenceSchemaVersion);
+        kRawArtifactChecksum,
+        ComputePhase4SourceEnvelopeChecksumV2(kPhase4SameRunRawEvidenceSchemaVersion,
+                                              kPhase4SameRunTrialWireSchemaVersion, kCommit, true,
+                                              false, kRawArtifactChecksum),
+        raw, kReportArtifactChecksum,
+        ComputePhase4PerNetReportSourceEnvelopeChecksumV1(kCommit, true, false,
+                                                          kReportArtifactChecksum),
+        {}, {}, kPhase4SameRunRawEvidenceSchemaVersion);
     ASSERT_TRUE(std::holds_alternative<Phase4ExactSmallSnapshotError>(build_result));
     const auto& build_error = std::get<Phase4ExactSmallSnapshotError>(build_result);
     EXPECT_EQ(build_error.code, Phase4ExactSmallSnapshotErrorCode::kUnsupportedCase);
     EXPECT_EQ(build_error.invariant_id, "P4EXACT-SNAPSHOT-CASE-001");
 
-    Phase4ExactSmallSnapshotArtifactV1 closed = open;
+    Phase4ExactSmallSnapshotArtifactV1 closed = Artifact();
     closed.config.case_id = case_id;
-    Reauthenticate(&closed);
     auto validation = ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(closed, {});
     ASSERT_TRUE(std::holds_alternative<Phase4ExactSmallSnapshotError>(validation));
     const auto& validation_error = std::get<Phase4ExactSmallSnapshotError>(validation);

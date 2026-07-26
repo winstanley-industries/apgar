@@ -5,8 +5,11 @@ import subprocess
 import tempfile
 import unittest
 
+from tests.support import phase4_confirmatory_h4096_test_artifacts as artifacts
 from tools import validate_phase4_raw_evidence as raw_validator
 from tools import validate_phase4_same_run_decision_telemetry as telemetry_validator
+
+_SESSION_AUTHORITY = "P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001"
 
 
 def runfile(relative: str) -> pathlib.Path:
@@ -20,47 +23,33 @@ class Phase4ConfirmatoryRawEvidenceTest(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory()
         root = pathlib.Path(cls.temporary.name)
         cls.sidecar_path = root / "exact-sidecar.json"
-        common = [
-            str(runfile("phase4_confirmatory_evidence_test_runner")),
-            "--corpus_version=2",
-            "--testing_allow_unstamped=1",
-            "--pool_size=4",
-            "--workers=4",
-            "--setup_ns=300000000000",
-            "--prepared_ns=300000000000",
-            "--cold_ns=300000000000",
-            "--address_space_bytes=68719476736",
-            "--peak_host_bytes=17179869184",
-        ]
-        exact = subprocess.run(
-            common
-            + [
-                "--case_id=10100",
-                "--repetitions=20",
-                f"--same_run_telemetry_output={cls.sidecar_path}",
-            ],
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=60,
+        cls.exact_raw = artifacts.make_raw(
+            10_100,
+            4,
+            same_run=True,
+            h4096=False,
+            repetitions=20,
+            canonical_confirmatory_caps=True,
         )
-        if exact.returncode != 0:
-            raise RuntimeError(exact.stderr)
-        cls.exact_raw = json.loads(exact.stdout)
+        cls.exact_sidecar = artifacts.make_sidecar(cls.exact_raw)
         cls.exact_raw_path = root / "exact-raw.json"
-        cls.exact_raw_path.write_text(exact.stdout, encoding="utf-8")
-        cls.exact_sidecar = telemetry_validator.read_document(cls.sidecar_path)
-
-        calibration = subprocess.run(
-            common + ["--case_id=10200", "--repetitions=1"],
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=60,
+        cls.exact_raw_path.write_text(
+            json.dumps(cls.exact_raw, separators=(",", ":")) + "\n",
+            encoding="utf-8",
         )
-        if calibration.returncode != 0:
-            raise RuntimeError(calibration.stderr)
-        cls.calibration_raw = json.loads(calibration.stdout)
+        cls.sidecar_path.write_text(
+            json.dumps(cls.exact_sidecar, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+
+        cls.calibration_raw = artifacts.make_raw(
+            10_200,
+            4,
+            same_run=False,
+            h4096=False,
+            repetitions=1,
+            canonical_confirmatory_caps=True,
+        )
 
         legacy = subprocess.run(
             [
@@ -89,7 +78,7 @@ class Phase4ConfirmatoryRawEvidenceTest(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.temporary.cleanup()
 
-    def test_exact_same_run_and_calibration_ordinary_cells_validate(self) -> None:
+    def test_synthetic_exact_same_run_and_calibration_ordinary_cells_validate(self) -> None:
         raw_validator.validate_confirmatory_same_run_document_v2(
             self.exact_raw,
             allow_unstamped=True,
@@ -137,26 +126,30 @@ class Phase4ConfirmatoryRawEvidenceTest(unittest.TestCase):
                 expected_workers=4,
             )
 
-    def test_confirmatory_runner_rejects_heldout_development_execution(self) -> None:
+    def test_confirmatory_runner_closes_session_before_fixture_access(self) -> None:
         missing_fixture = pathlib.Path(self.temporary.name) / "controller-must-not-open.kicad_pcb"
-        completed = subprocess.run(
-            [
-                str(runfile("phase4_confirmatory_evidence_test_runner")),
-                "--corpus_version=2",
-                "--testing_allow_unstamped=1",
-                "--case_id=11000",
-                "--pool_size=4",
-                f"--fixture_path={missing_fixture}",
-            ],
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=10,
-        )
-        self.assertEqual(completed.returncode, 2)
-        self.assertEqual(completed.stdout, "")
-        self.assertIn("restricted to frozen exact and calibration cases", completed.stderr)
-        self.assertNotIn("failed to read", completed.stderr)
+        fifo_fixture = pathlib.Path(self.temporary.name) / "controller-must-not-read.fifo"
+        os.mkfifo(fifo_fixture)
+        for fixture in (missing_fixture, fifo_fixture):
+            with self.subTest(fixture=fixture.name):
+                completed = subprocess.run(
+                    [
+                        str(runfile("phase4_confirmatory_evidence_test_runner")),
+                        "--corpus_version=2",
+                        "--testing_allow_unstamped=1",
+                        "--case_id=10200",
+                        "--pool_size=4",
+                        f"--fixture_path={fixture}",
+                    ],
+                    check=False,
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertEqual(completed.stdout, "")
+                self.assertIn(_SESSION_AUTHORITY, completed.stderr)
+                self.assertNotIn("failed to read", completed.stderr)
 
     def test_direct_confirmatory_workers_enforce_scope_before_fixture_access(self) -> None:
         runner = str(runfile("phase4_confirmatory_evidence_test_runner"))
@@ -178,10 +171,8 @@ class Phase4ConfirmatoryRawEvidenceTest(unittest.TestCase):
             "--response_fd=1",
         ]
         for worker_mode, case_id in (
-            ("--phase4_worker=1", 10100),
-            ("--phase4_same_run_worker=1", 10200),
-            ("--phase4_worker=1", 11000),
-            ("--phase4_same_run_worker=1", 11000),
+            ("--phase4_worker=1", 10200),
+            ("--phase4_same_run_worker=1", 10100),
         ):
             with self.subTest(worker_mode=worker_mode, case_id=case_id):
                 completed = subprocess.run(
@@ -193,10 +184,7 @@ class Phase4ConfirmatoryRawEvidenceTest(unittest.TestCase):
                 )
                 self.assertEqual(completed.returncode, 2)
                 self.assertEqual(completed.stdout, "")
-                self.assertIn(
-                    "restricted to frozen exact and calibration cases",
-                    completed.stderr,
-                )
+                self.assertIn(_SESSION_AUTHORITY, completed.stderr)
                 self.assertNotIn("failed to read", completed.stderr)
 
     def test_confirmatory_runner_enforces_protocol_assigned_raw_authority(self) -> None:
@@ -241,8 +229,10 @@ class Phase4ConfirmatoryRawEvidenceTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertIn("requires --corpus_version=2", completed.stderr)
 
-    def test_incomplete_same_run_raw_is_preserved_without_a_sidecar(self) -> None:
-        sidecar = pathlib.Path(self.temporary.name) / "incomplete-sidecar.json"
+    def test_fault_runner_cannot_bypass_session_closure_or_publish_a_sidecar(self) -> None:
+        sidecar = pathlib.Path(self.temporary.name) / "forbidden-sidecar.json"
+        fifo_fixture = pathlib.Path(self.temporary.name) / "fault-runner-must-not-read.fifo"
+        os.mkfifo(fifo_fixture)
         environment = os.environ.copy()
         environment["APGAR_PHASE4_TRIAL_FAULT_MODE"] = "second_run_bad_association"
         completed = subprocess.run(
@@ -259,45 +249,20 @@ class Phase4ConfirmatoryRawEvidenceTest(unittest.TestCase):
                 "--cold_ns=300000000000",
                 "--address_space_bytes=68719476736",
                 "--peak_host_bytes=17179869184",
+                f"--fixture_path={fifo_fixture}",
                 f"--same_run_telemetry_output={sidecar}",
             ],
             check=False,
             text=True,
             capture_output=True,
-            timeout=60,
+            timeout=10,
             env=environment,
         )
-        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(completed.stdout, "")
+        self.assertIn(_SESSION_AUTHORITY, completed.stderr)
+        self.assertNotIn("failed to read", completed.stderr)
         self.assertFalse(sidecar.exists())
-        raw = json.loads(completed.stdout)
-        self.assertFalse(
-            raw_validator.validate_confirmatory_same_run_total_attempt_document_v2(
-                raw,
-                allow_unstamped=True,
-                expected_repetitions=20,
-                expected_workers=4,
-            )
-        )
-        self.assertTrue(any(attempt["result"] is None for attempt in raw["attempts"]))
-        raw_path = pathlib.Path(self.temporary.name) / "incomplete-raw.json"
-        raw_path.write_text(completed.stdout, encoding="utf-8")
-        validation = subprocess.run(
-            [
-                str(runfile("phase4_confirmatory_raw_evidence_validator")),
-                "--same-run-total-attempt-v2",
-                "--testing-allow-unstamped",
-                "--testing-repetitions=20",
-                "--testing-workers=4",
-                str(raw_path),
-            ],
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=10,
-        )
-        self.assertEqual(validation.returncode, 3, validation.stderr)
-        self.assertIn("status=incomplete", validation.stdout)
-        self.assertIn("publication_eligible=false", validation.stdout)
 
     def test_validator_clis_reject_fifo_inputs_without_blocking(self) -> None:
         fifo = pathlib.Path(self.temporary.name) / "validator-input.fifo"

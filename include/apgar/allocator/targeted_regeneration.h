@@ -1,6 +1,7 @@
 #ifndef APGAR_ALLOCATOR_TARGETED_REGENERATION_H_
 #define APGAR_ALLOCATOR_TARGETED_REGENERATION_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -14,14 +15,26 @@
 namespace apgar::allocator {
 
 class TargetedRegenerationPlan;
+struct TargetedRegenerationNet;
 
 namespace internal {
 void SetTargetedRegenerationPlanSchemaVersionForTesting(TargetedRegenerationPlan& plan,
                                                         std::uint32_t schema_version) noexcept;
+void SetTargetedRegenerationCoverageSeedTargetCountForTesting(
+    TargetedRegenerationPlan& plan, std::uint64_t coverage_seed_target_count) noexcept;
+void ReplaceTargetedRegenerationTargetForTesting(TargetedRegenerationPlan& plan,
+                                                 std::size_t target_index,
+                                                 TargetedRegenerationNet target);
+void SetTargetedRegenerationPlanAggregatesForTesting(TargetedRegenerationPlan& plan,
+                                                     std::uint64_t total_requested_columns,
+                                                     std::uint64_t total_resource_actions,
+                                                     std::uint64_t total_conflict_resources,
+                                                     std::uint64_t total_conflict_impact) noexcept;
 }  // namespace internal
 
 inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersionV1 = 1;
-inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersion = 2;
+inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersionV2 = 2;
+inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersion = 3;
 
 struct TargetedRegenerationConfig {
   std::uint64_t maximum_target_nets = 100'000;
@@ -137,6 +150,9 @@ class TargetedRegenerationPlan {
   [[nodiscard]] const std::vector<TargetedRegenerationNet>& targets() const noexcept {
     return targets_;
   }
+  [[nodiscard]] std::uint64_t coverage_seed_target_count() const noexcept {
+    return coverage_seed_target_count_;
+  }
   [[nodiscard]] std::uint64_t total_requested_columns() const noexcept {
     return total_requested_columns_;
   }
@@ -166,6 +182,7 @@ class TargetedRegenerationPlan {
            left.pinned_candidate_count_ == right.pinned_candidate_count_ &&
            left.config_ == right.config_ && left.price_state_ == right.price_state_ &&
            left.targets_ == right.targets_ &&
+           left.coverage_seed_target_count_ == right.coverage_seed_target_count_ &&
            left.total_requested_columns_ == right.total_requested_columns_ &&
            left.total_resource_actions_ == right.total_resource_actions_ &&
            left.total_conflict_resources_ == right.total_conflict_resources_ &&
@@ -181,10 +198,11 @@ class TargetedRegenerationPlan {
       std::uint64_t candidate_pool_manifest_checksum, std::uint64_t source_pool_count,
       std::uint64_t source_candidate_count, std::uint64_t pinned_candidate_count,
       TargetedRegenerationConfig config, NegotiatedPriceState price_state,
-      std::vector<TargetedRegenerationNet> targets, std::uint64_t total_requested_columns,
-      std::uint64_t total_resource_actions, std::uint64_t total_conflict_resources,
-      std::uint64_t total_conflict_impact, std::uint64_t expanded_resource_visits,
-      std::uint64_t plan_checksum, std::optional<candidates::CandidateStorePinLease> pin_lease)
+      std::vector<TargetedRegenerationNet> targets, std::uint64_t coverage_seed_target_count,
+      std::uint64_t total_requested_columns, std::uint64_t total_resource_actions,
+      std::uint64_t total_conflict_resources, std::uint64_t total_conflict_impact,
+      std::uint64_t expanded_resource_visits, std::uint64_t plan_checksum,
+      std::optional<candidates::CandidateStorePinLease> pin_lease)
       : schema_version_(schema_version),
         associations_(associations),
         workload_checksum_(workload_checksum),
@@ -196,6 +214,7 @@ class TargetedRegenerationPlan {
         config_(config),
         price_state_(std::move(price_state)),
         targets_(std::move(targets)),
+        coverage_seed_target_count_(coverage_seed_target_count),
         total_requested_columns_(total_requested_columns),
         total_resource_actions_(total_resource_actions),
         total_conflict_resources_(total_conflict_resources),
@@ -215,6 +234,7 @@ class TargetedRegenerationPlan {
   TargetedRegenerationConfig config_;
   NegotiatedPriceState price_state_;
   std::vector<TargetedRegenerationNet> targets_;
+  std::uint64_t coverage_seed_target_count_ = 0;
   std::uint64_t total_requested_columns_ = 0;
   std::uint64_t total_resource_actions_ = 0;
   std::uint64_t total_conflict_resources_ = 0;
@@ -229,6 +249,16 @@ class TargetedRegenerationPlan {
                                 candidates::CandidateStore&, const TargetedRegenerationConfig&);
   friend void internal::SetTargetedRegenerationPlanSchemaVersionForTesting(
       TargetedRegenerationPlan&, std::uint32_t) noexcept;
+  friend void internal::SetTargetedRegenerationCoverageSeedTargetCountForTesting(
+      TargetedRegenerationPlan&, std::uint64_t) noexcept;
+  friend void internal::ReplaceTargetedRegenerationTargetForTesting(TargetedRegenerationPlan&,
+                                                                    std::size_t,
+                                                                    TargetedRegenerationNet);
+  friend void internal::SetTargetedRegenerationPlanAggregatesForTesting(TargetedRegenerationPlan&,
+                                                                        std::uint64_t,
+                                                                        std::uint64_t,
+                                                                        std::uint64_t,
+                                                                        std::uint64_t) noexcept;
   template <bool>
   friend std::variant<TargetedRegenerationPlan, TargetedRegenerationError>
   BuildTargetedRegenerationPlanImpl(std::uint32_t, const NegotiatedPriceState&,

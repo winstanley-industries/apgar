@@ -340,7 +340,7 @@ int main(int argc, char** argv) {
     BudgetRow budget{.case_id = descriptor.case_id, .pool_checksums = {}};
     for (std::uint8_t index = 0; index < descriptor.requested_pool_size_count; ++index) {
       const std::uint32_t pool = descriptor.requested_pool_sizes[index];
-      auto spec = apgar::benchmark::BuildPhase4CanonicalTrialSpecForCorpusV2(
+      auto spec = apgar::benchmark::BuildPhase4FrozenCanonicalBudgetPreimageForCorpusV2(
           Cell(descriptor.case_id, pool), 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
       if (!std::holds_alternative<apgar::benchmark::Phase4PairedTrialSpec>(spec)) {
         const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(spec);

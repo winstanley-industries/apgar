@@ -48,15 +48,26 @@ template <typename Value>
   return spec;
 }
 
-void ExpectAuthorityRejection(const Phase4PairedTrialError& error, std::uint64_t required,
-                              std::uint64_t configured) {
-  EXPECT_EQ(error.code, Phase4PairedTrialErrorCode::kInvalidConfiguration);
-  EXPECT_EQ(error.invariant_id, "P4PAIR-CORPUS-V2-BUDGET-AUTHORITY-001");
-  EXPECT_EQ(error.required, required);
-  EXPECT_EQ(error.configured, configured);
+void ExpectSessionClosure(const Phase4PairedTrialError& error) {
+  EXPECT_EQ(error.code, Phase4PairedTrialErrorCode::kUnsupportedSchema);
+  EXPECT_EQ(error.invariant_id, "P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001");
 }
 
-TEST(Phase4CorpusV2BudgetFirewallTest, RejectsEveryNonProtocolV1PriceValue) {
+TEST(Phase4CorpusV2BudgetFirewallTest,
+     FrozenH2250PriceFieldsRemainBudgetIdentityButExecutionClosesFirst) {
+  const Phase4PairedTrialSpec canonical = H2250Spec();
+  const std::uint64_t canonical_budget =
+      internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(canonical);
+  EXPECT_EQ(canonical.baseline_config.price_config.present_step_per_overuse_unit,
+            internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit);
+  EXPECT_EQ(canonical.baseline_config.price_config.history_step_per_overuse_unit,
+            internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit);
+  const auto expect_closed_drift = [canonical_budget](Phase4PairedTrialSpec spec) {
+    EXPECT_NE(internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(spec), canonical_budget);
+    ExpectSessionClosure(Rejection(ExecutePhase4TrialArmForCorpusV2(
+        Phase4TrialArm::kSequentialBaseline, spec, "must-not-be-read")));
+  };
+
   for (const std::uint64_t history : std::array<std::uint64_t, 6>{
            0,
            1,
@@ -68,38 +79,28 @@ TEST(Phase4CorpusV2BudgetFirewallTest, RejectsEveryNonProtocolV1PriceValue) {
     Phase4PairedTrialSpec spec = H2250Spec();
     spec.baseline_config.price_config.history_step_per_overuse_unit = history;
     spec.candidate_session_config.price_config = spec.baseline_config.price_config;
-    ExpectAuthorityRejection(Rejection(ExecutePhase4TrialArmForCorpusV2(
-                                 Phase4TrialArm::kSequentialBaseline, spec, "must-not-be-read")),
-                             internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit, history);
+    expect_closed_drift(std::move(spec));
   }
   for (const std::uint64_t present :
        std::array<std::uint64_t, 3>{0, 2, std::numeric_limits<std::uint64_t>::max()}) {
     Phase4PairedTrialSpec spec = H2250Spec();
     spec.baseline_config.price_config.present_step_per_overuse_unit = present;
     spec.candidate_session_config.price_config = spec.baseline_config.price_config;
-    ExpectAuthorityRejection(Rejection(ExecutePhase4TrialArmForCorpusV2(
-                                 Phase4TrialArm::kSequentialBaseline, spec, "must-not-be-read")),
-                             internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit, present);
+    expect_closed_drift(std::move(spec));
   }
 
   Phase4PairedTrialSpec unequal_history = H2250Spec();
   unequal_history.candidate_session_config.price_config.history_step_per_overuse_unit =
       internal::kPhase4CorpusV2H4096HistoryStepPerOveruseUnit;
-  ExpectAuthorityRejection(
-      Rejection(ExecutePhase4TrialArmForCorpusV2(Phase4TrialArm::kSequentialBaseline,
-                                                 unequal_history, "must-not-be-read")),
-      internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit,
-      internal::kPhase4CorpusV2H4096HistoryStepPerOveruseUnit);
+  expect_closed_drift(std::move(unequal_history));
 
   Phase4PairedTrialSpec unequal_present = H2250Spec();
   unequal_present.candidate_session_config.price_config.present_step_per_overuse_unit = 2;
-  ExpectAuthorityRejection(
-      Rejection(ExecutePhase4TrialArmForCorpusV2(Phase4TrialArm::kSequentialBaseline,
-                                                 unequal_present, "must-not-be-read")),
-      internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit, 2);
+  expect_closed_drift(std::move(unequal_present));
 }
 
-TEST(Phase4CorpusV2BudgetFirewallTest, BlocksH4096BeforeEveryExistingExecutionSurface) {
+TEST(Phase4CorpusV2BudgetFirewallTest,
+     PureH4096PreflightSurvivesButSessionClosurePrecedesEveryExecutionSurface) {
   Phase4CanonicalCellConfig cell;
   cell.case_id = 10'100;
   cell.requested_pool_size = 4;
@@ -117,21 +118,24 @@ TEST(Phase4CorpusV2BudgetFirewallTest, BlocksH4096BeforeEveryExistingExecutionSu
   Phase4PairedTrialSpec spec = std::get<Phase4PairedTrialSpec>(std::move(built));
   spec.corpus_limits.maximum_board_entities = 0;
 
-  const auto expect_h4096 = [](const Phase4PairedTrialError& error) {
-    ExpectAuthorityRejection(error, internal::kPhase4CorpusV2ProtocolV1HistoryStepPerOveruseUnit,
-                             internal::kPhase4CorpusV2H4096HistoryStepPerOveruseUnit);
-  };
-  expect_h4096(Rejection(ExecutePhase4TrialArmForCorpusV2(
+  EXPECT_FALSE(internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(
+                   spec, Phase4TrialArm::kSequentialBaseline)
+                   .has_value());
+  EXPECT_FALSE(internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(
+                   spec, Phase4TrialArm::kReusableCandidateAllocation)
+                   .has_value());
+
+  ExpectSessionClosure(Rejection(ExecutePhase4TrialArmForCorpusV2(
       Phase4TrialArm::kReusableCandidateAllocation, spec, "must-not-be-read", nullptr)));
-  expect_h4096(Rejection(ExecutePhase4TrialArmDiagnosticForCorpusV2(
+  ExpectSessionClosure(Rejection(ExecutePhase4TrialArmDiagnosticForCorpusV2(
       Phase4TrialArm::kSequentialBaseline, spec, "must-not-be-read")));
-  expect_h4096(Rejection(ExecutePhase4TrialArmWithSameRunTelemetryForCorpusV2(
+  ExpectSessionClosure(Rejection(ExecutePhase4TrialArmWithSameRunTelemetryForCorpusV2(
       Phase4TrialArm::kSequentialBaseline, spec, "must-not-be-read")));
-  expect_h4096(Rejection(ExecutePhase4TrialArmOperationalProfileForCorpusV2(
+  ExpectSessionClosure(Rejection(ExecutePhase4TrialArmOperationalProfileForCorpusV2(
       Phase4TrialArm::kSequentialBaseline, spec, "must-not-be-read")));
-  expect_h4096(Rejection(ExecutePhase4TrialArmReplayAuthorityForCorpusV2(
+  ExpectSessionClosure(Rejection(ExecutePhase4TrialArmReplayAuthorityForCorpusV2(
       Phase4TrialArm::kSequentialBaseline, spec, "must-not-be-read")));
-  expect_h4096(
+  ExpectSessionClosure(
       Rejection(ExecutePhase4CandidatePoolSnapshotForCorpusV2(spec, "must-not-be-read", nullptr)));
 }
 

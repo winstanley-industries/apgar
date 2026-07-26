@@ -1,12 +1,12 @@
 #include <array>
 #include <cstdlib>
-#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
 
-#include "apgar/allocator/cpu_candidate_pool_preparation.h"
 #include "apgar/benchmark/phase4_per_net_report_artifact.h"
+#include "src/allocator/negotiated_prices_internal.h"
 #include "src/benchmark/phase4_confirmatory_h4096_per_net_report_internal.h"
 #include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
 #include "src/benchmark/phase4_paired_trial_internal.h"
@@ -42,47 +42,115 @@ template <typename Value, typename Error>
   return cell;
 }
 
-[[nodiscard]] std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> Preparer() {
-  return ValueOf<std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer>>(
-      allocator::CreatePersistentCpuCandidatePoolPreparer(
-          {.worker_count = kPhase4CanonicalPreparationWorkersV1}));
-}
-
-[[nodiscard]] std::array<Phase4TrialArmDiagnosticExecutionV1, 2> H4096Diagnostics(
+[[nodiscard]] std::array<Phase4TrialArmDiagnosticExecutionV1, 2> SyntheticDiagnostics(
     const Phase4PairedTrialSpec& spec) {
-  Phase4TrialArmDiagnosticExecutionV1 baseline = ValueOf<Phase4TrialArmDiagnosticExecutionV1>(
-      internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmDiagnostic(
-          Phase4TrialArm::kSequentialBaseline, spec, {}));
-  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
-  Phase4TrialArmDiagnosticExecutionV1 candidate = ValueOf<Phase4TrialArmDiagnosticExecutionV1>(
-      internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmDiagnostic(
-          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
-  return {std::move(baseline), std::move(candidate)};
+  const Phase4RepresentativeCase representative = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV2(spec.case_id, {}, spec.corpus_limits));
+  const std::uint32_t terminal_rounds =
+      spec.candidate_session_config.schedules.back().maximum_selection_rounds;
+  const std::uint64_t columns_per_epoch =
+      spec.candidate_session_config.regeneration_plan_config.maximum_total_columns;
+  const Phase4RouteOpportunity opportunity{
+      .route_queries = spec.baseline_config.limits.maximum_route_queries,
+      .route_work_units = spec.baseline_config.limits.maximum_total_route_work_units,
+  };
+  const std::uint64_t budget_checksum = internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
+      Phase4RepresentativeCorpusAuthority::kV2, spec, opportunity,
+      representative.descriptor.requested_net_count, columns_per_epoch, terminal_rounds);
+
+  std::array<Phase4TrialArmDiagnosticExecutionV1, 2> diagnostics;
+  const std::array arms = {
+      Phase4TrialArm::kSequentialBaseline,
+      Phase4TrialArm::kReusableCandidateAllocation,
+  };
+  for (std::size_t index = 0; index < diagnostics.size(); ++index) {
+    Phase4TrialArmSemantics semantics;
+    semantics.arm = arms[index];
+    semantics.execution_order = spec.execution_order;
+    semantics.corpus_version = kPhase4RepresentativeCorpusVersionV2;
+    semantics.corpus_checksum = Phase4RepresentativeCorpusChecksumV2();
+    semantics.case_id = spec.case_id;
+    semantics.descriptor_fingerprint = FingerprintPhase4CaseDescriptorV2(representative.descriptor);
+    semantics.case_checksum = representative.case_checksum;
+    semantics.board_content_hash = representative.board.content_hash();
+    semantics.workload_checksum = representative.workload.workload_checksum();
+    semantics.capacity_model_checksum =
+        allocator::internal::RecomputeResourceCapacityModelChecksumV1(representative.capacities);
+    semantics.budget_checksum = budget_checksum;
+    semantics.workload_net_count = representative.descriptor.requested_net_count;
+    semantics.requested_pool_size = spec.requested_pool_size;
+    semantics.repetition_index = spec.repetition_index;
+    semantics.root_seed = spec.root_seed;
+    semantics.preparation_worker_count = spec.preparation_worker_count;
+    semantics.baseline_sweeps = spec.baseline_config.maximum_sweeps;
+    semantics.candidate_regeneration_epochs =
+        spec.candidate_session_config.maximum_regeneration_epochs;
+    semantics.candidate_columns_per_epoch = columns_per_epoch;
+    semantics.candidate_terminal_selection_rounds = terminal_rounds;
+    semantics.external_budget = spec.external_budget;
+    semantics.opportunity = opportunity;
+    semantics.algorithm_session_checksum = 101 + index;
+    semantics.terminal_reason = Phase4NormalizedTerminalReason::kNoAdmissibleCandidate;
+    semantics.outcome.no_candidate_net_count = representative.workload.nets().size();
+    semantics.outcome.world_checksum = 103 + index;
+    if (semantics.arm == Phase4TrialArm::kReusableCandidateAllocation) {
+      semantics.preparation_checksum = 107;
+      semantics.final_pool_manifest_checksum = 109;
+      semantics.final_rejection_manifest_checksum = 113;
+      semantics.candidate_outcome_source = Phase4CandidateOutcomeSource::kPreferredMultiWorld;
+    }
+    semantics.semantic_checksum = internal::ComputePhase4TrialArmSemanticChecksumV1(semantics);
+    EXPECT_FALSE(internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(
+                     Phase4RepresentativeCorpusAuthority::kV2, semantics)
+                     .has_value());
+
+    Phase4ArmReportTelemetryV1 telemetry;
+    telemetry.associated_semantic_checksum = semantics.semantic_checksum;
+    telemetry.per_net.reserve(representative.workload.nets().size());
+    for (const allocator::PreparedNetRoutingContext& context : representative.workload.nets()) {
+      Phase4PerNetReportV1 report;
+      report.net = context.request.net;
+      telemetry.per_net.push_back(std::move(report));
+    }
+    telemetry.telemetry_checksum = internal::ComputePhase4ArmReportTelemetryChecksumV1(telemetry);
+    EXPECT_FALSE(
+        internal::ValidatePhase4ArmReportTelemetryForAuthorityV1(
+            Phase4RepresentativeCorpusAuthority::kV2, semantics, representative.workload, telemetry)
+            .has_value());
+    diagnostics[index] = {
+        .semantics = std::move(semantics),
+        .telemetry = std::move(telemetry),
+    };
+  }
+  return diagnostics;
 }
 
 [[nodiscard]] std::array<Phase4TrialArmWithSameRunTelemetryExecutionV1, 2> H4096SameRunExecutions(
     const Phase4PairedTrialSpec& spec) {
-  Phase4TrialArmWithSameRunTelemetryExecutionV1 baseline =
-      ValueOf<Phase4TrialArmWithSameRunTelemetryExecutionV1>(
-          internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArm(
-              Phase4TrialArm::kSequentialBaseline, spec, {}));
-  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
-  Phase4TrialArmWithSameRunTelemetryExecutionV1 candidate =
-      ValueOf<Phase4TrialArmWithSameRunTelemetryExecutionV1>(
-          internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArm(
-              Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
-  return {std::move(baseline), std::move(candidate)};
-}
-
-[[nodiscard]] std::array<Phase4TrialArmDiagnosticExecutionV1, 2> H2250Diagnostics(
-    const Phase4PairedTrialSpec& spec) {
-  Phase4TrialArmDiagnosticExecutionV1 baseline = ValueOf<Phase4TrialArmDiagnosticExecutionV1>(
-      ExecutePhase4TrialArmDiagnosticForCorpusV2(Phase4TrialArm::kSequentialBaseline, spec, {}));
-  std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer> preparer = Preparer();
-  Phase4TrialArmDiagnosticExecutionV1 candidate =
-      ValueOf<Phase4TrialArmDiagnosticExecutionV1>(ExecutePhase4TrialArmDiagnosticForCorpusV2(
-          Phase4TrialArm::kReusableCandidateAllocation, spec, {}, preparer.get()));
-  return {std::move(baseline), std::move(candidate)};
+  const Phase4RepresentativeCase representative = ValueOf<Phase4RepresentativeCase>(
+      BuildPhase4RepresentativeCaseV2(spec.case_id, {}, spec.corpus_limits));
+  const auto diagnostics = SyntheticDiagnostics(spec);
+  std::array<Phase4TrialArmWithSameRunTelemetryExecutionV1, 2> executions;
+  for (std::size_t index = 0; index < executions.size(); ++index) {
+    Phase4SameRunArmDecisionTelemetryV1 telemetry;
+    telemetry.associated_semantic_checksum = diagnostics[index].semantics.semantic_checksum;
+    telemetry.outcome = diagnostics[index].semantics.outcome;
+    telemetry.per_net.reserve(representative.workload.nets().size());
+    for (const allocator::PreparedNetRoutingContext& context : representative.workload.nets()) {
+      Phase4SameRunPerNetColumnOutcomesV1 row;
+      row.net = context.request.net;
+      telemetry.per_net.push_back(std::move(row));
+    }
+    telemetry.telemetry_checksum =
+        internal::ComputePhase4SameRunArmDecisionTelemetryChecksumV1(telemetry);
+    EXPECT_FALSE(internal::ValidatePhase4SameRunArmDecisionTelemetryForAuthorityV1(
+                     Phase4RepresentativeCorpusAuthority::kV2, diagnostics[index].semantics,
+                     representative.workload, telemetry)
+                     .has_value());
+    executions[index].execution.semantics = diagnostics[index].semantics;
+    executions[index].telemetry = std::move(telemetry);
+  }
+  return executions;
 }
 
 [[nodiscard]] Phase4PerNetReportRawReferenceV1 RawReference(
@@ -105,7 +173,7 @@ template <typename Value, typename Error>
   const Phase4PairedTrialSpec spec =
       ValueOf<Phase4PairedTrialSpec>(internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
           cell, 0, Phase4TrialOrder::kBaselineFirst));
-  auto diagnostics = H4096Diagnostics(spec);
+  auto diagnostics = SyntheticDiagnostics(spec);
   const Phase4PerNetReportRawReferenceV1 raw = RawReference(diagnostics);
   constexpr std::uint64_t kRawArtifactChecksum = 127;
   return ValueOf<Phase4PerNetReportArtifactV1>(
@@ -122,7 +190,7 @@ template <typename Value, typename Error>
   const Phase4CanonicalCellConfig cell = CanonicalCell();
   const Phase4PairedTrialSpec spec = ValueOf<Phase4PairedTrialSpec>(
       BuildPhase4CanonicalTrialSpecForCorpusV2(cell, 0, Phase4TrialOrder::kBaselineFirst));
-  auto diagnostics = H2250Diagnostics(spec);
+  auto diagnostics = SyntheticDiagnostics(spec);
   const Phase4PerNetReportRawReferenceV1 raw = RawReference(diagnostics);
   constexpr std::uint64_t kRawArtifactChecksum = 131;
   return ValueOf<Phase4PerNetReportArtifactV1>(BuildPhase4PerNetReportArtifactForCorpusV2(
@@ -173,7 +241,7 @@ TEST(Phase4ConfirmatoryH4096SameRunPerNetReportArtifactTest,
   const Phase4PairedTrialSpec spec =
       ValueOf<Phase4PairedTrialSpec>(internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
           cell, 0, Phase4TrialOrder::kBaselineFirst));
-  const auto diagnostics = H4096Diagnostics(spec);
+  const auto diagnostics = SyntheticDiagnostics(spec);
   const auto same_run = H4096SameRunExecutions(spec);
   for (std::size_t index = 0; index < diagnostics.size(); ++index) {
     EXPECT_EQ(diagnostics[index].semantics, same_run[index].execution.semantics);
@@ -218,11 +286,11 @@ TEST(Phase4ConfirmatoryH4096SameRunPerNetReportArtifactTest,
   const Phase4PairedTrialSpec h2250_spec =
       ValueOf<Phase4PairedTrialSpec>(BuildPhase4CanonicalTrialSpecForCorpusV2(
           CanonicalCell(), 0, Phase4TrialOrder::kBaselineFirst));
-  auto rejected = internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmDiagnostic(
-      Phase4TrialArm::kSequentialBaseline, h2250_spec, {});
-  ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(rejected));
-  EXPECT_EQ(std::get<Phase4TrialArmFailure>(rejected).summary.invariant_id,
-            "P4PAIR-CORPUS-V2-H4096-BUDGET-AUTHORITY-001");
+  const std::optional<Phase4PairedTrialError> rejected =
+      internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(h2250_spec,
+                                                            Phase4TrialArm::kSequentialBaseline);
+  ASSERT_TRUE(rejected.has_value());
+  EXPECT_EQ(rejected->invariant_id, "P4PAIR-CORPUS-V2-H4096-BUDGET-AUTHORITY-001");
 }
 
 }  // namespace

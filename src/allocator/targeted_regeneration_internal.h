@@ -38,11 +38,23 @@ struct TargetedRegenerationChecksumHeaderV1 {
 
 using TargetedRegenerationChecksumHeaderV2 = TargetedRegenerationChecksumHeaderV1;
 
+struct TargetedRegenerationChecksumHeaderV3 : TargetedRegenerationChecksumHeaderV2 {
+  std::uint64_t coverage_seed_target_count = 0;
+};
+
 struct TargetedRegenerationResourceScanV1 {
   std::uint64_t conflict_resource_count = 0;
   std::uint64_t conflict_impact = 0;
   std::uint64_t negotiated_price_exposure = 0;
   std::vector<RegenerationResourceAction> resource_actions;
+};
+
+struct TargetedRegenerationRetentionV3ForTesting {
+  std::vector<TargetedRegenerationNet> coverage_seeds;
+  std::vector<TargetedRegenerationNet> fallback_targets;
+
+  friend bool operator==(const TargetedRegenerationRetentionV3ForTesting&,
+                         const TargetedRegenerationRetentionV3ForTesting&) = default;
 };
 
 struct TargetedRegenerationPolicyEntryProjectionV1 {
@@ -55,6 +67,8 @@ struct TargetedRegenerationPolicyEntryProjectionV1 {
 
 using TargetedRegenerationResourceScanResultV1 =
     std::variant<TargetedRegenerationResourceScanV1, TargetedRegenerationError>;
+using TargetedRegenerationRetentionResultV3ForTesting =
+    std::variant<TargetedRegenerationRetentionV3ForTesting, TargetedRegenerationError>;
 
 [[nodiscard]] bool TargetedRegenerationTargetRanksBeforeV1(
     const TargetedRegenerationNet& left, const TargetedRegenerationNet& right) noexcept;
@@ -76,6 +90,16 @@ ProjectTargetedRegenerationPolicyEntriesV1(const geometry_compiler::CompiledBoar
     std::span<const ResourceUsage> world_resources, std::span<const NegotiatedResourcePrice> prices,
     std::uint64_t maximum_retained_actions);
 
+// Source-private coverage/fallback retention seam over already authenticated
+// provisional targets. Production and tests share the same bounded collector.
+[[nodiscard]] TargetedRegenerationRetentionResultV3ForTesting
+RetainTargetedRegenerationTargetsV3ForTesting(
+    std::span<const TargetedRegenerationNet> provisional_targets,
+    std::uint64_t maximum_fallback_targets, std::uint64_t coverage_capacity);
+
+[[nodiscard]] std::uint64_t ComputeTargetedRegenerationCoverageCapacityV3ForTesting(
+    const TargetedRegenerationConfig& config, std::uint64_t candidate_headroom) noexcept;
+
 [[nodiscard]] std::uint64_t ComputeTargetedRegenerationPlanChecksumV1(
     const TargetedRegenerationChecksumHeaderV1& header,
     std::span<const TargetedRegenerationNet> targets) noexcept;
@@ -83,6 +107,18 @@ ProjectTargetedRegenerationPolicyEntriesV1(const geometry_compiler::CompiledBoar
 [[nodiscard]] std::uint64_t ComputeTargetedRegenerationPlanChecksumV2(
     const TargetedRegenerationChecksumHeaderV2& header,
     std::span<const TargetedRegenerationNet> targets) noexcept;
+
+[[nodiscard]] std::uint64_t ComputeTargetedRegenerationPlanChecksumV3(
+    const TargetedRegenerationChecksumHeaderV3& header,
+    std::span<const TargetedRegenerationNet> targets) noexcept;
+
+// Source-private one-shot drift injection immediately before the provisional
+// primary/full-rescan replay check.
+void SetTargetedRegenerationPrimaryReplayMismatchForTesting(bool enabled) noexcept;
+
+// Source-private one-shot inconsistent-summary injection into the exact-net
+// coverage/fallback union.
+void SetTargetedRegenerationUnionMismatchForTesting(bool enabled) noexcept;
 
 }  // namespace apgar::allocator::internal
 

@@ -71,6 +71,21 @@ using Phase4TrialExecutionAuthority = internal::Phase4TrialExecutionAuthority;
   return std::nullopt;
 }
 
+[[nodiscard]] std::optional<Phase4TrialHarnessError> PreflightCorpusV2SessionExecutionAuthority(
+    Phase4TrialExecutionAuthority authority) {
+  if (std::optional<Phase4PairedTrialError> error =
+          internal::PreflightPhase4CorpusV2SessionExecutionAuthority(
+              authority, Phase4TrialArm::kSequentialBaseline);
+      error.has_value()) {
+    return Phase4TrialHarnessError{
+        .invariant_id = std::string(error->invariant_id),
+        .detail = std::string(error->detail),
+        .raw_cell = std::nullopt,
+    };
+  }
+  return std::nullopt;
+}
+
 [[nodiscard]] Phase4CanonicalSpecResult BuildCanonicalSpecForAuthority(
     Phase4TrialExecutionAuthority authority, const Phase4CanonicalCellConfig& cell,
     std::uint32_t repetition, Phase4TrialOrder order) noexcept {
@@ -2439,6 +2454,11 @@ namespace {
         .raw_cell = std::nullopt,
     };
   }
+  if (std::optional<Phase4TrialHarnessError> error =
+          PreflightCorpusV2SessionExecutionAuthority(execution_authority);
+      error.has_value()) {
+    return *error;
+  }
   if (execution_authority == Phase4TrialExecutionAuthority::kCorpusV2H4096) {
     if (std::optional<Phase4TrialHarnessError> error =
             PreflightConfirmatoryH4096Cell(execution_authority, wire_mode, cell, std::nullopt);
@@ -3082,6 +3102,16 @@ namespace {
                                            int request_descriptor, int response_descriptor,
                                            WorkerWireMode wire_mode) noexcept {
   try {
+    if (std::optional<Phase4TrialHarnessError> error =
+            PreflightCorpusV2SessionExecutionAuthority(execution_authority);
+        error.has_value()) {
+      const Phase4DurableArmFailure failure =
+          SummaryFailure(execution_authority, arm, Phase4PairedTrialErrorCode::kUnsupportedSchema,
+                         error->invariant_id, error->detail);
+      (void)SendControllerMessage(response_descriptor, internal::Phase4TrialWireFailure{failure},
+                                  wire_mode);
+      return 10;
+    }
     if (execution_authority == Phase4TrialExecutionAuthority::kCorpusV2H4096) {
       if (std::optional<Phase4TrialHarnessError> error =
               PreflightConfirmatoryH4096Cell(execution_authority, wire_mode, cell, arm);

@@ -111,6 +111,15 @@ namespace {
   return std::get<internal::TargetedRegenerationResourceScanV1>(std::move(result));
 }
 
+[[nodiscard]] internal::TargetedRegenerationRetentionV3ForTesting BuiltRetention(
+    internal::TargetedRegenerationRetentionResultV3ForTesting result) {
+  EXPECT_TRUE(std::holds_alternative<internal::TargetedRegenerationRetentionV3ForTesting>(result));
+  if (!std::holds_alternative<internal::TargetedRegenerationRetentionV3ForTesting>(result)) {
+    std::abort();
+  }
+  return std::get<internal::TargetedRegenerationRetentionV3ForTesting>(std::move(result));
+}
+
 [[nodiscard]] bool SchemaTargetRanksBefore(const TargetedRegenerationNet& left,
                                            const TargetedRegenerationNet& right) {
   return internal::TargetedRegenerationTargetRanksBeforeV1(left, right);
@@ -223,6 +232,41 @@ struct PlanningFixture {
   };
 }
 
+[[nodiscard]] TargetedRegenerationNet ProvisionalTarget(std::uint64_t net_id,
+                                                        std::uint64_t conflict_impact,
+                                                        std::int64_t primary_lattice_x) {
+  return TargetedRegenerationNet{
+      .net = {.id = net_id, .generation = 1},
+      .source_pool_manifest_checksum = net_id + 1U,
+      .source_pool_candidate_count = 1,
+      .source_selected_candidate_id = {.high = 0, .low = net_id},
+      .source_selected_candidate_payload_checksum = net_id + 2U,
+      .next_price_candidate_id = {.high = 1, .low = net_id},
+      .next_price_candidate_payload_checksum = net_id + 3U,
+      .next_price_selection_score = net_id + 4U,
+      .conflict_resource_count = 1,
+      .conflict_impact = conflict_impact,
+      .negotiated_price_exposure = conflict_impact,
+      .requested_columns = 0,
+      .resource_actions =
+          {
+              RegenerationResourceAction{
+                  .resource =
+                      {
+                          .layer = 0,
+                          .lattice_x = primary_lattice_x,
+                          .lattice_y = 0,
+                          .direction = geometry_compiler::Direction::kEast,
+                      },
+                  .observed_overuse_units = conflict_impact,
+                  .selected_candidate_usage_units = 1,
+                  .negotiated_price = conflict_impact,
+                  .conflict_impact = conflict_impact,
+              },
+          },
+  };
+}
+
 [[nodiscard]] std::vector<routing::EdgeResourceKey> AtomicResources(
     const candidates::StoredCandidate& candidate) {
   std::vector<routing::EdgeResourceKey> resources;
@@ -294,6 +338,137 @@ struct PlanningFixture {
   return fixture;
 }
 
+[[nodiscard]] PlanningFixture BuildGlobalAllocationOrderFixture() {
+  board_ir::BoardData board_data = test_support::ValidM1TwoNetBoardData();
+  board_data.obstacles.clear();
+  constexpr board_ir::EntityRef kThirdNet{.id = 12, .generation = 0};
+  constexpr board_ir::EntityRef kFifthTerminal{.id = 24, .generation = 0};
+  constexpr board_ir::EntityRef kSixthTerminal{.id = 25, .generation = 0};
+  board_data.nets.push_back(board_ir::Net{
+      .ref = kThirdNet, .name = "THIRD", .terminals = {kFifthTerminal, kSixthTerminal}});
+  board_data.terminals.push_back(board_ir::Terminal{
+      .ref = kFifthTerminal,
+      .net = kThirdNet,
+      .component = "U5",
+      .pin = "1",
+      .center = {.x = 0, .y = -20},
+      .connection_region = {.min = {.x = 0, .y = -20}, .max = {.x = 0, .y = -20}},
+      .layers = {0, 31},
+  });
+  board_data.terminals.push_back(board_ir::Terminal{
+      .ref = kSixthTerminal,
+      .net = kThirdNet,
+      .component = "U6",
+      .pin = "1",
+      .center = {.x = 100, .y = -20},
+      .connection_region = {.min = {.x = 100, .y = -20}, .max = {.x = 100, .y = -20}},
+      .layers = {0, 31},
+  });
+  board_ir::BoardSnapshot board = test_support::Snapshot(std::move(board_data));
+  const geometry_compiler::CompilerProfile compiler_profile =
+      test_support::DefaultCompilerProfile({0});
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = board.data().nets[1].ref;
+  board_ir::RoutingProfile third_profile = board.data().routing_profile;
+  third_profile.net = board.data().nets[2].ref;
+  const std::array specs = {
+      MultiNetRoutingSpec{
+          .routing_profile = board.data().routing_profile, .start_layer = 0, .goal_layer = 0},
+      MultiNetRoutingSpec{.routing_profile = second_profile, .start_layer = 0, .goal_layer = 0},
+      MultiNetRoutingSpec{.routing_profile = third_profile, .start_layer = 0, .goal_layer = 0},
+  };
+  MultiNetWorkload workload = BuiltWorkload(BuildMultiNetWorkload(
+      kMultiNetWorkloadSchemaVersion, board, compiler_profile, specs, specs.size()));
+
+  auto store = std::make_unique<candidates::CandidateStore>(candidates::CandidateStoreConfig{
+      .maximum_candidates_per_net = 8,
+      .maximum_candidate_bytes_per_net = 16U * 1024U * 1024U,
+      .maximum_rejection_records = 32,
+      .maximum_pin_lease_items_per_transaction = 16,
+  });
+  std::vector<CandidatePool> pools;
+  pools.reserve(workload.nets().size());
+  for (std::size_t index = 0; index < workload.nets().size(); ++index) {
+    const PreparedNetRoutingContext& context = workload.nets()[index];
+    routing::PlanarRouteRequest request = context.request;
+    candidates::GeneratedRouteCandidate draft;
+    if (index == 1) {
+      const std::array shared_detour = {
+          routing::LayerSegment{
+              .layer = 0, .centerline = {.start = {.x = 0, .y = 20}, .end = {.x = 20, .y = 20}}},
+          routing::LayerSegment{
+              .layer = 0, .centerline = {.start = {.x = 20, .y = 20}, .end = {.x = 20, .y = 0}}},
+          routing::LayerSegment{
+              .layer = 0, .centerline = {.start = {.x = 20, .y = 0}, .end = {.x = 30, .y = 0}}},
+          routing::LayerSegment{
+              .layer = 0, .centerline = {.start = {.x = 30, .y = 0}, .end = {.x = 30, .y = 20}}},
+          routing::LayerSegment{
+              .layer = 0, .centerline = {.start = {.x = 30, .y = 20}, .end = {.x = 100, .y = 20}}},
+      };
+      draft = test_support::CandidateDraftAlongSegments(
+          board, context.compiled_board, request, shared_detour,
+          candidates::CandidateSchedulingIdentity{.batch_identity = 1, .query_identity = 2});
+    } else {
+      draft = test_support::CandidateDraft(board, context.compiled_board, request, 1, index + 1);
+    }
+    const candidates::CandidateAdmissionContext admission_context{
+        .board = board, .compiled_board = context.compiled_board, .request = request};
+    static_cast<void>(Stored(store->Admit(admission_context, std::move(draft))));
+    pools.push_back(CandidatePool{.net = context.request.net,
+                                  .candidates = store->Enumerate(context.request.net)});
+  }
+
+  const std::vector<routing::EdgeResourceKey> first = AtomicResources(pools[0].candidates.front());
+  const std::vector<routing::EdgeResourceKey> second = AtomicResources(pools[1].candidates.front());
+  const std::set<routing::EdgeResourceKey> second_set(second.begin(), second.end());
+  const auto shared = std::ranges::find_if(first, [&](const routing::EdgeResourceKey& resource) {
+    return second_set.contains(resource);
+  });
+  EXPECT_NE(shared, first.end());
+  const std::vector<routing::EdgeResourceKey> third = AtomicResources(pools[2].candidates.front());
+  EXPECT_GE(third.size(), 2U);
+  if (shared == first.end() || third.size() < 2U) {
+    std::abort();
+  }
+
+  ResourceCapacityModel capacities = BuiltCapacities(BuildResourceCapacityModel(
+      kResourceCapacityModelSchemaVersion, board, workload.nets().front().compiled_board, 1,
+      {
+          ResourceCapacityOverride{.resource = *shared, .capacity_units = 0},
+          ResourceCapacityOverride{.resource = third[0], .capacity_units = 0},
+          ResourceCapacityOverride{.resource = third[1], .capacity_units = 0},
+      }));
+  const NegotiatedPriceConfig price_config{
+      .present_step_per_overuse_unit = 1,
+      .history_step_per_overuse_unit = 1,
+      .maximum_price_per_resource = 100,
+      .maximum_iterations = 4,
+      .maximum_price_records = 1'000,
+  };
+  NegotiatedPriceState initial_price_state = BuiltState(BuildInitialNegotiatedPriceState(
+      kNegotiatedPriceStateSchemaVersion, capacities, workload, price_config));
+  OneWorldAllocationRequest request{
+      .associations = capacities.associations(),
+      .capacities = capacities,
+      .prices = BuiltSnapshot(BuildPriceSnapshotForState(capacities, initial_price_state)),
+      .intrinsic_cost_weight = 1,
+      .limits = OneWorldAllocatorLimits{},
+      .pools = pools,
+      .workload = &workload,
+  };
+
+  OneWorldAllocationRequest history_request = request;
+  history_request.pools[2].candidates.clear();
+  const OneWorldAllocation history_world = BuiltWorld(AllocateOneWorld(history_request));
+  initial_price_state =
+      BuiltState(UpdateNegotiatedPrices(initial_price_state, history_request, history_world));
+  request.prices = BuiltSnapshot(BuildPriceSnapshotForState(capacities, initial_price_state));
+  OneWorldAllocation world = BuiltWorld(AllocateOneWorld(request));
+  return PlanningFixture(std::move(board), std::move(workload), std::move(capacities),
+                         std::move(store), std::move(pools), std::move(initial_price_state),
+                         std::move(request), std::move(world));
+}
+
 TEST(TargetedRegenerationTest, SingletonConflictPlansPriceOnlyAndSoleBanColumns) {
   PlanningFixture fixture = BuildSingletonConflictFixture();
   ASSERT_EQ(fixture.world.total_overuse_units, 1U);
@@ -308,6 +483,7 @@ TEST(TargetedRegenerationTest, SingletonConflictPlansPriceOnlyAndSoleBanColumns)
       kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
       fixture.world, *fixture.store, config));
   ASSERT_EQ(plan.targets().size(), 1U);
+  EXPECT_EQ(plan.coverage_seed_target_count(), 1U);
   const TargetedRegenerationNet& target = plan.targets().front();
   EXPECT_EQ(target.conflict_resource_count, 1U);
   ASSERT_EQ(target.resource_actions.size(), 1U);
@@ -332,12 +508,15 @@ TEST(TargetedRegenerationTest, RejectsLegacyPlanSchemaBeforeStoreMutation) {
       fixture.store->Enumerate(fixture.request.pools[1].net);
   const std::vector<candidates::CandidateRejection> before_rejections = fixture.store->Rejections();
 
-  const TargetedRegenerationPlanResult result = BuildTargetedRegenerationPlan(
-      kTargetedRegenerationPlanSchemaVersionV1, fixture.initial_price_state, fixture.request,
-      fixture.world, *fixture.store, PlanConfig());
-  ASSERT_TRUE(std::holds_alternative<TargetedRegenerationError>(result));
-  EXPECT_EQ(std::get<TargetedRegenerationError>(result).code,
-            TargetedRegenerationErrorCode::kUnsupportedSchema);
+  for (const std::uint32_t legacy_schema :
+       {kTargetedRegenerationPlanSchemaVersionV1, kTargetedRegenerationPlanSchemaVersionV2}) {
+    const TargetedRegenerationPlanResult result =
+        BuildTargetedRegenerationPlan(legacy_schema, fixture.initial_price_state, fixture.request,
+                                      fixture.world, *fixture.store, PlanConfig());
+    ASSERT_TRUE(std::holds_alternative<TargetedRegenerationError>(result));
+    EXPECT_EQ(std::get<TargetedRegenerationError>(result).code,
+              TargetedRegenerationErrorCode::kUnsupportedSchema);
+  }
   EXPECT_EQ(fixture.store->Enumerate(fixture.request.pools[0].net), before_first);
   EXPECT_EQ(fixture.store->Enumerate(fixture.request.pools[1].net), before_second);
   EXPECT_EQ(fixture.store->Rejections(), before_rejections);
@@ -611,8 +790,130 @@ TEST(TargetedRegenerationTest, CandidateHeadroomCapsRequestedColumnsExactly) {
       kTargetedRegenerationPlanSchemaVersion, one_slot.initial_price_state, one_slot.request,
       one_slot.world, *one_slot.store, PlanConfig()));
   ASSERT_EQ(one.targets().size(), 1U);
+  EXPECT_EQ(one.coverage_seed_target_count(), 0U);
   EXPECT_EQ(one.targets().front().requested_columns, 1U);
   EXPECT_EQ(one.total_requested_columns(), 1U);
+}
+
+TEST(TargetedRegenerationTest, CoverageCapacityDiscriminatesEveryNormativeLimit) {
+  const TargetedRegenerationConfig base{
+      .maximum_target_nets = 11,
+      .maximum_columns_per_net = 2,
+      .maximum_total_columns = 22,
+      .maximum_resource_actions_per_net = 4,
+      .maximum_total_resource_actions = 11,
+      .maximum_expanded_resource_visits = 1'000,
+  };
+  EXPECT_EQ(internal::ComputeTargetedRegenerationCoverageCapacityV3ForTesting(base, 22), 11U);
+
+  TargetedRegenerationConfig target_limited = base;
+  target_limited.maximum_target_nets = 3;
+  EXPECT_EQ(internal::ComputeTargetedRegenerationCoverageCapacityV3ForTesting(target_limited, 22),
+            3U);
+
+  TargetedRegenerationConfig column_limited = base;
+  column_limited.maximum_total_columns = 6;
+  EXPECT_EQ(internal::ComputeTargetedRegenerationCoverageCapacityV3ForTesting(column_limited, 22),
+            3U);
+
+  TargetedRegenerationConfig action_limited = base;
+  action_limited.maximum_total_resource_actions = 3;
+  EXPECT_EQ(internal::ComputeTargetedRegenerationCoverageCapacityV3ForTesting(action_limited, 22),
+            3U);
+
+  EXPECT_EQ(internal::ComputeTargetedRegenerationCoverageCapacityV3ForTesting(base, 6), 3U);
+
+  TargetedRegenerationConfig no_two_column_schedule = base;
+  no_two_column_schedule.maximum_columns_per_net = 1;
+  EXPECT_EQ(
+      internal::ComputeTargetedRegenerationCoverageCapacityV3ForTesting(no_two_column_schedule, 22),
+      0U);
+}
+
+TEST(TargetedRegenerationTest, MultiTargetZeroCoveragePreservesOneColumnFallbackAllocation) {
+  PlanningFixture fixture = BuildPlanningFixture(0);
+  TargetedRegenerationConfig config = PlanConfig();
+  config.maximum_columns_per_net = 1;
+  config.maximum_total_columns = 2;
+
+  const TargetedRegenerationPlan plan = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, config));
+  ASSERT_EQ(plan.targets().size(), 2U);
+  EXPECT_EQ(plan.coverage_seed_target_count(), 0U);
+  EXPECT_EQ(plan.total_requested_columns(), 2U);
+  EXPECT_TRUE(std::ranges::is_sorted(plan.targets(), SchemaTargetRanksBefore));
+  for (const TargetedRegenerationNet& target : plan.targets()) {
+    EXPECT_EQ(target.requested_columns, 1U);
+    ASSERT_FALSE(target.resource_actions.empty());
+  }
+}
+
+TEST(TargetedRegenerationTest, ReservesCoverageBeforeOneColumnFallbackTail) {
+  PlanningFixture fixture = BuildPlanningFixture(0);
+  TargetedRegenerationConfig config = PlanConfig();
+  config.maximum_columns_per_net = 2;
+  config.maximum_total_columns = 3;
+
+  const TargetedRegenerationPlan plan = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, config));
+  ASSERT_EQ(plan.coverage_seed_target_count(), 1U);
+  ASSERT_EQ(plan.targets().size(), 2U);
+  EXPECT_EQ(plan.targets()[0].requested_columns, 2U);
+  EXPECT_EQ(plan.targets()[1].requested_columns, 1U);
+  EXPECT_EQ(plan.total_requested_columns(), 3U);
+  ASSERT_FALSE(plan.targets()[0].resource_actions.empty());
+  ASSERT_FALSE(plan.targets()[1].resource_actions.empty());
+}
+
+TEST(TargetedRegenerationTest,
+     AllocatesContendedRemainderByGlobalSeverityBeforeCoverageLaneEmission) {
+  PlanningFixture fixture = BuildGlobalAllocationOrderFixture();
+  TargetedRegenerationConfig config = PlanConfig();
+  config.maximum_target_nets = 3;
+  config.maximum_columns_per_net = 3;
+  config.maximum_total_columns = 5;
+  config.maximum_resource_actions_per_net = 2;
+  config.maximum_total_resource_actions = 3;
+
+  const TargetedRegenerationPlan plan = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, config));
+  ASSERT_EQ(plan.coverage_seed_target_count(), 2U);
+  ASSERT_EQ(plan.targets().size(), 3U);
+
+  // Serialized lane order remains coverage seeds first even though allocation
+  // ran in the target-severity order below.
+  const TargetedRegenerationNet& higher_ranked_seed = plan.targets()[0];
+  const TargetedRegenerationNet& lower_ranked_seed = plan.targets()[1];
+  const TargetedRegenerationNet& duplicate_primary_fallback = plan.targets()[2];
+  EXPECT_EQ(higher_ranked_seed.net.id, 10U);
+  EXPECT_EQ(lower_ranked_seed.net.id, 12U);
+  EXPECT_EQ(duplicate_primary_fallback.net.id, 11U);
+  ASSERT_FALSE(higher_ranked_seed.resource_actions.empty());
+  ASSERT_FALSE(lower_ranked_seed.resource_actions.empty());
+  ASSERT_FALSE(duplicate_primary_fallback.resource_actions.empty());
+  EXPECT_EQ(higher_ranked_seed.resource_actions.front().resource,
+            duplicate_primary_fallback.resource_actions.front().resource);
+  EXPECT_NE(lower_ranked_seed.resource_actions.front().resource,
+            duplicate_primary_fallback.resource_actions.front().resource);
+  EXPECT_TRUE(SchemaTargetRanksBefore(duplicate_primary_fallback, lower_ranked_seed));
+  EXPECT_EQ(higher_ranked_seed.conflict_resource_count, 1U);
+  EXPECT_EQ(duplicate_primary_fallback.conflict_resource_count, 1U);
+  EXPECT_EQ(lower_ranked_seed.conflict_resource_count, 2U);
+
+  // The two seed reservations leave exactly one action and one column. The
+  // higher-severity unseeded fallback receives both; the later seed retains
+  // only its reserved primary action and two columns.
+  EXPECT_EQ(higher_ranked_seed.resource_actions.size(), 1U);
+  EXPECT_EQ(higher_ranked_seed.requested_columns, 2U);
+  EXPECT_EQ(duplicate_primary_fallback.resource_actions.size(), 1U);
+  EXPECT_EQ(duplicate_primary_fallback.requested_columns, 1U);
+  EXPECT_EQ(lower_ranked_seed.resource_actions.size(), 1U);
+  EXPECT_EQ(lower_ranked_seed.requested_columns, 2U);
+  EXPECT_EQ(plan.total_resource_actions(), 3U);
+  EXPECT_EQ(plan.total_requested_columns(), 5U);
 }
 
 TEST(TargetedRegenerationTest, ZeroSelectionPlanRetainsExactStoreIdentityLease) {
@@ -678,6 +979,7 @@ TEST(TargetedRegenerationTest, EmptyWhenFeasibleAndDeterministicallyCapsHotsetBu
       kTargetedRegenerationPlanSchemaVersion, conflicted.initial_price_state, conflicted.request,
       conflicted.world, *conflicted.store, bounded));
   ASSERT_EQ(one.targets().size(), 1U);
+  EXPECT_EQ(one.coverage_seed_target_count(), 0U);
   EXPECT_EQ(one.targets().front().requested_columns, 1U);
   EXPECT_EQ(one.targets().front().resource_actions.size(), 1U);
   EXPECT_EQ(one.total_requested_columns(), 1U);
@@ -976,6 +1278,102 @@ TEST(TargetedRegenerationTest, TargetSeverityOrderDiscriminatesEveryTieBreakKey)
   expect_before(lower_candidate, base);
 }
 
+TEST(TargetedRegenerationTest,
+     BoundedCoverageRetentionReplacesDuplicateGroupsAndAllowsEvictedGroupReentry) {
+  const std::vector<TargetedRegenerationNet> provisional = {
+      ProvisionalTarget(10, 100, 10), ProvisionalTarget(20, 90, 20),
+      ProvisionalTarget(30, 80, 30),  ProvisionalTarget(31, 110, 30),
+      ProvisionalTarget(21, 120, 20), ProvisionalTarget(22, 125, 20),
+  };
+  const auto retain = [](std::span<const TargetedRegenerationNet> input) {
+    return BuiltRetention(internal::RetainTargetedRegenerationTargetsV3ForTesting(input, 3, 2));
+  };
+  const internal::TargetedRegenerationRetentionV3ForTesting expected = retain(provisional);
+  ASSERT_EQ(expected.coverage_seeds.size(), 2U);
+  EXPECT_EQ(expected.coverage_seeds[0].net.id, 22U);
+  EXPECT_EQ(expected.coverage_seeds[1].net.id, 31U);
+  EXPECT_NE(expected.coverage_seeds[0].resource_actions.front().resource,
+            expected.coverage_seeds[1].resource_actions.front().resource);
+  ASSERT_EQ(expected.fallback_targets.size(), 3U);
+  EXPECT_EQ(expected.fallback_targets[0].net.id, 22U);
+  EXPECT_EQ(expected.fallback_targets[1].net.id, 21U);
+  EXPECT_EQ(expected.fallback_targets[2].net.id, 31U);
+
+  std::vector<TargetedRegenerationNet> permuted = provisional;
+  std::ranges::reverse(permuted);
+  EXPECT_EQ(retain(permuted), expected);
+  std::ranges::rotate(permuted, permuted.begin() + 2);
+  EXPECT_EQ(retain(permuted), expected);
+  std::ranges::sort(permuted,
+                    [](const TargetedRegenerationNet& left, const TargetedRegenerationNet& right) {
+                      return left.net.id < right.net.id;
+                    });
+  EXPECT_EQ(retain(permuted), expected);
+
+  const std::array fewer_groups = {
+      ProvisionalTarget(40, 70, 40),
+      ProvisionalTarget(50, 60, 50),
+  };
+  const internal::TargetedRegenerationRetentionV3ForTesting under_capacity =
+      BuiltRetention(internal::RetainTargetedRegenerationTargetsV3ForTesting(fewer_groups, 5, 5));
+  EXPECT_EQ(under_capacity.coverage_seeds.size(), 2U);
+  EXPECT_EQ(under_capacity.fallback_targets.size(), 2U);
+}
+
+TEST(TargetedRegenerationTest, CoverageRetentionRejectsMissingProvisionalPrimary) {
+  TargetedRegenerationNet invalid = ProvisionalTarget(10, 100, 10);
+  invalid.resource_actions.clear();
+  const std::array provisional = {invalid};
+  const internal::TargetedRegenerationRetentionResultV3ForTesting result =
+      internal::RetainTargetedRegenerationTargetsV3ForTesting(provisional, 1, 1);
+  ASSERT_TRUE(std::holds_alternative<TargetedRegenerationError>(result));
+  EXPECT_EQ(std::get<TargetedRegenerationError>(result).code,
+            TargetedRegenerationErrorCode::kInternalInvariant);
+}
+
+TEST(TargetedRegenerationTest, RejectsPrimaryActionReplayDriftAndClearsOneShotFault) {
+  PlanningFixture fixture = BuildPlanningFixture(0);
+  internal::SetTargetedRegenerationPrimaryReplayMismatchForTesting(true);
+  const TargetedRegenerationPlanResult drift = BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, PlanConfig());
+  ASSERT_TRUE(std::holds_alternative<TargetedRegenerationError>(drift));
+  EXPECT_EQ(std::get<TargetedRegenerationError>(drift).code,
+            TargetedRegenerationErrorCode::kInternalInvariant);
+  EXPECT_EQ(std::get<TargetedRegenerationError>(drift).invariant_id,
+            "allocator.targeted_regeneration.primary_action_replay.v3");
+
+  const TargetedRegenerationPlan recovered = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, PlanConfig()));
+  EXPECT_FALSE(recovered.targets().empty());
+}
+
+TEST(TargetedRegenerationTest, ExactNetUnionRejectsInconsistentSeedFallbackSummary) {
+  PlanningFixture fixture = BuildSingletonConflictFixture();
+  TargetedRegenerationConfig config = PlanConfig();
+  config.maximum_columns_per_net = 2;
+  config.maximum_total_columns = 2;
+  config.maximum_resource_actions_per_net = 1;
+  config.maximum_total_resource_actions = 2;
+
+  internal::SetTargetedRegenerationUnionMismatchForTesting(true);
+  const TargetedRegenerationPlanResult mismatch = BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, config);
+  ASSERT_TRUE(std::holds_alternative<TargetedRegenerationError>(mismatch));
+  EXPECT_EQ(std::get<TargetedRegenerationError>(mismatch).code,
+            TargetedRegenerationErrorCode::kInternalInvariant);
+  EXPECT_EQ(std::get<TargetedRegenerationError>(mismatch).invariant_id,
+            "allocator.targeted_regeneration.target_union_replay.v3");
+
+  const TargetedRegenerationPlan recovered = BuiltPlan(BuildTargetedRegenerationPlan(
+      kTargetedRegenerationPlanSchemaVersion, fixture.initial_price_state, fixture.request,
+      fixture.world, *fixture.store, config));
+  EXPECT_EQ(recovered.coverage_seed_target_count(), 1U);
+  EXPECT_EQ(recovered.targets().size(), 1U);
+}
+
 TEST(TargetedRegenerationTest, RejectsWorkOverflowAndChecksumConsistentWorldFabrication) {
   const PlanningFixture fixture = BuildPlanningFixture(0);
   TargetedRegenerationConfig tiny = PlanConfig();
@@ -1061,16 +1459,41 @@ TEST(TargetedRegenerationTest, PlanChecksumHasGoldenAndFieldSensitivity) {
   };
   const std::uint64_t golden = internal::ComputeTargetedRegenerationPlanChecksumV1(header, targets);
   EXPECT_EQ(golden, 10'960'306'375'439'121'819ULL);
-  header.schema_version = kTargetedRegenerationPlanSchemaVersion;
+  header.schema_version = kTargetedRegenerationPlanSchemaVersionV2;
   const std::uint64_t v2_golden =
       internal::ComputeTargetedRegenerationPlanChecksumV2(header, targets);
   EXPECT_EQ(v2_golden, 8958480360901484544ULL);
+  internal::TargetedRegenerationChecksumHeaderV3 v3_header{
+      header,
+      1,
+  };
+  v3_header.schema_version = kTargetedRegenerationPlanSchemaVersion;
+  const std::uint64_t v3_golden =
+      internal::ComputeTargetedRegenerationPlanChecksumV3(v3_header, targets);
+  EXPECT_EQ(v3_golden, 11681155673263320325ULL);
   ++header.price_state_checksum;
   EXPECT_NE(internal::ComputeTargetedRegenerationPlanChecksumV1(header, targets), golden);
   EXPECT_NE(internal::ComputeTargetedRegenerationPlanChecksumV2(header, targets), v2_golden);
   --header.price_state_checksum;
+  ++v3_header.coverage_seed_target_count;
+  EXPECT_NE(internal::ComputeTargetedRegenerationPlanChecksumV3(v3_header, targets), v3_golden);
+  --v3_header.coverage_seed_target_count;
+  std::vector<TargetedRegenerationNet> ordered_seeds(targets.begin(), targets.end());
+  TargetedRegenerationNet second_seed = targets.front();
+  ++second_seed.net.id;
+  ++second_seed.next_price_candidate_id.low;
+  ++second_seed.resource_actions.front().resource.lattice_x;
+  ordered_seeds.push_back(std::move(second_seed));
+  v3_header.coverage_seed_target_count = 2;
+  const std::uint64_t ordered_seed_checksum =
+      internal::ComputeTargetedRegenerationPlanChecksumV3(v3_header, ordered_seeds);
+  std::ranges::reverse(ordered_seeds);
+  EXPECT_NE(internal::ComputeTargetedRegenerationPlanChecksumV3(v3_header, ordered_seeds),
+            ordered_seed_checksum);
+  v3_header.coverage_seed_target_count = 1;
   ++targets.front().resource_actions.front().conflict_impact;
   EXPECT_NE(internal::ComputeTargetedRegenerationPlanChecksumV1(header, targets), golden);
+  EXPECT_NE(internal::ComputeTargetedRegenerationPlanChecksumV3(v3_header, targets), v3_golden);
 }
 
 }  // namespace

@@ -9,14 +9,8 @@
 
 namespace apgar::benchmark::internal {
 
-// Configuration-preimage capability only. Existing Corpus-v2 execution entry
-// points positively require the Protocol-v1 H=2250 authority and reject this
-// result before case construction.
-[[nodiscard]] static inline Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
-    const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
-    Phase4TrialOrder execution_order) {
-  Phase4CanonicalSpecResult result =
-      BuildPhase4CanonicalTrialSpecForCorpusV2(cell, repetition_index, execution_order);
+[[nodiscard]] static inline Phase4CanonicalSpecResult ApplyPhase4H4096PriceAuthority(
+    Phase4CanonicalSpecResult result) {
   Phase4PairedTrialSpec* spec = std::get_if<Phase4PairedTrialSpec>(&result);
   if (spec == nullptr) {
     return result;
@@ -36,6 +30,16 @@ namespace apgar::benchmark::internal {
       kPhase4CorpusV2H4096HistoryStepPerOveruseUnit;
   spec->candidate_session_config.price_config = spec->baseline_config.price_config;
   return result;
+}
+
+// Frozen configuration-preimage capability only. Existing Corpus-v2
+// publication authorities remain bound to Session v4; current Session-v5
+// execution requires a separately reviewed successor authority.
+[[nodiscard]] static inline Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
+    const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
+    Phase4TrialOrder execution_order) {
+  return ApplyPhase4H4096PriceAuthority(
+      BuildPhase4CanonicalTrialSpecForCorpusV2(cell, repetition_index, execution_order));
 }
 
 }  // namespace apgar::benchmark::internal

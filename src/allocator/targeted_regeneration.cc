@@ -2,10 +2,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <new>
+#include <optional>
 #include <queue>
 #include <ranges>
+#include <set>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
@@ -21,6 +25,9 @@ namespace {
 using UWide = __uint128_t;
 using Wide = __int128_t;
 using OperationalClock = std::chrono::steady_clock;
+
+thread_local bool g_primary_replay_mismatch_for_testing = false;
+thread_local bool g_target_union_mismatch_for_testing = false;
 
 [[nodiscard]] std::uint64_t OperationalElapsed(OperationalClock::time_point start) noexcept {
   const auto elapsed =
@@ -116,6 +123,149 @@ struct TargetBetter {
                                 const TargetedRegenerationNet& right) const noexcept {
     return TargetRanksBefore(left, right);
   }
+};
+
+struct TargetOrder {
+  [[nodiscard]] bool operator()(const TargetedRegenerationNet& left,
+                                const TargetedRegenerationNet& right) const noexcept {
+    return TargetRanksBefore(left, right);
+  }
+};
+
+struct ResourceOrder {
+  [[nodiscard]] bool operator()(const routing::EdgeResourceKey& left,
+                                const routing::EdgeResourceKey& right) const noexcept {
+    return left < right;
+  }
+};
+
+struct ProvisionalRetainedTarget {
+  TargetedRegenerationNet target;
+  bool coverage_seed = false;
+};
+
+[[nodiscard]] std::uint64_t CoverageCapacityV3(const TargetedRegenerationConfig& config,
+                                               std::uint64_t candidate_headroom) noexcept {
+  return config.maximum_columns_per_net >= 2
+             ? std::min({config.maximum_target_nets, config.maximum_total_columns / 2U,
+                         config.maximum_total_resource_actions, candidate_headroom / 2U})
+             : 0;
+}
+
+class BoundedTargetRetentionV3 {
+ public:
+  BoundedTargetRetentionV3(std::uint64_t maximum_fallback_targets, std::uint64_t coverage_capacity)
+      : maximum_fallback_targets_(maximum_fallback_targets),
+        coverage_capacity_(coverage_capacity) {}
+
+  [[nodiscard]] std::optional<TargetedRegenerationError> Retain(
+      const TargetedRegenerationNet& target) {
+    if (target.resource_actions.size() != 1U) {
+      return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                   "allocator.targeted_regeneration.provisional_primary.v3",
+                   "A conflicted provisional target did not retain exactly one primary action");
+    }
+
+    if (coverage_capacity_ != 0) {
+      const routing::EdgeResourceKey& primary = target.resource_actions.front().resource;
+      auto group = coverage_by_resource_.find(primary);
+      if (group != coverage_by_resource_.end()) {
+        if (TargetRanksBefore(target, *group->second)) {
+          coverage_ranking_.erase(group->second);
+          const auto [replacement, inserted] = coverage_ranking_.insert(target);
+          if (!inserted) {
+            return RankCollision();
+          }
+          group->second = replacement;
+        }
+      } else if (coverage_ranking_.size() < coverage_capacity_) {
+        if (std::optional<TargetedRegenerationError> failure = InsertCoverage(target, primary);
+            failure.has_value()) {
+          return failure;
+        }
+      } else {
+        const auto worst = std::prev(coverage_ranking_.end());
+        if (TargetRanksBefore(target, *worst)) {
+          const routing::EdgeResourceKey evicted_primary = worst->resource_actions.front().resource;
+          if (coverage_by_resource_.erase(evicted_primary) != 1U) {
+            return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                         "allocator.targeted_regeneration.coverage_lookup.v3",
+                         "Coverage grouping lost its exact ranking/lookup association");
+          }
+          coverage_ranking_.erase(worst);
+          if (std::optional<TargetedRegenerationError> failure = InsertCoverage(target, primary);
+              failure.has_value()) {
+            return failure;
+          }
+        }
+      }
+    }
+
+    if (fallback_targets_.size() < maximum_fallback_targets_) {
+      fallback_targets_.push(target);
+    } else if (maximum_fallback_targets_ != 0 &&
+               TargetRanksBefore(target, fallback_targets_.top())) {
+      fallback_targets_.pop();
+      fallback_targets_.push(target);
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::vector<TargetedRegenerationNet> TakeCoverageSeeds() {
+    std::vector<TargetedRegenerationNet> result;
+    result.reserve(coverage_ranking_.size());
+    for (const TargetedRegenerationNet& target : coverage_ranking_) {
+      result.push_back(target);
+    }
+    coverage_by_resource_.clear();
+    coverage_ranking_.clear();
+    return result;
+  }
+
+  [[nodiscard]] std::vector<TargetedRegenerationNet> TakeFallbackTargets() {
+    std::vector<TargetedRegenerationNet> result;
+    result.reserve(fallback_targets_.size());
+    while (!fallback_targets_.empty()) {
+      result.push_back(fallback_targets_.top());
+      fallback_targets_.pop();
+    }
+    std::ranges::sort(result, TargetRanksBefore);
+    return result;
+  }
+
+ private:
+  using CoverageRanking = std::set<TargetedRegenerationNet, TargetOrder>;
+
+  [[nodiscard]] TargetedRegenerationError RankCollision() const noexcept {
+    return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                 "allocator.targeted_regeneration.coverage_rank_collision.v3",
+                 "Distinct provisional targets collided under the total target order");
+  }
+
+  [[nodiscard]] std::optional<TargetedRegenerationError> InsertCoverage(
+      const TargetedRegenerationNet& target, const routing::EdgeResourceKey& primary) {
+    const auto [retained, inserted] = coverage_ranking_.insert(target);
+    if (!inserted) {
+      return RankCollision();
+    }
+    const auto [lookup, lookup_inserted] = coverage_by_resource_.emplace(primary, retained);
+    static_cast<void>(lookup);
+    if (!lookup_inserted) {
+      coverage_ranking_.erase(retained);
+      return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                   "allocator.targeted_regeneration.coverage_lookup.v3",
+                   "Coverage grouping could not retain a unique target/resource pair");
+    }
+    return std::nullopt;
+  }
+
+  std::uint64_t maximum_fallback_targets_ = 0;
+  std::uint64_t coverage_capacity_ = 0;
+  std::priority_queue<TargetedRegenerationNet, std::vector<TargetedRegenerationNet>, TargetBetter>
+      fallback_targets_;
+  CoverageRanking coverage_ranking_;
+  std::map<routing::EdgeResourceKey, CoverageRanking::iterator, ResourceOrder>
+      coverage_by_resource_;
 };
 
 [[nodiscard]] bool SelectionProjectionMatches(
@@ -216,6 +366,7 @@ namespace {
 
 [[nodiscard]] std::uint64_t ComputeTargetedRegenerationPlanChecksum(
     std::string_view domain, const internal::TargetedRegenerationChecksumHeaderV1& header,
+    std::optional<std::uint64_t> coverage_seed_target_count,
     std::span<const TargetedRegenerationNet> targets) noexcept {
   board_ir::StableHashBuilder hash;
   hash.AddString(domain);
@@ -239,6 +390,9 @@ namespace {
   hash.AddU32(header.price_iteration);
   hash.AddU64(header.source_world_checksum);
   hash.AddU64(static_cast<std::uint64_t>(targets.size()));
+  if (coverage_seed_target_count.has_value()) {
+    hash.AddU64(*coverage_seed_target_count);
+  }
   hash.AddU64(header.total_requested_columns);
   hash.AddU64(header.total_resource_actions);
   hash.AddU64(header.total_conflict_resources);
@@ -278,14 +432,21 @@ std::uint64_t internal::ComputeTargetedRegenerationPlanChecksumV1(
     const TargetedRegenerationChecksumHeaderV1& header,
     std::span<const TargetedRegenerationNet> targets) noexcept {
   return ComputeTargetedRegenerationPlanChecksum("APGAR-TARGETED-REGENERATION-PLAN-V1", header,
-                                                 targets);
+                                                 std::nullopt, targets);
 }
 
 std::uint64_t internal::ComputeTargetedRegenerationPlanChecksumV2(
     const TargetedRegenerationChecksumHeaderV2& header,
     std::span<const TargetedRegenerationNet> targets) noexcept {
   return ComputeTargetedRegenerationPlanChecksum("APGAR-TARGETED-REGENERATION-PLAN-V2", header,
-                                                 targets);
+                                                 std::nullopt, targets);
+}
+
+std::uint64_t internal::ComputeTargetedRegenerationPlanChecksumV3(
+    const TargetedRegenerationChecksumHeaderV3& header,
+    std::span<const TargetedRegenerationNet> targets) noexcept {
+  return ComputeTargetedRegenerationPlanChecksum("APGAR-TARGETED-REGENERATION-PLAN-V3", header,
+                                                 header.coverage_seed_target_count, targets);
 }
 
 bool internal::TargetedRegenerationTargetRanksBeforeV1(
@@ -556,6 +717,30 @@ internal::TargetedRegenerationResourceScanResultV1 internal::ScanTargetedRegener
   };
 }
 
+internal::TargetedRegenerationRetentionResultV3ForTesting
+internal::RetainTargetedRegenerationTargetsV3ForTesting(
+    std::span<const TargetedRegenerationNet> provisional_targets,
+    std::uint64_t maximum_fallback_targets, std::uint64_t coverage_capacity) {
+  return WithFailureEnvelope([&]() -> TargetedRegenerationRetentionResultV3ForTesting {
+    BoundedTargetRetentionV3 retention(maximum_fallback_targets, coverage_capacity);
+    for (const TargetedRegenerationNet& target : provisional_targets) {
+      if (std::optional<TargetedRegenerationError> failure = retention.Retain(target);
+          failure.has_value()) {
+        return *failure;
+      }
+    }
+    return TargetedRegenerationRetentionV3ForTesting{
+        .coverage_seeds = retention.TakeCoverageSeeds(),
+        .fallback_targets = retention.TakeFallbackTargets(),
+    };
+  });
+}
+
+std::uint64_t internal::ComputeTargetedRegenerationCoverageCapacityV3ForTesting(
+    const TargetedRegenerationConfig& config, std::uint64_t candidate_headroom) noexcept {
+  return CoverageCapacityV3(config, candidate_headroom);
+}
+
 template <bool CaptureOperationalProfile>
 TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
     std::uint32_t schema_version, const NegotiatedPriceState& previous_price_state,
@@ -571,13 +756,13 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
   }
   if (schema_version != kTargetedRegenerationPlanSchemaVersion) {
     return Error(TargetedRegenerationErrorCode::kUnsupportedSchema,
-                 "allocator.targeted_regeneration.schema.v2",
+                 "allocator.targeted_regeneration.schema.v3",
                  "Targeted-regeneration plan schema is unsupported");
   }
   if (!ConfigIsValid(config)) {
     return Error(TargetedRegenerationErrorCode::kInvalidConfiguration,
-                 "allocator.targeted_regeneration.configuration.v2",
-                 "Targeted-regeneration configuration is outside schema-v2 bounds");
+                 "allocator.targeted_regeneration.configuration.v3",
+                 "Targeted-regeneration configuration is outside schema-v3 bounds");
   }
 
   return WithFailureEnvelope([&]() -> TargetedRegenerationPlanResult {
@@ -687,11 +872,11 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
       assembly_start =
           ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
     }
-    const std::uint64_t maximum_retained_targets =
+    const std::uint64_t maximum_fallback_targets =
         std::min({config.maximum_target_nets, config.maximum_total_columns,
                   config.maximum_total_resource_actions, candidate_headroom});
-    std::priority_queue<TargetedRegenerationNet, std::vector<TargetedRegenerationNet>, TargetBetter>
-        best_targets;
+    const std::uint64_t coverage_capacity = CoverageCapacityV3(config, candidate_headroom);
+    BoundedTargetRetentionV3 retention(maximum_fallback_targets, coverage_capacity);
     for (std::size_t index = 0; index < next_selection.pools.size(); ++index) {
       const internal::OneWorldPoolSelectionEvidence& next_pool = next_selection.pools[index];
       const internal::OneWorldPoolSelectionEvidence& source_pool = source_selection.pools[index];
@@ -701,7 +886,7 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
       }
       internal::TargetedRegenerationResourceScanResultV1 scan_result =
           internal::ScanTargetedRegenerationResourcesV1(selection.candidate->data().resources,
-                                                        world.resources, price_state.prices(), 0);
+                                                        world.resources, price_state.prices(), 1);
       if (const auto* failure = std::get_if<TargetedRegenerationError>(&scan_result);
           failure != nullptr) {
         return *failure;
@@ -725,38 +910,123 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
           .conflict_impact = scan.conflict_impact,
           .negotiated_price_exposure = scan.negotiated_price_exposure,
           .requested_columns = 0,
-          .resource_actions = {},
+          .resource_actions = scan.resource_actions,
       };
-      if (best_targets.size() < maximum_retained_targets) {
-        best_targets.push(std::move(target));
-      } else if (maximum_retained_targets != 0 && TargetRanksBefore(target, best_targets.top())) {
-        best_targets.pop();
-        best_targets.push(std::move(target));
+      if (std::optional<TargetedRegenerationError> failure = retention.Retain(target);
+          failure.has_value()) {
+        return *failure;
       }
     }
 
-    std::vector<TargetedRegenerationNet> targets;
-    targets.reserve(best_targets.size());
-    while (!best_targets.empty()) {
-      targets.push_back(best_targets.top());
-      best_targets.pop();
+    std::vector<TargetedRegenerationNet> provisional_coverage_seeds = retention.TakeCoverageSeeds();
+    std::vector<TargetedRegenerationNet> provisional_fallback_targets =
+        retention.TakeFallbackTargets();
+    const std::uint64_t provisional_seed_count = provisional_coverage_seeds.size();
+    if (g_target_union_mismatch_for_testing) {
+      g_target_union_mismatch_for_testing = false;
+      for (TargetedRegenerationNet& fallback : provisional_fallback_targets) {
+        const auto seed = std::ranges::find(provisional_coverage_seeds, fallback.net,
+                                            &TargetedRegenerationNet::net);
+        if (seed != provisional_coverage_seeds.end()) {
+          ++fallback.negotiated_price_exposure;
+          break;
+        }
+      }
     }
-    std::ranges::sort(targets, TargetRanksBefore);
-    UWide total_columns = 0;
-    UWide total_actions = 0;
+    std::vector<ProvisionalRetainedTarget> union_targets;
+    union_targets.reserve(provisional_coverage_seeds.size() + provisional_fallback_targets.size());
+    for (TargetedRegenerationNet& target : provisional_coverage_seeds) {
+      union_targets.push_back(ProvisionalRetainedTarget{
+          .target = std::move(target),
+          .coverage_seed = true,
+      });
+    }
+    provisional_coverage_seeds.clear();
+    for (TargetedRegenerationNet& target : provisional_fallback_targets) {
+      union_targets.push_back(ProvisionalRetainedTarget{
+          .target = std::move(target),
+          .coverage_seed = false,
+      });
+    }
+    provisional_fallback_targets.clear();
+    std::ranges::sort(union_targets, [](const ProvisionalRetainedTarget& left,
+                                        const ProvisionalRetainedTarget& right) {
+      if (left.target.net != right.target.net) {
+        return NetRanksBefore(left.target.net, right.target.net);
+      }
+      if (left.coverage_seed != right.coverage_seed) {
+        return left.coverage_seed;
+      }
+      return TargetRanksBefore(left.target, right.target);
+    });
+    std::size_t compacted_count = 0;
+    for (std::size_t candidate_index = 0; candidate_index < union_targets.size();
+         ++candidate_index) {
+      ProvisionalRetainedTarget& candidate = union_targets[candidate_index];
+      if (compacted_count != 0 &&
+          union_targets[compacted_count - 1U].target.net == candidate.target.net) {
+        ProvisionalRetainedTarget& retained = union_targets[compacted_count - 1U];
+        if (!(retained.target == candidate.target)) {
+          return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                       "allocator.targeted_regeneration.target_union_replay.v3",
+                       "Coverage and fallback retained inconsistent summaries for one net");
+        }
+        retained.coverage_seed = retained.coverage_seed || candidate.coverage_seed;
+        continue;
+      }
+      if (compacted_count != candidate_index) {
+        union_targets[compacted_count] = std::move(candidate);
+      }
+      ++compacted_count;
+    }
+    union_targets.resize(compacted_count);
+    std::ranges::sort(union_targets, [](const ProvisionalRetainedTarget& left,
+                                        const ProvisionalRetainedTarget& right) {
+      return TargetRanksBefore(left.target, right.target);
+    });
+    if (static_cast<std::uint64_t>(
+            std::ranges::count(union_targets, true, &ProvisionalRetainedTarget::coverage_seed)) !=
+        provisional_seed_count) {
+      return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                   "allocator.targeted_regeneration.coverage_union.v3",
+                   "Coverage seed identities changed during exact-net union construction");
+    }
+
+    UWide used_targets = provisional_seed_count;
+    UWide used_columns = static_cast<UWide>(provisional_seed_count) * 2U;
+    UWide used_actions = provisional_seed_count;
+    if (used_targets > config.maximum_target_nets || used_columns > config.maximum_total_columns ||
+        used_columns > candidate_headroom || used_actions > config.maximum_total_resource_actions) {
+      return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                   "allocator.targeted_regeneration.coverage_reservation.v3",
+                   "Coverage seed reservations exceed a declared planning bound");
+    }
+
     UWide total_conflicts = 0;
     UWide total_impact = 0;
-    std::size_t retained_target_count = 0;
-    for (TargetedRegenerationNet& target : targets) {
-      if (total_columns >= config.maximum_total_columns ||
-          total_actions >= config.maximum_total_resource_actions ||
-          total_columns >= candidate_headroom) {
-        break;
+    std::vector<TargetedRegenerationNet> coverage_targets;
+    std::vector<TargetedRegenerationNet> noncoverage_targets;
+    coverage_targets.reserve(static_cast<std::size_t>(provisional_seed_count));
+    noncoverage_targets.reserve(union_targets.size() -
+                                static_cast<std::size_t>(provisional_seed_count));
+    for (ProvisionalRetainedTarget& provisional : union_targets) {
+      if (!provisional.coverage_seed &&
+          (used_targets == config.maximum_target_nets ||
+           used_columns == config.maximum_total_columns || used_columns == candidate_headroom ||
+           used_actions == config.maximum_total_resource_actions)) {
+        continue;
       }
-      const std::uint64_t available_actions = static_cast<std::uint64_t>(
-          static_cast<UWide>(config.maximum_total_resource_actions) - total_actions);
-      const std::uint64_t maximum_actions =
-          std::min(config.maximum_resource_actions_per_net, available_actions);
+
+      const UWide remaining_actions =
+          static_cast<UWide>(config.maximum_total_resource_actions) - used_actions;
+      const UWide action_limit_wide =
+          provisional.coverage_seed
+              ? std::min(static_cast<UWide>(config.maximum_resource_actions_per_net),
+                         remaining_actions + 1U)
+              : std::min(static_cast<UWide>(config.maximum_resource_actions_per_net),
+                         remaining_actions);
+      const std::uint64_t action_limit = static_cast<std::uint64_t>(action_limit_wide);
+      TargetedRegenerationNet& target = provisional.target;
       const auto selected_pool =
           std::ranges::lower_bound(next_selection.pools, target.net, NetRanksBefore,
                                    &internal::OneWorldPoolSelectionEvidence::net);
@@ -781,13 +1051,19 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
       internal::TargetedRegenerationResourceScanResultV1 action_scan_result =
           internal::ScanTargetedRegenerationResourcesV1(
               selected_pool->selection.candidate->data().resources, world.resources,
-              price_state.prices(), maximum_actions);
+              price_state.prices(), action_limit);
       if (const auto* failure = std::get_if<TargetedRegenerationError>(&action_scan_result);
           failure != nullptr) {
         return *failure;
       }
       internal::TargetedRegenerationResourceScanV1 action_scan =
           std::get<internal::TargetedRegenerationResourceScanV1>(std::move(action_scan_result));
+      if (g_primary_replay_mismatch_for_testing) {
+        g_primary_replay_mismatch_for_testing = false;
+        if (!action_scan.resource_actions.empty()) {
+          action_scan.resource_actions.front().conflict_impact ^= 1U;
+        }
+      }
       if (action_scan.conflict_resource_count != target.conflict_resource_count ||
           action_scan.conflict_impact != target.conflict_impact ||
           action_scan.negotiated_price_exposure != target.negotiated_price_exposure) {
@@ -795,26 +1071,45 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
                      "allocator.targeted_regeneration.target_metric_replay.v1",
                      "Ranked regeneration target metrics changed during action materialization");
       }
-      target.resource_actions = std::move(action_scan.resource_actions);
-      if (target.resource_actions.empty()) {
-        break;
+      if (target.resource_actions.size() != 1U || action_scan.resource_actions.empty() ||
+          !(action_scan.resource_actions.front() == target.resource_actions.front())) {
+        return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                     "allocator.targeted_regeneration.primary_action_replay.v3",
+                     "Retained-target rescan changed the provisional primary conflict action");
       }
+      target.resource_actions = std::move(action_scan.resource_actions);
       const UWide desired_columns_wide =
           std::min({static_cast<UWide>(config.maximum_columns_per_net),
                     static_cast<UWide>(target.conflict_resource_count) + 1U,
                     static_cast<UWide>(target.resource_actions.size()) + 1U});
-      const std::uint64_t desired_columns = static_cast<std::uint64_t>(desired_columns_wide);
-      const std::uint64_t available_columns = static_cast<std::uint64_t>(
-          static_cast<UWide>(config.maximum_total_columns) - total_columns);
-      const std::uint64_t available_candidate_headroom =
-          static_cast<std::uint64_t>(static_cast<UWide>(candidate_headroom) - total_columns);
-      target.requested_columns =
-          std::min({desired_columns, available_columns, available_candidate_headroom});
-      if (target.requested_columns == 0) {
-        break;
+      if (provisional.coverage_seed) {
+        if (desired_columns_wide < 2U) {
+          return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                       "allocator.targeted_regeneration.coverage_materialization.v3",
+                       "A reserved coverage seed cannot materialize its two required columns");
+        }
+        const UWide extra_actions = target.resource_actions.size() - 1U;
+        const UWide extra_columns =
+            std::min({desired_columns_wide - 2U,
+                      static_cast<UWide>(config.maximum_total_columns) - used_columns,
+                      static_cast<UWide>(candidate_headroom) - used_columns});
+        target.requested_columns = static_cast<std::uint64_t>(2U + extra_columns);
+        used_actions += extra_actions;
+        used_columns += extra_columns;
+      } else {
+        const UWide requested_columns = std::min(
+            {desired_columns_wide, static_cast<UWide>(config.maximum_total_columns) - used_columns,
+             static_cast<UWide>(candidate_headroom) - used_columns});
+        if (requested_columns == 0) {
+          return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                       "allocator.targeted_regeneration.unseeded_materialization.v3",
+                       "An unexhausted fallback target received no materializable column");
+        }
+        target.requested_columns = static_cast<std::uint64_t>(requested_columns);
+        ++used_targets;
+        used_columns += requested_columns;
+        used_actions += target.resource_actions.size();
       }
-      total_columns += target.requested_columns;
-      total_actions += target.resource_actions.size();
       total_conflicts += target.conflict_resource_count;
       total_impact += target.conflict_impact;
       if (total_conflicts > std::numeric_limits<std::uint64_t>::max() ||
@@ -823,9 +1118,42 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
                      "allocator.targeted_regeneration.aggregate_overflow.v1",
                      "Targeted-regeneration aggregate metrics exceed replay fields");
       }
-      ++retained_target_count;
+      if (provisional.coverage_seed) {
+        coverage_targets.push_back(std::move(target));
+      } else {
+        noncoverage_targets.push_back(std::move(target));
+      }
     }
-    targets.resize(retained_target_count);
+    if (coverage_targets.size() != provisional_seed_count ||
+        used_targets != coverage_targets.size() + noncoverage_targets.size()) {
+      return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                   "allocator.targeted_regeneration.target_count_replay.v3",
+                   "Materialized coverage/fallback target counts do not replay reservations");
+    }
+    std::vector<TargetedRegenerationNet> targets;
+    targets.reserve(coverage_targets.size() + noncoverage_targets.size());
+    for (TargetedRegenerationNet& target : coverage_targets) {
+      targets.push_back(std::move(target));
+    }
+    for (TargetedRegenerationNet& target : noncoverage_targets) {
+      targets.push_back(std::move(target));
+    }
+    UWide replay_columns = 0;
+    UWide replay_actions = 0;
+    UWide replay_conflicts = 0;
+    UWide replay_impact = 0;
+    for (const TargetedRegenerationNet& target : targets) {
+      replay_columns += target.requested_columns;
+      replay_actions += target.resource_actions.size();
+      replay_conflicts += target.conflict_resource_count;
+      replay_impact += target.conflict_impact;
+    }
+    if (replay_columns != used_columns || replay_actions != used_actions ||
+        replay_conflicts != total_conflicts || replay_impact != total_impact) {
+      return Error(TargetedRegenerationErrorCode::kInternalInvariant,
+                   "allocator.targeted_regeneration.aggregate_replay.v3",
+                   "Final target aggregates do not replay bounded allocation accounting");
+    }
 
     std::vector<candidates::CandidatePinRequest> pin_requests;
     pin_requests.reserve(source_selection.selection_projection.selected_net_count +
@@ -871,34 +1199,37 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlanImpl(
     }
     pin_lease.emplace(std::get<candidates::CandidateStorePinLease>(std::move(lease_result)));
 
-    const internal::TargetedRegenerationChecksumHeaderV2 checksum_header{
-        .schema_version = schema_version,
-        .associations = price_state.associations(),
-        .workload_checksum = price_state.workload_checksum(),
-        .source_request_manifest_checksum = source_selection.request_manifest_checksum,
-        .candidate_pool_manifest_checksum = source_selection.candidate_pool_manifest_checksum,
-        .source_pool_count = source_selection.source_pool_count,
-        .source_candidate_count = source_selection.source_candidate_count,
-        .pinned_candidate_count = static_cast<std::uint64_t>(pin_requests.size()),
-        .config = config,
-        .price_state_checksum = price_state.state_checksum(),
-        .price_iteration = price_state.iteration(),
-        .source_world_checksum = world.world_checksum,
-        .total_requested_columns = static_cast<std::uint64_t>(total_columns),
-        .total_resource_actions = static_cast<std::uint64_t>(total_actions),
-        .total_conflict_resources = static_cast<std::uint64_t>(total_conflicts),
-        .total_conflict_impact = static_cast<std::uint64_t>(total_impact),
-        .expanded_resource_visits = static_cast<std::uint64_t>(expanded_visits),
+    const internal::TargetedRegenerationChecksumHeaderV3 checksum_header{
+        internal::TargetedRegenerationChecksumHeaderV2{
+            .schema_version = schema_version,
+            .associations = price_state.associations(),
+            .workload_checksum = price_state.workload_checksum(),
+            .source_request_manifest_checksum = source_selection.request_manifest_checksum,
+            .candidate_pool_manifest_checksum = source_selection.candidate_pool_manifest_checksum,
+            .source_pool_count = source_selection.source_pool_count,
+            .source_candidate_count = source_selection.source_candidate_count,
+            .pinned_candidate_count = static_cast<std::uint64_t>(pin_requests.size()),
+            .config = config,
+            .price_state_checksum = price_state.state_checksum(),
+            .price_iteration = price_state.iteration(),
+            .source_world_checksum = world.world_checksum,
+            .total_requested_columns = static_cast<std::uint64_t>(used_columns),
+            .total_resource_actions = static_cast<std::uint64_t>(used_actions),
+            .total_conflict_resources = static_cast<std::uint64_t>(total_conflicts),
+            .total_conflict_impact = static_cast<std::uint64_t>(total_impact),
+            .expanded_resource_visits = static_cast<std::uint64_t>(expanded_visits),
+        },
+        provisional_seed_count,
     };
     const std::uint64_t checksum =
-        internal::ComputeTargetedRegenerationPlanChecksumV2(checksum_header, targets);
+        internal::ComputeTargetedRegenerationPlanChecksumV3(checksum_header, targets);
     TargetedRegenerationPlan result(
         schema_version, price_state.associations(), price_state.workload_checksum(),
         source_selection.request_manifest_checksum,
         source_selection.candidate_pool_manifest_checksum, source_selection.source_pool_count,
         source_selection.source_candidate_count, static_cast<std::uint64_t>(pin_requests.size()),
-        config, std::move(price_state), std::move(targets),
-        static_cast<std::uint64_t>(total_columns), static_cast<std::uint64_t>(total_actions),
+        config, std::move(price_state), std::move(targets), provisional_seed_count,
+        static_cast<std::uint64_t>(used_columns), static_cast<std::uint64_t>(used_actions),
         static_cast<std::uint64_t>(total_conflicts), static_cast<std::uint64_t>(total_impact),
         static_cast<std::uint64_t>(expanded_visits), checksum, std::move(pin_lease));
     if constexpr (CaptureOperationalProfile) {
@@ -933,6 +1264,35 @@ TargetedRegenerationPlanResult BuildTargetedRegenerationPlan(
 void internal::SetTargetedRegenerationPlanSchemaVersionForTesting(
     TargetedRegenerationPlan& plan, std::uint32_t schema_version) noexcept {
   plan.schema_version_ = schema_version;
+}
+
+void internal::SetTargetedRegenerationCoverageSeedTargetCountForTesting(
+    TargetedRegenerationPlan& plan, std::uint64_t coverage_seed_target_count) noexcept {
+  plan.coverage_seed_target_count_ = coverage_seed_target_count;
+}
+
+void internal::ReplaceTargetedRegenerationTargetForTesting(TargetedRegenerationPlan& plan,
+                                                           std::size_t target_index,
+                                                           TargetedRegenerationNet target) {
+  plan.targets_.at(target_index) = std::move(target);
+}
+
+void internal::SetTargetedRegenerationPlanAggregatesForTesting(
+    TargetedRegenerationPlan& plan, std::uint64_t total_requested_columns,
+    std::uint64_t total_resource_actions, std::uint64_t total_conflict_resources,
+    std::uint64_t total_conflict_impact) noexcept {
+  plan.total_requested_columns_ = total_requested_columns;
+  plan.total_resource_actions_ = total_resource_actions;
+  plan.total_conflict_resources_ = total_conflict_resources;
+  plan.total_conflict_impact_ = total_conflict_impact;
+}
+
+void internal::SetTargetedRegenerationPrimaryReplayMismatchForTesting(bool enabled) noexcept {
+  g_primary_replay_mismatch_for_testing = enabled;
+}
+
+void internal::SetTargetedRegenerationUnionMismatchForTesting(bool enabled) noexcept {
+  g_target_union_mismatch_for_testing = enabled;
 }
 
 TargetedRegenerationPlanResult BuildTargetedRegenerationPlanWithOperationalProfileV1(

@@ -440,8 +440,8 @@ class Phase4ConfirmatoryH4096ExactSmallOracleProcessTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 2)
         self.assertEqual(completed.stdout, "")
-        self.assertIn("preflight-only", completed.stderr)
-        self.assertIn("cannot access a board fixture", completed.stderr)
+        self.assertIn("P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001", completed.stderr)
+        self.assertNotIn("preflight-only", completed.stderr)
 
     def test_source_binding_rejects_before_delegation_or_input_access(self) -> None:
         raw_fifo = self.root / "source-binding-raw.fifo"

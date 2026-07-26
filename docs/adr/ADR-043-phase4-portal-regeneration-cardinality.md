@@ -1,6 +1,7 @@
 # ADR-043: Phase 4 Portal-Regeneration Column Cardinality
 
-**Status:** Accepted for Phase 4 remediation
+**Status:** Accepted for Phase 4 remediation; allocator child authorities
+superseded for production by ADR-060
 **Date:** July 23, 2026
 **Applies to:** Targeted-regeneration planning, execution, composed CPU
 allocation, and the Phase 4 V2 evidence protocol
@@ -35,7 +36,9 @@ V1 matrix and its negative decision must remain reproducible.
 - Separate the validation-only frozen-V1 budget-preimage builder from the
   ordinary executable V1 canonical builder. The former reconstructs Session-v3
   manifest checksums and is intentionally rejected by current execution; the
-  latter names current Session v4 so existing V1 diagnostics remain runnable.
+  latter named the then-current Session v4 so existing V1 diagnostics remained
+  runnable. ADR-060 now supplies Session v5 and the nondecision diagnostic
+  roster v2 successor.
 - Freeze
   `schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.md` as a
   Session-v4, `decision_eligible=false` authority for only the five

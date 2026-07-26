@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -9,6 +8,7 @@
 
 #include "apgar/benchmark/phase4_paired_trial.h"
 #include "apgar/benchmark/phase4_representative_corpus.h"
+#include "src/allocator/negotiated_prices_internal.h"
 #include "src/benchmark/phase4_confirmatory_h4096_execution_internal.h"
 #include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
 #include "src/benchmark/phase4_paired_trial_internal.h"
@@ -17,8 +17,7 @@
 namespace apgar::benchmark {
 namespace {
 
-// This test reconstructs configuration and semantic preimages only. It never
-// calls an arm, case, fixture, preparer, or allocator execution surface.
+// This helper reconstructs only the frozen configuration preimage.
 [[nodiscard]] Phase4CanonicalCellConfig CanonicalCell(std::uint32_t case_id,
                                                       std::uint32_t pool_size) {
   Phase4CanonicalCellConfig cell;
@@ -70,31 +69,22 @@ void ExpectFinalizationInvariant(Phase4TrialArmRecordResult result, Phase4Paired
   EXPECT_EQ(error.invariant_id, invariant_id);
 }
 
-void ExpectNoSuccessfulArmWitness(const Phase4IsolatedCellResult& cell) {
-  EXPECT_TRUE(std::none_of(
-      cell.attempts.begin(), cell.attempts.end(), [](const Phase4IsolatedPairAttempt& pair) {
-        return pair.baseline.record.has_value() || pair.candidate.record.has_value();
-      }));
-}
-
 [[nodiscard]] Phase4TrialArmSemantics AssociatedSemantics(const Phase4PairedTrialSpec& spec,
                                                           Phase4TrialArm arm) {
-  const Phase4CaseDescriptor* descriptor =
-      FindPhase4CaseDescriptorForAuthority(Phase4RepresentativeCorpusAuthority::kV2, spec.case_id);
-  EXPECT_NE(descriptor, nullptr);
-  if (descriptor == nullptr) {
+  Phase4RepresentativeCaseResult built =
+      BuildPhase4RepresentativeCaseV2(spec.case_id, {}, spec.corpus_limits);
+  EXPECT_TRUE(std::holds_alternative<Phase4RepresentativeCase>(built));
+  if (!std::holds_alternative<Phase4RepresentativeCase>(built)) {
     std::abort();
   }
-  const std::uint64_t route_queries = static_cast<std::uint64_t>(descriptor->requested_net_count) *
-                                      spec.baseline_config.maximum_sweeps;
+  const Phase4RepresentativeCase representative =
+      std::get<Phase4RepresentativeCase>(std::move(built));
   const Phase4RouteOpportunity opportunity{
-      .route_queries = route_queries,
-      .route_work_units = route_queries * spec.baseline_config.route_limits.maximum_work_units,
+      .route_queries = spec.baseline_config.limits.maximum_route_queries,
+      .route_work_units = spec.baseline_config.limits.maximum_total_route_work_units,
   };
-  std::uint32_t terminal_rounds = 0;
-  for (const allocator::MultiWorldSchedule& schedule : spec.candidate_session_config.schedules) {
-    terminal_rounds = std::max(terminal_rounds, schedule.maximum_selection_rounds);
-  }
+  const std::uint32_t terminal_rounds =
+      spec.candidate_session_config.schedules.back().maximum_selection_rounds;
   const std::uint64_t columns_per_epoch =
       spec.candidate_session_config.regeneration_plan_config.maximum_total_columns;
 
@@ -106,12 +96,16 @@ void ExpectNoSuccessfulArmWitness(const Phase4IsolatedCellResult& cell) {
   semantics.corpus_checksum =
       Phase4RepresentativeCorpusChecksumForAuthority(Phase4RepresentativeCorpusAuthority::kV2);
   semantics.case_id = spec.case_id;
-  semantics.descriptor_fingerprint = FingerprintPhase4CaseDescriptorForAuthority(
-      Phase4RepresentativeCorpusAuthority::kV2, *descriptor);
+  semantics.descriptor_fingerprint = FingerprintPhase4CaseDescriptorV2(representative.descriptor);
+  semantics.case_checksum = representative.case_checksum;
+  semantics.board_content_hash = representative.board.content_hash();
+  semantics.workload_checksum = representative.workload.workload_checksum();
+  semantics.capacity_model_checksum =
+      allocator::internal::RecomputeResourceCapacityModelChecksumV1(representative.capacities);
   semantics.budget_checksum = internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
-      Phase4RepresentativeCorpusAuthority::kV2, spec, opportunity, descriptor->requested_net_count,
-      columns_per_epoch, terminal_rounds);
-  semantics.workload_net_count = descriptor->requested_net_count;
+      Phase4RepresentativeCorpusAuthority::kV2, spec, opportunity,
+      representative.descriptor.requested_net_count, columns_per_epoch, terminal_rounds);
+  semantics.workload_net_count = representative.descriptor.requested_net_count;
   semantics.requested_pool_size = spec.requested_pool_size;
   semantics.repetition_index = spec.repetition_index;
   semantics.root_seed = spec.root_seed;
@@ -123,6 +117,20 @@ void ExpectNoSuccessfulArmWitness(const Phase4IsolatedCellResult& cell) {
   semantics.candidate_terminal_selection_rounds = terminal_rounds;
   semantics.external_budget = spec.external_budget;
   semantics.opportunity = opportunity;
+  semantics.algorithm_session_checksum = 101;
+  semantics.terminal_reason = Phase4NormalizedTerminalReason::kNoAdmissibleCandidate;
+  semantics.outcome.no_candidate_net_count = representative.workload.nets().size();
+  semantics.outcome.world_checksum = 103;
+  if (arm == Phase4TrialArm::kReusableCandidateAllocation) {
+    semantics.preparation_checksum = 107;
+    semantics.final_pool_manifest_checksum = 109;
+    semantics.final_rejection_manifest_checksum = 113;
+    semantics.candidate_outcome_source = Phase4CandidateOutcomeSource::kPreferredMultiWorld;
+  }
+  semantics.semantic_checksum = internal::ComputePhase4TrialArmSemanticChecksumV1(semantics);
+  EXPECT_FALSE(internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(
+                   Phase4RepresentativeCorpusAuthority::kV2, semantics)
+                   .has_value());
   return semantics;
 }
 
@@ -204,6 +212,40 @@ TEST(Phase4H4096RawEntrypointFirewallTest,
   EXPECT_EQ(std::get<Phase4TrialArmFailure>(replay).summary.invariant_id, kPriceAuthority);
 }
 
+TEST(Phase4H4096RawEntrypointFirewallTest,
+     FrozenSessionExecutionSurfacesFailClosedBeforeFixtureOrPreparerAccess) {
+  constexpr std::string_view kSessionAuthority = "P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001";
+  constexpr std::string_view kMustNotBeRead =
+      "apgar-phase4-h4096-frozen-session-must-not-be-read.kicad_pcb";
+  const Phase4PairedTrialSpec ordinary = H4096Spec(10'200, 8);
+  const Phase4PairedTrialSpec same_run = H4096Spec(10'100, 4);
+  const auto expect_closed = [kSessionAuthority](const auto& result) {
+    ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(result));
+    const Phase4PairedTrialError& error = std::get<Phase4TrialArmFailure>(result).summary;
+    EXPECT_EQ(error.code, Phase4PairedTrialErrorCode::kUnsupportedSchema);
+    EXPECT_EQ(error.invariant_id, kSessionAuthority);
+  };
+
+  expect_closed(internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArm(
+      Phase4TrialArm::kSequentialBaseline, ordinary, kMustNotBeRead));
+  expect_closed(internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmDiagnostic(
+      Phase4TrialArm::kSequentialBaseline, ordinary, kMustNotBeRead));
+  expect_closed(internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmOperationalProfile(
+      Phase4TrialArm::kSequentialBaseline, ordinary, kMustNotBeRead));
+  expect_closed(internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmReplayAuthority(
+      Phase4TrialArm::kSequentialBaseline, ordinary, kMustNotBeRead));
+  expect_closed(internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmForOperationalWarmup(
+      Phase4TrialArm::kSequentialBaseline, same_run, kMustNotBeRead));
+  expect_closed(internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmDiagnostic(
+      Phase4TrialArm::kSequentialBaseline, same_run, kMustNotBeRead));
+  expect_closed(internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArm(
+      Phase4TrialArm::kSequentialBaseline, same_run, kMustNotBeRead));
+  expect_closed(internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmOperationalProfile(
+      Phase4TrialArm::kSequentialBaseline, same_run, kMustNotBeRead));
+  expect_closed(internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmReplayAuthority(
+      Phase4TrialArm::kSequentialBaseline, same_run, kMustNotBeRead));
+}
+
 TEST(Phase4H4096RawEntrypointFirewallTest, RejectsScopeAndCarrierDrift) {
   constexpr std::string_view kOrdinaryScope = "P4PAIR-CORPUS-V2-H4096-ORDINARY-SCOPE-001";
   constexpr std::string_view kSameRunScope = "P4PAIR-CORPUS-V2-H4096-SAME-RUN-SCOPE-001";
@@ -230,12 +272,12 @@ TEST(Phase4H4096RawEntrypointFirewallTest, RejectsScopeAndCarrierDrift) {
 }
 
 TEST(Phase4H4096RawEntrypointFirewallTest,
-     FinalizationRechecksPriceBudgetCarrierAndCellAssociation) {
+     FinalizationRechecksPriceBudgetCarrierThenClosesFrozenSessionAuthority) {
   constexpr std::string_view kPriceAuthority = "P4PAIR-CORPUS-V2-H4096-BUDGET-AUTHORITY-001";
   constexpr std::string_view kCanonicalBudget = "P4PAIR-CORPUS-V2-H4096-CANONICAL-BUDGET-001";
   constexpr std::string_view kOrdinaryScope = "P4PAIR-CORPUS-V2-H4096-ORDINARY-SCOPE-001";
   constexpr std::string_view kSameRunScope = "P4PAIR-CORPUS-V2-H4096-SAME-RUN-SCOPE-001";
-  constexpr std::string_view kAssociation = "P4PAIR-CORPUS-V2-H4096-ASSOCIATION-001";
+  constexpr std::string_view kSessionAuthority = "P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001";
 
   const Phase4PairedTrialSpec ordinary = H4096Spec(10'200, 8);
   const Phase4PairedTrialSpec same_run = H4096Spec(10'100, 4);
@@ -270,61 +312,47 @@ TEST(Phase4H4096RawEntrypointFirewallTest,
                                                                Phase4ExternalResourceObservation{}),
       Phase4PairedTrialErrorCode::kInvalidConfiguration, kSameRunScope);
 
-  Phase4TrialArmExecution ordinary_cell_drift;
-  ordinary_cell_drift.semantics =
-      AssociatedSemantics(ordinary, Phase4TrialArm::kSequentialBaseline);
-  ++ordinary_cell_drift.semantics.case_id;
+  Phase4TrialArmExecution ordinary_execution;
+  ordinary_execution.semantics = AssociatedSemantics(ordinary, Phase4TrialArm::kSequentialBaseline);
   ExpectFinalizationInvariant(
       internal::FinalizePhase4ConfirmatoryH4096OrdinaryTrialArm(
-          ordinary, std::move(ordinary_cell_drift), Phase4ExternalResourceObservation{}),
-      Phase4PairedTrialErrorCode::kMeasurementAssociation, kAssociation);
+          ordinary, std::move(ordinary_execution), Phase4ExternalResourceObservation{}),
+      Phase4PairedTrialErrorCode::kUnsupportedSchema, kSessionAuthority);
 
-  Phase4TrialArmExecution same_run_cell_drift;
-  same_run_cell_drift.semantics =
+  Phase4TrialArmExecution same_run_execution;
+  same_run_execution.semantics =
       AssociatedSemantics(same_run, Phase4TrialArm::kReusableCandidateAllocation);
-  ++same_run_cell_drift.semantics.requested_pool_size;
   ExpectFinalizationInvariant(
       internal::FinalizePhase4ConfirmatoryH4096SameRunTrialArm(
-          same_run, std::move(same_run_cell_drift), Phase4ExternalResourceObservation{}),
-      Phase4PairedTrialErrorCode::kMeasurementAssociation, kAssociation);
+          same_run, std::move(same_run_execution), Phase4ExternalResourceObservation{}),
+      Phase4PairedTrialErrorCode::kUnsupportedSchema, kSessionAuthority);
 }
 
 TEST(Phase4H4096RawEntrypointFirewallTest,
-     ProducerRejectsChecksumValidCellsWithoutASuccessfulH4096ArmWitness) {
+     ControllersRejectFrozenSessionBeforeWorkerFixtureOrSerialization) {
+  constexpr std::string_view kSessionAuthority = "P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001";
   constexpr std::string_view kMissingWorker =
       "/nonexistent/apgar-phase4-h4096-serializer-firewall-worker";
   constexpr std::string_view kUnreadFixtureToken =
       "apgar-phase4-h4096-serializer-firewall-must-not-be-read.kicad_pcb";
-  constexpr std::string_view kCleanCommit = "1111111111111111111111111111111111111111";
 
-  // The worker cannot exec, so neither controller can read the fixture token or
-  // reach a case, preparer, or allocator. Both still return checksum-valid Raw
-  // total-attempt state whose only missing publication witness is a successful
-  // H=4096 arm record.
-  Phase4IsolatedCellExecution ordinary_execution = internal::RunPhase4ConfirmatoryH4096OrdinaryCell(
-      CanonicalCell(10'200, 8), kMissingWorker, kUnreadFixtureToken);
-  ASSERT_TRUE(std::holds_alternative<Phase4IsolatedCellResult>(ordinary_execution));
-  const Phase4IsolatedCellResult& ordinary = std::get<Phase4IsolatedCellResult>(ordinary_execution);
-  ExpectNoSuccessfulArmWitness(ordinary);
-  EXPECT_TRUE(SerializePhase4IsolatedCellJsonV1(ordinary, kCleanCommit, true, false).has_value());
-  EXPECT_FALSE(internal::SerializePhase4ConfirmatoryH4096OrdinaryCellJsonV1(ordinary, kCleanCommit,
-                                                                            true, false)
-                   .has_value());
+  const Phase4IsolatedCellExecution ordinary_execution =
+      internal::RunPhase4ConfirmatoryH4096OrdinaryCell(CanonicalCell(10'200, 8), kMissingWorker,
+                                                       kUnreadFixtureToken);
+  ASSERT_TRUE(std::holds_alternative<Phase4TrialHarnessError>(ordinary_execution));
+  const Phase4TrialHarnessError& ordinary_error =
+      std::get<Phase4TrialHarnessError>(ordinary_execution);
+  EXPECT_EQ(ordinary_error.invariant_id, kSessionAuthority);
+  EXPECT_FALSE(ordinary_error.raw_cell.has_value());
 
-  Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1 same_run_execution =
+  const Phase4IsolatedCellWithSameRunDecisionTelemetryExecutionV1 same_run_execution =
       internal::RunPhase4ConfirmatoryH4096SameRunCell(CanonicalCell(10'100, 4), kMissingWorker,
                                                       kUnreadFixtureToken);
   ASSERT_TRUE(std::holds_alternative<Phase4TrialHarnessError>(same_run_execution));
   const Phase4TrialHarnessError& same_run_error =
       std::get<Phase4TrialHarnessError>(same_run_execution);
-  ASSERT_TRUE(same_run_error.raw_cell.has_value());
-  ExpectNoSuccessfulArmWitness(*same_run_error.raw_cell);
-  EXPECT_TRUE(
-      SerializePhase4SameRunIsolatedCellJsonV2(*same_run_error.raw_cell, kCleanCommit, true, false)
-          .has_value());
-  EXPECT_FALSE(internal::SerializePhase4ConfirmatoryH4096SameRunCellJsonV2(
-                   *same_run_error.raw_cell, kCleanCommit, true, false)
-                   .has_value());
+  EXPECT_EQ(same_run_error.invariant_id, kSessionAuthority);
+  EXPECT_FALSE(same_run_error.raw_cell.has_value());
 }
 
 }  // namespace

@@ -501,9 +501,11 @@ ExecutePhase4TrialArmWithSameRunTelemetryV1(
 [[nodiscard]] Phase4PairedTrialAssemblyResult AssemblePhase4PairedTrialV1(
     Phase4TrialArmRecord baseline, Phase4TrialArmRecord candidate);
 
-// Corpus-v2 entry points are intentionally separate from the frozen v1 entry
-// points. Corpus authority is selected out of band by the entry point and is
-// never added to the frozen Phase4PairedTrialSpec v1 field set.
+// Preserved Corpus-v2 validation/finalization surfaces remain separate from
+// the v1 entry points. Corpus authority is selected out of band and is never
+// added to the frozen Phase4PairedTrialSpec v1 field set. Every Corpus-v2
+// execution surface below fails closed after Session-v5 activation until a
+// separately reviewed successor budget and consuming authority exists.
 [[nodiscard]] Phase4TrialArmRecordResult FinalizePhase4TrialArmForCorpusV2(
     Phase4TrialArmExecution execution, const Phase4ExternalResourceObservation& observation);
 

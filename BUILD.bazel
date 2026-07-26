@@ -813,6 +813,17 @@ cc_binary(
 )
 
 cc_binary(
+    name = "phase4_current_diagnostic_budget_roster",
+    testonly = True,
+    srcs = ["tools/phase4_current_diagnostic_budget_roster.cc"],
+    copts = APGAR_COPTS,
+    deps = [
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
+    ],
+)
+
+cc_binary(
     name = "phase4_v2_representative_manifest",
     srcs = ["tools/phase4_v2_representative_manifest.cc"],
     copts = APGAR_COPTS,
@@ -1936,11 +1947,28 @@ py_library(
     imports = ["."],
 )
 
+py_test(
+    name = "phase4_current_diagnostic_budget_roster_test",
+    size = "small",
+    srcs = ["tests/tools/validate_phase4_current_diagnostic_budget_roster_test.py"],
+    data = [
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.json",
+        ":phase4_current_diagnostic_budget_roster",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_current_diagnostic_budget_roster_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_current_diagnostic_budget_test_support",
+        ":phase4_raw_evidence_validator_lib",
+    ],
+)
+
 py_binary(
     name = "phase4_current_v1_diagnostic_cli",
     testonly = True,
     srcs = ["tests/support/run_phase4_current_diagnostic_cli.py"],
-    data = ["schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json"],
+    data = ["schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.json"],
     legacy_create_init = 0,
     main = "tests/support/run_phase4_current_diagnostic_cli.py",
     python_version = "3.13",
@@ -1960,7 +1988,7 @@ py_test(
     size = "medium",
     srcs = ["tests/tools/validate_phase4_same_run_decision_telemetry_test.py"],
     data = [
-        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.json",
         "schemas/benchmark/phase4_representative_manifest_v1.json",
         "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
@@ -2014,6 +2042,7 @@ py_test(
     tags = ["exact-address-space-envelope"],
     deps = [
         ":phase4_confirmatory_decision_protocol_validator_lib",
+        ":phase4_confirmatory_h4096_test_artifacts_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_representative_manifest_v2_validator_lib",
         ":phase4_same_run_decision_telemetry_validator_lib",
@@ -2036,6 +2065,19 @@ py_library(
         ":phase4_raw_evidence_validator_lib",
         ":phase4_representative_manifest_v2_validator_lib",
         ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_operational_test_artifacts_lib",
+    testonly = True,
+    srcs = ["tests/support/phase4_confirmatory_operational_test_artifacts.py"],
+    imports = ["."],
+    deps = [
+        ":phase4_confirmatory_h4096_test_artifacts_lib",
+        ":phase4_operational_capture_fixtureless_lib",
+        ":phase4_operational_measurement_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
     ],
 )
 
@@ -2669,7 +2711,7 @@ py_test(
     size = "medium",
     srcs = ["tests/tools/validate_phase4_exact_small_oracle_test.py"],
     data = [
-        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.json",
         "schemas/benchmark/phase4_representative_manifest_v1.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
         ":phase4_current_v1_diagnostic_cli",
@@ -2706,7 +2748,7 @@ py_test(
     size = "medium",
     srcs = ["tests/benchmark/phase4_exact_small_oracle_v2_test.py"],
     data = [
-        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.json",
         "schemas/benchmark/phase4_representative_manifest_v1.json",
         "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
@@ -3782,7 +3824,7 @@ py_test(
     size = "large",
     srcs = ["tests/tools/validate_phase4_operational_measurement_test.py"],
     data = [
-        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.json",
         "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
         ":phase4_current_v1_diagnostic_cli",
         ":phase4_evidence_runner",
@@ -4594,7 +4636,7 @@ py_test(
     size = "medium",
     srcs = ["tests/benchmark/phase4_per_net_report_process_test.py"],
     data = [
-        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.json",
         "schemas/benchmark/phase4_representative_manifest_v1.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
         "tests/fixtures/phase4_supported_multinet_v1.kicad_pcb",
@@ -4769,6 +4811,7 @@ py_test(
     deps = [
         ":phase4_confirmatory_decision_protocol_validator_lib",
         ":phase4_confirmatory_exact_small_oracle_validator_lib",
+        ":phase4_confirmatory_h4096_test_artifacts_lib",
         ":phase4_exact_small_oracle_validator_lib",
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
@@ -4832,9 +4875,11 @@ py_test(
     python_version = "3.13",
     tags = ["exact-address-space-envelope"],
     deps = [
+        ":phase4_confirmatory_operational_authority_lib",
+        ":phase4_confirmatory_operational_capture_lib",
         ":phase4_confirmatory_operational_measurement_validator_lib",
+        ":phase4_confirmatory_operational_test_artifacts_lib",
         ":phase4_operational_measurement_validator_lib",
-        ":phase4_raw_evidence_validator_lib",
     ],
 )
 
@@ -4850,19 +4895,8 @@ py_test(
         "schemas/benchmark/phase4_representative_manifest_v2.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
-        ":phase4_authority_shadow_sitecustomize",
-        ":phase4_authority_shadow_tools_init",
-        ":phase4_confirmatory_evidence_test_runner",
-        ":phase4_confirmatory_operational_launcher_lifetime_probe",
-        ":phase4_confirmatory_operational_launcher_lifetime_probe_py",
         ":phase4_confirmatory_same_run_operational_capture",
-        ":phase4_confirmatory_same_run_operational_capture_py",
         ":phase4_confirmatory_same_run_operational_capture_test",
-        ":phase4_confirmatory_same_run_operational_capture_test_py",
-        ":phase4_confirmatory_same_run_operational_measurement_test_validator",
-        ":phase4_confirmatory_same_run_operational_measurement_test_validator_py",
-        ":phase4_confirmatory_same_run_operational_measurement_validator",
-        ":phase4_confirmatory_same_run_operational_measurement_validator_py",
         ":phase4_confirmatory_same_run_operational_replay_test_worker",
         ":phase4_confirmatory_same_run_operational_replay_worker",
     ],
@@ -4872,8 +4906,43 @@ py_test(
     tags = ["exact-address-space-envelope"],
     deps = [
         ":phase4_confirmatory_operational_measurement_validator_lib",
+        ":phase4_confirmatory_operational_test_artifacts_lib",
         ":phase4_confirmatory_same_run_operational_authority_lib",
         ":phase4_confirmatory_same_run_operational_measurement_validator_lib",
+        ":phase4_operational_measurement_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_confirmatory_operational_publisher_launcher_process_test",
+    size = "large",
+    srcs = [
+        "tests/benchmark/phase4_confirmatory_operational_publisher_launcher_process_test.py",
+    ],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v1.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_authority_shadow_sitecustomize",
+        ":phase4_authority_shadow_tools_init",
+        ":phase4_confirmatory_operational_launcher_lifetime_probe",
+        ":phase4_confirmatory_operational_launcher_lifetime_probe_py",
+        ":phase4_confirmatory_same_run_operational_measurement_test_validator",
+        ":phase4_confirmatory_same_run_operational_measurement_test_validator_py",
+        ":phase4_confirmatory_same_run_operational_measurement_validator",
+        ":phase4_confirmatory_same_run_operational_measurement_validator_py",
+        ":phase4_confirmatory_same_run_operational_replay_test_worker",
+    ],
+    legacy_create_init = 0,
+    main = "tests/benchmark/phase4_confirmatory_operational_publisher_launcher_process_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_operational_test_artifacts_lib",
+        ":phase4_confirmatory_same_run_operational_authority_lib",
         ":phase4_operational_measurement_validator_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_same_run_decision_telemetry_validator_lib",
@@ -4918,6 +4987,7 @@ py_test(
         ":phase4_confirmatory_h4096_same_run_operational_measurement_validator_lib",
         ":phase4_confirmatory_h4096_test_artifacts_lib",
         ":phase4_confirmatory_operational_measurement_validator_lib",
+        ":phase4_confirmatory_operational_test_artifacts_lib",
         ":phase4_operational_capture_fixtureless_lib",
         ":phase4_operational_measurement_validator_lib",
         ":phase4_raw_evidence_validator_lib",
@@ -4955,6 +5025,7 @@ py_test(
         ":phase4_confirmatory_h4096_same_run_operational_authority_lib",
         ":phase4_confirmatory_h4096_same_run_operational_measurement_validator_lib",
         ":phase4_confirmatory_h4096_test_artifacts_lib",
+        ":phase4_confirmatory_operational_test_artifacts_lib",
         ":phase4_confirmatory_same_run_operational_measurement_validator_lib",
         ":phase4_operational_measurement_validator_lib",
         ":phase4_raw_evidence_validator_lib",
@@ -4967,7 +5038,7 @@ py_test(
     size = "medium",
     srcs = ["tests/benchmark/phase4_raw_v2_downstream_join_test.py"],
     data = [
-        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json",
+        "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.json",
         "schemas/benchmark/phase4_representative_manifest_v1.json",
         "schemas/benchmark/phase4_statistical_decision_protocol_v2.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v1.json",
@@ -5622,6 +5693,8 @@ cc_test(
     name = "cpu_candidate_allocation_session_corpus_test",
     size = "medium",
     srcs = [
+        "src/allocator/targeted_regeneration_internal.h",
+        "src/benchmark/phase4_h4096_canonical_budget_internal.h",
         "tests/allocator/cpu_candidate_allocation_session_corpus_test.cc",
         "tests/support/google_test.h",
     ],
@@ -5633,6 +5706,7 @@ cc_test(
         ":negotiated_prices",
         ":one_world_allocator",
         ":phase4_representative_corpus",
+        ":phase4_trial_harness",
         ":targeted_regeneration",
         ":targeted_regeneration_execution",
         "@googletest//:gtest_main",

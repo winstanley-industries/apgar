@@ -12,6 +12,15 @@ from tools import capture_phase4_operational_measurement as capture_tool
 from tools import phase4_confirmatory_operational_authority as authority
 from tools import validate_phase4_operational_measurement as measurement_validator
 
+_SESSION_AUTHORITY_INVARIANT = "P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001"
+
+
+def _require_session_execution_authority() -> None:
+    raise capture_tool.CaptureError(
+        f"{_SESSION_AUTHORITY_INVARIANT}: Corpus-v2 execution is closed after Session v5 "
+        "activation until a separately reviewed successor budget and consuming authority exists"
+    )
+
 
 def _parser(
     *,
@@ -156,6 +165,7 @@ def main(
             authority_module=authority_module,
             authority_label=authority_label,
         )
+        _require_session_execution_authority()
         if len(options.apgar_commit) != 40 or any(
             character not in "0123456789abcdef" for character in options.apgar_commit
         ):

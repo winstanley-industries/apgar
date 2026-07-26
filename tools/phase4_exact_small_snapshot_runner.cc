@@ -23,6 +23,9 @@
 #if defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER)
 #include "src/benchmark/phase4_confirmatory_h4096_exact_small_snapshot_internal.h"
 #include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
+#endif
+#if defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER)
 #include "src/benchmark/phase4_paired_trial_internal.h"
 #endif
 
@@ -318,6 +321,25 @@ int main(int argc, char** argv) try {
                  "authority\n";
     return 2;
   }
+#endif
+#if defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER)
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER
+  constexpr auto kExecutionAuthority =
+      apgar::benchmark::internal::Phase4TrialExecutionAuthority::kCorpusV2H4096;
+#else
+  constexpr auto kExecutionAuthority =
+      apgar::benchmark::internal::Phase4TrialExecutionAuthority::kCorpusV2H2250;
+#endif
+  if (const std::optional<apgar::benchmark::Phase4PairedTrialError> authority_error =
+          apgar::benchmark::internal::PreflightPhase4CorpusV2SessionExecutionAuthority(
+              kExecutionAuthority, apgar::benchmark::Phase4TrialArm::kReusableCandidateAllocation);
+      authority_error.has_value()) {
+    std::cerr << authority_error->invariant_id << ": " << authority_error->detail << '\n';
+    return 2;
+  }
+#endif
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER
 #ifdef APGAR_PHASE4_EXACT_SNAPSHOT_RUNNER_TESTING
   if (!options.testing_allow_unstamped) {
     Usage();

@@ -147,6 +147,175 @@ void MaybeFailAfterPublicationForTesting() {
   return std::tie(left.id, left.generation) < std::tie(right.id, right.generation);
 }
 
+struct NetLess {
+  [[nodiscard]] bool operator()(board_ir::EntityRef left,
+                                board_ir::EntityRef right) const noexcept {
+    return NetBefore(left, right);
+  }
+};
+
+[[nodiscard]] bool ActionRanksBefore(const RegenerationResourceAction& left,
+                                     const RegenerationResourceAction& right) noexcept {
+  if (left.conflict_impact != right.conflict_impact) {
+    return left.conflict_impact > right.conflict_impact;
+  }
+  if (left.observed_overuse_units != right.observed_overuse_units) {
+    return left.observed_overuse_units > right.observed_overuse_units;
+  }
+  if (left.negotiated_price != right.negotiated_price) {
+    return left.negotiated_price > right.negotiated_price;
+  }
+  return left.resource < right.resource;
+}
+
+[[nodiscard]] std::optional<TargetedRegenerationExecutionError> ValidatePlanStructureV6(
+    const TargetedRegenerationPlan& plan, UWide source_candidate_count,
+    std::uint64_t maximum_candidates) {
+  const std::vector<TargetedRegenerationNet>& targets = plan.targets();
+  if (plan.coverage_seed_target_count() > targets.size()) {
+    return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                 "allocator.targeted_regeneration_execution.coverage_seed_count.v6",
+                 "The authenticated coverage-seed prefix exceeds the target roster");
+  }
+  if (targets.size() > plan.config().maximum_target_nets) {
+    return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                 "allocator.targeted_regeneration_execution.target_cap.v6",
+                 "The target roster exceeds its authenticated plan cap");
+  }
+
+  const std::size_t seed_count = static_cast<std::size_t>(plan.coverage_seed_target_count());
+  std::set<board_ir::EntityRef, NetLess> unique_nets;
+  std::set<routing::EdgeResourceKey> unique_seed_resources;
+  UWide total_requested_columns = 0;
+  UWide total_resource_actions = 0;
+  UWide total_conflict_resources = 0;
+  UWide total_conflict_impact = 0;
+
+  for (std::size_t target_index = 0; target_index < targets.size(); ++target_index) {
+    const TargetedRegenerationNet& target = targets[target_index];
+    const bool first_in_lane = target_index == 0 || target_index == seed_count;
+    if (!first_in_lane &&
+        !internal::TargetedRegenerationTargetRanksBeforeV1(targets[target_index - 1U], target)) {
+      return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                   "allocator.targeted_regeneration_execution.target_lane_order.v6",
+                   "A coverage-seed lane is outside the canonical target order");
+    }
+    if (!unique_nets.insert(target.net).second) {
+      return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                   "allocator.targeted_regeneration_execution.target_net_unique.v6",
+                   "Target net identities are not globally unique across both lanes");
+    }
+    if (target.resource_actions.empty()) {
+      return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                   "allocator.targeted_regeneration_execution.primary_action.v6",
+                   "Every retained target must authenticate a primary conflict action");
+    }
+    if (target.resource_actions.size() > plan.config().maximum_resource_actions_per_net ||
+        target.resource_actions.size() > target.conflict_resource_count) {
+      return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                   "allocator.targeted_regeneration_execution.target_action_cap.v6",
+                   "A target action roster exceeds its authenticated conflict or plan cap");
+    }
+    if (target.requested_columns == 0 ||
+        target.requested_columns > plan.config().maximum_columns_per_net ||
+        static_cast<UWide>(target.requested_columns) >
+            static_cast<UWide>(target.resource_actions.size()) + 1U ||
+        static_cast<UWide>(target.requested_columns) >
+            static_cast<UWide>(target.conflict_resource_count) + 1U) {
+      return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                   "allocator.targeted_regeneration_execution.target_columns.v6",
+                   "A target's requested columns are not representable by its action schedule");
+    }
+
+    std::set<routing::EdgeResourceKey> unique_action_resources;
+    UWide retained_action_impact = 0;
+    for (std::size_t action_index = 0; action_index < target.resource_actions.size();
+         ++action_index) {
+      const RegenerationResourceAction& action = target.resource_actions[action_index];
+      const UWide expected_impact =
+          static_cast<UWide>(action.observed_overuse_units) * action.selected_candidate_usage_units;
+      retained_action_impact += action.conflict_impact;
+      if (action.observed_overuse_units == 0 || action.selected_candidate_usage_units == 0 ||
+          action.negotiated_price == 0 || expected_impact != action.conflict_impact ||
+          retained_action_impact > target.conflict_impact) {
+        return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                     "allocator.targeted_regeneration_execution.target_action_metrics.v6",
+                     "A retained action is not an authentic positive conflict observation");
+      }
+      if (!unique_action_resources.insert(action.resource).second ||
+          (action_index != 0 &&
+           !ActionRanksBefore(target.resource_actions[action_index - 1U], action))) {
+        return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                     "allocator.targeted_regeneration_execution.target_action_order.v6",
+                     "A target action roster is duplicate or outside its stable order");
+      }
+    }
+
+    if (target_index < seed_count) {
+      if (target.requested_columns < 2) {
+        return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                     "allocator.targeted_regeneration_execution.seed_columns.v6",
+                     "Every coverage seed must reserve price-only and primary-ban columns");
+      }
+      if (!unique_seed_resources.insert(target.resource_actions.front().resource).second) {
+        return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                     "allocator.targeted_regeneration_execution.seed_resource_unique.v6",
+                     "Coverage-seed primary conflict resources must be pairwise distinct");
+      }
+    }
+
+    total_requested_columns += target.requested_columns;
+    total_resource_actions += target.resource_actions.size();
+    total_conflict_resources += target.conflict_resource_count;
+    total_conflict_impact += target.conflict_impact;
+  }
+
+  if (total_requested_columns != plan.total_requested_columns() ||
+      total_resource_actions != plan.total_resource_actions() ||
+      total_conflict_resources != plan.total_conflict_resources() ||
+      total_conflict_impact != plan.total_conflict_impact()) {
+    return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                 "allocator.targeted_regeneration_execution.plan_aggregates.v6",
+                 "The authenticated plan aggregates do not replay from its complete target roster");
+  }
+  if (total_requested_columns > plan.config().maximum_total_columns ||
+      total_resource_actions > plan.config().maximum_total_resource_actions ||
+      source_candidate_count + total_requested_columns > maximum_candidates) {
+    return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                 "allocator.targeted_regeneration_execution.plan_capacity.v6",
+                 "The complete target roster exceeds its authenticated plan or candidate caps");
+  }
+  const internal::TargetedRegenerationChecksumHeaderV3 checksum_header{
+      internal::TargetedRegenerationChecksumHeaderV2{
+          .schema_version = plan.schema_version(),
+          .associations = plan.associations(),
+          .workload_checksum = plan.workload_checksum(),
+          .source_request_manifest_checksum = plan.source_request_manifest_checksum(),
+          .candidate_pool_manifest_checksum = plan.candidate_pool_manifest_checksum(),
+          .source_pool_count = plan.source_pool_count(),
+          .source_candidate_count = plan.source_candidate_count(),
+          .pinned_candidate_count = plan.pinned_candidate_count(),
+          .config = plan.config(),
+          .price_state_checksum = plan.price_state().state_checksum(),
+          .price_iteration = plan.price_state().iteration(),
+          .source_world_checksum = plan.price_state().source_world_checksum(),
+          .total_requested_columns = plan.total_requested_columns(),
+          .total_resource_actions = plan.total_resource_actions(),
+          .total_conflict_resources = plan.total_conflict_resources(),
+          .total_conflict_impact = plan.total_conflict_impact(),
+          .expanded_resource_visits = plan.expanded_resource_visits(),
+      },
+      plan.coverage_seed_target_count(),
+  };
+  if (internal::ComputeTargetedRegenerationPlanChecksumV3(checksum_header, targets) !=
+      plan.plan_checksum()) {
+    return Error(TargetedRegenerationExecutionErrorCode::kPlanInvariant,
+                 "allocator.targeted_regeneration_execution.plan_checksum.v6",
+                 "The complete plan payload does not reproduce its authenticated checksum");
+  }
+  return std::nullopt;
+}
+
 void AddExecutionConfig(board_ir::StableHashBuilder& hash,
                         const TargetedRegenerationExecutionConfig& config) noexcept {
   hash.AddU64(config.deterministic_seed);
@@ -184,7 +353,7 @@ void AddStoreConfig(board_ir::StableHashBuilder& hash,
     const TargetedRegenerationExecutionConfig& config,
     const candidates::CandidateStoreConfig& store_config) noexcept {
   board_ir::StableHashBuilder hash;
-  hash.AddString("APGAR-TARGETED-REGENERATION-CPU-BATCH-V5");
+  hash.AddString("APGAR-TARGETED-REGENERATION-CPU-BATCH-V6");
   hash.AddU64(plan_checksum);
   hash.AddU64(net.id);
   hash.AddU32(net.generation);
@@ -436,7 +605,7 @@ void AddColumns(board_ir::StableHashBuilder& hash,
       .columns = std::move(columns),
   };
   observation.observation_checksum =
-      internal::ComputeTargetedRegenerationFailedObservationChecksumV5(
+      internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
           plan_checksum, config, store_config, candidate_store_publication_committed, code,
           counters, observation.columns);
   return TargetedRegenerationExecutionError{
@@ -515,6 +684,11 @@ bool internal::TargetedRegenerationExecutionConfigIsValidV4(
 }
 
 bool internal::TargetedRegenerationExecutionConfigIsValidV5(
+    const TargetedRegenerationExecutionConfig& config) noexcept {
+  return ConfigIsValid(config);
+}
+
+bool internal::TargetedRegenerationExecutionConfigIsValidV6(
     const TargetedRegenerationExecutionConfig& config) noexcept {
   return ConfigIsValid(config);
 }
@@ -720,7 +894,46 @@ std::uint64_t internal::ComputeTargetedRegenerationFailedObservationChecksumV5(
     std::span<const TargetedRegenerationColumnRecord> columns) noexcept {
   board_ir::StableHashBuilder hash;
   hash.AddString("APGAR-TARGETED-REGENERATION-FAILED-EXECUTION-V5");
-  hash.AddU32(kTargetedRegenerationExecutionSchemaVersion);
+  hash.AddU32(kTargetedRegenerationExecutionSchemaVersionV5);
+  hash.AddU64(plan_checksum);
+  AddExecutionConfig(hash, config);
+  AddStoreConfig(hash, store_config);
+  hash.AddBool(candidate_store_publication_committed);
+  hash.AddByte(static_cast<std::uint8_t>(error_code));
+  AddCounters(hash, counters);
+  AddColumns(hash, columns);
+  return hash.Finish();
+}
+
+std::uint64_t internal::ComputeTargetedRegenerationExecutionChecksumV6(
+    const TargetedRegenerationExecutionChecksumHeaderV6& header,
+    std::span<const TargetedRegenerationColumnRecord> columns) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-TARGETED-REGENERATION-EXECUTION-V6");
+  hash.AddU32(header.schema_version);
+  hash.AddU64(header.plan_checksum);
+  AddExecutionConfig(hash, header.config);
+  AddStoreConfig(hash, header.store_config);
+  hash.AddU64(header.refreshed_request_manifest_checksum);
+  hash.AddU64(header.refreshed_candidate_pool_manifest_checksum);
+  hash.AddU64(header.baseline_world_checksum);
+  hash.AddU64(header.refreshed_world_checksum);
+  hash.AddByte(static_cast<std::uint8_t>(header.disposition));
+  hash.AddByte(static_cast<std::uint8_t>(header.terminal_reason));
+  AddCounters(hash, header.counters);
+  AddColumns(hash, columns);
+  return hash.Finish();
+}
+
+std::uint64_t internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
+    std::uint64_t plan_checksum, const TargetedRegenerationExecutionConfig& config,
+    const candidates::CandidateStoreConfig& store_config,
+    bool candidate_store_publication_committed, TargetedRegenerationExecutionErrorCode error_code,
+    const TargetedRegenerationExecutionCounters& counters,
+    std::span<const TargetedRegenerationColumnRecord> columns) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-TARGETED-REGENERATION-FAILED-EXECUTION-V6");
+  hash.AddU32(kTargetedRegenerationExecutionSchemaVersionV6);
   hash.AddU64(plan_checksum);
   AddExecutionConfig(hash, config);
   AddStoreConfig(hash, store_config);
@@ -761,18 +974,18 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
   g_source_resource_span_visits = 0;
   if (schema_version != kTargetedRegenerationExecutionSchemaVersion) {
     return Error(TargetedRegenerationExecutionErrorCode::kUnsupportedSchema,
-                 "allocator.targeted_regeneration_execution.schema.v5",
+                 "allocator.targeted_regeneration_execution.schema.v6",
                  "Targeted-regeneration execution schema is unsupported");
   }
   if (!ConfigIsValid(config)) {
     return Error(TargetedRegenerationExecutionErrorCode::kInvalidConfiguration,
-                 "allocator.targeted_regeneration_execution.configuration.v5",
-                 "Targeted-regeneration execution configuration is outside schema-v5 bounds");
+                 "allocator.targeted_regeneration_execution.configuration.v6",
+                 "Targeted-regeneration execution configuration is outside schema-v6 bounds");
   }
   if (plan.schema_version() != kTargetedRegenerationPlanSchemaVersion) {
     return Error(TargetedRegenerationExecutionErrorCode::kUnsupportedSchema,
-                 "allocator.targeted_regeneration_execution.plan_schema.v5",
-                 "Targeted-regeneration execution requires a schema-v2 plan");
+                 "allocator.targeted_regeneration_execution.plan_schema.v6",
+                 "Targeted-regeneration execution requires a schema-v3 plan");
   }
   if (!plan.has_active_pin_lease()) {
     return Error(TargetedRegenerationExecutionErrorCode::kInactivePlanLease,
@@ -826,6 +1039,12 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
           return Error(TargetedRegenerationExecutionErrorCode::kSourceRequestDrift,
                        "allocator.targeted_regeneration_execution.source_candidate_count.v2",
                        "The source candidate count differs from the planned input");
+        }
+        if (const std::optional<TargetedRegenerationExecutionError> plan_error =
+                ValidatePlanStructureV6(plan, source_candidate_count,
+                                        source_request.limits.maximum_candidates);
+            plan_error.has_value()) {
+          return *plan_error;
         }
         if (!resource_refinement_required &&
             (plan.total_requested_columns() > config.maximum_route_queries ||
@@ -910,6 +1129,10 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
         UWide projected_policy_entries = 0;
         UWide maximum_policy_entries_per_candidate = 0;
         std::uint64_t preflight_column_count = 0;
+        std::vector<std::uint64_t> target_legal_price_counts;
+        if (!resource_refinement_required) {
+          target_legal_price_counts.reserve(plan.targets().size());
+        }
         for (std::size_t target_index = 0;
              !resource_refinement_required && target_index < plan.targets().size();
              ++target_index) {
@@ -937,6 +1160,7 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
           const internal::TargetedRegenerationPolicyEntryProjectionV1 entry_projection =
               internal::ProjectTargetedRegenerationPolicyEntriesV1(
                   context->compiled_board, plan.price_state().prices(), target);
+          target_legal_price_counts.push_back(entry_projection.target_legal_price_count);
           if (!internal::TargetedRegenerationPolicyEntriesFitV1(
                   entry_projection.aggregate_entry_count, routing::kMaximumPolicyResourceEntries) ||
               entry_projection.aggregate_entry_count >
@@ -1197,6 +1421,24 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
             return Error(TargetedRegenerationExecutionErrorCode::kInternalInvariant,
                          "allocator.targeted_regeneration_execution.policy_count.v1",
                          "Policy synthesis returned a different number of columns than planned");
+          }
+          const routing::CandidateGenerationPolicy& price_only_policy = policies.front().policy;
+          if (!price_only_policy.banned_resources.empty() ||
+              price_only_policy.resource_penalties.size() !=
+                  target_legal_price_counts[target_index]) {
+            return Error(TargetedRegenerationExecutionErrorCode::kInternalInvariant,
+                         "allocator.targeted_regeneration_execution.price_only_policy.v6",
+                         "Column zero is not the complete synthesized price-only policy");
+          }
+          if (target_index < plan.coverage_seed_target_count()) {
+            const routing::CandidateGenerationPolicy& primary_ban_policy = policies[1].policy;
+            if (primary_ban_policy.banned_resources.size() != 1 ||
+                primary_ban_policy.banned_resources.front() !=
+                    target.resource_actions.front().resource) {
+              return Error(TargetedRegenerationExecutionErrorCode::kInternalInvariant,
+                           "allocator.targeted_regeneration_execution.seed_primary_policy.v6",
+                           "A coverage seed's column one does not ban exactly its primary action");
+            }
           }
           UWide synthesized_policy_entries = 0;
           for (const routing::NormalizedCandidateGenerationPolicy& policy : policies) {
@@ -1760,7 +2002,7 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
           final_start =
               ::apgar::internal::OperationalNow<CaptureOperationalProfile, OperationalClock>();
         }
-        const internal::TargetedRegenerationExecutionChecksumHeaderV5 checksum_header{
+        const internal::TargetedRegenerationExecutionChecksumHeaderV6 checksum_header{
             .schema_version = schema_version,
             .plan_checksum = plan.plan_checksum(),
             .config = config,
@@ -1775,7 +2017,7 @@ TargetedRegenerationExecutionResult ExecuteTargetedRegenerationPlanCpuImpl(
             .counters = counters,
         };
         const std::uint64_t checksum =
-            internal::ComputeTargetedRegenerationExecutionChecksumV5(checksum_header, columns);
+            internal::ComputeTargetedRegenerationExecutionChecksumV6(checksum_header, columns);
         TargetedRegenerationExecution result(
             schema_version, std::move(plan), config, candidate_store.config(), disposition,
             terminal_reason, counters, std::move(columns), std::move(refreshed_pools),

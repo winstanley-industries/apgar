@@ -293,14 +293,23 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
 
 namespace {
 
+enum class CanonicalNestedSessionAuthority : std::uint8_t {
+  kCurrent = 0,
+  kFrozenCorpusV1 = 1,
+  kFrozenCorpusV2 = 2,
+};
+
 Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecForAuthority(
     Phase4RepresentativeCorpusAuthority authority, const Phase4CanonicalCellConfig& cell,
     std::uint32_t repetition_index, Phase4TrialOrder execution_order,
-    bool frozen_v1_budget_preimage) noexcept {
+    CanonicalNestedSessionAuthority session_authority) noexcept {
   try {
-    if (frozen_v1_budget_preimage && authority != Phase4RepresentativeCorpusAuthority::kV1) {
+    if ((session_authority == CanonicalNestedSessionAuthority::kFrozenCorpusV1 &&
+         authority != Phase4RepresentativeCorpusAuthority::kV1) ||
+        (session_authority == CanonicalNestedSessionAuthority::kFrozenCorpusV2 &&
+         authority != Phase4RepresentativeCorpusAuthority::kV2)) {
       return HarnessError("P4HARNESS-SPEC-001",
-                          "frozen V1 budget preimages require the V1 corpus authority");
+                          "frozen algorithm-budget preimages require their exact corpus authority");
     }
     if (!ValidCell(authority, cell) || repetition_index >= cell.repetitions ||
         (execution_order != Phase4TrialOrder::kBaselineFirst &&
@@ -495,10 +504,15 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecForAuthority(
     };
 
     auto& session = spec.candidate_session_config;
-    if (frozen_v1_budget_preimage) {
+    if (session_authority == CanonicalNestedSessionAuthority::kFrozenCorpusV1) {
       // This validation-only profile reconstructs the preserved V1 manifest
-      // preimage. Executable canonical specs always retain current Session v4.
+      // preimage. Executable diagnostic specs always retain current Session.
       session.schema_version = allocator::kCpuCandidateAllocationSessionSchemaVersionV3;
+    } else if (session_authority == CanonicalNestedSessionAuthority::kFrozenCorpusV2) {
+      // Representative Manifest v2 and its H=2250/H=4096 budget rosters bind
+      // Session v4. Current Session v5 execution requires a separately
+      // reviewed successor budget and consuming authority.
+      session.schema_version = allocator::kCpuCandidateAllocationSessionSchemaVersionV4;
     }
     session.intrinsic_cost_weight = spec.baseline_config.intrinsic_cost_weight;
     session.maximum_regeneration_epochs = epochs;
@@ -570,21 +584,32 @@ Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecV1(
     const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
     Phase4TrialOrder execution_order) noexcept {
   return BuildPhase4CanonicalTrialSpecForAuthority(Phase4RepresentativeCorpusAuthority::kV1, cell,
-                                                   repetition_index, execution_order, false);
+                                                   repetition_index, execution_order,
+                                                   CanonicalNestedSessionAuthority::kCurrent);
 }
 
 Phase4CanonicalSpecResult BuildPhase4FrozenCanonicalBudgetPreimageV1(
     const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
     Phase4TrialOrder execution_order) noexcept {
-  return BuildPhase4CanonicalTrialSpecForAuthority(Phase4RepresentativeCorpusAuthority::kV1, cell,
-                                                   repetition_index, execution_order, true);
+  return BuildPhase4CanonicalTrialSpecForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV1, cell, repetition_index, execution_order,
+      CanonicalNestedSessionAuthority::kFrozenCorpusV1);
 }
 
 Phase4CanonicalSpecResult BuildPhase4CanonicalTrialSpecForCorpusV2(
     const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
     Phase4TrialOrder execution_order) noexcept {
-  return BuildPhase4CanonicalTrialSpecForAuthority(Phase4RepresentativeCorpusAuthority::kV2, cell,
-                                                   repetition_index, execution_order, false);
+  return BuildPhase4CanonicalTrialSpecForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV2, cell, repetition_index, execution_order,
+      CanonicalNestedSessionAuthority::kFrozenCorpusV2);
+}
+
+Phase4CanonicalSpecResult BuildPhase4FrozenCanonicalBudgetPreimageForCorpusV2(
+    const Phase4CanonicalCellConfig& cell, std::uint32_t repetition_index,
+    Phase4TrialOrder execution_order) noexcept {
+  return BuildPhase4CanonicalTrialSpecForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV2, cell, repetition_index, execution_order,
+      CanonicalNestedSessionAuthority::kFrozenCorpusV2);
 }
 
 [[nodiscard]] Phase4ArmFailureReconciliationResultV1 TryReconcilePhase4TrialArmFailureForAuthority(

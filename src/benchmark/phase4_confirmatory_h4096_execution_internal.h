@@ -9,9 +9,10 @@
 
 namespace apgar::benchmark::internal {
 
-// Fixed Protocol-v2 development authorities. Ordinary Raw Wire 1 is restricted
-// to calibration cell (10200,8); same-run Raw Wire 2 is restricted to exact
-// cell (10100,4). Both paths select H=4096 out of band.
+// Frozen Protocol-v2 development authorities. Pure preflight preserves the
+// ordinary calibration (10200,8) and same-run exact (10100,4) carrier
+// distinctions. Their controller and worker execution surfaces now fail
+// closed before fixture access because the budget preimages name Session v4.
 [[nodiscard]] std::optional<Phase4TrialHarnessError> PreflightPhase4ConfirmatoryH4096OrdinaryCell(
     const Phase4CanonicalCellConfig& cell);
 

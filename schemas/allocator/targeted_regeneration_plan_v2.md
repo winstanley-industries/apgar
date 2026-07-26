@@ -1,12 +1,14 @@
 # Targeted Regeneration Plan v2
 
+> Superseded for production planning by Targeted Regeneration Plan v3.
+
 Targeted Regeneration Plan v2 is a narrow decision-rule supersession of
 [`targeted_regeneration_plan_v1.md`](targeted_regeneration_plan_v1.md). It
 preserves the v1 input validation, hotset and action ranking, bounds,
 CandidateStore lease, policy synthesis, field order, and field widths.
 
-Production accepts schema version `2`; version `1` remains historical and is
-rejected by the production factory.
+Historical production accepted schema version `2`. The production Plan-v3
+factory rejects versions `1` and `2` before mutation or input consumption.
 
 ## Corrected column cardinality
 
@@ -40,6 +42,7 @@ The v1 representation fixture remains
 `10960306375439121819`. With schema version `2` and the v2 domain, the same
 prime-valued fixture hashes to `8958480360901484544`.
 
-This plan is accepted only by Targeted Regeneration Execution v5 or a later
-explicit authority. Any further field, bound, order, width, or decision-rule
-change requires another schema version.
+This plan remains replay identity for historical Targeted Regeneration
+Execution v5 evidence. Production Execution v6 requires Plan v3. Any further
+field, bound, order, width, or decision-rule change requires another schema
+version.

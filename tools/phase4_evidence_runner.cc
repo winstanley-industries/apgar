@@ -46,6 +46,22 @@ constexpr apgar::benchmark::Phase4RepresentativeCorpusAuthority kCorpusAuthority
     apgar::benchmark::Phase4RepresentativeCorpusAuthority::kV1;
 #endif
 
+[[nodiscard]] std::optional<apgar::benchmark::Phase4PairedTrialError>
+PreflightSessionExecutionAuthority() {
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_RUNNER)
+  constexpr auto kExecutionAuthority =
+      apgar::benchmark::internal::Phase4TrialExecutionAuthority::kCorpusV2H4096;
+#elif defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
+  constexpr auto kExecutionAuthority =
+      apgar::benchmark::internal::Phase4TrialExecutionAuthority::kCorpusV2H2250;
+#else
+  constexpr auto kExecutionAuthority =
+      apgar::benchmark::internal::Phase4TrialExecutionAuthority::kCorpusV1;
+#endif
+  return apgar::benchmark::internal::PreflightPhase4CorpusV2SessionExecutionAuthority(
+      kExecutionAuthority, apgar::benchmark::Phase4TrialArm::kSequentialBaseline);
+}
+
 #if defined(APGAR_PHASE4_CONFIRMATORY_H4096_FORCE_UNPUBLISHABLE_SOURCE_FOR_TESTING)
 constexpr bool kPublishabilitySourceStamped = false;
 constexpr bool kPublishabilitySourceTreeDirty = true;
@@ -117,14 +133,10 @@ struct Options {
   options.cell.external_budget.maximum_cold_elapsed_nanoseconds = 300'000'000'000ULL;
   options.cell.external_budget.maximum_address_space_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL;
   options.cell.external_budget.maximum_peak_host_bytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
-#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_RUNNER)
-  // The H4096 targets intentionally carry no fixture runfile. A caller must
-  // cross the complete source and observation firewall before naming one.
+  // Resolve a default fixture only after the out-of-band execution authority
+  // is checked. Corpus-v2 runners remain closed before any fixture path is
+  // resolved or opened.
   options.fixture_path.clear();
-#else
-  options.fixture_path =
-      apgar::tooling::ResolveRunfile("tests/fixtures/phase4_supported_multinet_v1.kicad_pcb");
-#endif
 
   std::unordered_set<std::string> seen;
   for (int index = 1; index < argc; ++index) {
@@ -486,13 +498,6 @@ int main(int argc, char** argv) {
     std::cerr << preflight_error->invariant_id << ": " << preflight_error->detail << '\n';
     return 2;
   }
-#endif
-  [[maybe_unused]] const bool publishable =
-      options.runtime_commit.has_value() &&
-      apgar::benchmark::IsPublishableBenchmarkSource(
-          *options.runtime_commit, apgar::benchmark::kPhase3BuiltCommit,
-          kPublishabilitySourceStamped, kPublishabilitySourceTreeDirty);
-#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_RUNNER)
   if (options.fixture_path.empty()) {
     PrintUsage();
     return 2;
@@ -502,9 +507,30 @@ int main(int argc, char** argv) {
     PrintUsage();
     return 2;
   }
+#endif
+#endif
+  if (const std::optional<apgar::benchmark::Phase4PairedTrialError> authority_error =
+          PreflightSessionExecutionAuthority();
+      authority_error.has_value()) {
+    std::cerr << authority_error->invariant_id << ": " << authority_error->detail << '\n';
+    return 2;
+  }
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_RUNNER) && \
+    defined(APGAR_PHASE4_CONFIRMATORY_RUNNER_TESTING)
   std::cerr << "the H4096 test runner is preflight-only and cannot execute a board fixture\n";
   return 2;
-#else
+#endif
+  if (options.fixture_path.empty()) {
+    options.fixture_path =
+        apgar::tooling::ResolveRunfile("tests/fixtures/phase4_supported_multinet_v1.kicad_pcb");
+  }
+  [[maybe_unused]] const bool publishable =
+      options.runtime_commit.has_value() &&
+      apgar::benchmark::IsPublishableBenchmarkSource(
+          *options.runtime_commit, apgar::benchmark::kPhase3BuiltCommit,
+          kPublishabilitySourceStamped, kPublishabilitySourceTreeDirty);
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_RUNNER) && \
+    !defined(APGAR_PHASE4_CONFIRMATORY_RUNNER_TESTING)
   if ((worker_process && !apgar::benchmark::IsPublishableEmbeddedBenchmarkSource(
                              apgar::benchmark::kPhase3BuiltCommit, kPublishabilitySourceStamped,
                              kPublishabilitySourceTreeDirty)) ||
@@ -512,7 +538,6 @@ int main(int argc, char** argv) {
     PrintUsage();
     return 2;
   }
-#endif
 #endif
   const std::optional<std::string> fixture = apgar::tooling::ReadFile(options.fixture_path);
   if (!fixture.has_value()) {
@@ -558,7 +583,7 @@ int main(int argc, char** argv) {
 #if !defined(APGAR_PHASE4_CONFIRMATORY_RUNNER)
   if (publishable) {
     std::cerr << "Phase 4 Raw-v1/Wire-v2 publication is frozen at the Session-v3 budget "
-                 "authority; current Session-v4 execution is diagnostic-only until a new "
+                 "authority; current Session-v5 execution is diagnostic-only until a new "
                  "manifest and protocol are frozen\n";
     return 2;
   }

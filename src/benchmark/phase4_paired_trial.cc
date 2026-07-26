@@ -168,6 +168,11 @@ enum class Phase4ConfirmatoryH4096Carrier : std::uint8_t {
     return Error(Phase4PairedTrialErrorCode::kInvalidConfiguration, "P4PAIR-ENUM-001",
                  "the trial arm and prescribed execution order must be known v1 values", arm);
   }
+  if (std::optional<Phase4PairedTrialError> authority_error =
+          internal::PreflightPhase4CorpusV2SessionExecutionAuthority(execution_authority, arm);
+      authority_error.has_value()) {
+    return *authority_error;
+  }
   const std::optional<Phase4RepresentativeCorpusAuthority> selected_corpus =
       CorpusAuthority(execution_authority);
   if (!selected_corpus.has_value()) {
@@ -463,7 +468,7 @@ enum class Phase4ConfirmatoryH4096Carrier : std::uint8_t {
       spec.preparation_config.schema_version !=
           allocator::kCpuCandidatePoolPreparationSchemaVersion ||
       spec.candidate_session_config.schema_version !=
-          allocator::kCpuCandidateAllocationSessionSchemaVersion) {
+          allocator::kCpuCandidateAllocationSessionSchemaVersionV4) {
     return Error(Phase4PairedTrialErrorCode::kUnsupportedSchema, "P4PAIR-SCHEMA-001",
                  "the trial or one of its contender configurations has an unsupported schema", arm);
   }
@@ -1516,6 +1521,19 @@ void HashOutcome(board_ir::StableHashBuilder& hash, const Phase4BoardOutcome& ou
 }  // namespace
 
 namespace internal {
+
+std::optional<Phase4PairedTrialError> PreflightPhase4CorpusV2SessionExecutionAuthority(
+    Phase4TrialExecutionAuthority authority, Phase4TrialArm arm) noexcept {
+  if (authority == Phase4TrialExecutionAuthority::kCorpusV2H2250 ||
+      authority == Phase4TrialExecutionAuthority::kCorpusV2H4096) {
+    return Error(Phase4PairedTrialErrorCode::kUnsupportedSchema,
+                 "P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001",
+                 "Corpus-v2 execution is closed after Session v5 activation until a separately "
+                 "reviewed successor budget and consuming authority exists",
+                 arm);
+  }
+  return std::nullopt;
+}
 
 Phase4TrialArmFailure PreservePhase4CandidateSessionFailureV1(
     Phase4RepresentativeCase case_state, allocator::PreparedCpuCandidatePools prepared,

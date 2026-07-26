@@ -9,9 +9,9 @@
 
 namespace apgar::benchmark::internal {
 
-// Private Protocol-v2 H=4096 snapshot execution surface. The entry point
-// preflights the exact same-run authority before selecting the H=4096
-// execution path; public Corpus-v2 snapshot execution remains H=2250-only.
+// Preserved Protocol-v2 H=4096 snapshot execution surface. It authenticates
+// the exact same-run carrier, then fails closed at the shared Corpus-v2
+// Session-authority boundary before fixture or preparer access.
 [[nodiscard]] Phase4CandidatePoolSnapshotExecutionResultV1
 ExecutePhase4ConfirmatoryH4096SameRunCandidatePoolSnapshot(
     const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,

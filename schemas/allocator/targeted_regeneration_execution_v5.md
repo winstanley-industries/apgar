@@ -1,14 +1,16 @@
 # Targeted Regeneration Execution v5
 
+> Superseded for production execution by Targeted Regeneration Execution v6.
+
 Targeted Regeneration Execution v5 is a child-authority supersession of
 [`targeted_regeneration_execution_v4.md`](targeted_regeneration_execution_v4.md).
 It preserves v4 input ordering, hard limits, preflight equations, atomic
 publication, failure observations, counters, terminal semantics, and field
 encoding.
 
-Production accepts execution schema version `5` and requires Targeted
-Regeneration Plan schema version `2` before routing or publication. Execution
-versions `1` through `4`, and plans from any other schema, are rejected.
+Historical production accepted execution schema version `5` with Targeted
+Regeneration Plan schema version `2`. Production Execution v6 rejects
+versions `1` through `5` and requires Plan v3 before routing or publication.
 
 The new plan authority is bound through the plan checksum under three new
 domains:

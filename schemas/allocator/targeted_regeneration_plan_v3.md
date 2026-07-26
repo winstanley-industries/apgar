@@ -1,7 +1,6 @@
 # Targeted Regeneration Plan v3
 
-**Status:** Reserved successor; not executable until its implementation is
-separately reviewed and activated.
+**Status:** Current production planning authority.
 
 Targeted Regeneration Plan v3 is a bounded target-retention policy
 supersession of
@@ -10,9 +9,8 @@ preserves v2 input validation, source and next-price selection, conflict
 metrics, action ranking, target severity ranking, CandidateStore lease,
 policy synthesis, configuration fields, and hard limits.
 
-At this contract freeze, production still accepts schema version `2`.
-Conforming activation advances production to schema version `3` and rejects
-versions `1` and `2` before mutation or input consumption.
+Production accepts schema version `3` and rejects versions `1` and `2` before
+mutation or input consumption.
 
 ## Provisional primary conflict
 

@@ -1,7 +1,6 @@
 # Targeted Regeneration Execution v6
 
-**Status:** Reserved successor; not executable until its implementation is
-separately reviewed and activated.
+**Status:** Current production execution authority.
 
 Targeted Regeneration Execution v6 is a child-authority supersession of
 [`targeted_regeneration_execution_v5.md`](targeted_regeneration_execution_v5.md).
@@ -9,11 +8,9 @@ It preserves v5 input ordering, hard limits, preflight equations, atomic
 publication, failure observations, counters, terminal semantics, and field
 encoding.
 
-At this contract freeze, production still accepts execution schema version `5`
-with Targeted Regeneration Plan v2. Conforming activation advances production
-to execution schema version `6`, requires Targeted Regeneration Plan v3, and
-rejects every earlier execution or plan version before routing, publication,
-or input mutation.
+Production accepts execution schema version `6`, requires Targeted
+Regeneration Plan v3, and rejects every earlier execution or plan version
+before routing, publication, or input mutation.
 
 Before the first CPU query, v6 additionally validates:
 
@@ -25,7 +22,8 @@ Before the first CPU query, v6 additionally validates:
 - every seed requests at least two columns and retains a primary action;
 - seed action-zero resources are pairwise distinct;
 - the complete plan target, action, column, conflict, and impact aggregates
-  replay exactly; and
+  replay exactly;
+- the complete Plan-v3 payload reproduces its authenticated plan checksum; and
 - column zero remains the complete price-only policy while column one for each
   seed bans exactly its authenticated action-zero resource.
 

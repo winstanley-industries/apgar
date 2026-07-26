@@ -26,7 +26,7 @@ int main() {
           .maximum_address_space_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL,
           .maximum_peak_host_bytes = 16ULL * 1024ULL * 1024ULL * 1024ULL,
       };
-      auto built = apgar::benchmark::BuildPhase4CanonicalTrialSpecForCorpusV2(
+      auto built = apgar::benchmark::BuildPhase4FrozenCanonicalBudgetPreimageForCorpusV2(
           cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
       if (!std::holds_alternative<apgar::benchmark::Phase4PairedTrialSpec>(built)) {
         const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(built);

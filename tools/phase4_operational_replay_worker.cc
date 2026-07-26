@@ -17,11 +17,11 @@
 #include "apgar/benchmark/phase4_operational_artifact.h"
 #include "apgar/benchmark/phase4_trial_harness.h"
 #include "apgar/tooling/runfiles.h"
+#include "src/benchmark/phase4_paired_trial_internal.h"
 
 #if defined(APGAR_PHASE4_CONFIRMATORY_H4096_OPERATIONAL_WORKER) || \
     defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
 #include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
-#include "src/benchmark/phase4_paired_trial_internal.h"
 #endif
 
 #if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER) +                    \
@@ -356,6 +356,23 @@ int main(int argc, char** argv) {
       error.has_value()) {
 #endif
     std::cerr << error->invariant_id << ": " << error->detail << '\n';
+    return 1;
+  }
+#endif
+#if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_WORKER_ACTIVE)
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_OPERATIONAL_WORKER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_SAME_RUN_OPERATIONAL_WORKER)
+  constexpr auto kExecutionAuthority =
+      apgar::benchmark::internal::Phase4TrialExecutionAuthority::kCorpusV2H4096;
+#else
+  constexpr auto kExecutionAuthority =
+      apgar::benchmark::internal::Phase4TrialExecutionAuthority::kCorpusV2H2250;
+#endif
+  if (const std::optional<apgar::benchmark::Phase4PairedTrialError> authority_error =
+          apgar::benchmark::internal::PreflightPhase4CorpusV2SessionExecutionAuthority(
+              kExecutionAuthority, *options.arm);
+      authority_error.has_value()) {
+    std::cerr << authority_error->invariant_id << ": " << authority_error->detail << '\n';
     return 1;
   }
 #endif

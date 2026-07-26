@@ -1,4 +1,4 @@
-"""Frozen nondecision budget authority for live post-V1 diagnostic tests."""
+"""Frozen nondecision Session-v5 budget authority for live V1 diagnostic tests."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
-_ROSTER = "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v1.json"
-_DOMAIN = "APGAR-PHASE4-CURRENT-V1-DIAGNOSTIC-BUDGET-ROSTER-V1"
+_ROSTER = "schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.json"
+_DOMAIN = "APGAR-PHASE4-CURRENT-V1-DIAGNOSTIC-BUDGET-ROSTER-V2"
 _U32_MAX = (1 << 32) - 1
 _U64_MAX = (1 << 64) - 1
 _EXPECTED_KEYS = ((100, 4), (101, 4), (102, 4), (200, 4), (4000, 4))
@@ -49,8 +49,8 @@ def _read_live_diagnostic_budgets(
     ):
         raise RuntimeError("current diagnostic budget roster header is invalid")
     if (
-        _uint(document["schema_version"], _U32_MAX, "schema_version") != 1
-        or _uint(document["session_schema_version"], _U32_MAX, "session_schema_version") != 4
+        _uint(document["schema_version"], _U32_MAX, "schema_version") != 2
+        or _uint(document["session_schema_version"], _U32_MAX, "session_schema_version") != 5
         or document["decision_eligible"] is not False
         or not isinstance(document["entries"], list)
         or not document["entries"]

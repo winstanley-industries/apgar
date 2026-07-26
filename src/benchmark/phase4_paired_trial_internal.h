@@ -16,14 +16,21 @@ inline constexpr std::uint64_t kPhase4ConfirmatoryH4096ExactCanonicalAlgorithmBu
 inline constexpr std::uint64_t kPhase4ConfirmatoryH4096CalibrationCanonicalAlgorithmBudgetChecksum =
     8'230'401'457'668'518'004ULL;
 
-// Trusted, out-of-band execution authority. Public Corpus-v2 entry points
-// always select kCorpusV2H2250; only separately named internal development
-// entry points may select kCorpusV2H4096.
+// Preserved, out-of-band authority identities. Session-v5 activation closes
+// both Corpus-v2 execution identities before fixture access until a separately
+// reviewed successor budget and consuming authority is added.
 enum class Phase4TrialExecutionAuthority : std::uint8_t {
   kCorpusV1 = 0,
   kCorpusV2H2250 = 1,
   kCorpusV2H4096 = 2,
 };
+
+// Pure out-of-band Session authority gate. Corpus-v2 callers must invoke this
+// after syntactic/scope validation and before source, fixture, preparer,
+// worker, representative-case, or allocator access.
+[[nodiscard]] std::optional<Phase4PairedTrialError>
+PreflightPhase4CorpusV2SessionExecutionAuthority(Phase4TrialExecutionAuthority authority,
+                                                 Phase4TrialArm arm) noexcept;
 
 // Pure configuration preflights. These do not construct a representative case
 // or touch a fixture, preparer, or worker.
@@ -33,9 +40,8 @@ enum class Phase4TrialExecutionAuthority : std::uint8_t {
 [[nodiscard]] std::optional<Phase4PairedTrialError> PreflightPhase4ConfirmatoryH4096SameRunSpec(
     const Phase4PairedTrialSpec& spec, Phase4TrialArm arm);
 
-// The only H=4096 arm-execution surfaces opened by the initial development
-// slice: calibration (10200,8) over ordinary Raw/Wire1 and exact (10100,4)
-// over same-run Raw/Wire2.
+// Preserved H=4096 arm-execution surfaces. They now fail closed before fixture
+// access because their canonical budgets bind Session v4.
 [[nodiscard]] Phase4TrialArmExecutionResult ExecutePhase4ConfirmatoryH4096OrdinaryTrialArm(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer = nullptr);

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -243,6 +244,36 @@ struct ExecutionFixture {
   return BuiltPlan(BuildTargetedRegenerationPlan(kTargetedRegenerationPlanSchemaVersion,
                                                  fixture.initial_state, fixture.request,
                                                  fixture.world, *fixture.store, config));
+}
+
+void ExpectPreQueryPlanInvariant(
+    ExecutionFixture& fixture, TargetedRegenerationPlan plan,
+    std::string_view expected_invariant_id,
+    TargetedRegenerationExecutionConfig config = TargetedRegenerationExecutionConfig{}) {
+  std::vector<std::vector<candidates::StoredCandidate>> pools_before;
+  pools_before.reserve(fixture.request.pools.size());
+  for (const CandidatePool& pool : fixture.request.pools) {
+    pools_before.push_back(fixture.store->Enumerate(pool.net));
+  }
+  const std::vector<candidates::CandidateRejection> rejections_before = fixture.store->Rejections();
+  const candidates::CandidateStoreTelemetry telemetry_before = fixture.store->telemetry();
+
+  TargetedRegenerationExecutionResult result =
+      ExecuteTargetedRegenerationPlanCpu(kTargetedRegenerationExecutionSchemaVersion, fixture.board,
+                                         fixture.request, std::move(plan), *fixture.store, config);
+  ASSERT_TRUE(std::holds_alternative<TargetedRegenerationExecutionError>(result));
+  const TargetedRegenerationExecutionError& error =
+      std::get<TargetedRegenerationExecutionError>(result);
+  EXPECT_EQ(error.code, TargetedRegenerationExecutionErrorCode::kPlanInvariant);
+  EXPECT_EQ(error.invariant_id, expected_invariant_id);
+  EXPECT_FALSE(error.failed_execution.has_value());
+  EXPECT_EQ(internal::TargetedRegenerationRouteQueriesForTesting(), 0U);
+  for (std::size_t pool_index = 0; pool_index < fixture.request.pools.size(); ++pool_index) {
+    EXPECT_EQ(fixture.store->Enumerate(fixture.request.pools[pool_index].net),
+              pools_before[pool_index]);
+  }
+  EXPECT_EQ(fixture.store->Rejections(), rejections_before);
+  EXPECT_EQ(fixture.store->telemetry(), telemetry_before);
 }
 
 struct ExecutionPreflightWitness {
@@ -942,7 +973,7 @@ TEST(TargetedRegenerationExecutionTest,
     EXPECT_EQ(observation.counters.peak_route_record_count, route_telemetry.peak_record_count);
     EXPECT_EQ(observation.counters.peak_route_queue_size, route_telemetry.peak_queue_size);
     EXPECT_EQ(observation.observation_checksum,
-              internal::ComputeTargetedRegenerationFailedObservationChecksumV5(
+              internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
                   observation.plan_checksum, observation.config, observation.store_config,
                   observation.candidate_store_publication_committed, error.code,
                   observation.counters, observation.columns));
@@ -1041,7 +1072,7 @@ TEST(TargetedRegenerationExecutionTest,
   ExpectReachedColumnStageCounters(observation);
   EXPECT_EQ(observation.counters.route_work_units, observed_work);
   EXPECT_EQ(observation.observation_checksum,
-            internal::ComputeTargetedRegenerationFailedObservationChecksumV5(
+            internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
                 observation.plan_checksum, observation.config, observation.store_config,
                 observation.candidate_store_publication_committed, error.code, observation.counters,
                 observation.columns));
@@ -1110,7 +1141,7 @@ TEST(TargetedRegenerationExecutionTest, PostQueryHostFailuresRetainFirstAndLater
     }
     ExpectReachedColumnStageCounters(observation);
     EXPECT_EQ(observation.observation_checksum,
-              internal::ComputeTargetedRegenerationFailedObservationChecksumV5(
+              internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
                   observation.plan_checksum, observation.config, observation.store_config,
                   observation.candidate_store_publication_committed, error.code,
                   observation.counters, observation.columns));
@@ -1349,7 +1380,7 @@ TEST(TargetedRegenerationExecutionTest,
   }));
   ExpectReachedColumnStageCounters(observation);
   EXPECT_EQ(observation.observation_checksum,
-            internal::ComputeTargetedRegenerationFailedObservationChecksumV5(
+            internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
                 observation.plan_checksum, observation.config, observation.store_config,
                 observation.candidate_store_publication_committed, error.code, observation.counters,
                 observation.columns));
@@ -1411,7 +1442,7 @@ TEST(TargetedRegenerationExecutionTest,
     ExpectReachedColumnStageCounters(observation);
     ExpectEveryFinalRejectionHasCompleteEvidence(observation);
     EXPECT_EQ(observation.observation_checksum,
-              internal::ComputeTargetedRegenerationFailedObservationChecksumV5(
+              internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
                   observation.plan_checksum, observation.config, observation.store_config,
                   observation.candidate_store_publication_committed, error.code,
                   observation.counters, observation.columns));
@@ -1520,11 +1551,137 @@ TEST(TargetedRegenerationExecutionTest,
   ExpectEveryFinalRejectionHasCompleteEvidence(observation);
 }
 
+TEST(TargetedRegenerationExecutionTest,
+     RejectsMalformedCoveragePlanBeforeQueriesEvenDuringResourceRefinement) {
+  {
+    ExecutionFixture fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan plan = PlanFor(fixture);
+    internal::SetTargetedRegenerationCoverageSeedTargetCountForTesting(plan,
+                                                                       plan.targets().size() + 1U);
+    TargetedRegenerationExecutionConfig config;
+    config.known_unmapped_exact_conflict_count = 1;
+    ExpectPreQueryPlanInvariant(fixture, std::move(plan),
+                                "allocator.targeted_regeneration_execution.coverage_seed_count.v6",
+                                config);
+  }
+  {
+    ExecutionFixture fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan plan = PlanFor(fixture);
+    ASSERT_FALSE(plan.targets().empty());
+    TargetedRegenerationNet target = plan.targets().front();
+    target.resource_actions.clear();
+    internal::ReplaceTargetedRegenerationTargetForTesting(plan, 0, std::move(target));
+    ExpectPreQueryPlanInvariant(fixture, std::move(plan),
+                                "allocator.targeted_regeneration_execution.primary_action.v6");
+  }
+  {
+    ExecutionFixture fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan plan = PlanFor(fixture);
+    ASSERT_GT(plan.coverage_seed_target_count(), 0U);
+    TargetedRegenerationNet target = plan.targets().front();
+    ASSERT_GE(target.requested_columns, 2U);
+    const std::uint64_t previous_columns = target.requested_columns;
+    target.requested_columns = 1;
+    internal::ReplaceTargetedRegenerationTargetForTesting(plan, 0, std::move(target));
+    internal::SetTargetedRegenerationPlanAggregatesForTesting(
+        plan, plan.total_requested_columns() - previous_columns + 1U, plan.total_resource_actions(),
+        plan.total_conflict_resources(), plan.total_conflict_impact());
+    ExpectPreQueryPlanInvariant(fixture, std::move(plan),
+                                "allocator.targeted_regeneration_execution.seed_columns.v6");
+  }
+  {
+    ExecutionFixture fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan plan = PlanFor(fixture);
+    internal::SetTargetedRegenerationPlanAggregatesForTesting(
+        plan, plan.total_requested_columns() + 1U, plan.total_resource_actions(),
+        plan.total_conflict_resources(), plan.total_conflict_impact());
+    ExpectPreQueryPlanInvariant(fixture, std::move(plan),
+                                "allocator.targeted_regeneration_execution.plan_aggregates.v6");
+  }
+  {
+    ExecutionFixture fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan plan = TwoTargetPlanFor(fixture);
+    ASSERT_EQ(plan.targets().size(), 2U);
+    internal::ReplaceTargetedRegenerationTargetForTesting(plan, 1, plan.targets().front());
+    ExpectPreQueryPlanInvariant(fixture, std::move(plan),
+                                "allocator.targeted_regeneration_execution.target_net_unique.v6");
+  }
+  {
+    ExecutionFixture fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan plan = TwoTargetPlanFor(fixture);
+    ASSERT_EQ(plan.targets().size(), 2U);
+    ASSERT_EQ(plan.coverage_seed_target_count(), 1U);
+    ASSERT_FALSE(plan.targets()[0].resource_actions.empty());
+    ASSERT_FALSE(plan.targets()[1].resource_actions.empty());
+    ASSERT_EQ(plan.targets()[0].resource_actions.front().resource,
+              plan.targets()[1].resource_actions.front().resource);
+    internal::SetTargetedRegenerationCoverageSeedTargetCountForTesting(plan, 2);
+    ExpectPreQueryPlanInvariant(
+        fixture, std::move(plan),
+        "allocator.targeted_regeneration_execution.seed_resource_unique.v6");
+  }
+  {
+    ExecutionFixture fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan plan = TwoTargetPlanFor(fixture);
+    ASSERT_EQ(plan.targets().size(), 2U);
+    TargetedRegenerationNet first = plan.targets()[0];
+    TargetedRegenerationNet second = plan.targets()[1];
+    if (internal::TargetedRegenerationTargetRanksBeforeV1(first, second)) {
+      internal::ReplaceTargetedRegenerationTargetForTesting(plan, 0, std::move(second));
+      internal::ReplaceTargetedRegenerationTargetForTesting(plan, 1, std::move(first));
+    }
+    internal::SetTargetedRegenerationCoverageSeedTargetCountForTesting(plan, 0);
+    ExpectPreQueryPlanInvariant(fixture, std::move(plan),
+                                "allocator.targeted_regeneration_execution.target_lane_order.v6");
+  }
+  {
+    ExecutionFixture fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan plan = PlanFor(fixture);
+    ASSERT_FALSE(plan.targets().empty());
+    TargetedRegenerationNet target = plan.targets().front();
+    ASSERT_FALSE(target.resource_actions.empty());
+    ++target.resource_actions.front().conflict_impact;
+    internal::ReplaceTargetedRegenerationTargetForTesting(plan, 0, std::move(target));
+    ExpectPreQueryPlanInvariant(
+        fixture, std::move(plan),
+        "allocator.targeted_regeneration_execution.target_action_metrics.v6");
+  }
+  {
+    ExecutionFixture fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan plan = PlanFor(fixture);
+    ASSERT_FALSE(plan.targets().empty());
+    TargetedRegenerationNet target = plan.targets().front();
+    ASSERT_GE(target.resource_actions.size(), 2U);
+    std::swap(target.resource_actions[0], target.resource_actions[1]);
+    internal::ReplaceTargetedRegenerationTargetForTesting(plan, 0, std::move(target));
+    ExpectPreQueryPlanInvariant(fixture, std::move(plan),
+                                "allocator.targeted_regeneration_execution.target_action_order.v6");
+  }
+  {
+    ExecutionFixture fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan plan = PlanFor(fixture);
+    ASSERT_EQ(plan.coverage_seed_target_count(), 1U);
+    ASSERT_EQ(plan.targets().size(), 1U);
+    TargetedRegenerationNet target = plan.targets().front();
+    ASSERT_GE(target.resource_actions.size(), 2U);
+    ASSERT_GE(target.requested_columns, 3U);
+    target.resource_actions.erase(target.resource_actions.begin());
+    --target.requested_columns;
+    internal::ReplaceTargetedRegenerationTargetForTesting(plan, 0, std::move(target));
+    internal::SetTargetedRegenerationPlanAggregatesForTesting(
+        plan, plan.total_requested_columns() - 1U, plan.total_resource_actions() - 1U,
+        plan.total_conflict_resources(), plan.total_conflict_impact());
+    ExpectPreQueryPlanInvariant(fixture, std::move(plan),
+                                "allocator.targeted_regeneration_execution.plan_checksum.v6");
+  }
+}
+
 TEST(TargetedRegenerationExecutionTest, RejectsLegacySchemasAndBindsStoreConfigIntoBatchIdentity) {
   for (const std::uint32_t old_version : {kTargetedRegenerationExecutionSchemaVersionV1,
                                           kTargetedRegenerationExecutionSchemaVersionV2,
                                           kTargetedRegenerationExecutionSchemaVersionV3,
-                                          kTargetedRegenerationExecutionSchemaVersionV4}) {
+                                          kTargetedRegenerationExecutionSchemaVersionV4,
+                                          kTargetedRegenerationExecutionSchemaVersionV5}) {
     ExecutionFixture old_schema = BuildExecutionFixture(true);
     TargetedRegenerationExecutionResult old_result = ExecuteTargetedRegenerationPlanCpu(
         old_version, old_schema.board, old_schema.request, PlanFor(old_schema), *old_schema.store,
@@ -1535,29 +1692,31 @@ TEST(TargetedRegenerationExecutionTest, RejectsLegacySchemasAndBindsStoreConfigI
     EXPECT_EQ(internal::TargetedRegenerationRouteQueriesForTesting(), 0U);
   }
 
-  ExecutionFixture legacy_plan_fixture = BuildExecutionFixture(true);
-  TargetedRegenerationPlan legacy_plan = PlanFor(legacy_plan_fixture);
-  internal::SetTargetedRegenerationPlanSchemaVersionForTesting(
-      legacy_plan, kTargetedRegenerationPlanSchemaVersionV1);
-  const std::vector<candidates::StoredCandidate> legacy_first_before =
-      legacy_plan_fixture.store->Enumerate(legacy_plan_fixture.request.pools[0].net);
-  const std::vector<candidates::StoredCandidate> legacy_second_before =
-      legacy_plan_fixture.store->Enumerate(legacy_plan_fixture.request.pools[1].net);
-  const std::vector<candidates::CandidateRejection> legacy_rejections_before =
-      legacy_plan_fixture.store->Rejections();
-  TargetedRegenerationExecutionResult legacy_plan_result = ExecuteTargetedRegenerationPlanCpu(
-      kTargetedRegenerationExecutionSchemaVersion, legacy_plan_fixture.board,
-      legacy_plan_fixture.request, std::move(legacy_plan), *legacy_plan_fixture.store,
-      TargetedRegenerationExecutionConfig{});
-  ASSERT_TRUE(std::holds_alternative<TargetedRegenerationExecutionError>(legacy_plan_result));
-  EXPECT_EQ(std::get<TargetedRegenerationExecutionError>(legacy_plan_result).code,
-            TargetedRegenerationExecutionErrorCode::kUnsupportedSchema);
-  EXPECT_EQ(internal::TargetedRegenerationRouteQueriesForTesting(), 0U);
-  EXPECT_EQ(legacy_plan_fixture.store->Enumerate(legacy_plan_fixture.request.pools[0].net),
-            legacy_first_before);
-  EXPECT_EQ(legacy_plan_fixture.store->Enumerate(legacy_plan_fixture.request.pools[1].net),
-            legacy_second_before);
-  EXPECT_EQ(legacy_plan_fixture.store->Rejections(), legacy_rejections_before);
+  for (const std::uint32_t old_plan_version :
+       {kTargetedRegenerationPlanSchemaVersionV1, kTargetedRegenerationPlanSchemaVersionV2}) {
+    ExecutionFixture legacy_plan_fixture = BuildExecutionFixture(true);
+    TargetedRegenerationPlan legacy_plan = PlanFor(legacy_plan_fixture);
+    internal::SetTargetedRegenerationPlanSchemaVersionForTesting(legacy_plan, old_plan_version);
+    const std::vector<candidates::StoredCandidate> legacy_first_before =
+        legacy_plan_fixture.store->Enumerate(legacy_plan_fixture.request.pools[0].net);
+    const std::vector<candidates::StoredCandidate> legacy_second_before =
+        legacy_plan_fixture.store->Enumerate(legacy_plan_fixture.request.pools[1].net);
+    const std::vector<candidates::CandidateRejection> legacy_rejections_before =
+        legacy_plan_fixture.store->Rejections();
+    TargetedRegenerationExecutionResult legacy_plan_result = ExecuteTargetedRegenerationPlanCpu(
+        kTargetedRegenerationExecutionSchemaVersion, legacy_plan_fixture.board,
+        legacy_plan_fixture.request, std::move(legacy_plan), *legacy_plan_fixture.store,
+        TargetedRegenerationExecutionConfig{});
+    ASSERT_TRUE(std::holds_alternative<TargetedRegenerationExecutionError>(legacy_plan_result));
+    EXPECT_EQ(std::get<TargetedRegenerationExecutionError>(legacy_plan_result).code,
+              TargetedRegenerationExecutionErrorCode::kUnsupportedSchema);
+    EXPECT_EQ(internal::TargetedRegenerationRouteQueriesForTesting(), 0U);
+    EXPECT_EQ(legacy_plan_fixture.store->Enumerate(legacy_plan_fixture.request.pools[0].net),
+              legacy_first_before);
+    EXPECT_EQ(legacy_plan_fixture.store->Enumerate(legacy_plan_fixture.request.pools[1].net),
+              legacy_second_before);
+    EXPECT_EQ(legacy_plan_fixture.store->Rejections(), legacy_rejections_before);
+  }
 
   ExecutionFixture first_fixture = BuildExecutionFixture(true);
   TargetedRegenerationExecution first = BuiltExecution(ExecuteTargetedRegenerationPlanCpu(
@@ -1774,7 +1933,7 @@ TEST(TargetedRegenerationExecutionTest, ChecksumRepresentationIsGoldenAndFieldSe
           TargetedRegenerationExecutionErrorCode::kResourceExhausted, header.counters, columns);
   EXPECT_EQ(failure_golden, 10718127143049464138ULL);
   internal::TargetedRegenerationExecutionChecksumHeaderV5 v5_header = header;
-  v5_header.schema_version = kTargetedRegenerationExecutionSchemaVersion;
+  v5_header.schema_version = kTargetedRegenerationExecutionSchemaVersionV5;
   const std::uint64_t v5_golden =
       internal::ComputeTargetedRegenerationExecutionChecksumV5(v5_header, columns);
   EXPECT_EQ(v5_golden, 17041031294214445527ULL);
@@ -1783,6 +1942,47 @@ TEST(TargetedRegenerationExecutionTest, ChecksumRepresentationIsGoldenAndFieldSe
           v5_header.plan_checksum, v5_header.config, v5_header.store_config, false,
           TargetedRegenerationExecutionErrorCode::kResourceExhausted, v5_header.counters, columns);
   EXPECT_EQ(v5_failure_golden, 4030485784013825900ULL);
+  internal::TargetedRegenerationExecutionChecksumHeaderV6 v6_header = header;
+  v6_header.schema_version = kTargetedRegenerationExecutionSchemaVersionV6;
+  const std::uint64_t v6_golden =
+      internal::ComputeTargetedRegenerationExecutionChecksumV6(v6_header, columns);
+  EXPECT_EQ(v6_golden, 9384286314767353977ULL);
+  const std::uint64_t v6_failure_golden =
+      internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
+          v6_header.plan_checksum, v6_header.config, v6_header.store_config, false,
+          TargetedRegenerationExecutionErrorCode::kResourceExhausted, v6_header.counters, columns);
+  EXPECT_EQ(v6_failure_golden, 15821825237325258190ULL);
+  internal::TargetedRegenerationExecutionChecksumHeaderV6 changed_v6_header = v6_header;
+  ++changed_v6_header.plan_checksum;
+  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV6(changed_v6_header, columns),
+            v6_golden);
+  EXPECT_NE(
+      internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
+          changed_v6_header.plan_checksum, changed_v6_header.config, changed_v6_header.store_config,
+          false, TargetedRegenerationExecutionErrorCode::kResourceExhausted,
+          changed_v6_header.counters, columns),
+      v6_failure_golden);
+  std::vector<TargetedRegenerationColumnRecord> ordered_columns = columns;
+  TargetedRegenerationColumnRecord second_column = columns.front();
+  ++second_column.column_index;
+  ++second_column.query_identity;
+  ordered_columns.push_back(std::move(second_column));
+  const std::uint64_t ordered_v6_checksum =
+      internal::ComputeTargetedRegenerationExecutionChecksumV6(v6_header, ordered_columns);
+  std::ranges::reverse(ordered_columns);
+  EXPECT_NE(internal::ComputeTargetedRegenerationExecutionChecksumV6(v6_header, ordered_columns),
+            ordered_v6_checksum);
+  const std::uint64_t ordered_v6_failure_checksum =
+      internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
+          v6_header.plan_checksum, v6_header.config, v6_header.store_config, false,
+          TargetedRegenerationExecutionErrorCode::kResourceExhausted, v6_header.counters,
+          ordered_columns);
+  std::ranges::reverse(ordered_columns);
+  EXPECT_NE(internal::ComputeTargetedRegenerationFailedObservationChecksumV6(
+                v6_header.plan_checksum, v6_header.config, v6_header.store_config, false,
+                TargetedRegenerationExecutionErrorCode::kResourceExhausted, v6_header.counters,
+                ordered_columns),
+            ordered_v6_failure_checksum);
   EXPECT_NE(
       internal::ComputeTargetedRegenerationFailedObservationChecksumV4(
           header.plan_checksum, header.config, header.store_config, true,

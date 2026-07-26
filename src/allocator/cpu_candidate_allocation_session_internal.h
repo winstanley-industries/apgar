@@ -78,6 +78,16 @@ ProjectCpuCandidateAllocationSessionEnvelopeV1(
     std::uint64_t final_price_state_checksum, std::uint64_t final_single_world_checksum,
     std::uint64_t final_multi_world_checksum) noexcept;
 
+[[nodiscard]] std::uint64_t ComputeCpuCandidateAllocationSessionChecksumV5(
+    const CpuCandidateAllocationSessionConfig& config, std::uint64_t board_content_hash,
+    std::uint64_t workload_checksum, std::uint64_t capacity_model_checksum,
+    std::uint64_t preparation_checksum, CpuCandidateAllocationTerminalReason terminal_reason,
+    const CpuCandidateAllocationSessionCounters& counters,
+    std::span<const CpuCandidateAllocationEpochRecord> epochs,
+    std::uint64_t final_pool_manifest_checksum, std::uint64_t final_rejection_manifest_checksum,
+    std::uint64_t final_price_state_checksum, std::uint64_t final_single_world_checksum,
+    std::uint64_t final_multi_world_checksum) noexcept;
+
 [[nodiscard]] std::uint64_t ComputeCpuCandidateAllocationEpochAssociationChecksumV1(
     std::span<const CpuCandidateAllocationEpochRecord> epochs,
     std::uint64_t planning_expanded_resource_visits) noexcept;

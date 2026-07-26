@@ -15,6 +15,9 @@ namespace apgar::allocator::internal {
 [[nodiscard]] bool TargetedRegenerationExecutionConfigIsValidV5(
     const TargetedRegenerationExecutionConfig& config) noexcept;
 
+[[nodiscard]] bool TargetedRegenerationExecutionConfigIsValidV6(
+    const TargetedRegenerationExecutionConfig& config) noexcept;
+
 [[nodiscard]] routing::PlanarRouteRequest BuildTargetedRegenerationRouteRequestV1(
     const routing::PlanarRouteRequest& source,
     const routing::CandidateGenerationPolicy& candidate_policy);
@@ -36,6 +39,7 @@ struct TargetedRegenerationExecutionChecksumHeaderV4 {
 };
 
 using TargetedRegenerationExecutionChecksumHeaderV5 = TargetedRegenerationExecutionChecksumHeaderV4;
+using TargetedRegenerationExecutionChecksumHeaderV6 = TargetedRegenerationExecutionChecksumHeaderV5;
 
 [[nodiscard]] std::uint64_t ComputeTargetedRegenerationExecutionChecksumV4(
     const TargetedRegenerationExecutionChecksumHeaderV4& header,
@@ -43,6 +47,10 @@ using TargetedRegenerationExecutionChecksumHeaderV5 = TargetedRegenerationExecut
 
 [[nodiscard]] std::uint64_t ComputeTargetedRegenerationExecutionChecksumV5(
     const TargetedRegenerationExecutionChecksumHeaderV5& header,
+    std::span<const TargetedRegenerationColumnRecord> columns) noexcept;
+
+[[nodiscard]] std::uint64_t ComputeTargetedRegenerationExecutionChecksumV6(
+    const TargetedRegenerationExecutionChecksumHeaderV6& header,
     std::span<const TargetedRegenerationColumnRecord> columns) noexcept;
 
 [[nodiscard]] std::optional<std::uint64_t> ComputeTargetedRegenerationMaximumDraftBytesV2(
@@ -81,6 +89,13 @@ using TargetedRegenerationExecutionChecksumHeaderV5 = TargetedRegenerationExecut
     std::span<const TargetedRegenerationColumnRecord> columns) noexcept;
 
 [[nodiscard]] std::uint64_t ComputeTargetedRegenerationFailedObservationChecksumV5(
+    std::uint64_t plan_checksum, const TargetedRegenerationExecutionConfig& config,
+    const candidates::CandidateStoreConfig& store_config,
+    bool candidate_store_publication_committed, TargetedRegenerationExecutionErrorCode error_code,
+    const TargetedRegenerationExecutionCounters& counters,
+    std::span<const TargetedRegenerationColumnRecord> columns) noexcept;
+
+[[nodiscard]] std::uint64_t ComputeTargetedRegenerationFailedObservationChecksumV6(
     std::uint64_t plan_checksum, const TargetedRegenerationExecutionConfig& config,
     const candidates::CandidateStoreConfig& store_config,
     bool candidate_store_publication_committed, TargetedRegenerationExecutionErrorCode error_code,

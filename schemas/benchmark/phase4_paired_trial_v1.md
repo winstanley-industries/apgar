@@ -4,7 +4,10 @@ Phase 4 Paired Trial v1 is the decision-eligible semantic boundary between the
 Sequential Negotiated-Routing Baseline v1 and the reusable CPU Candidate-
 Allocation Session authority checksum-bound in the spec. A distinct,
 validation-only frozen-V1 budget-preimage builder names Session v3; executable
-V1 and new V2 calibration specs name Session v4.
+V1 diagnostic specs name current Session v5. Frozen Corpus-v2/H=2250 and
+H=4096 budget-preimage builders deliberately name Session v4. Their execution
+entry points are closed after Session-v5 activation until separately reviewed
+successor budget and consuming authorities exist.
 It executes one contender in one independently built
 representative case, destroys heavyweight state, and returns a compact result.
 An external isolated-process authority then associates wall-clock and peak-host
@@ -31,22 +34,21 @@ lookup, descriptor fingerprinting, corpus version/checksum, case construction,
 and the paired-budget preimage. Case IDs and returned evidence never select or
 override the authority. The original v1 entry points remain strict
 Representative Corpus v1 entry points. Their executable canonical specs use
-the current Session-v4 authority; the separately named frozen-budget builder
+the current Session-v5 authority; the separately named frozen-budget builder
 alone preserves the historical Session-v3 algorithm-budget preimage.
 
 The existing schema-v1 semantic carrier already includes corpus version,
 corpus checksum, case ID, descriptor fingerprint, and built-case identities.
-It may therefore carry non-decision calibration executions produced by the
-explicit Representative Corpus v2 entry points without adding a field or
-changing field order or width. These v2 entry points are not a
-decision-eligible finalization path: `FinalizePhase4TrialArmV1` and
-`AssemblePhase4PairedTrialV1` continue to reject non-v1 corpus semantics. A
-future v2 evidence controller must independently bind case checksum, Board,
-workload, capacity, and budget identities to its frozen v2 manifest before it
-may add authority-specific finalization and publication. Recomputing public
-checksums is not a substitute for that independent join.
+It may therefore continue to carry preserved non-decision calibration records
+without adding a field or changing field order or width. The explicit
+Representative Corpus v2 execution entry points now reject Session-v4
+preimages before fixture, preparer, worker, or allocator access. A future v2
+evidence controller must independently bind case checksum, Board, workload,
+capacity, and a separately frozen Session-v5 budget identity before it may add
+authority-specific execution, finalization, and publication. Recomputing
+public checksums is not a substitute for that independent join.
 
-Typed failures from a v2 calibration execution use
+Preserved typed failures from a v2 calibration execution use
 `TryReconcilePhase4TrialArmFailureForCorpusV2`, which applies the v2 descriptor
 fingerprint domain while preserving the unchanged Durable Arm Failure v1
 carrier. Both strict `TryReconcile` profiles first require the retained
@@ -199,22 +201,24 @@ configuration checksum but are not executable-success promises.
 ## Arm execution
 
 Each v1 decision-path call independently builds exactly one Representative
-Corpus v1 case. An explicit v2 calibration-path call instead independently
-builds exactly one Representative Corpus v2 case. Case descriptor, net count,
+Corpus v1 case. Historical explicit v2 calibration-path calls independently
+built one Representative Corpus v2 case. Case descriptor, net count,
 Board/workload association, selected-corpus checksum, selected descriptor
 fingerprint, case checksum, Board content hash, workload checksum, and
 capacity-model checksum become the execution identity. The historical V1
-budget-preimage builder preserves Session-v3 manifest
-checksums and is rejected by current execution after Session v4 supersession.
-The ordinary V1 canonical builder remains executable and names Session v4; the
-two builders are intentionally distinct so validation cannot silently weaken
-runtime schema checks. Only the v1 profile is eligible for the finalization and
+budget-preimage builder preserves Session-v3 manifest checksums and is rejected
+by current execution. The ordinary V1 canonical builder remains executable for
+nondecision diagnostics and names Session v5. Corpus-v2/H=2250 and H=4096
+builders reconstruct frozen Session-v4 budget preimages for validation only;
+every corresponding execution surface returns
+`P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001` before case, fixture, preparer, or
+worker access. Only the v1 profile is eligible for the finalization and
 assembly operations defined by this contract; v2 publication requires the
-independent manifest join described above.
+independent successor manifest join described above.
 
 The separately frozen
-`phase4_current_v1_diagnostic_budget_roster_v1.md` covers only five
-cross-process Session-v4 test cells and declares `decision_eligible=false`.
+`phase4_current_v1_diagnostic_budget_roster_v2.md` covers only five
+cross-process Session-v5 test cells and declares `decision_eligible=false`.
 Production Raw-v1/Wire-v2 validation does not consult it. The evidence runner
 therefore rejects publishable current-V1 output until the V2 manifest and
 protocol authority are frozen; only its explicit unstamped testing seam may
@@ -223,7 +227,7 @@ exercise these current diagnostic joins.
 The baseline arm executes the named sequential reference and retains its final
 One-World board outcome. The candidate arm prepares the initial pools through
 the caller-owned matching persistent preparer and executes the current
-Candidate-Allocation Session v4. Its actual queries and work are widened sums of
+Candidate-Allocation Session v5. Its actual queries and work are widened sums of
 preparation and regeneration counters. Its decision outcome is the preferred retained
 Multi-World when one exists; otherwise it is the common-lineage terminal
 One-World. A preferred identity missing from the retained roster is an internal

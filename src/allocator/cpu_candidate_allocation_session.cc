@@ -580,6 +580,22 @@ std::uint64_t internal::ComputeCpuCandidateAllocationSessionChecksumV4(
       final_single_world_checksum, final_multi_world_checksum);
 }
 
+std::uint64_t internal::ComputeCpuCandidateAllocationSessionChecksumV5(
+    const CpuCandidateAllocationSessionConfig& config, std::uint64_t board_content_hash,
+    std::uint64_t workload_checksum, std::uint64_t capacity_model_checksum,
+    std::uint64_t preparation_checksum, CpuCandidateAllocationTerminalReason terminal_reason,
+    const CpuCandidateAllocationSessionCounters& counters,
+    std::span<const CpuCandidateAllocationEpochRecord> epochs,
+    std::uint64_t final_pool_manifest_checksum, std::uint64_t final_rejection_manifest_checksum,
+    std::uint64_t final_price_state_checksum, std::uint64_t final_single_world_checksum,
+    std::uint64_t final_multi_world_checksum) noexcept {
+  return ComputeCpuCandidateAllocationSessionChecksum(
+      "APGAR-CPU-CANDIDATE-ALLOCATION-SESSION-V5", config, board_content_hash, workload_checksum,
+      capacity_model_checksum, preparation_checksum, terminal_reason, counters, epochs,
+      final_pool_manifest_checksum, final_rejection_manifest_checksum, final_price_state_checksum,
+      final_single_world_checksum, final_multi_world_checksum);
+}
+
 std::uint64_t internal::ComputeCpuCandidateAllocationEpochAssociationChecksumV1(
     std::span<const CpuCandidateAllocationEpochRecord> epochs,
     std::uint64_t planning_expanded_resource_visits) noexcept {
@@ -827,7 +843,7 @@ internal::BuildCpuCandidateAllocationSessionReplayWitnessV1(
   }
 
   const std::uint64_t rebuilt_session_checksum =
-      internal::ComputeCpuCandidateAllocationSessionChecksumV4(
+      internal::ComputeCpuCandidateAllocationSessionChecksumV5(
           session.config(), session.board().content_hash(), workload_checksum, capacity_checksum,
           *preparation_checksum, session.terminal_reason(), session.counters(), session.epochs(),
           pool_manifest_checksum, rejection_manifest_checksum, price_checksum,
@@ -873,7 +889,7 @@ struct SessionSourceCounts {
   if (schema_version != kCpuCandidateAllocationSessionSchemaVersion ||
       config.schema_version != kCpuCandidateAllocationSessionSchemaVersion) {
     return Error(CpuCandidateAllocationSessionErrorCode::kUnsupportedSchema,
-                 "allocator.cpu_candidate_session.schema.v4",
+                 "allocator.cpu_candidate_session.schema.v5",
                  "CPU candidate-allocation session schema is unsupported");
   }
   if (config.intrinsic_cost_weight == 0 || config.maximum_regeneration_epochs == 0 ||
@@ -884,7 +900,7 @@ struct SessionSourceCounts {
       !internal::NegotiatedPriceConfigIsValidV1(config.price_config) ||
       !internal::OneWorldAllocatorLimitsAreValidV1(config.allocator_limits) ||
       !internal::TargetedRegenerationConfigIsValidV1(config.regeneration_plan_config) ||
-      !internal::TargetedRegenerationExecutionConfigIsValidV5(
+      !internal::TargetedRegenerationExecutionConfigIsValidV6(
           config.regeneration_execution_config) ||
       !internal::MultiWorldExecutionConfigIsValidV1(config.multi_world_config) ||
       config.schedules.empty() ||
@@ -893,7 +909,7 @@ struct SessionSourceCounts {
       config.regeneration_execution_config.known_unmapped_exact_conflict_count != 0 ||
       config.multi_world_config.known_unmapped_exact_conflict_count != 0) {
     return Error(CpuCandidateAllocationSessionErrorCode::kInvalidConfiguration,
-                 "allocator.cpu_candidate_session.configuration.v4",
+                 "allocator.cpu_candidate_session.configuration.v5",
                  "CPU candidate-allocation session configuration is inconsistent or unbounded");
   }
 
@@ -1714,7 +1730,7 @@ CpuCandidateAllocationSessionResult ExecuteCpuCandidateAllocationSessionImpl(
         prepared.candidate_store().Rejections();
     const std::uint64_t rejection_manifest =
         internal::ComputeCpuCandidateAllocationRejectionManifestChecksumV1(final_rejections);
-    const std::uint64_t session_checksum = internal::ComputeCpuCandidateAllocationSessionChecksumV4(
+    const std::uint64_t session_checksum = internal::ComputeCpuCandidateAllocationSessionChecksumV5(
         config, board.content_hash(), workload.workload_checksum(),
         current_state.capacity_model_checksum(), prepared.preparation_checksum(), terminal_reason,
         counters, epochs, final_pool_manifest, rejection_manifest, current_state.state_checksum(),

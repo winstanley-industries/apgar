@@ -1,6 +1,9 @@
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <variant>
@@ -8,6 +11,8 @@
 
 #include "apgar/allocator/cpu_candidate_allocation_session.h"
 #include "apgar/benchmark/phase4_representative_corpus.h"
+#include "src/allocator/targeted_regeneration_internal.h"
+#include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
 #include "tests/support/google_test.h"
 
 namespace apgar::allocator {
@@ -32,6 +37,22 @@ template <typename Value, typename Error>
 [[nodiscard]] std::unique_ptr<PersistentCpuCandidatePoolPreparer> Preparer() {
   return Built<std::unique_ptr<PersistentCpuCandidatePoolPreparer>>(
       CreatePersistentCpuCandidatePoolPreparer({.worker_count = 4}));
+}
+
+[[nodiscard]] benchmark::Phase4CanonicalCellConfig H4096CalibrationCell() {
+  benchmark::Phase4CanonicalCellConfig cell;
+  cell.case_id = 10'200;
+  cell.requested_pool_size = 8;
+  cell.preparation_worker_count = 4;
+  cell.repetitions = 20;
+  cell.maximum_setup_elapsed_nanoseconds = 60'000'000'000ULL;
+  cell.external_budget = {
+      .maximum_prepared_elapsed_nanoseconds = 120'000'000'000ULL,
+      .maximum_cold_elapsed_nanoseconds = 180'000'000'000ULL,
+      .maximum_address_space_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL,
+      .maximum_peak_host_bytes = 32ULL * 1024ULL * 1024ULL * 1024ULL,
+  };
+  return cell;
 }
 
 [[nodiscard]] CpuCandidatePoolPreparationConfig PreparationConfig(
@@ -296,6 +317,76 @@ TEST(CpuCandidateAllocationSessionCorpusTest,
     EXPECT_TRUE(session.final_multi_world().has_active_retention_lease());
     EXPECT_NE(session.session_checksum(), 0U);
   }
+}
+
+TEST(CpuCandidateAllocationSessionCorpusTest,
+     H4096CalibrationEpochZeroPlansThirtyTwoDistinctPrimaryConflictSeeds) {
+  const benchmark::Phase4PairedTrialSpec spec = Built<benchmark::Phase4PairedTrialSpec>(
+      benchmark::internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
+          H4096CalibrationCell(), 0, benchmark::Phase4TrialOrder::kBaselineFirst));
+  benchmark::Phase4RepresentativeCase corpus =
+      Case(benchmark::BuildPhase4RepresentativeCaseV2(spec.case_id, {}));
+  std::unique_ptr<PersistentCpuCandidatePoolPreparer> preparer = Preparer();
+  PreparedCpuCandidatePools prepared =
+      Built<PreparedCpuCandidatePools>(PrepareInitialCpuCandidatePools(
+          *preparer, corpus.board, corpus.workload, spec.preparation_config));
+  const CpuCandidateAllocationSessionConfig& config = spec.candidate_session_config;
+  NegotiatedPriceState initial_state = Built<NegotiatedPriceState>(BuildInitialNegotiatedPriceState(
+      kNegotiatedPriceStateSchemaVersion, corpus.capacities, corpus.workload, config.price_config));
+  OneWorldAllocationRequest request =
+      AllocationRequest(corpus, config, initial_state, prepared.pools());
+  const OneWorldAllocation world = Built<OneWorldAllocation>(AllocateOneWorld(request));
+  ASSERT_GT(world.total_overuse_units, 0U);
+
+  const TargetedRegenerationPlan plan =
+      Built<TargetedRegenerationPlan>(BuildTargetedRegenerationPlan(
+          kTargetedRegenerationPlanSchemaVersion, initial_state, request, world,
+          prepared.candidate_store(), config.regeneration_plan_config));
+  EXPECT_EQ(plan.coverage_seed_target_count(), 32U);
+  EXPECT_EQ(plan.targets().size(), 32U);
+  EXPECT_EQ(plan.total_requested_columns(), 64U);
+  std::set<routing::EdgeResourceKey> primary_resources;
+  for (std::size_t target_index = 0;
+       target_index < static_cast<std::size_t>(plan.coverage_seed_target_count()); ++target_index) {
+    const TargetedRegenerationNet& target = plan.targets()[target_index];
+    ASSERT_FALSE(target.resource_actions.empty());
+    EXPECT_EQ(target.requested_columns, 2U);
+    EXPECT_TRUE(primary_resources.insert(target.resource_actions.front().resource).second);
+  }
+  EXPECT_EQ(primary_resources.size(), 32U);
+
+  TargetedRegenerationConfig cap_plus_one = config.regeneration_plan_config;
+  ++cap_plus_one.maximum_total_columns;
+  TargetedRegenerationPlan two_lane_plan = Built<TargetedRegenerationPlan>(
+      BuildTargetedRegenerationPlan(kTargetedRegenerationPlanSchemaVersion, initial_state, request,
+                                    world, prepared.candidate_store(), cap_plus_one));
+  ASSERT_EQ(two_lane_plan.coverage_seed_target_count(), 32U);
+  ASSERT_EQ(two_lane_plan.targets().size(), 33U);
+  EXPECT_EQ(two_lane_plan.total_requested_columns(), 65U);
+  const auto seed_end = two_lane_plan.targets().begin() +
+                        static_cast<std::ptrdiff_t>(two_lane_plan.coverage_seed_target_count());
+  EXPECT_TRUE(std::ranges::is_sorted(two_lane_plan.targets().begin(), seed_end,
+                                     internal::TargetedRegenerationTargetRanksBeforeV1));
+  EXPECT_TRUE(std::ranges::is_sorted(seed_end, two_lane_plan.targets().end(),
+                                     internal::TargetedRegenerationTargetRanksBeforeV1));
+  EXPECT_FALSE(std::ranges::is_sorted(two_lane_plan.targets(),
+                                      internal::TargetedRegenerationTargetRanksBeforeV1));
+  ASSERT_EQ(std::distance(seed_end, two_lane_plan.targets().end()), 1);
+  EXPECT_EQ(seed_end->requested_columns, 1U);
+  EXPECT_TRUE(std::ranges::any_of(
+      two_lane_plan.targets().begin(), seed_end, [&](const TargetedRegenerationNet& seed) {
+        return internal::TargetedRegenerationTargetRanksBeforeV1(*seed_end, seed);
+      }));
+
+  TargetedRegenerationExecutionConfig refinement = config.regeneration_execution_config;
+  refinement.known_unmapped_exact_conflict_count = 1;
+  const TargetedRegenerationExecution execution =
+      Built<TargetedRegenerationExecution>(ExecuteTargetedRegenerationPlanCpu(
+          kTargetedRegenerationExecutionSchemaVersion, corpus.board, request,
+          std::move(two_lane_plan), prepared.candidate_store(), refinement));
+  EXPECT_EQ(execution.disposition(),
+            TargetedRegenerationExecutionDisposition::kResourceRefinementRequired);
+  EXPECT_TRUE(execution.columns().empty());
 }
 
 }  // namespace

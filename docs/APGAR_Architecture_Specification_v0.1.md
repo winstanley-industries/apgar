@@ -1139,12 +1139,20 @@ acceleration.
   retention. Known exact conflicts absent from the current resource vocabulary
   MUST produce resource-refinement-required rather than convergence or stall.
 - Production targeted-regeneration planning is versioned by
-  `schemas/allocator/targeted_regeneration_plan_v2.md`. A retained target MUST
-  budget its price-only column plus every reachable retained hard-ban action,
-  subject to the per-net, total-column, and candidate-headroom caps.
+  `schemas/allocator/targeted_regeneration_plan_v3.md`. Before ordinary
+  remainder allocation, it MUST reserve a price-only column and one
+  primary-conflict hard-ban column for the best bounded representative of each
+  retained distinct primary resource. The exact-net union, coverage grouping,
+  fallback retention, and final two-lane roster MUST remain bounded,
+  deterministic, and replayable. A retained target MUST still budget its
+  price-only column plus every reachable retained hard-ban action, subject to
+  the per-net, total-column, action, and candidate-headroom caps.
   Production targeted-regeneration execution is versioned by
-  `schemas/allocator/targeted_regeneration_execution_v5.md`. It MUST use bounded
-  CPU A*, preflight aggregate route work, all complete price-roster projection
+  `schemas/allocator/targeted_regeneration_execution_v6.md`. It MUST validate
+  the complete Plan-v3 coverage prefix, both lane orders, primary-resource
+  uniqueness, action semantics, aggregate replay, and the complete
+  authenticated plan checksum before query one. It MUST use bounded CPU A*,
+  preflight aggregate route work, all complete price-roster projection
   passes, candidate-draft/rejection/transient bytes, and CandidateStore
   input/exact work before the first query. The same preflight MUST prove the
   worst-case refreshed candidate count and expanded resource uses fit the
@@ -1168,7 +1176,7 @@ acceleration.
   into each derived target batch and policy identity; the root seed is part of
   execution and composed-session replay identity.
 - The reusable CPU contender is versioned by
-  `schemas/allocator/cpu_candidate_allocation_session_v4.md`. It MUST own the
+  `schemas/allocator/cpu_candidate_allocation_session_v5.md`. It MUST own the
   prepared CandidateStore and every lease-bearing terminal result on success,
   retain caller ownership of all inputs on failure, and preserve that
   authoritative store when a failed targeted observation says publication
@@ -1184,12 +1192,12 @@ acceleration.
   MAY upgrade the common-lineage outcome to feasible. Version 1 MUST NOT
   simulate interleaved multi-world column generation by sequential publication
   whose visible pool depends on world order.
-- ADR-060 reserves, but does not yet activate,
+- ADR-060 activates
   `schemas/allocator/targeted_regeneration_plan_v3.md`,
   `schemas/allocator/targeted_regeneration_execution_v6.md`, and
   `schemas/allocator/cpu_candidate_allocation_session_v5.md`. Production
-  remains Plan v2 / Execution v5 / Session v4 until the successor
-  implementation passes its separate adversarial review and repository gates.
+  rejects Plan v1/v2, Execution v1-v5, and Session v1-v4 before routing,
+  publication, mutation, or input consumption.
   Plan v3 MUST reserve a price-only and primary-conflict hard-ban column for
   the best bounded representative of each retained distinct primary conflict
   before secondary actions or duplicate-primary targets consume remaining
@@ -1198,6 +1206,18 @@ acceleration.
   MUST reproduce its provisional primary action field-for-field. This rule
   neither prioritizes thin pools nor promises cross-epoch rotation among
   repeatedly failing nets on one resource.
+- Session-v5 activation does not reinterpret any frozen Corpus-v2 or H=4096
+  algorithm-budget preimage. Those builders deliberately reconstruct Session
+  v4, and every corresponding arm, snapshot, controller, and hidden-worker
+  execution entry point MUST fail with
+  `P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001` before fixture, preparer, worker, or
+  allocator access. Canonical roster v3, Confirmatory Decision Protocol v2,
+  and existing Raw/report/operational/publication artifacts remain unchanged.
+  A future acquisition requires separately reviewed Session-v5 budget and
+  consuming authorities. Explicitly nondecision Representative-Corpus-v1
+  diagnostic tests may use
+  `schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.md`; that
+  roster cannot authorize Corpus-v2 execution or publication.
 
 #### Equal-budget decision evidence
 
@@ -1566,13 +1586,13 @@ acceleration.
   independently instrumented H=4096 structural test and MUST link-inspect the
   exact ordinary generator obtained through an explicit sanitizer-reset audit
   transition.
-  Every existing Corpus-v2 execution entry point MUST positively require
-  equal-arm `present=1,history=2250` and reject any other price authority before
-  case, fixture, preparer, or worker access. Corpus version, case ID, cell-plan
-  checksum, wire schema, source commit, and opaque budget-checksum matching
-  MUST NOT select H=4096. A separately frozen Confirmatory Decision Protocol
-  v2 and separately named, adversarially reviewed execution and validation
-  entry points are required before any H=4096 acquisition. The roster alone
+  The frozen Corpus-v2/H=2250 preimages positively bind equal-arm
+  `present=1,history=2250`; corpus version, case ID, cell-plan checksum, wire
+  schema, source commit, and opaque budget-checksum matching MUST NOT
+  reinterpret them as H=4096. Session-v5 activation closes both H=2250 and
+  H=4096 execution surfaces before case, fixture, preparer, or worker access.
+  Separately frozen Session-v5 budget, acquisition, and consuming authorities
+  are required before either configuration may run again. The roster alone
   does not claim exact optimality, publish evidence, open another development
   cell, or authorize heldout execution.
   The acquisition-free authority-only supersession is frozen by
@@ -1598,6 +1618,11 @@ acceleration.
   completed reviewed execution and publication chain; the protocol/roster-only
   commit is insufficient. Premature H=4096 heldout observation invalidates the
   roster and requires a fresh versioned authority.
+  The following H=4096 carrier, artifact, and publication contracts remain
+  authoritative for validation of already captured material. Their existing
+  Session-v4 execution surfaces are suspended by the Session-v5 boundary; any
+  future executable successor must satisfy these constraints or revise them
+  through an explicit versioned authority.
   The first separately reviewed H=4096 executable authority is frozen by
   `docs/adr/ADR-053-phase4-confirmatory-h4096-raw-authority.md`. The compiled
   production `phase4_confirmatory_h4096_evidence_runner`, never a caller
@@ -1628,9 +1653,10 @@ acceleration.
   boundary and positively require equal-arm `present=1,history=4096` before
   worker launch or representative-case construction. Each worker MUST repeat
   that configuration and canonical-spec validation before preparer creation,
-  warmup, allocator access, or request decoding. Existing Corpus-v2 execution
-  entry points remain H=2250-only and MUST continue to reject H=4096 at the
-  same pre-access boundary; the new H=4096 entry points MUST reject H=2250.
+  warmup, allocator access, or request decoding. The historical H=2250/H=4096
+  carrier distinction remains a pure validation invariant. The shared
+  Session-v5 closure now precedes both configurations at every execution
+  boundary.
   The test-only `phase4_confirmatory_h4096_evidence_test_runner` MUST be
   permanently nonpublishable and fixtureless. It declares no board fixture,
   cannot enter either authorized execution path, and may exercise only parsing

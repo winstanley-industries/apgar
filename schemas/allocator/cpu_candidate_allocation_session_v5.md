@@ -1,7 +1,6 @@
 # CPU Candidate-Allocation Session v5
 
-**Status:** Reserved successor; not executable until its implementation is
-separately reviewed and activated.
+**Status:** Current production allocation authority.
 
 CPU Candidate-Allocation Session v5 is a child-authority supersession of
 [`cpu_candidate_allocation_session_v4.md`](cpu_candidate_allocation_session_v4.md).
@@ -9,11 +8,9 @@ It preserves v4 ownership, configuration ordering, aggregate preflights,
 atomicity, epoch records, fixed-point rules, terminal precedence, Multi-World
 boundary, field order, and field widths.
 
-At this contract freeze, production still accepts schema version `4`.
-Conforming activation advances production to schema version `5`, composes
-Targeted Regeneration Plan v3 and Targeted Regeneration Execution v6, and
-rejects versions `1` through `4` before routing, mutation, or input
-consumption.
+Production accepts schema version `5`, composes Targeted Regeneration Plan v3
+and Targeted Regeneration Execution v6, and rejects versions `1` through `4`
+before routing, mutation, or input consumption.
 
 The successful session identity domain is
 `APGAR-CPU-CANDIDATE-ALLOCATION-SESSION-V5`. Existing epoch plan and execution
