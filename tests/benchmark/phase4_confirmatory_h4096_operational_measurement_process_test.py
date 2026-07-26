@@ -134,6 +134,9 @@ def _rebuild_raw_around_capture(capture: dict[str, object]) -> dict[str, object]
         h4096=True,
         repetitions=20,
     )
+    raw["source_commit"] = capture["source_commit"]
+    raw["source_stamped"] = capture["source_stamped"]
+    raw["source_tree_dirty"] = capture["source_tree_dirty"]
     raw["config"] = copy.deepcopy(capture["cell_config"])
 
     measured_semantics = {

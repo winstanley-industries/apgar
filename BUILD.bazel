@@ -4260,6 +4260,26 @@ cc_binary(
     ],
 )
 
+test_standalone_runfiles(
+    name = "phase4_confirmatory_h4096_operational_capture_standalone_test_runfiles",
+    src = ":phase4_confirmatory_h4096_operational_capture",
+)
+
+test_standalone_runfiles(
+    name = "phase4_confirmatory_h4096_operational_capture_test_standalone_test_runfiles",
+    src = ":phase4_confirmatory_h4096_operational_capture_test",
+)
+
+test_standalone_runfiles(
+    name = "phase4_confirmatory_h4096_operational_measurement_validator_standalone_test_runfiles",
+    src = ":phase4_confirmatory_h4096_operational_measurement_validator",
+)
+
+test_standalone_runfiles(
+    name = "phase4_confirmatory_h4096_operational_measurement_test_validator_standalone_test_runfiles",
+    src = ":phase4_confirmatory_h4096_operational_measurement_test_validator",
+)
+
 py_binary(
     name = "phase4_confirmatory_h4096_same_run_operational_capture_py",
     srcs = [
@@ -4874,12 +4894,16 @@ py_test(
         "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
         ":phase4_confirmatory_h4096_operational_capture",
         ":phase4_confirmatory_h4096_operational_capture_py",
+        ":phase4_confirmatory_h4096_operational_capture_standalone_test_runfiles",
         ":phase4_confirmatory_h4096_operational_capture_test",
         ":phase4_confirmatory_h4096_operational_capture_test_py",
+        ":phase4_confirmatory_h4096_operational_capture_test_standalone_test_runfiles",
         ":phase4_confirmatory_h4096_operational_measurement_test_validator",
         ":phase4_confirmatory_h4096_operational_measurement_test_validator_py",
+        ":phase4_confirmatory_h4096_operational_measurement_test_validator_standalone_test_runfiles",
         ":phase4_confirmatory_h4096_operational_measurement_validator",
         ":phase4_confirmatory_h4096_operational_measurement_validator_py",
+        ":phase4_confirmatory_h4096_operational_measurement_validator_standalone_test_runfiles",
         ":phase4_confirmatory_h4096_operational_replay_test_worker",
         ":phase4_confirmatory_h4096_operational_replay_worker",
     ],
