@@ -1,7 +1,8 @@
 # ADR-025: Reusable CPU Candidate-Allocation Session
 
 **Status:** Accepted for the eleventh Phase 4 vertical slice; amended before
-canonical evidence by ADR-026 and later by ADR-043
+canonical evidence by ADR-026 and later by ADR-043; ADR-060 reserves an
+inactive successor
 **Date:** July 20, 2026
 **Applies to:** The composed reusable-candidate CPU contender used by Phase 4
 equal-budget evidence

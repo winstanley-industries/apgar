@@ -1184,6 +1184,20 @@ acceleration.
   MAY upgrade the common-lineage outcome to feasible. Version 1 MUST NOT
   simulate interleaved multi-world column generation by sequential publication
   whose visible pool depends on world order.
+- ADR-060 reserves, but does not yet activate,
+  `schemas/allocator/targeted_regeneration_plan_v3.md`,
+  `schemas/allocator/targeted_regeneration_execution_v6.md`, and
+  `schemas/allocator/cpu_candidate_allocation_session_v5.md`. Production
+  remains Plan v2 / Execution v5 / Session v4 until the successor
+  implementation passes its separate adversarial review and repository gates.
+  Plan v3 MUST reserve a price-only and primary-conflict hard-ban column for
+  the best bounded representative of each retained distinct primary conflict
+  before secondary actions or duplicate-primary targets consume remaining
+  opportunity. The seed prefix and count are replay identity; grouping scratch
+  MUST be bounded and input-order independent, and a retained-target rescan
+  MUST reproduce its provisional primary action field-for-field. This rule
+  neither prioritizes thin pools nor promises cross-epoch rotation among
+  repeatedly failing nets on one resource.
 
 #### Equal-budget decision evidence
 

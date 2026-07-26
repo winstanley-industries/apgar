@@ -1,6 +1,7 @@
 # ADR-026: Phase 4 Equal-Budget Work and Seed Accounting
 
-**Status:** Accepted for the twelfth Phase 4 vertical slice; amended by ADR-043
+**Status:** Accepted for the twelfth Phase 4 vertical slice; amended by ADR-043;
+ADR-060 reserves an inactive successor
 **Date:** July 20, 2026
 **Applies to:** Replay inputs and CPU route-work evidence required before the
 paired equal-budget trial runner

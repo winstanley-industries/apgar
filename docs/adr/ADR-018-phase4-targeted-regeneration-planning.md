@@ -1,6 +1,7 @@
 # ADR-018: Phase 4 Store-Backed Targeted Regeneration Planning
 
-**Status:** Accepted for the fourth Phase 4 vertical slice; amended by ADR-043
+**Status:** Accepted for the fourth Phase 4 vertical slice; amended by ADR-043;
+ADR-060 reserves an inactive successor
 **Date:** July 20, 2026
 **Applies to:** Deterministic congestion hotsets, complete-pool insufficiency,
 and bounded column requests

@@ -1,7 +1,8 @@
 # ADR-019: Phase 4 CPU Targeted-Regeneration Execution
 
 **Status:** Accepted for the fifth Phase 4 vertical slice; amended by bounded
-execution v2, ADR-026 before canonical evidence, and ADR-043
+execution v2, ADR-026 before canonical evidence, and ADR-043; ADR-060 reserves
+an inactive successor
 **Date:** July 20, 2026
 **Applies to:** Authentic CPU column generation, conditional store publication,
 and deterministic progress or stall classification
