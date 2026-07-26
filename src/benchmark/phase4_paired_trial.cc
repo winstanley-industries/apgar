@@ -3760,6 +3760,56 @@ Phase4TrialArmWithSameRunTelemetryExecutionResultV1 ExecutePhase4ConfirmatoryH40
   };
 }
 
+Phase4TrialArmOperationalProfileResultV1
+ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmOperationalProfile(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  if (std::optional<Phase4PairedTrialError> error =
+          PreflightPhase4ConfirmatoryH4096OrdinarySpec(spec, arm);
+      error.has_value()) {
+    return ArmFailure(*error);
+  }
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<true, false>(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.operational_profile.has_value()) {
+    return ArmFailure(
+        Error(Phase4PairedTrialErrorCode::kInternalInvariant, "P4OP-H4096-ORDINARY-INTERNAL-001",
+              "H=4096 ordinary operational execution completed without its profile", arm));
+  }
+  return std::move(*output.operational_profile);
+}
+
+Phase4TrialArmReplayAuthorityResultV1 ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmReplayAuthority(
+    Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  if (std::optional<Phase4PairedTrialError> error =
+          PreflightPhase4ConfirmatoryH4096OrdinarySpec(spec, arm);
+      error.has_value()) {
+    return ArmFailure(*error);
+  }
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, true>(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, arm, spec, imported_fixture,
+      candidate_preparer, false, false, false);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.replay_authority.has_value()) {
+    return ArmFailure(
+        Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+              "P4OP-H4096-ORDINARY-AUTHORITY-INTERNAL-001",
+              "H=4096 ordinary unmeasured replay completed without full-preimage authority", arm));
+  }
+  return std::move(*output.replay_authority);
+}
+
 Phase4TrialArmExecutionResult ExecutePhase4ConfirmatoryH4096SameRunTrialArmForOperationalWarmup(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {

@@ -163,23 +163,43 @@ TEST(Phase4H4096RawEntrypointFirewallTest,
   constexpr std::string_view kPriceAuthority = "P4PAIR-CORPUS-V2-H4096-BUDGET-AUTHORITY-001";
   constexpr std::string_view kMustNotBeRead =
       "apgar-phase4-h4096-operational-firewall-must-not-be-read.kicad_pcb";
-  const Phase4PairedTrialSpec h2250 = H2250Spec(10'100, 4);
+  const Phase4PairedTrialSpec ordinary_h2250 = H2250Spec(10'200, 8);
+  const Phase4PairedTrialSpec same_run_h2250 = H2250Spec(10'100, 4);
+
+  const Phase4TrialArmExecutionResult ordinary_warmup =
+      internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArm(Phase4TrialArm::kSequentialBaseline,
+                                                               ordinary_h2250, kMustNotBeRead);
+  ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(ordinary_warmup));
+  EXPECT_EQ(std::get<Phase4TrialArmFailure>(ordinary_warmup).summary.invariant_id, kPriceAuthority);
+
+  const Phase4TrialArmOperationalProfileResultV1 ordinary_profile =
+      internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmOperationalProfile(
+          Phase4TrialArm::kSequentialBaseline, ordinary_h2250, kMustNotBeRead);
+  ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(ordinary_profile));
+  EXPECT_EQ(std::get<Phase4TrialArmFailure>(ordinary_profile).summary.invariant_id,
+            kPriceAuthority);
+
+  const Phase4TrialArmReplayAuthorityResultV1 ordinary_replay =
+      internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArmReplayAuthority(
+          Phase4TrialArm::kSequentialBaseline, ordinary_h2250, kMustNotBeRead);
+  ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(ordinary_replay));
+  EXPECT_EQ(std::get<Phase4TrialArmFailure>(ordinary_replay).summary.invariant_id, kPriceAuthority);
 
   const Phase4TrialArmExecutionResult warmup =
       internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmForOperationalWarmup(
-          Phase4TrialArm::kSequentialBaseline, h2250, kMustNotBeRead);
+          Phase4TrialArm::kSequentialBaseline, same_run_h2250, kMustNotBeRead);
   ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(warmup));
   EXPECT_EQ(std::get<Phase4TrialArmFailure>(warmup).summary.invariant_id, kPriceAuthority);
 
   const Phase4TrialArmOperationalProfileResultV1 profile =
       internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmOperationalProfile(
-          Phase4TrialArm::kSequentialBaseline, h2250, kMustNotBeRead);
+          Phase4TrialArm::kSequentialBaseline, same_run_h2250, kMustNotBeRead);
   ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(profile));
   EXPECT_EQ(std::get<Phase4TrialArmFailure>(profile).summary.invariant_id, kPriceAuthority);
 
   const Phase4TrialArmReplayAuthorityResultV1 replay =
       internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArmReplayAuthority(
-          Phase4TrialArm::kSequentialBaseline, h2250, kMustNotBeRead);
+          Phase4TrialArm::kSequentialBaseline, same_run_h2250, kMustNotBeRead);
   ASSERT_TRUE(std::holds_alternative<Phase4TrialArmFailure>(replay));
   EXPECT_EQ(std::get<Phase4TrialArmFailure>(replay).summary.invariant_id, kPriceAuthority);
 }

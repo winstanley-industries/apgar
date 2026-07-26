@@ -1716,9 +1716,52 @@ acceleration.
   Raw, sidecar, sibling per-net report, and operational capture/publication
   MUST be reacquired from that same clean commit. Earlier artifacts cannot be
   relabeled or joined across commits.
-  Ordinary H=4096 operational measurement, every other development cell,
-  standalone replay, fixed-query, stress, aggregation, matrix, decision,
-  heldout, and imported paths remain closed.
+  Every other development cell, standalone replay, fixed-query, stress,
+  aggregation, matrix, decision, heldout, and imported paths remain closed.
+  The H=4096 ordinary operational authority is separately frozen by
+  `docs/adr/ADR-058-phase4-confirmatory-h4096-operational-measurement.md` and
+  `schemas/benchmark/phase4_confirmatory_operational_measurement_publication_v2.md`.
+  Its separately compiled capture, worker, and publication validator MUST
+  select H=4096 out of band and accept only explicit Corpus 2 calibration
+  `(10200,8)`, Raw Evidence schema 1 over Raw Wire 1, four workers, 20
+  repetitions, equal-arm `present=1,history=4096`, canonical algorithm-budget
+  checksum `8230401457668518004`, and paired semantic
+  `budget_checksum=12108149041077564710`. It MUST positively authenticate
+  Confirmatory Decision Protocol v2 checksum `11520586171987743043`, canonical
+  algorithm-budget roster v3 checksum `18429170436700418962`, configuration
+  authority `phase4_confirmatory_corpus_v2_h4096`, and Raw binding
+  `phase4_confirmatory_raw_evidence_v2`. Existing H=2250 and H=4096 same-run
+  operational entry points MUST reject this authority before fixture access,
+  case construction, preparer creation, warmup, or replay.
+  Worker Output v1, Operational Measurement Capture v1, Operational Profile
+  v1, Replay Authority v1, and final publication payload schema 1 remain
+  unchanged. The Protocol-v2 `v2` name selects only the H=4096 authority
+  binding and the domain-separated
+  `APGAR-PHASE4-CONFIRMATORY-OPERATIONAL-MEASUREMENT-PUBLICATION-ARTIFACT-V2`
+  and
+  `APGAR-PHASE4-CONFIRMATORY-OPERATIONAL-MEASUREMENT-PUBLICATION-SOURCE-V2`
+  checksum domains; Protocol-v2 JSON MUST remain byte-unchanged.
+  The capture MUST retain the reviewed measured-baseline, measured-candidate,
+  unmeasured-baseline-authority, unmeasured-candidate-authority exec order,
+  exact-child and descendant containment, process/provenance checks, launcher
+  handshake, complete adjacent standalone-runfiles authority, and pinned
+  H=4096 worker inode and digest. Capture and publication MUST independently
+  hash the fixed
+  `phase4_confirmatory_h4096_operational_replay_worker`; caller paths, ambient
+  runfiles, working directories, enclosing test trees, arguments, and opaque
+  checksums MUST NOT substitute an executable or authority.
+  The publisher MUST completely authenticate bounded regular H=4096 ordinary
+  Raw `(10200,8)` before resolving the worker or opening and validating the
+  bounded regular capture. Only after the complete Raw/capture source,
+  configuration, process, replay, and semantic join may it open a publication
+  validation input or install output. No Same-Run Decision Telemetry sidecar
+  is accepted or opened. Raw remains the sole outcome/timing authority; the
+  operational publication retains `cell_role="calibration"` and remains
+  diagnostic, non-standalone, non-statistical, and incomplete coverage.
+  After this implementation is adversarially reviewed and committed, ordinary
+  Raw, its sibling per-net report, and the operational capture/publication
+  MUST be reacquired from that same clean commit. Earlier artifacts cannot be
+  copied, relabeled, rechecksummed, or joined across commits.
   The H=4096 exact-small Oracle authority is separately frozen by
   `docs/adr/ADR-057-phase4-confirmatory-h4096-exact-small-oracle.md` and
   `schemas/benchmark/phase4_confirmatory_exact_small_oracle_publication_v2.md`.

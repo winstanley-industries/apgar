@@ -206,16 +206,18 @@ def main(
             expected_worker_target=options.worker_target,
             expected_worker_sha256=authority_module.sha256_file(options.worker),
         )
+        validate_capture_authority = getattr(
+            authority_module,
+            "validate_capture_authority",
+            None,
+        )
+        if validate_capture_authority is not None:
+            validate_capture_authority(artifact)
         encoded = capture_tool._canonical(artifact) + "\n"
         if len(encoded.encode("utf-8")) > capture_tool._MAXIMUM_CAPTURE_BYTES:
             raise capture_tool.CaptureError("operational capture exceeds 32 MiB")
         sys.stdout.write(encoded)
-    except (
-        capture_tool.CaptureError,
-        measurement_validator.EvidenceError,
-        OSError,
-        OverflowError,
-    ) as error:
+    except (ValueError, OSError, OverflowError) as error:
         print(f"Phase 4 confirmatory operational capture failed: {error}", file=sys.stderr)
         return 1
     return 0
