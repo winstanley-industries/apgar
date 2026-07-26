@@ -1,7 +1,7 @@
 # Phase 4 Confirmatory Decision Protocol v3
 
-**Status:** Frozen inactive contract; implementation, execution, and
-acquisition are not authorized by this document.
+**Status:** Frozen and implemented as an active acquisition-free protocol
+authority; execution and acquisition are not authorized by this document.
 
 This acquisition-free contract is a compact authority-only supersession of
 Confirmatory Decision Protocol v2. It binds the Session-v5/H=4096 canonical
@@ -11,7 +11,7 @@ development evidence.
 
 ## Root shape and authority ancestry
 
-The eventual compact canonical JSON must use these exact root fields in this
+The checked-in compact canonical JSON uses these exact root fields in this
 exact order:
 
 1. `schema_version`;
@@ -291,16 +291,18 @@ matching budget checksum cannot select the Session-v5 configuration.
 
 ## Serialization
 
-The eventual artifact is compact canonical UTF-8 JSON ending in exactly one
+The checked-in artifact is compact canonical UTF-8 JSON ending in exactly one
 LF. It is bounded, rejects duplicate keys, type aliases, non-finite numbers,
 unknown or reordered fields, and exactly reconstructs the frozen literal
-before accepting its checksum.
+before accepting its checksum. It is 6,303 bytes including the final LF, has
+`artifact_checksum=4963299999381388941`, and has SHA-256
+`c3812719674fdf6958379272fbb3b2af4439ca12cdc2532b5dda230097dd473d`.
 
 `artifact_checksum` uses Board IR v1 FNV-1a by adding domain string
 `APGAR-PHASE4-CONFIRMATORY-DECISION-PROTOCOL-V3`, then the compact canonical
-JSON string of every preceding root field in order. The implementation must
-first validate checked-in Protocol v2 and roster v4, reconstruct the exact
-successor, prove the matrix and decision sections unchanged, and reject
+JSON string of every preceding root field in order. The strict validator first
+validates checked-in Protocol v2 and roster v4, reconstructs the exact
+successor, proves the matrix and decision sections unchanged, and rejects
 rechecksummed ancestry, namespace, state, or firewall forgeries.
 
 The protocol contains no Session-v5 allocation outcome, family result,

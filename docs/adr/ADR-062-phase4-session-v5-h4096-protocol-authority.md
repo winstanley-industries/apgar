@@ -1,6 +1,6 @@
 # ADR-062: Phase 4 Session-v5 H=4096 Protocol Authority
 
-**Status:** Accepted as an inactive acquisition-free authority contract
+**Status:** Accepted and active as an acquisition-free protocol authority
 **Date:** July 26, 2026
 **Applies to:** Confirmatory protocol supersession after canonical roster v4
 and before any Session-v5 Corpus-v2 execution or evidence acquisition
@@ -29,9 +29,10 @@ allocation outcome has been observed.
 ## Decision
 
 - Preserve Confirmatory Decision Protocol v2 byte-for-byte and adopt the
-  inactive Protocol-v3 contract in
+  implemented acquisition-free Protocol-v3 authority in
   `schemas/benchmark/phase4_confirmatory_decision_protocol_v3.md`. It directly
-  supersedes schema 2 artifact checksum `11520586171987743043`.
+  supersedes schema 2 artifact checksum `11520586171987743043`. Its canonical
+  artifact checksum is `4963299999381388941`.
 - Retain campaign `phase4_confirmatory_corpus_v2`, preserve the authentic V1
   negative matrix and both Protocol-v2 development observations, and bind
   configuration authority
@@ -79,10 +80,10 @@ allocation outcome has been observed.
 
 ## Consequences
 
-The next implementation slice can freeze the complete Session-v5/H=4096
-decision contract and consuming namespace without executing an allocator or
-creating evidence. Later development execution and publication capabilities
-remain separate narrow slices.
+This implementation freezes the complete Session-v5/H=4096 decision contract
+and consuming namespace without executing an allocator or creating evidence.
+Later development execution and publication capabilities remain separate
+narrow slices.
 
 No performance, improvement, feasibility, fixed-pool optimality, calibration
 non-regression, heldout, confirmatory, Phase 4, or M1 claim follows from this

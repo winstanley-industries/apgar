@@ -1233,12 +1233,12 @@ acceleration.
   from every execution-authority switch. Roster v4 alone authorizes no
   fixture, preparer, allocator, worker, Raw, telemetry, report, operational,
   snapshot, oracle, matrix, decision, publication, or acquisition path.
-  Confirmatory Decision Protocol v2 remains bound to roster v3; a separately
-  reviewed Protocol v3 and separately reviewed consuming authorities are
-  required before any Session-v5 Corpus-v2 execution.
-- ADR-062 freezes the inactive acquisition-free contract for Confirmatory
-  Decision Protocol v3 in
-  `schemas/benchmark/phase4_confirmatory_decision_protocol_v3.md`. Its eventual
+  Confirmatory Decision Protocol v2 remains bound to roster v3. Confirmatory
+  Decision Protocol v3 binds roster v4, but separately reviewed consuming
+  authorities remain required before any Session-v5 Corpus-v2 execution.
+- ADR-062 activates the acquisition-free authority for Confirmatory Decision
+  Protocol v3 in
+  `schemas/benchmark/phase4_confirmatory_decision_protocol_v3.md`. Its
   canonical artifact MUST directly supersede Protocol v2 checksum
   `11520586171987743043`, exactly bind roster v4 and its
   Session-v4-to-v5/Plan-v2-to-v3/Execution-v5-to-v6 transition, and preserve
@@ -1248,10 +1248,10 @@ acceleration.
   historical and non-promotable while declaring only the Session-v5/H=4096
   successor unobserved. All ten configuration-specific artifact authorities
   and the matrix-decision publication authority MUST advance from v2 to fresh
-  v3 names without implying a payload or carrier schema change. The inactive
-  contract, and its eventual protocol artifact, authorize no execution or
-  acquisition. Separately reviewed Session-v5 development execution,
-  acquisition, and consuming-publication authorities remain required.
+  v3 names without implying a payload or carrier schema change. The protocol
+  authority authorizes no execution or acquisition. Separately reviewed
+  Session-v5 development execution, acquisition, and consuming-publication
+  authorities remain required.
 
 #### Equal-budget decision evidence
 
@@ -1652,7 +1652,7 @@ acceleration.
   completed reviewed execution and publication chain; the protocol/roster-only
   commit is insufficient. Premature H=4096 heldout observation invalidates the
   roster and requires a fresh versioned authority.
-  The next acquisition-free protocol contract is frozen by ADR-062 and
+  The acquisition-free protocol authority is activated by ADR-062 and
   `schemas/benchmark/phase4_confirmatory_decision_protocol_v3.md`. Protocol v3
   MUST directly supersede Protocol v2 without modifying it, bind canonical
   roster v4 authority/schema/checksum and its exact Session-v5 child
@@ -1664,11 +1664,10 @@ acceleration.
   Session v5. It MUST reserve exact one-to-one v2-to-v3 successors for all ten
   cell/shared artifact authorities plus
   `phase4_confirmatory_matrix_decision_publication_v3`; authority suffixes do
-  not choose payload or wire schemas. The contract is inactive until its
-  canonical artifact and strict validator are separately implemented and
-  reviewed, and even that artifact alone MUST NOT open a fixture, preparer,
-  worker, allocator, Raw, report, operational, Oracle, matrix, publication, or
-  acquisition path.
+  not choose payload or wire schemas. Its canonical artifact and strict
+  validator are implemented; the authority alone MUST NOT open a fixture,
+  preparer, worker, allocator, Raw, report, operational, Oracle, matrix,
+  publication, or acquisition path.
   The following H=4096 carrier, artifact, and publication contracts remain
   authoritative for validation of already captured material. Their existing
   Session-v4 execution surfaces are suspended by the Session-v5 boundary; any
