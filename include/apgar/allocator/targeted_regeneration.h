@@ -34,7 +34,9 @@ void SetTargetedRegenerationPlanAggregatesForTesting(TargetedRegenerationPlan& p
 
 inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersionV1 = 1;
 inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersionV2 = 2;
-inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersion = 3;
+inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersionV3 = 3;
+inline constexpr std::uint32_t kTargetedRegenerationPlanSchemaVersion =
+    kTargetedRegenerationPlanSchemaVersionV3;
 
 struct TargetedRegenerationConfig {
   std::uint64_t maximum_target_nets = 100'000;

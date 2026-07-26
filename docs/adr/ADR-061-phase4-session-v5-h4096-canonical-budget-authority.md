@@ -1,6 +1,6 @@
 # ADR-061: Phase 4 Session-v5 H=4096 Canonical Budget Authority
 
-**Status:** Accepted as an inactive acquisition-free authority contract
+**Status:** Accepted and active as an acquisition-free configuration authority
 **Date:** July 26, 2026
 **Applies to:** The next canonical algorithm-budget roster after Session-v5
 activation and before any successor protocol or evidence acquisition
@@ -32,13 +32,14 @@ create an execution capability.
 
 - Preserve canonical algorithm-budget roster v3, its JSON bytes, checksum,
   generator, validator, and all 102 per-cell checksums.
-- Adopt the inactive roster-v4 contract in
+- Implement the roster-v4 contract in
   `schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.md`.
   It directly supersedes roster v3 and retains Representative Corpus v2,
   Representative Manifest v2, Workload-Net Roster Manifest v2, all 102 ordered
   canonical cells, H=4096 equal-arm pricing, case and workload identities,
   root seeds, stopping depth, query/work opportunities, external budgets, and
-  every non-session field.
+  every non-session field. Its compact JSON has aggregate roster checksum
+  `12316700735749461907`.
 - Name the successor configuration authority
   `phase4_confirmatory_corpus_v2_h4096_session_v5`. Do not reuse
   `phase4_confirmatory_corpus_v2_h4096`, which remains the frozen Session-v4
@@ -54,9 +55,8 @@ create an execution capability.
   v5 and the complete child configurations. The Session-v5 contract
   normatively binds Plan v3 and Execution v6; changing either child without a
   new Session authority is nonconforming.
-- Add explicit fixed historical constants for Session v5 and Plan v3 when the
-  inactive authority is implemented. The frozen builder must not depend on a
-  moving current-version alias.
+- Add explicit fixed historical constants for Session v5 and Plan v3. The
+  frozen builder must not depend on a moving current-version alias.
 - Implement the successor preimage through a separately named private builder
   that first reconstructs the frozen H=4096/Session-v4 preimage, positively
   requires Session v4, and changes only the nested session schema to the
@@ -66,11 +66,12 @@ create an execution capability.
   `Phase4RepresentativeCorpusAuthority`, or any serialized payload field in
   this slice. The new builder must remain absent from every execution switch
   and preflight allowlist.
-- The eventual no-argument generator must emit all 102 ordered configuration
-  preimages through the dead-section-eliminated preimage graph. Its exact final
-  binary, including the sanitizer-reset audit artifact, must contain no
-  fixture, case-construction, preparer, worker, candidate-store, routing, or
-  allocator-execution capability.
+- The no-argument generator emits all 102 ordered configuration preimages
+  through the dead-section-eliminated preimage graph; its stdout SHA-256 is
+  `1379050ceaf62bd5ff221827ab54565a9087b0c3fdbf04fa69fc81c7ea40e283`.
+  Its exact final binary, including the sanitizer-reset audit artifact, must
+  contain no fixture, case-construction, preparer, worker, candidate-store,
+  routing, or allocator-execution capability.
 - The implementation must retain v3 goldens and add full-field 102-cell
   differential coverage, deterministic live-roster reproduction, strict
   canonical JSON validation, exact ancestry checks, corruption tests, and
@@ -86,10 +87,10 @@ create an execution capability.
 
 ## Consequences
 
-The next implementation slice can freeze a complete Session-v5/H=4096
-configuration authority without observing an allocation result or weakening
-the Session-v4 evidence boundary. Roster-v3 artifacts remain reproducible and
-valid for their historical authorities.
+This implementation freezes a complete Session-v5/H=4096 configuration
+authority without observing an allocation result or weakening the Session-v4
+evidence boundary. Roster-v3 artifacts remain reproducible and valid for their
+historical authorities.
 
 No performance, improvement, feasibility, fixed-pool optimality, calibration
 non-regression, heldout, confirmatory, Phase 4, or M1 claim follows from this

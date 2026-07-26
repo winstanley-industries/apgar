@@ -1218,8 +1218,8 @@ acceleration.
   diagnostic tests may use
   `schemas/benchmark/phase4_current_v1_diagnostic_budget_roster_v2.md`; that
   roster cannot authorize Corpus-v2 execution or publication.
-- ADR-061 freezes the inactive acquisition-free Session-v5/H=4096 canonical
-  budget contract in
+- ADR-061 activates the acquisition-free Session-v5/H=4096 canonical budget
+  configuration authority in
   `schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.md`.
   Roster v4 MUST retain the complete ordered 102-cell roster-v3 authority and
   change exactly the nested candidate-allocation Session schema from v4 to v5.

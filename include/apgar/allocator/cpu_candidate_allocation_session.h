@@ -18,7 +18,9 @@ inline constexpr std::uint32_t kCpuCandidateAllocationSessionSchemaVersionV1 = 1
 inline constexpr std::uint32_t kCpuCandidateAllocationSessionSchemaVersionV2 = 2;
 inline constexpr std::uint32_t kCpuCandidateAllocationSessionSchemaVersionV3 = 3;
 inline constexpr std::uint32_t kCpuCandidateAllocationSessionSchemaVersionV4 = 4;
-inline constexpr std::uint32_t kCpuCandidateAllocationSessionSchemaVersion = 5;
+inline constexpr std::uint32_t kCpuCandidateAllocationSessionSchemaVersionV5 = 5;
+inline constexpr std::uint32_t kCpuCandidateAllocationSessionSchemaVersion =
+    kCpuCandidateAllocationSessionSchemaVersionV5;
 inline constexpr std::uint32_t kMaximumCpuCandidateAllocationEpochsV1 = 1'000'000;
 inline constexpr std::uint64_t kMaximumCpuCandidateAllocationWorkItemsV1 = 1'000'000'000'000'000ULL;
 

@@ -1,7 +1,7 @@
 # Phase 4 Confirmatory Canonical Algorithm-Budget Roster v4
 
-**Status:** Frozen inactive contract; implementation and acquisition are not
-authorized by this document.
+**Status:** Frozen and implemented as an acquisition-free configuration
+authority; acquisition is not authorized by this document.
 
 Roster v4 is the acquisition-free configuration successor to
 `phase4_confirmatory_canonical_algorithm_budget_roster_v3`. It freezes the
@@ -11,7 +11,7 @@ result.
 
 ## Authority ancestry
 
-The eventual compact canonical JSON must use these exact root fields in this
+The checked-in compact canonical JSON uses these exact root fields in this
 exact order:
 
 1. `schema_version`;
@@ -39,7 +39,8 @@ The fixed root values are:
   `14986327048461036142`;
 - configuration authority
   `phase4_confirmatory_corpus_v2_h4096_session_v5`; and
-- `cell_count=102`.
+- `cell_count=102`; and
+- `roster_checksum=12316700735749461907`.
 
 `supersedes` is an object with these exact fields and order:
 
@@ -142,7 +143,7 @@ the listed u64 checksum encoding.
 
 ## Builder and capability boundary
 
-The eventual fixed private builder must:
+The fixed private builder must:
 
 1. reconstruct the frozen roster-v3 H=4096/Session-v4 preimage;
 2. reject unless its candidate-session schema equals the explicit Session-v4
