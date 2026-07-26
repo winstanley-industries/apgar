@@ -17,7 +17,19 @@
 #include "apgar/benchmark/phase3_commit.h"
 #include "apgar/benchmark/phase3_source_stamp.h"
 #include "apgar/benchmark/phase4_exact_small_snapshot.h"
+#if !defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER)
 #include "apgar/tooling/runfiles.h"
+#endif
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER)
+#include "src/benchmark/phase4_confirmatory_h4096_exact_small_snapshot_internal.h"
+#include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
+#include "src/benchmark/phase4_paired_trial_internal.h"
+#endif
+
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER) && \
+    defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER)
+#error "H=2250 and H=4096 exact-small snapshot authorities are mutually exclusive"
+#endif
 
 namespace {
 
@@ -90,7 +102,8 @@ struct Options {
     } else if (key == "apgar_commit") {
       options.runtime_commit = std::string(value);
     } else if (key == "corpus_version") {
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+#if defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER)
       valid = ParseU32(value, &options.corpus_version);
 #else
       valid = false;
@@ -98,7 +111,8 @@ struct Options {
     } else if (key == "raw_evidence_schema_version")
       valid = ParseU32(value, &options.raw_evidence_schema_version);
     else if (key == "raw_wire_schema_version") {
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+#if defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER)
       valid = ParseU32(value, &options.raw_wire_schema_version);
 #else
       valid = false;
@@ -188,7 +202,8 @@ struct Options {
                                            "per_net_report_source_envelope_checksum"};
   for (const std::string_view key : required)
     if (!seen.contains(std::string(key))) return std::nullopt;
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+#if defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER)
   if (!seen.contains("corpus_version") || !seen.contains("raw_evidence_schema_version") ||
       !seen.contains("raw_wire_schema_version")) {
     return std::nullopt;
@@ -198,7 +213,12 @@ struct Options {
 }
 
 void Usage() {
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER
+  std::cerr << "phase4_confirmatory_h4096_exact_small_snapshot_runner requires explicit Corpus 2, "
+               "Raw schema 2/Wire 2, exact development cell (10100,4), the complete canonical "
+               "H=4096 cell, a clean stamped source, complete Raw repetition-zero references, "
+               "and the associated H=4096 per-net report artifact/envelope checksums.\n";
+#elif defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER)
   std::cerr << "phase4_confirmatory_exact_small_snapshot_runner requires explicit Corpus 2, "
                "Raw schema 2/Wire 2, exact development cell (10100,4), a clean stamped source, "
                "complete Raw repetition-zero references, and the associated per-net report "
@@ -219,7 +239,8 @@ int main(int argc, char** argv) try {
     return 2;
   }
   Options& options = *parsed;
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+#if defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER)
   const bool corpus_scope_valid =
       options.corpus_version == apgar::benchmark::kPhase4RepresentativeCorpusVersionV2 &&
       options.raw_evidence_schema_version ==
@@ -259,6 +280,54 @@ int main(int argc, char** argv) try {
     Usage();
     return 2;
   }
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER
+  auto spec_result = apgar::benchmark::internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
+      options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+  if (!std::holds_alternative<apgar::benchmark::Phase4PairedTrialSpec>(spec_result)) {
+    const auto& error = std::get<apgar::benchmark::Phase4TrialHarnessError>(spec_result);
+    std::cerr << error.invariant_id << ": " << error.detail << '\n';
+    return 2;
+  }
+  const auto& spec = std::get<apgar::benchmark::Phase4PairedTrialSpec>(spec_result);
+  if (std::optional<apgar::benchmark::Phase4PairedTrialError> error =
+          apgar::benchmark::internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(
+              spec, apgar::benchmark::Phase4TrialArm::kReusableCandidateAllocation);
+      error.has_value()) {
+    std::cerr << error->invariant_id << ": " << error->detail << '\n';
+    return 2;
+  }
+  const apgar::benchmark::Phase4CaseDescriptor* descriptor =
+      apgar::benchmark::FindPhase4CaseDescriptorForAuthority(
+          apgar::benchmark::Phase4RepresentativeCorpusAuthority::kV2, options.cell.case_id);
+  constexpr std::uint64_t kExpectedPairedBudgetChecksum = 5'851'813'264'366'095'594ULL;
+  const std::uint64_t paired_budget_checksum =
+      descriptor == nullptr || spec.candidate_session_config.schedules.empty()
+          ? 0
+          : apgar::benchmark::internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
+                apgar::benchmark::Phase4RepresentativeCorpusAuthority::kV2, spec,
+                apgar::benchmark::Phase4RouteOpportunity{
+                    .route_queries = spec.baseline_config.limits.maximum_route_queries,
+                    .route_work_units = spec.baseline_config.limits.maximum_total_route_work_units,
+                },
+                descriptor->requested_net_count,
+                spec.candidate_session_config.regeneration_plan_config.maximum_total_columns,
+                spec.candidate_session_config.schedules.back().maximum_selection_rounds);
+  if (options.cell.maximum_setup_elapsed_nanoseconds != 300'000'000'000ULL ||
+      paired_budget_checksum != kExpectedPairedBudgetChecksum) {
+    std::cerr << "the H=4096 exact snapshot cell differs from its frozen setup or paired-budget "
+                 "authority\n";
+    return 2;
+  }
+#ifdef APGAR_PHASE4_EXACT_SNAPSHOT_RUNNER_TESTING
+  if (!options.testing_allow_unstamped) {
+    Usage();
+    return 2;
+  }
+  std::cerr << "the H=4096 exact-small snapshot test runner is preflight-only and cannot access "
+               "a board fixture, create a preparer, execute a candidate arm, or emit a snapshot\n";
+  return 2;
+#endif
+#endif
   bool source_stamped = apgar::benchmark::kPhase3SourceStamped;
   bool source_tree_dirty = apgar::benchmark::kPhase3BuiltFromDirtyTree;
   const bool publishable = apgar::benchmark::IsPublishableBenchmarkSource(
@@ -274,7 +343,8 @@ int main(int argc, char** argv) try {
     Usage();
     return 2;
   }
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+#if defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER)
   const std::uint64_t expected_cell_plan_checksum =
       apgar::benchmark::ComputePhase4CanonicalCellPlanChecksumForCorpusV2(options.cell);
 #else
@@ -301,12 +371,17 @@ int main(int argc, char** argv) try {
                  "execution\n";
     return 2;
   }
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER
+  const std::string fixture;
+#else
   const std::optional<std::string> fixture = apgar::tooling::ReadFile(
       apgar::tooling::ResolveRunfile("tests/fixtures/phase4_supported_multinet_v1.kicad_pcb"));
   if (!fixture.has_value()) {
     std::cerr << "failed to authenticate fixture runfile\n";
     return 2;
   }
+#endif
+#ifndef APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER
 #ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
   auto spec_result = apgar::benchmark::BuildPhase4CanonicalTrialSpecForCorpusV2(
       options.cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
@@ -319,6 +394,7 @@ int main(int argc, char** argv) try {
     std::cerr << error.invariant_id << ": " << error.detail << '\n';
     return 2;
   }
+#endif
   auto preparer_result = apgar::allocator::CreatePersistentCpuCandidatePoolPreparer(
       {.worker_count = options.cell.preparation_worker_count});
   if (!std::holds_alternative<
@@ -330,7 +406,11 @@ int main(int argc, char** argv) try {
   }
   auto preparer = std::get<std::unique_ptr<apgar::allocator::PersistentCpuCandidatePoolPreparer>>(
       std::move(preparer_result));
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER
+  auto capture_result =
+      apgar::benchmark::internal::ExecutePhase4ConfirmatoryH4096SameRunCandidatePoolSnapshot(
+          std::get<apgar::benchmark::Phase4PairedTrialSpec>(spec_result), fixture, preparer.get());
+#elif defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER)
   auto capture_result = apgar::benchmark::ExecutePhase4CandidatePoolSnapshotForCorpusV2(
       std::get<apgar::benchmark::Phase4PairedTrialSpec>(spec_result), *fixture, preparer.get());
 #else
@@ -342,17 +422,25 @@ int main(int argc, char** argv) try {
     std::cerr << error.invariant_id << ": " << error.detail << '\n';
     return 1;
   }
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER
+  auto artifact_result =
+      apgar::benchmark::internal::BuildPhase4ConfirmatoryH4096ExactSmallSnapshotArtifact(
+#elif defined(APGAR_PHASE4_CONFIRMATORY_EXACT_SNAPSHOT_RUNNER)
   auto artifact_result = apgar::benchmark::BuildPhase4ExactSmallSnapshotArtifactForCorpusV2(
 #else
   auto artifact_result = apgar::benchmark::BuildPhase4ExactSmallSnapshotArtifactV1(
 #endif
-      options.cell, *options.runtime_commit, source_stamped, source_tree_dirty,
-      options.raw_cell_plan_checksum, options.raw_cell_artifact_checksum,
-      options.raw_source_envelope_checksum, options.raw_reference,
-      options.per_net_report_artifact_checksum, options.per_net_report_source_envelope_checksum,
-      std::get<apgar::benchmark::Phase4CandidatePoolSnapshotExecutionV1>(std::move(capture_result)),
+          options.cell, *options.runtime_commit, source_stamped, source_tree_dirty,
+          options.raw_cell_plan_checksum, options.raw_cell_artifact_checksum,
+          options.raw_source_envelope_checksum, options.raw_reference,
+          options.per_net_report_artifact_checksum, options.per_net_report_source_envelope_checksum,
+          std::get<apgar::benchmark::Phase4CandidatePoolSnapshotExecutionV1>(
+              std::move(capture_result)),
+#ifdef APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_SNAPSHOT_RUNNER
+          fixture, options.raw_evidence_schema_version);
+#else
       *fixture, options.raw_evidence_schema_version);
+#endif
   if (std::holds_alternative<apgar::benchmark::Phase4ExactSmallSnapshotError>(artifact_result)) {
     const auto& error = std::get<apgar::benchmark::Phase4ExactSmallSnapshotError>(artifact_result);
     std::cerr << error.invariant_id << ": " << error.detail << '\n';

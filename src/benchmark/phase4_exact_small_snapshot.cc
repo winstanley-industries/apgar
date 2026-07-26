@@ -19,6 +19,8 @@
 
 #include "apgar/board_ir/stable_hash.h"
 #include "src/allocator/negotiated_prices_internal.h"
+#include "src/benchmark/phase4_confirmatory_h4096_exact_small_snapshot_internal.h"
+#include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
 #include "src/benchmark/phase4_paired_trial_internal.h"
 #include "src/candidates/route_candidate_internal.h"
 
@@ -27,6 +29,9 @@ namespace {
 
 using Wide = unsigned __int128;
 using SignedWide = __int128;
+
+inline constexpr std::uint64_t kPhase4ConfirmatoryH4096ExactPairedBudgetChecksum =
+    5'851'813'264'366'095'594ULL;
 
 [[nodiscard]] bool FitsI64(SignedWide value) noexcept {
   return value >= std::numeric_limits<std::int64_t>::min() &&
@@ -690,7 +695,15 @@ namespace {
 }
 
 [[nodiscard]] Phase4CanonicalSpecResult BuildExactSmallCanonicalSpec(
-    Phase4RepresentativeCorpusAuthority authority, const Phase4CanonicalCellConfig& config) {
+    Phase4RepresentativeCorpusAuthority authority, const Phase4CanonicalCellConfig& config,
+    bool h4096) {
+  if (h4096) {
+    if (authority != Phase4RepresentativeCorpusAuthority::kV2) {
+      return Phase4TrialHarnessError{};
+    }
+    return internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
+        config, 0, Phase4TrialOrder::kBaselineFirst);
+  }
   switch (authority) {
     case Phase4RepresentativeCorpusAuthority::kV1:
       return BuildPhase4CanonicalTrialSpecV1(config, 0, Phase4TrialOrder::kBaselineFirst);
@@ -712,10 +725,28 @@ namespace {
   return 0;
 }
 
+[[nodiscard]] std::uint64_t ComputeExactSmallPairedBudgetChecksum(
+    Phase4RepresentativeCorpusAuthority authority, const Phase4PairedTrialSpec& spec,
+    const Phase4CaseDescriptor& descriptor) noexcept {
+  if (spec.candidate_session_config.schedules.empty()) {
+    return 0;
+  }
+  return internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
+      authority, spec,
+      Phase4RouteOpportunity{
+          .route_queries = spec.baseline_config.limits.maximum_route_queries,
+          .route_work_units = spec.baseline_config.limits.maximum_total_route_work_units,
+      },
+      descriptor.requested_net_count,
+      spec.candidate_session_config.regeneration_plan_config.maximum_total_columns,
+      spec.candidate_session_config.schedules.back().maximum_selection_rounds);
+}
+
 [[nodiscard]] std::variant<std::monostate, Phase4ExactSmallSnapshotError>
 ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
     Phase4RepresentativeCorpusAuthority authority,
-    const Phase4ExactSmallSnapshotArtifactV1& artifact, std::string_view imported_fixture);
+    const Phase4ExactSmallSnapshotArtifactV1& artifact, std::string_view imported_fixture,
+    bool h4096);
 
 }  // namespace
 
@@ -835,7 +866,12 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactFo
     std::uint64_t per_net_report_artifact_checksum,
     std::uint64_t per_net_report_source_envelope_checksum,
     Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture,
-    std::uint32_t raw_evidence_schema_version) try {
+    std::uint32_t raw_evidence_schema_version, bool h4096) try {
+  if (h4096 && authority != Phase4RepresentativeCorpusAuthority::kV2) {
+    return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
+                 "P4EXACT-SNAPSHOT-H4096-AUTHORITY-001",
+                 "H=4096 snapshot construction requires the private Corpus-v2 authority");
+  }
   if (!IsLowerHexCommit(source_commit) || !source_stamped || source_tree_dirty) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
                  "P4EXACT-SNAPSHOT-SOURCE-001",
@@ -892,6 +928,35 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactFo
   }
   const std::uint64_t product = std::get<std::uint64_t>(product_result);
 
+  std::optional<Phase4PairedTrialSpec> preflighted_h4096_spec;
+  if (h4096) {
+    Phase4CanonicalSpecResult spec_result = BuildExactSmallCanonicalSpec(authority, config, true);
+    if (std::holds_alternative<Phase4TrialHarnessError>(spec_result)) {
+      return Error(Phase4ExactSmallSnapshotErrorCode::kInvalidConfiguration,
+                   "P4EXACT-SNAPSHOT-CONFIG-002", "the canonical cell configuration is invalid");
+    }
+    preflighted_h4096_spec.emplace(std::get<Phase4PairedTrialSpec>(std::move(spec_result)));
+    const Phase4PairedTrialSpec& spec = *preflighted_h4096_spec;
+    if (std::optional<Phase4PairedTrialError> error =
+            internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(
+                spec, Phase4TrialArm::kReusableCandidateAllocation);
+        error.has_value()) {
+      return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
+                   "P4EXACT-SNAPSHOT-H4096-SPEC-001",
+                   "the snapshot configuration is not the frozen H=4096 exact same-run spec",
+                   internal::kPhase4ConfirmatoryH4096ExactCanonicalAlgorithmBudgetChecksum,
+                   internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(spec));
+    }
+    const std::uint64_t paired_budget =
+        ComputeExactSmallPairedBudgetChecksum(authority, spec, *descriptor);
+    if (paired_budget != kPhase4ConfirmatoryH4096ExactPairedBudgetChecksum) {
+      return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
+                   "P4EXACT-SNAPSHOT-H4096-PAIRED-BUDGET-001",
+                   "the snapshot configuration differs from the frozen H=4096 paired budget",
+                   kPhase4ConfirmatoryH4096ExactPairedBudgetChecksum, paired_budget);
+    }
+  }
+
   if (capture.capacity_overrides.size() > kPhase4ExactSmallMaximumCapacityOverridesV1) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kArtifactBoundExceeded,
                  "P4EXACT-SNAPSHOT-CAPACITY-BOUND-001",
@@ -926,12 +991,6 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactFo
     }
   }
 
-  Phase4CanonicalSpecResult spec_result = BuildExactSmallCanonicalSpec(authority, config);
-  if (std::holds_alternative<Phase4TrialHarnessError>(spec_result)) {
-    return Error(Phase4ExactSmallSnapshotErrorCode::kInvalidConfiguration,
-                 "P4EXACT-SNAPSHOT-CONFIG-002", "the canonical cell configuration is invalid");
-  }
-  Phase4PairedTrialSpec spec = std::get<Phase4PairedTrialSpec>(std::move(spec_result));
   Phase4RepresentativeCaseResult case_result = BuildPhase4RepresentativeCaseForAuthority(
       authority, config.case_id, imported_fixture, config.corpus_limits);
   if (!std::holds_alternative<Phase4RepresentativeCase>(case_result)) {
@@ -940,6 +999,14 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactFo
   }
   Phase4RepresentativeCase representative_case =
       std::get<Phase4RepresentativeCase>(std::move(case_result));
+  Phase4CanonicalSpecResult spec_result =
+      h4096 ? Phase4CanonicalSpecResult{std::move(*preflighted_h4096_spec)}
+            : BuildExactSmallCanonicalSpec(authority, config, false);
+  if (std::holds_alternative<Phase4TrialHarnessError>(spec_result)) {
+    return Error(Phase4ExactSmallSnapshotErrorCode::kInvalidConfiguration,
+                 "P4EXACT-SNAPSHOT-CONFIG-002", "the canonical cell configuration is invalid");
+  }
+  Phase4PairedTrialSpec spec = std::get<Phase4PairedTrialSpec>(std::move(spec_result));
   const Phase4TrialArmSemantics& semantics = capture.semantics;
   if (internal::ValidatePhase4TrialArmSemanticsForAuthorityV1(authority, semantics).has_value() ||
       semantics.arm != Phase4TrialArm::kReusableCandidateAllocation ||
@@ -1093,7 +1160,7 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactFo
       artifact.source_commit, artifact.source_stamped, artifact.source_tree_dirty,
       artifact.artifact_checksum);
   if (auto error = ValidatePhase4ExactSmallSnapshotArtifactForAuthority(authority, artifact,
-                                                                        imported_fixture);
+                                                                        imported_fixture, h4096);
       std::holds_alternative<Phase4ExactSmallSnapshotError>(error)) {
     return std::get<Phase4ExactSmallSnapshotError>(std::move(error));
   }
@@ -1121,7 +1188,7 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactV1
       source_tree_dirty, raw_cell_plan_checksum, raw_cell_artifact_checksum,
       raw_source_envelope_checksum, raw_reference, per_net_report_artifact_checksum,
       per_net_report_source_envelope_checksum, std::move(capture), imported_fixture,
-      raw_evidence_schema_version);
+      raw_evidence_schema_version, false);
 }
 
 Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactForCorpusV2(
@@ -1137,7 +1204,7 @@ Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ExactSmallSnapshotArtifactFo
       source_tree_dirty, raw_cell_plan_checksum, raw_cell_artifact_checksum,
       raw_source_envelope_checksum, raw_reference, per_net_report_artifact_checksum,
       per_net_report_source_envelope_checksum, std::move(capture), imported_fixture,
-      raw_evidence_schema_version);
+      raw_evidence_schema_version, false);
 }
 
 namespace {
@@ -1145,7 +1212,13 @@ namespace {
 std::variant<std::monostate, Phase4ExactSmallSnapshotError>
 ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
     Phase4RepresentativeCorpusAuthority authority,
-    const Phase4ExactSmallSnapshotArtifactV1& artifact, std::string_view imported_fixture) {
+    const Phase4ExactSmallSnapshotArtifactV1& artifact, std::string_view imported_fixture,
+    bool h4096) {
+  if (h4096 && authority != Phase4RepresentativeCorpusAuthority::kV2) {
+    return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
+                 "P4EXACT-SNAPSHOT-H4096-AUTHORITY-001",
+                 "H=4096 snapshot validation requires the private Corpus-v2 authority");
+  }
   if (artifact.schema_version != kPhase4ExactSmallSnapshotSchemaVersion) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kUnsupportedSchema,
                  "P4EXACT-SNAPSHOT-SCHEMA-001", "unsupported exact-small snapshot schema");
@@ -1188,6 +1261,35 @@ ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
     return Error(Phase4ExactSmallSnapshotErrorCode::kChecksumMismatch,
                  "P4EXACT-SNAPSHOT-PRODUCT-003", "serialized Cartesian product is inconsistent");
   }
+  std::optional<Phase4PairedTrialSpec> preflighted_h4096_spec;
+  if (h4096) {
+    Phase4CanonicalSpecResult spec_result =
+        BuildExactSmallCanonicalSpec(authority, artifact.config, true);
+    if (!std::holds_alternative<Phase4PairedTrialSpec>(spec_result)) {
+      return Error(Phase4ExactSmallSnapshotErrorCode::kInvalidConfiguration,
+                   "P4EXACT-SNAPSHOT-CONFIG-003", "snapshot canonical cell is invalid");
+    }
+    preflighted_h4096_spec.emplace(std::get<Phase4PairedTrialSpec>(std::move(spec_result)));
+    const Phase4PairedTrialSpec& spec = *preflighted_h4096_spec;
+    if (std::optional<Phase4PairedTrialError> error =
+            internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(
+                spec, Phase4TrialArm::kReusableCandidateAllocation);
+        error.has_value()) {
+      return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
+                   "P4EXACT-SNAPSHOT-H4096-SPEC-001",
+                   "the snapshot configuration is not the frozen H=4096 exact same-run spec",
+                   internal::kPhase4ConfirmatoryH4096ExactCanonicalAlgorithmBudgetChecksum,
+                   internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(spec));
+    }
+    const std::uint64_t paired_budget =
+        ComputeExactSmallPairedBudgetChecksum(authority, spec, *descriptor);
+    if (paired_budget != kPhase4ConfirmatoryH4096ExactPairedBudgetChecksum) {
+      return Error(Phase4ExactSmallSnapshotErrorCode::kAuthorityAssociation,
+                   "P4EXACT-SNAPSHOT-H4096-PAIRED-BUDGET-001",
+                   "the snapshot configuration differs from the frozen H=4096 paired budget",
+                   kPhase4ConfirmatoryH4096ExactPairedBudgetChecksum, paired_budget);
+    }
+  }
   if (artifact.capacity_overrides.size() > kPhase4ExactSmallMaximumCapacityOverridesV1) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kArtifactBoundExceeded,
                  "P4EXACT-SNAPSHOT-CAPACITY-BOUND-001",
@@ -1228,7 +1330,9 @@ ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
   }
   const Phase4RepresentativeCase& representative_case =
       std::get<Phase4RepresentativeCase>(case_result);
-  Phase4CanonicalSpecResult spec_result = BuildExactSmallCanonicalSpec(authority, artifact.config);
+  Phase4CanonicalSpecResult spec_result =
+      h4096 ? Phase4CanonicalSpecResult{std::move(*preflighted_h4096_spec)}
+            : BuildExactSmallCanonicalSpec(authority, artifact.config, false);
   if (!std::holds_alternative<Phase4PairedTrialSpec>(spec_result)) {
     return Error(Phase4ExactSmallSnapshotErrorCode::kInvalidConfiguration,
                  "P4EXACT-SNAPSHOT-CONFIG-003", "snapshot canonical cell is invalid");
@@ -1563,15 +1667,42 @@ std::variant<std::monostate, Phase4ExactSmallSnapshotError>
 ValidatePhase4ExactSmallSnapshotArtifactV1(const Phase4ExactSmallSnapshotArtifactV1& artifact,
                                            std::string_view imported_fixture) {
   return ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
-      Phase4RepresentativeCorpusAuthority::kV1, artifact, imported_fixture);
+      Phase4RepresentativeCorpusAuthority::kV1, artifact, imported_fixture, false);
 }
 
 std::variant<std::monostate, Phase4ExactSmallSnapshotError>
 ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(
     const Phase4ExactSmallSnapshotArtifactV1& artifact, std::string_view imported_fixture) {
   return ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
-      Phase4RepresentativeCorpusAuthority::kV2, artifact, imported_fixture);
+      Phase4RepresentativeCorpusAuthority::kV2, artifact, imported_fixture, false);
 }
+
+namespace internal {
+
+Phase4ExactSmallSnapshotArtifactResultV1 BuildPhase4ConfirmatoryH4096ExactSmallSnapshotArtifact(
+    const Phase4CanonicalCellConfig& config, std::string_view source_commit, bool source_stamped,
+    bool source_tree_dirty, std::uint64_t raw_cell_plan_checksum,
+    std::uint64_t raw_cell_artifact_checksum, std::uint64_t raw_source_envelope_checksum,
+    Phase4PerNetReportRawReferenceV1 raw_reference, std::uint64_t per_net_report_artifact_checksum,
+    std::uint64_t per_net_report_source_envelope_checksum,
+    Phase4CandidatePoolSnapshotExecutionV1 capture, std::string_view imported_fixture,
+    std::uint32_t raw_evidence_schema_version) {
+  return BuildPhase4ExactSmallSnapshotArtifactForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV2, config, source_commit, source_stamped,
+      source_tree_dirty, raw_cell_plan_checksum, raw_cell_artifact_checksum,
+      raw_source_envelope_checksum, raw_reference, per_net_report_artifact_checksum,
+      per_net_report_source_envelope_checksum, std::move(capture), imported_fixture,
+      raw_evidence_schema_version, true);
+}
+
+std::variant<std::monostate, Phase4ExactSmallSnapshotError>
+ValidatePhase4ConfirmatoryH4096ExactSmallSnapshotArtifact(
+    const Phase4ExactSmallSnapshotArtifactV1& artifact, std::string_view imported_fixture) {
+  return ValidatePhase4ExactSmallSnapshotArtifactForAuthority(
+      Phase4RepresentativeCorpusAuthority::kV2, artifact, imported_fixture, true);
+}
+
+}  // namespace internal
 
 Phase4ExactSmallSnapshotSerializationResultV1 SerializePhase4ExactSmallSnapshotArtifactJsonV1(
     const Phase4ExactSmallSnapshotArtifactV1& value) try {

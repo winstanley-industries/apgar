@@ -42,9 +42,13 @@ _MAXIMUM_SERIALIZED_BYTES = 64 * 1024 * 1024
 _OVERLAP_PARTS_PER_MILLION = 1_000_000
 _ADMISSION_MAGIC = b"APGARP4E"
 _ADMISSION_REPLAY_TARGETS = {
-    1: "phase4_exact_small_candidate_admission_replay",
-    2: "phase4_confirmatory_exact_small_candidate_admission_replay",
+    (1, 1): "phase4_exact_small_candidate_admission_replay",
+    (2, 2): "phase4_confirmatory_exact_small_candidate_admission_replay",
+    (2, 3): "phase4_confirmatory_h4096_exact_small_candidate_admission_replay",
 }
+_H4096_EXACT_SMALL_PRESENT_STEP_PER_OVERUSE_UNIT = 1
+_H4096_EXACT_SMALL_HISTORY_STEP_PER_OVERUSE_UNIT = 4096
+_H4096_EXACT_SMALL_CANONICAL_ALGORITHM_BUDGET_CHECKSUM = 8829615204625848656
 _EXACT_SMALL_LATTICE_PROFILES = {
     1: (0, 0, 1),
     2: (0, 0, 8),
@@ -1943,14 +1947,28 @@ def _candidate_admission_payload(
     snapshot: Mapping[str, Any],
     *,
     corpus_version: int = 1,
+    private_wire_version: int | None = None,
 ) -> bytes:
     encoder = _AdmissionEncoder()
-    if corpus_version not in _ADMISSION_REPLAY_TARGETS:
+    if private_wire_version is None:
+        private_wire_version = corpus_version
+    authority = (corpus_version, private_wire_version)
+    if authority not in _ADMISSION_REPLAY_TARGETS:
         raise EvidenceError("unsupported exact candidate admission replay corpus authority")
-    encoder.u32(corpus_version)
-    if corpus_version == 2:
+    encoder.u32(private_wire_version)
+    if private_wire_version == 1:
+        encoder.u32(snapshot["config"]["case_id"])
+    elif private_wire_version == 2:
         encoder.u32(corpus_version)
-    encoder.u32(snapshot["config"]["case_id"])
+        encoder.u32(snapshot["config"]["case_id"])
+    else:
+        encoder.u32(corpus_version)
+        encoder.u32(snapshot["config"]["case_id"])
+        encoder.u32(snapshot["config"]["requested_pool_size"])
+        encoder.u64(_H4096_EXACT_SMALL_PRESENT_STEP_PER_OVERUSE_UNIT)
+        encoder.u64(_H4096_EXACT_SMALL_HISTORY_STEP_PER_OVERUSE_UNIT)
+        encoder.u64(_H4096_EXACT_SMALL_CANONICAL_ALGORITHM_BUDGET_CHECKSUM)
+        encoder.u64(snapshot["budget_checksum"])
     for field in _LIMIT_FIELDS:
         encoder.u64(snapshot["config"]["corpus_limits"][field])
     encoder.u32(len(snapshot["pools"]))
@@ -2067,14 +2085,21 @@ def _replay_exact_candidate_admission(
     snapshot: Mapping[str, Any],
     *,
     corpus_version: int = 1,
+    private_wire_version: int | None = None,
     target: str = "phase4_exact_small_candidate_admission_replay",
 ) -> None:
-    if _ADMISSION_REPLAY_TARGETS.get(corpus_version) != target:
+    if private_wire_version is None:
+        private_wire_version = corpus_version
+    if _ADMISSION_REPLAY_TARGETS.get((corpus_version, private_wire_version)) != target:
         raise EvidenceError("exact candidate admission replay authority does not match its target")
     try:
         completed = subprocess.run(
             [_admission_replay_path(target)],
-            input=_candidate_admission_payload(snapshot, corpus_version=corpus_version),
+            input=_candidate_admission_payload(
+                snapshot,
+                corpus_version=corpus_version,
+                private_wire_version=private_wire_version,
+            ),
             capture_output=True,
             check=False,
             timeout=30,
@@ -2274,6 +2299,7 @@ def validate_publication_against_validated_authorities(
     expected_commit: str,
     corpus_version: int = 1,
     allowed_case_ids: frozenset[int] = frozenset({100, 101, 102}),
+    private_wire_version: int | None = None,
     admission_replay_target: str = "phase4_exact_small_candidate_admission_replay",
 ) -> Mapping[str, Any]:
     """Build the oracle after the caller validates its versioned Raw/report authority."""
@@ -2401,6 +2427,7 @@ def validate_publication_against_validated_authorities(
     _replay_exact_candidate_admission(
         snapshot,
         corpus_version=corpus_version,
+        private_wire_version=private_wire_version,
         target=admission_replay_target,
     )
     optimum, optimum_count, witness = enumerate_exact_oracle(snapshot)

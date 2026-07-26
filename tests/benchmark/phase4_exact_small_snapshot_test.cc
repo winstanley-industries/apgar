@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "apgar/allocator/cpu_candidate_pool_preparation.h"
+#include "src/benchmark/phase4_confirmatory_h4096_exact_small_snapshot_internal.h"
+#include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
 #include "src/benchmark/phase4_paired_trial_internal.h"
 #include "tests/support/google_test.h"
 
@@ -114,6 +116,59 @@ template <typename Value, typename Error>
           std::move(capture), {}, kPhase4SameRunRawEvidenceSchemaVersion));
 }
 
+[[nodiscard]] Phase4ExactSmallSnapshotArtifactV1 H4096CorpusV2Artifact() {
+  Phase4CanonicalCellConfig cell = Cell(10'100);
+  cell.maximum_setup_elapsed_nanoseconds = 300'000'000'000ULL;
+  cell.external_budget = {
+      .maximum_prepared_elapsed_nanoseconds = 300'000'000'000ULL,
+      .maximum_cold_elapsed_nanoseconds = 300'000'000'000ULL,
+      .maximum_address_space_bytes = 64ULL * 1024ULL * 1024ULL * 1024ULL,
+      .maximum_peak_host_bytes = 16ULL * 1024ULL * 1024ULL * 1024ULL,
+  };
+  const Phase4PairedTrialSpec spec =
+      ValueOf<Phase4PairedTrialSpec>(internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
+          cell, 0, Phase4TrialOrder::kBaselineFirst));
+  EXPECT_FALSE(internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(
+                   spec, Phase4TrialArm::kReusableCandidateAllocation)
+                   .has_value());
+  auto preparer = ValueOf<std::unique_ptr<allocator::PersistentCpuCandidatePoolPreparer>>(
+      allocator::CreatePersistentCpuCandidatePoolPreparer(
+          {.worker_count = kPhase4CanonicalPreparationWorkersV1}));
+  Phase4CandidatePoolSnapshotExecutionV1 capture = ValueOf<Phase4CandidatePoolSnapshotExecutionV1>(
+      internal::ExecutePhase4ConfirmatoryH4096SameRunCandidatePoolSnapshot(spec, {},
+                                                                           preparer.get()));
+  const std::uint64_t raw_artifact_checksum = 301;
+  const std::uint64_t report_artifact_checksum = 307;
+  const Phase4PerNetReportRawReferenceV1 raw{
+      .repetition_index = 0,
+      .execution_order = Phase4TrialOrder::kBaselineFirst,
+      .pair_attempt_checksum = 311,
+      .paired_semantic_checksum = 313,
+      .paired_artifact_checksum = 317,
+      .baseline_semantic_checksum = 331,
+      .baseline_arm_artifact_checksum = 337,
+      .candidate_semantic_checksum = capture.semantics.semantic_checksum,
+      .candidate_arm_artifact_checksum = 347,
+  };
+  auto artifact_result = internal::BuildPhase4ConfirmatoryH4096ExactSmallSnapshotArtifact(
+      cell, kCommit, true, false, ComputePhase4CanonicalCellPlanChecksumForCorpusV2(cell),
+      raw_artifact_checksum,
+      ComputePhase4SourceEnvelopeChecksumV2(kPhase4SameRunRawEvidenceSchemaVersion,
+                                            kPhase4SameRunTrialWireSchemaVersion, kCommit, true,
+                                            false, raw_artifact_checksum),
+      raw, report_artifact_checksum,
+      ComputePhase4PerNetReportSourceEnvelopeChecksumV1(kCommit, true, false,
+                                                        report_artifact_checksum),
+      std::move(capture), {}, kPhase4SameRunRawEvidenceSchemaVersion);
+  if (const auto* error = std::get_if<Phase4ExactSmallSnapshotError>(&artifact_result);
+      error != nullptr) {
+    ADD_FAILURE() << error->invariant_id << ": " << error->detail << " required=" << error->required
+                  << " configured=" << error->configured;
+    std::abort();
+  }
+  return std::get<Phase4ExactSmallSnapshotArtifactV1>(std::move(artifact_result));
+}
+
 void Reauthenticate(Phase4ExactSmallSnapshotArtifactV1* artifact) {
   artifact->artifact_checksum = ComputePhase4ExactSmallSnapshotArtifactChecksumV1(*artifact);
   artifact->source_envelope_checksum = ComputePhase4ExactSmallSnapshotSourceEnvelopeChecksumV1(
@@ -201,6 +256,38 @@ TEST(Phase4ExactSmallSnapshotTest, CorpusV2AuthorityIsExplicitAndCrossRejecting)
       ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(corpus_v1, {})));
   EXPECT_EQ(corpus_v2.config.case_id, 10'100U);
   EXPECT_EQ(corpus_v2.corpus_checksum, Phase4RepresentativeCorpusChecksumV2());
+}
+
+TEST(Phase4ExactSmallSnapshotTest, H4096AuthorityPinsBudgetOutcomeAndCrossRejectsH2250) {
+  constexpr std::uint64_t kH4096ExactPairedBudgetChecksum = 5'851'813'264'366'095'594ULL;
+  const Phase4ExactSmallSnapshotArtifactV1 h2250 = CorpusV2Artifact();
+  const Phase4ExactSmallSnapshotArtifactV1 h4096 = H4096CorpusV2Artifact();
+
+  EXPECT_TRUE(std::holds_alternative<std::monostate>(
+      internal::ValidatePhase4ConfirmatoryH4096ExactSmallSnapshotArtifact(h4096, {})));
+  EXPECT_TRUE(std::holds_alternative<Phase4ExactSmallSnapshotError>(
+      ValidatePhase4ExactSmallSnapshotArtifactForCorpusV2(h4096, {})));
+  EXPECT_TRUE(std::holds_alternative<Phase4ExactSmallSnapshotError>(
+      internal::ValidatePhase4ConfirmatoryH4096ExactSmallSnapshotArtifact(h2250, {})));
+
+  EXPECT_EQ(h4096.budget_checksum, kH4096ExactPairedBudgetChecksum);
+  EXPECT_EQ(h4096.candidate_semantics.budget_checksum, kH4096ExactPairedBudgetChecksum);
+  EXPECT_EQ(h4096.cartesian_product, 8U);
+  ASSERT_EQ(h4096.pools.size(), 6U);
+  EXPECT_EQ(h4096.pools[0].candidates.size(), 2U);
+  EXPECT_EQ(h4096.pools[1].candidates.size(), 2U);
+  EXPECT_EQ(h4096.pools[2].candidates.size(), 2U);
+  EXPECT_EQ(h4096.pools[3].candidates.size(), 1U);
+  EXPECT_EQ(h4096.pools[4].candidates.size(), 1U);
+  EXPECT_EQ(h4096.pools[5].candidates.size(), 1U);
+  EXPECT_EQ(h4096.production_outcome, (Phase4BoardOutcome{
+                                          .selected_net_count = 6,
+                                          .no_candidate_net_count = 0,
+                                          .overused_resource_count = 1,
+                                          .total_overuse_units = 1,
+                                          .total_intrinsic_cost = 159'000,
+                                          .world_checksum = 6'504'433'565'156'884'771ULL,
+                                      }));
 }
 
 TEST(Phase4ExactSmallSnapshotTest, CorpusV2SnapshotAuthorityKeepsUnopenedCasesClosed) {

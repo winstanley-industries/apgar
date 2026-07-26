@@ -16,7 +16,16 @@
 
 #include "apgar/benchmark/phase4_representative_corpus.h"
 #include "apgar/candidates/route_candidate.h"
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_REPLAY)
+#include "src/benchmark/phase4_h4096_canonical_budget_internal.h"
+#include "src/benchmark/phase4_paired_trial_internal.h"
+#endif
 #include "src/candidates/route_candidate_internal.h"
+
+#if defined(APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY) && \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_REPLAY)
+#error "H=2250 and H=4096 exact-small replay authorities are mutually exclusive"
+#endif
 
 namespace {
 
@@ -29,6 +38,9 @@ constexpr std::uint64_t kMaximumComponentRows = 100'000;
 constexpr std::uint64_t kMaximumExpandedEdges = 100'000;
 constexpr std::uint64_t kMaximumLogicalBytes = 32ULL * 1024ULL * 1024ULL;
 constexpr std::uint32_t kMaximumDeviceClassBytes = 1024;
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_REPLAY)
+constexpr std::uint64_t kH4096ExactPairedBudgetChecksum = 5'851'813'264'366'095'594ULL;
+#endif
 
 class Reader {
  public:
@@ -288,13 +300,37 @@ template <typename Value>
 [[nodiscard]] int Run(std::span<const std::uint8_t> input) {
   Reader reader(input);
   std::uint32_t version = 0;
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY
+#if defined(APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY) || \
+    defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_REPLAY)
   std::uint32_t corpus_version = 0;
 #endif
   std::uint32_t case_id = 0;
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_REPLAY)
+  std::uint32_t pool_size = 0;
+  std::uint64_t present_step_per_overuse_unit = 0;
+  std::uint64_t history_step_per_overuse_unit = 0;
+  std::uint64_t canonical_algorithm_budget_checksum = 0;
+  std::uint64_t paired_budget_checksum = 0;
+#endif
   apgar::benchmark::Phase4RepresentativeCorpusLimits limits;
   if (!reader.Bytes(kMagic) || !reader.U32(&version) ||
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_REPLAY)
+      version != 3 || !reader.U32(&corpus_version) ||
+      corpus_version != apgar::benchmark::kPhase4RepresentativeCorpusVersionV2 ||
+      !reader.U32(&case_id) || case_id != 10'100 || !reader.U32(&pool_size) || pool_size != 4 ||
+      !reader.U64(&present_step_per_overuse_unit) ||
+      present_step_per_overuse_unit !=
+          apgar::benchmark::internal::kPhase4CorpusV2ProtocolV1PresentStepPerOveruseUnit ||
+      !reader.U64(&history_step_per_overuse_unit) ||
+      history_step_per_overuse_unit !=
+          apgar::benchmark::internal::kPhase4CorpusV2H4096HistoryStepPerOveruseUnit ||
+      !reader.U64(&canonical_algorithm_budget_checksum) ||
+      canonical_algorithm_budget_checksum !=
+          apgar::benchmark::internal::
+              kPhase4ConfirmatoryH4096ExactCanonicalAlgorithmBudgetChecksum ||
+      !reader.U64(&paired_budget_checksum) ||
+      paired_budget_checksum != kH4096ExactPairedBudgetChecksum ||
+#elif defined(APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY)
       version != 2 || !reader.U32(&corpus_version) ||
       corpus_version != apgar::benchmark::kPhase4RepresentativeCorpusVersionV2 ||
       !reader.U32(&case_id) || case_id != 10'100 ||
@@ -307,7 +343,62 @@ template <typename Value>
       !reader.U64(&limits.maximum_active_regions) || !reader.U64(&limits.maximum_board_entities)) {
     return Fail("invalid magic, version, case, or corpus limits");
   }
-#ifdef APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY
+#if defined(APGAR_PHASE4_CONFIRMATORY_H4096_EXACT_REPLAY)
+  apgar::benchmark::Phase4CanonicalCellConfig cell;
+  cell.case_id = case_id;
+  cell.requested_pool_size = pool_size;
+  cell.preparation_worker_count = apgar::benchmark::kPhase4CanonicalPreparationWorkersV1;
+  cell.repetitions = apgar::benchmark::kPhase4CanonicalRepetitionsV1;
+  cell.maximum_setup_elapsed_nanoseconds = 300'000'000'000ULL;
+  cell.external_budget = {
+      .maximum_prepared_elapsed_nanoseconds = 300'000'000'000ULL,
+      .maximum_cold_elapsed_nanoseconds = 300'000'000'000ULL,
+      .maximum_address_space_bytes = 68'719'476'736ULL,
+      .maximum_peak_host_bytes = 17'179'869'184ULL,
+  };
+  cell.corpus_limits = limits;
+  apgar::benchmark::Phase4CanonicalSpecResult spec_result =
+      apgar::benchmark::internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(
+          cell, 0, apgar::benchmark::Phase4TrialOrder::kBaselineFirst);
+  const auto* spec = std::get_if<apgar::benchmark::Phase4PairedTrialSpec>(&spec_result);
+  if (spec == nullptr || apgar::benchmark::internal::PreflightPhase4ConfirmatoryH4096SameRunSpec(
+                             *spec, apgar::benchmark::Phase4TrialArm::kReusableCandidateAllocation)
+                             .has_value()) {
+    return Fail("the H=4096 exact canonical spec could not be independently reconstructed");
+  }
+  const apgar::benchmark::Phase4CaseDescriptor* descriptor =
+      apgar::benchmark::FindPhase4CaseDescriptorForAuthority(
+          apgar::benchmark::Phase4RepresentativeCorpusAuthority::kV2, case_id);
+  if (descriptor == nullptr || spec->candidate_session_config.schedules.empty()) {
+    return Fail("the H=4096 exact descriptor or terminal schedule is unavailable");
+  }
+  const std::uint64_t rebuilt_algorithm_budget =
+      apgar::benchmark::internal::ComputePhase4CanonicalAlgorithmBudgetChecksumV1(*spec);
+  const std::uint64_t rebuilt_paired_budget =
+      apgar::benchmark::internal::ComputePhase4PairedBudgetChecksumForAuthorityV1(
+          apgar::benchmark::Phase4RepresentativeCorpusAuthority::kV2, *spec,
+          apgar::benchmark::Phase4RouteOpportunity{
+              .route_queries = spec->baseline_config.limits.maximum_route_queries,
+              .route_work_units = spec->baseline_config.limits.maximum_total_route_work_units,
+          },
+          descriptor->requested_net_count,
+          spec->candidate_session_config.regeneration_plan_config.maximum_total_columns,
+          spec->candidate_session_config.schedules.back().maximum_selection_rounds);
+  if (spec->baseline_config.price_config.present_step_per_overuse_unit !=
+          present_step_per_overuse_unit ||
+      spec->candidate_session_config.price_config.present_step_per_overuse_unit !=
+          present_step_per_overuse_unit ||
+      spec->baseline_config.price_config.history_step_per_overuse_unit !=
+          history_step_per_overuse_unit ||
+      spec->candidate_session_config.price_config.history_step_per_overuse_unit !=
+          history_step_per_overuse_unit ||
+      rebuilt_algorithm_budget != canonical_algorithm_budget_checksum ||
+      rebuilt_paired_budget != paired_budget_checksum ||
+      rebuilt_paired_budget != kH4096ExactPairedBudgetChecksum) {
+    return Fail("the H=4096 price or budget authority does not match its canonical preimage");
+  }
+  auto rebuilt = apgar::benchmark::BuildPhase4RepresentativeCaseV2(case_id, {}, limits);
+#elif defined(APGAR_PHASE4_CONFIRMATORY_EXACT_REPLAY)
   auto rebuilt = apgar::benchmark::BuildPhase4RepresentativeCaseV2(case_id, {}, limits);
 #else
   auto rebuilt = apgar::benchmark::BuildPhase4RepresentativeCaseV1(case_id, {}, limits);

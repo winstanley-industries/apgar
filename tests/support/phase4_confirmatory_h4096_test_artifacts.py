@@ -33,8 +33,27 @@ def _budget() -> dict[str, int]:
     }
 
 
+def _canonical_confirmatory_budget() -> dict[str, int]:
+    return {
+        "maximum_prepared_elapsed_nanoseconds": 300_000_000_000,
+        "maximum_cold_elapsed_nanoseconds": 300_000_000_000,
+        "maximum_address_space_bytes": 68_719_476_736,
+        "maximum_peak_host_bytes": 17_179_869_184,
+    }
+
+
 def _corpus_limits() -> dict[str, int]:
     return dict(raw_validator._MAXIMUM_CORPUS_LIMITS)
+
+
+def _canonical_confirmatory_corpus_limits() -> dict[str, int]:
+    return {
+        "maximum_nets": 4_096,
+        "maximum_compiled_nodes": 100_000_000,
+        "maximum_compiled_host_bytes": 8_589_934_592,
+        "maximum_active_regions": 250_000,
+        "maximum_board_entities": 100_000,
+    }
 
 
 def _environment() -> dict[str, object]:
@@ -158,6 +177,7 @@ def _record(
     budget_checksum: int,
 ) -> dict[str, object]:
     candidate = arm == 1
+    external_budget = document["config"]["external_budget"]
     semantics = _semantics(
         document,
         manifest_case,
@@ -176,9 +196,9 @@ def _record(
             _CANDIDATE_PROCESS_IDENTITY if candidate else _BASELINE_PROCESS_IDENTITY
         ),
         "associated_semantic_checksum": semantics["semantic_checksum"],
-        "configured_wall_limit_nanoseconds": 2_000,
-        "configured_address_space_limit_bytes": 1 << 34,
-        "configured_peak_host_limit_bytes": 1 << 30,
+        "configured_wall_limit_nanoseconds": external_budget["maximum_cold_elapsed_nanoseconds"],
+        "configured_address_space_limit_bytes": external_budget["maximum_address_space_bytes"],
+        "configured_peak_host_limit_bytes": external_budget["maximum_peak_host_bytes"],
         "outer_elapsed_nanoseconds": 50 + repetition,
         "peak_host_bytes": 20_000 if candidate else 10_000,
         "process_exit_code": 0,
@@ -308,6 +328,7 @@ def make_raw(
     same_run: bool,
     h4096: bool,
     repetitions: int = 1,
+    canonical_confirmatory_caps: bool = False,
 ) -> dict[str, object]:
     """Build one complete synthetic Corpus-v2 Raw artifact."""
     corpus_checksum, cases, h2250_budgets = (
@@ -320,9 +341,17 @@ def make_raw(
         "requested_pool_size": pool,
         "preparation_worker_count": 4,
         "repetitions": repetitions,
-        "maximum_setup_elapsed_nanoseconds": 3_000,
-        "external_budget": _budget(),
-        "corpus_limits": _corpus_limits(),
+        "maximum_setup_elapsed_nanoseconds": (
+            300_000_000_000 if canonical_confirmatory_caps else 3_000
+        ),
+        "external_budget": (
+            _canonical_confirmatory_budget() if canonical_confirmatory_caps else _budget()
+        ),
+        "corpus_limits": (
+            _canonical_confirmatory_corpus_limits()
+            if canonical_confirmatory_caps
+            else _corpus_limits()
+        ),
     }
     result: dict[str, object] = {}
     if same_run:

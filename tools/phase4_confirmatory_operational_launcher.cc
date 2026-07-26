@@ -20,6 +20,11 @@
 #include <string_view>
 #include <vector>
 
+#if defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_SOURCE_BOUND) && \
+    !defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_COMMIT)
+#include "apgar/benchmark/phase3_source_stamp.h"
+#endif
+
 namespace {
 
 #if defined(APGAR_PHASE4_CONFIRMATORY_OPERATIONAL_INNER) && \
@@ -38,11 +43,96 @@ constexpr char kHandshakePrefix[] = "APGAR-PHASE4-EXACT-SMALL-ORACLE-LAUNCH-V1\n
 #else
 #error "Python authority launcher requires one fixed inner target"
 #endif
+
+#if defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_SOURCE_BOUND)
+#if !defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_INNER)
+#error "Source binding is restricted to an exact-small Oracle launcher"
+#elif defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_COMMIT)
+#if !defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_STAMPED) || \
+    !defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_DIRTY)
+#error "Test source binding requires complete fixed source state"
+#endif
+constexpr std::string_view kBuiltCommit = APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_COMMIT;
+constexpr bool kSourceStamped = APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_STAMPED != 0;
+constexpr bool kSourceTreeDirty = APGAR_PHASE4_EXACT_SMALL_ORACLE_TEST_SOURCE_DIRTY != 0;
+#else
+constexpr std::string_view kBuiltCommit = apgar::benchmark::kPhase3BuiltCommit;
+constexpr bool kSourceStamped = apgar::benchmark::kPhase3SourceStamped;
+constexpr bool kSourceTreeDirty = apgar::benchmark::kPhase3BuiltFromDirtyTree;
+#endif
+#endif
+
 constexpr char kHermeticPythonRepository[] =
     "rules_python++python+python_3_13_x86_64-unknown-linux-gnu";
 constexpr std::size_t kMaximumRunfilesEntries = 16'384;
 constexpr std::uintmax_t kMaximumRunfilesManifestBytes = 8ULL * 1024ULL * 1024ULL;
 constexpr std::uintmax_t kMaximumRepositoryMappingBytes = 1024ULL * 1024ULL;
+
+#if defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_SOURCE_BOUND)
+[[nodiscard]] bool IsLowerHexCommit(std::string_view value) {
+  return value.size() == 40U && std::all_of(value.begin(), value.end(), [](char character) {
+           return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
+         });
+}
+
+[[nodiscard]] std::optional<std::string_view> ParseExpectedCommit(int argc, char** argv) {
+  std::optional<std::string_view> expected_commit;
+  constexpr std::string_view kOption = "--expected-commit";
+  constexpr std::string_view kEqualsPrefix = "--expected-commit=";
+  for (int index = 1; index < argc; ++index) {
+    if (argv[index] == nullptr) {
+      return std::nullopt;
+    }
+    const std::string_view argument(argv[index]);
+    const std::size_t equals = argument.find('=');
+    const std::string_view option = argument.substr(0, equals);
+    // argparse accepts unambiguous long-option prefixes by default. Reject
+    // every possible abbreviation here as well as disabling that behavior in
+    // the inner parser, so another spelling cannot override the checked
+    // commit after delegation.
+    if (option.size() > 2U && option != kOption && kOption.starts_with(option)) {
+      return std::nullopt;
+    }
+    std::optional<std::string_view> value;
+    if (argument == kOption) {
+      if (++index >= argc || argv[index] == nullptr) {
+        return std::nullopt;
+      }
+      value = std::string_view(argv[index]);
+    } else if (argument.starts_with(kEqualsPrefix)) {
+      value = argument.substr(kEqualsPrefix.size());
+    }
+    if (value.has_value()) {
+      if (expected_commit.has_value() || !IsLowerHexCommit(*value)) {
+        return std::nullopt;
+      }
+      expected_commit = *value;
+    }
+  }
+  return expected_commit;
+}
+
+[[nodiscard]] bool ValidateSourceBinding(int argc, char** argv) {
+  if (!kSourceStamped) {
+    std::cerr << kLauncherName << " launcher rejects unstamped source\n";
+    return false;
+  }
+  if (kSourceTreeDirty) {
+    std::cerr << kLauncherName << " launcher rejects dirty source\n";
+    return false;
+  }
+  const std::optional<std::string_view> expected_commit = ParseExpectedCommit(argc, argv);
+  if (!expected_commit.has_value()) {
+    std::cerr << kLauncherName << " launcher requires exactly one valid --expected-commit\n";
+    return false;
+  }
+  if (!IsLowerHexCommit(kBuiltCommit) || *expected_commit != kBuiltCommit) {
+    std::cerr << kLauncherName << " launcher rejects expected commit mismatch\n";
+    return false;
+  }
+  return true;
+}
+#endif
 
 [[nodiscard]] bool ResolvesTo(const std::filesystem::path& path,
                               const std::filesystem::path& expected) {
@@ -386,6 +476,13 @@ int main(int argc, char** argv) {
   if (argc <= 0 || argv == nullptr || argv[0] == nullptr) {
     return 2;
   }
+#if defined(APGAR_PHASE4_EXACT_SMALL_ORACLE_SOURCE_BOUND)
+  // This preflight is deliberately argv-only. It precedes runfiles discovery,
+  // delegation, and every publisher input open.
+  if (!ValidateSourceBinding(argc, argv)) {
+    return 2;
+  }
+#endif
   for (const char* name : {"LD_PRELOAD", "LD_AUDIT"}) {
     const char* value = std::getenv(name);
     if (value != nullptr && value[0] != '\0') {

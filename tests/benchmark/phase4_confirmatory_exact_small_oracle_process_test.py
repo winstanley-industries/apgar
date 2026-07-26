@@ -21,10 +21,12 @@ _COMMIT = "a" * 40
 _OPTIMALITY_ERROR = "production frozen-pool objective is not exact-optimal"
 _PRODUCTION_OBJECTIVE = (6, 3, 112200)
 _OPTIMUM_OBJECTIVE = (6, 1, 159000)
-_PUBLIC_EXACT_LAUNCHERS = (
+_H4096_TEST_CLEAN_LAUNCHER = "phase4_confirmatory_h4096_exact_small_oracle_test_clean_validator"
+_EXACT_LAUNCHERS_UNDER_TEST = (
     "phase4_exact_small_oracle_validator",
     "phase4_exact_small_oracle_v2_validator",
     "phase4_confirmatory_exact_small_oracle_validator",
+    _H4096_TEST_CLEAN_LAUNCHER,
 )
 _PYTHON_REPOSITORY = "rules_python++python+python_3_13_x86_64-unknown-linux-gnu"
 
@@ -35,6 +37,14 @@ def runfile(relative: str) -> pathlib.Path:
 
 def canonical(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
+
+
+def launcher_help_command(executable: pathlib.Path) -> list[str]:
+    command = [str(executable)]
+    if executable.name == _H4096_TEST_CLEAN_LAUNCHER:
+        command.extend(("--expected-commit", _COMMIT))
+    command.append("--help")
+    return command
 
 
 def normalize_clean_source(
@@ -765,6 +775,13 @@ class Phase4ConfirmatoryExactSmallOracleProcessTest(unittest.TestCase):
             self.snapshot,
             corpus_version=2,
         )
+        h4096_snapshot = copy.deepcopy(self.snapshot)
+        h4096_snapshot["budget_checksum"] = 5851813264366095594
+        h4096_payload = legacy_oracle._candidate_admission_payload(
+            h4096_snapshot,
+            corpus_version=2,
+            private_wire_version=3,
+        )
         legacy_payload = legacy_oracle._candidate_admission_payload(
             self.legacy_snapshot,
             corpus_version=1,
@@ -772,22 +789,31 @@ class Phase4ConfirmatoryExactSmallOracleProcessTest(unittest.TestCase):
         confirmatory_replay = str(
             runfile("phase4_confirmatory_exact_small_candidate_admission_replay")
         )
+        h4096_replay = str(
+            runfile("phase4_confirmatory_h4096_exact_small_candidate_admission_replay")
+        )
         legacy_replay = str(runfile("phase4_exact_small_candidate_admission_replay"))
-        for target, payload, expected in (
-            (confirmatory_replay, confirmatory_payload, 0),
-            (legacy_replay, legacy_payload, 0),
-            (legacy_replay, confirmatory_payload, 1),
-            (confirmatory_replay, legacy_payload, 1),
-        ):
-            completed = subprocess.run(
-                [target],
-                input=payload,
-                check=False,
-                capture_output=True,
-                timeout=30,
-            )
-            self.assertEqual(completed.returncode, expected, completed.stderr)
-            self.assertEqual(completed.stdout, b"")
+        authorities = (
+            (legacy_replay, legacy_payload),
+            (confirmatory_replay, confirmatory_payload),
+            (h4096_replay, h4096_payload),
+        )
+        for target_index, (target, _) in enumerate(authorities):
+            for payload_index, (_, payload) in enumerate(authorities):
+                with self.subTest(target=target_index, payload=payload_index):
+                    completed = subprocess.run(
+                        [target],
+                        input=payload,
+                        check=False,
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(
+                        completed.returncode,
+                        0 if target_index == payload_index else 1,
+                        completed.stderr,
+                    )
+                    self.assertEqual(completed.stdout, b"")
 
     def test_cli_obeys_raw_sidecar_report_snapshot_open_order(self) -> None:
         sidecar_fifo = self.root / "oracle-sidecar.fifo"
@@ -1032,11 +1058,11 @@ class Phase4ConfirmatoryExactSmallOracleProcessTest(unittest.TestCase):
         self.assertEqual(direct_inner.stdout, "")
         self.assertIn("requires its compiled launcher", direct_inner.stderr)
 
-    def test_public_launchers_promote_the_handshake_above_closed_stdin(self) -> None:
-        for target in _PUBLIC_EXACT_LAUNCHERS:
+    def test_compiled_launchers_promote_the_handshake_above_closed_stdin(self) -> None:
+        for target in _EXACT_LAUNCHERS_UNDER_TEST:
             with self.subTest(target=target):
                 completed = subprocess.run(
-                    [str(runfile(target)), "--help"],
+                    launcher_help_command(runfile(target)),
                     check=False,
                     text=True,
                     capture_output=True,
@@ -1047,11 +1073,11 @@ class Phase4ConfirmatoryExactSmallOracleProcessTest(unittest.TestCase):
                 self.assertIn("usage:", completed.stdout)
                 self.assertNotIn("requires its compiled launcher", completed.stderr)
 
-    def test_public_launchers_skip_stage_one_site_initialization(self) -> None:
+    def test_compiled_launchers_skip_stage_one_site_initialization(self) -> None:
         declared_sitecustomize = runfile("sitecustomize.py")
         self.assertTrue(declared_sitecustomize.is_file())
         marker = self.root / "stage-one-sitecustomize-ran"
-        probe_launcher = runfile(_PUBLIC_EXACT_LAUNCHERS[0]).resolve()
+        probe_launcher = runfile(_EXACT_LAUNCHERS_UNDER_TEST[0]).resolve()
         probe_interpreter = (
             pathlib.Path(f"{probe_launcher}.runfiles")
             / "_main"
@@ -1072,7 +1098,7 @@ class Phase4ConfirmatoryExactSmallOracleProcessTest(unittest.TestCase):
         self.assertEqual(probe.returncode, 0, probe.stderr)
         self.assertTrue(marker.is_file())
         marker.unlink()
-        for target in _PUBLIC_EXACT_LAUNCHERS:
+        for target in _EXACT_LAUNCHERS_UNDER_TEST:
             with self.subTest(target=target):
                 canonical_launcher = runfile(target).resolve()
                 broad_sitecustomize = canonical_launcher.parent / "sitecustomize.py"
@@ -1081,7 +1107,7 @@ class Phase4ConfirmatoryExactSmallOracleProcessTest(unittest.TestCase):
                 environment = os.environ.copy()
                 environment["APGAR_PHASE4_ENCLOSING_INIT_MARKER"] = str(marker)
                 completed = subprocess.run(
-                    [str(runfile(target)), "--help"],
+                    launcher_help_command(runfile(target)),
                     check=False,
                     text=True,
                     capture_output=True,
@@ -1092,7 +1118,7 @@ class Phase4ConfirmatoryExactSmallOracleProcessTest(unittest.TestCase):
                 self.assertIn("usage:", completed.stdout)
                 self.assertFalse(marker.exists())
 
-    def test_public_launchers_ignore_manifest_declared_enclosing_package_init(self) -> None:
+    def test_compiled_launchers_ignore_manifest_declared_enclosing_package_init(self) -> None:
         marker = self.root / "enclosing-package-init-ran"
         shadow = self.root / "manifest-declared-superset.runfiles"
         shutil.copytree(
@@ -1115,12 +1141,12 @@ class Phase4ConfirmatoryExactSmallOracleProcessTest(unittest.TestCase):
                 for line in manifest.read_text(encoding="utf-8").splitlines()
             )
         )
-        for target in _PUBLIC_EXACT_LAUNCHERS:
+        for target in _EXACT_LAUNCHERS_UNDER_TEST:
             with self.subTest(target=target):
                 environment = os.environ.copy()
                 environment["APGAR_PHASE4_ENCLOSING_INIT_MARKER"] = str(marker)
                 completed = subprocess.run(
-                    [str(main / target), "--help"],
+                    launcher_help_command(main / target),
                     check=False,
                     text=True,
                     capture_output=True,
@@ -1171,7 +1197,7 @@ class Phase4ConfirmatoryExactSmallOracleProcessTest(unittest.TestCase):
                     (shadow / metadata).symlink_to(pathlib.Path(f"{foreign}{suffix}"))
 
                 completed = subprocess.run(
-                    [str(shadow / "_main" / target), "--help"],
+                    launcher_help_command(shadow / "_main" / target),
                     check=False,
                     text=True,
                     capture_output=True,

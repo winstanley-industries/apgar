@@ -3636,6 +3636,32 @@ std::optional<Phase4PairedTrialError> PreflightPhase4ConfirmatoryH4096SameRunSpe
   return PreflightH4096Spec(Phase4ConfirmatoryH4096Carrier::kSameRun, spec, arm);
 }
 
+Phase4CandidatePoolSnapshotExecutionResultV1
+ExecutePhase4ConfirmatoryH4096SameRunCandidatePoolSnapshot(
+    const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
+    allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {
+  if (std::optional<Phase4PairedTrialError> error = PreflightPhase4ConfirmatoryH4096SameRunSpec(
+          spec, Phase4TrialArm::kReusableCandidateAllocation);
+      error.has_value()) {
+    return ArmFailure(*error);
+  }
+  ArmExecutionWithOptionalTelemetryResult result = ExecutePhase4TrialArmImpl<false, false>(
+      Phase4TrialExecutionAuthority::kCorpusV2H4096, Phase4TrialArm::kReusableCandidateAllocation,
+      spec, imported_fixture, candidate_preparer, true, false, true);
+  if (std::holds_alternative<Phase4TrialArmFailure>(result)) {
+    return std::get<Phase4TrialArmFailure>(std::move(result));
+  }
+  ArmExecutionWithOptionalTelemetry output =
+      std::get<ArmExecutionWithOptionalTelemetry>(std::move(result));
+  if (!output.snapshot.has_value()) {
+    return ArmFailure(Error(Phase4PairedTrialErrorCode::kInternalInvariant,
+                            "P4SNAPSHOT-H4096-INTERNAL-001",
+                            "H=4096 candidate execution completed without a final-pool snapshot",
+                            Phase4TrialArm::kReusableCandidateAllocation));
+  }
+  return std::move(*output.snapshot);
+}
+
 Phase4TrialArmExecutionResult ExecutePhase4ConfirmatoryH4096OrdinaryTrialArm(
     Phase4TrialArm arm, const Phase4PairedTrialSpec& spec, std::string_view imported_fixture,
     allocator::PersistentCpuCandidatePoolPreparer* candidate_preparer) {

@@ -13,6 +13,10 @@ _TARGETS = frozenset(
         "phase4_exact_small_oracle_validator_py",
         "phase4_exact_small_oracle_v2_validator_py",
         "phase4_confirmatory_exact_small_oracle_validator_py",
+        "phase4_confirmatory_h4096_exact_small_oracle_validator_py",
+        "phase4_confirmatory_h4096_exact_small_oracle_test_clean_validator_py",
+        "phase4_confirmatory_h4096_exact_small_oracle_test_dirty_validator_py",
+        "phase4_confirmatory_h4096_exact_small_oracle_test_unstamped_validator_py",
     }
 )
 _MAXIMUM_TOKEN_BYTES = 512

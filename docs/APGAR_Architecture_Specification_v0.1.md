@@ -1710,8 +1710,80 @@ acceleration.
   MUST be reacquired from that same clean commit. Earlier artifacts cannot be
   relabeled or joined across commits.
   Ordinary H=4096 operational measurement, every other development cell,
-  standalone replay, snapshot, exact-small Oracle, fixed-query, stress,
-  aggregation, matrix, decision, heldout, and imported paths remain closed.
+  standalone replay, fixed-query, stress, aggregation, matrix, decision,
+  heldout, and imported paths remain closed.
+  The H=4096 exact-small Oracle authority is separately frozen by
+  `docs/adr/ADR-057-phase4-confirmatory-h4096-exact-small-oracle.md` and
+  `schemas/benchmark/phase4_confirmatory_exact_small_oracle_publication_v2.md`.
+  Its separately compiled production snapshot runner and publication validator
+  MUST select H=4096 out of band and accept only explicit Corpus 2 exact
+  `(10100,4)`, Raw Evidence schema 2 over Raw Wire 2, Same-Run Decision
+  Telemetry schema 1 over Telemetry Wire 2, four workers, 20 repetitions,
+  equal-arm `present=1,history=4096`, and canonical algorithm-budget checksum
+  `8829615204625848656`. It MUST independently require the Raw/Snapshot paired
+  semantic `budget_checksum=5851813264366095594`; neither budget identity may
+  be derived from or substituted for the other. Existing H=2250 snapshot,
+  replay, and Oracle entry points MUST remain unchanged and reject H=4096
+  before fixture access, case construction, preparer creation, candidate
+  execution, replay, or enumeration. Protocol-v2 JSON MUST remain
+  byte-unchanged.
+  Exact-Small Snapshot v1 retains its frozen payload schema, component and
+  output bounds, canonical key order, artifact checksum domain, and source
+  envelope checksum domain. The H=4096 production snapshot target MUST be
+  fixtureless because case 10100 is generated. Its test target MUST remain
+  permanently preflight-only and unable to construct a case, create a
+  preparer, execute a candidate arm, serialize a snapshot, or emit evidence.
+  The Oracle output likewise retains payload schema 1 and its fixed key order.
+  The Protocol-v2 `v2` authority selects only the H=4096 binding values and
+  domain-separated V2 Oracle publication artifact/source checksums.
+  Before authenticating runfiles, delegating to Python, or opening any input,
+  the H=4096 production publisher's compiled launcher MUST require its
+  generated source stamp to identify a clean stamped tree and MUST require
+  exactly one well-formed independently supplied expected commit equal to the
+  embedded build commit. The compiled launcher MUST reject abbreviated
+  expected-commit spellings, and the inner parser MUST disable long-option
+  abbreviation so a second spelling cannot replace the checked commit after
+  delegation. Missing, duplicate, abbreviated, malformed, unstamped, dirty, or
+  mismatched source identity MUST fail without input access.
+  Fixed-source test-only launcher variants MAY exercise this firewall
+  deterministically, but their inner targets MUST stop immediately after
+  handshake and argument parsing, MUST NOT depend on the production validator
+  or replay helper, and MUST remain incapable of opening inputs, executing
+  replay or enumeration, constructing an artifact, or emitting an Oracle
+  Artifact. Existing H=2250 and ordinary compiled launchers retain their
+  current source behavior.
+  The publisher MUST completely authenticate bounded regular H=4096 Raw first,
+  then open and completely join its bounded regular H=4096 same-run telemetry
+  companion. Only then may it open and completely join the bounded regular
+  H=4096 Wire-2 report; only after the report joins may it open and completely
+  validate the bounded regular Snapshot v1. Only after all four inputs join
+  may it invoke the fixed separately compiled
+  `phase4_confirmatory_h4096_exact_small_candidate_admission_replay`. That
+  helper's private replay wire v3 MUST bind Corpus 2, case 10100, pool four,
+  equal-arm `present=1,history=4096`, canonical algorithm-budget cell checksum
+  `8829615204625848656`, and paired semantic budget checksum
+  `5851813264366095594` before case construction or candidate traversal. It
+  MUST independently pin both checksums to their proper preimages, MUST NOT
+  conflate them, MUST rebuild only that case, replay every non-authenticating
+  exact candidate-admission check, require exact EOF, and expose no
+  caller-selectable corpus, configuration, case, helper, or executable
+  authority. Complete bounded enumeration may begin only after replay
+  succeeds.
+  Production and exhaustive objectives MUST be exactly equal before an Oracle
+  Artifact can be emitted. The reviewed H=4096 production objective
+  `(6,1,159000)` is motivation, not proof; Raw, telemetry, report, and snapshot
+  MUST be freshly reacquired from the same clean implementation commit and the
+  optimum MUST be freshly enumerated. A mismatch emits no completion authority
+  and leaves the campaign incomplete, never an allocator loss.
+  One remaining overused resource and one overuse unit are compatible with
+  fixed-pool optimality; objective equality MUST NOT be presented as resource
+  feasibility. A structurally valid false exact-rejection guardrail remains
+  publishable authentic negative evidence when the fixed-pool proof otherwise
+  completes. This authority proves neither candidate-pool route completeness,
+  operational performance, combined-board legality, another cell, heldout or
+  imported execution, confirmatory matrix completion, Phase 4 completion, nor
+  M1 completion. Fixed-query, stress, aggregation, matrix, decision, heldout,
+  imported, and every other development path remain closed.
   Complete observed aggregation is versioned by
   `schemas/benchmark/phase4_matrix_decision_publication_v1.md`. The aggregator
   MUST derive its exact external bundle inventory from Protocol v4, fully
