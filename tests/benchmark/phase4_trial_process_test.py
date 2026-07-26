@@ -258,11 +258,14 @@ class Phase4TrialProcessTest(unittest.TestCase):
         self.assertEqual(baseline["disposition"], 2)
         self.assertTrue(baseline["watchdog_kill_sent"])
 
-        teardown = self.run_fault("teardown_hang", setup_nanoseconds=100_000_000)
+        # The setup budget also gates worker launch and warmup. Keep the
+        # teardown probe's one-second default so sanitizer load cannot fail
+        # setup before the injected teardown hang is reached.
+        teardown = self.run_fault("teardown_hang")
         for arm in ("baseline", "candidate"):
             attempt = teardown["attempts"][0][arm]
-            self.assertEqual(attempt["disposition"], 9)
-            self.assertTrue(attempt["watchdog_kill_sent"])
+            self.assertEqual(attempt["disposition"], 9, teardown)
+            self.assertTrue(attempt["watchdog_kill_sent"], teardown)
 
     def test_continuous_output_cannot_starve_setup_watchdog(self) -> None:
         artifact = self.run_fault("continuous_output", setup_nanoseconds=100_000_000)
