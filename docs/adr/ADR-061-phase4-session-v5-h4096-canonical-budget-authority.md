@@ -81,9 +81,11 @@ create an execution capability.
   exact snapshot or oracle, fixed-query, stress, imported, heldout, matrix,
   decision, aggregation, or publication path.
 - Confirmatory Decision Protocol v2 remains byte-frozen and bound to roster
-  v3. A separately reviewed Protocol v3 must bind roster v4 before separately
-  reviewed development acquisition and consuming-publication authorities may
-  be proposed. A protocol/roster commit alone is insufficient for execution.
+  v3. ADR-062 freezes the separately reviewed inactive Protocol-v3 contract
+  that must bind roster v4 before separately reviewed development acquisition
+  and consuming-publication authorities may be proposed. Its canonical JSON
+  and validator remain a separate implementation slice. A protocol/roster
+  commit alone is insufficient for execution.
 
 ## Consequences
 

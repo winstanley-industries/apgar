@@ -167,7 +167,10 @@ fixed-query, stress, imported, heldout, matrix, aggregation, decision,
 publication, or acquisition.
 
 Confirmatory Decision Protocol v2 remains byte-frozen and bound to roster v3.
-A separately reviewed Protocol v3 must bind roster v4, and separately reviewed
+ADR-062 and
+`phase4_confirmatory_decision_protocol_v3.md` freeze the separately reviewed
+inactive Protocol-v3 contract that must bind roster v4. Its canonical JSON and
+validator remain a separate implementation slice. Separately reviewed
 development acquisition and consuming-publication authorities must bind the
 complete successor chain from one clean stamped source commit before either
 designated development cell may run.
