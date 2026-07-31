@@ -1979,6 +1979,7 @@ py_binary(
     deps = [
         ":phase4_confirmatory_canonical_budget_roster_v4_validator_lib",
         ":phase4_confirmatory_decision_protocol_v2_validator_lib",
+        ":phase4_confirmatory_decision_protocol_validator_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_statistical_protocol_validator_lib",
     ],
@@ -1993,6 +1994,7 @@ py_library(
     deps = [
         ":phase4_confirmatory_canonical_budget_roster_v4_validator_lib",
         ":phase4_confirmatory_decision_protocol_v2_validator_lib",
+        ":phase4_confirmatory_decision_protocol_validator_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_statistical_protocol_validator_lib",
     ],
@@ -2018,6 +2020,7 @@ py_test(
         ":phase4_confirmatory_canonical_budget_roster_v4_validator_lib",
         ":phase4_confirmatory_decision_protocol_v2_validator_lib",
         ":phase4_confirmatory_decision_protocol_v3_validator_lib",
+        ":phase4_confirmatory_decision_protocol_validator_lib",
         ":phase4_statistical_protocol_validator_lib",
     ],
 )

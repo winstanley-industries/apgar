@@ -474,7 +474,10 @@ def validate_document(value: Any) -> Mapping[str, Any]:
     roster = budget_v4.validate_roster()
     if not isinstance(value, dict):
         raise ConfirmatoryProtocolV3Error("confirmatory protocol v3 must be a JSON object")
-    statistical_v1._check_depth(value)
+    try:
+        statistical_v1._check_depth(value)
+    except statistical_v1.ProtocolError as error:
+        raise ConfirmatoryProtocolV3Error(str(error)) from error
     expected = expected_protocol()
     if not statistical_v1._exact_equal(value, expected):
         raise ConfirmatoryProtocolV3Error(
@@ -529,7 +532,9 @@ def read_protocol(path: pathlib.Path = _PROTOCOL) -> Mapping[str, Any]:
             object_pairs_hook=_reject_pairs,
             parse_constant=_reject_constant,
         )
-    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
+    except ConfirmatoryProtocolV3Error:
+        raise
+    except (UnicodeError, RecursionError, ValueError) as error:
         raise ConfirmatoryProtocolV3Error(
             f"invalid confirmatory protocol v3 JSON: {error}"
         ) from error

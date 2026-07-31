@@ -581,6 +581,23 @@ class Phase4ConfirmatoryDecisionProtocolV3Test(unittest.TestCase):
             ):
                 protocol.read_protocol(path)
 
+    def test_parser_and_dependency_errors_use_the_v3_error_boundary(self) -> None:
+        oversized_integer = self._write_text('{"schema_version":' + ("9" * 5000) + "}\n")
+        with self.assertRaises(protocol.ConfirmatoryProtocolV3Error):
+            protocol.read_protocol(oversized_integer)
+
+        deeply_nested: dict[str, Any] = {}
+        cursor = deeply_nested
+        for _ in range(65):
+            child: dict[str, Any] = {}
+            cursor["nested"] = child
+            cursor = child
+        with self.assertRaisesRegex(
+            protocol.ConfirmatoryProtocolV3Error,
+            "JSON nesting exceeds 64 levels",
+        ):
+            protocol.validate_document(deeply_nested)
+
 
 if __name__ == "__main__":
     unittest.main()
