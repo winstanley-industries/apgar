@@ -16,6 +16,14 @@ load(
     "phase4_h4096_session_v5_generator_audit_contract",
 )
 load(
+    "//bazel:phase4_h4096_session_v5_per_net_report_producer_preflight_audit.bzl",
+    "phase4_h4096_session_v5_per_net_report_producer_preflight_audit_artifact",
+    "phase4_h4096_session_v5_per_net_report_producer_preflight_audit_contract",
+    "phase4_h4096_session_v5_per_net_report_producer_preflight_audit_negative_contract",
+    "phase4_h4096_session_v5_per_net_report_producer_preflight_process_artifacts",
+    "phase4_h4096_session_v5_unpublishable_source_per_net_report_producer_preflight_audit_artifact",
+)
+load(
     "//bazel:phase4_h4096_session_v5_per_net_report_validator_audit.bzl",
     "phase4_h4096_session_v5_per_net_report_validator_audit",
     "phase4_h4096_session_v5_per_net_report_validator_audit_negative_contract",
@@ -902,6 +910,35 @@ cc_library(
         ":targeted_regeneration",
         ":targeted_regeneration_execution",
     ],
+)
+
+cc_library(
+    name = "phase4_h4096_session_v5_per_net_report_producer_preflight",
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight.cc",
+    ],
+    hdrs = [
+        "src/benchmark/phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_internal.h",
+    ],
+    copts = APGAR_COPTS + [
+        "-fdata-sections",
+        "-ffunction-sections",
+    ],
+    target_compatible_with = SESSION_V5_PREFLIGHT_SANITIZER_COMPATIBILITY,
+    deps = [":phase4_h4096_session_v5_execution_preflight"],
+)
+
+cc_library(
+    name = "phase4_h4096_session_v5_per_net_report_producer_preflight_test_support",
+    testonly = True,
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight.cc",
+    ],
+    hdrs = [
+        "src/benchmark/phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_internal.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [":phase4_h4096_session_v5_execution_preflight_test_support"],
 )
 
 cc_binary(
@@ -3638,6 +3675,55 @@ phase4_h4096_session_v5_preflight_process_artifacts(
 )
 
 cc_binary(
+    name = "phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_test_runner",
+    testonly = True,
+    srcs = [
+        "tools/phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_test_runner.cc",
+    ],
+    copts = APGAR_COPTS,
+    linkopts = ["-Wl,--gc-sections"],
+    linkstatic = True,
+    target_compatible_with = SESSION_V5_PREFLIGHT_SANITIZER_COMPATIBILITY,
+    deps = [":phase4_h4096_session_v5_per_net_report_producer_preflight"],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_h4096_session_v5_unpublishable_source_per_net_report_producer_preflight_test_runner",
+    testonly = True,
+    srcs = [
+        "tools/phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_test_runner.cc",
+    ],
+    copts = APGAR_COPTS,
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_H4096_SESSION_V5_FORCE_UNPUBLISHABLE_SOURCE_FOR_TESTING",
+    ],
+    linkopts = ["-Wl,--gc-sections"],
+    linkstatic = True,
+    target_compatible_with = SESSION_V5_PREFLIGHT_SANITIZER_COMPATIBILITY,
+    deps = [":phase4_h4096_session_v5_per_net_report_producer_preflight"],
+)
+
+phase4_h4096_session_v5_per_net_report_producer_preflight_audit_artifact(
+    name = "phase4_h4096_session_v5_per_net_report_producer_preflight_unsanitized_artifact",
+)
+
+phase4_h4096_session_v5_unpublishable_source_per_net_report_producer_preflight_audit_artifact(
+    name = "phase4_h4096_session_v5_unpublishable_source_per_net_report_producer_preflight_unsanitized_artifact",
+)
+
+phase4_h4096_session_v5_per_net_report_producer_preflight_audit_contract(
+    name = "phase4_h4096_session_v5_per_net_report_producer_preflight_audit_contract",
+)
+
+phase4_h4096_session_v5_per_net_report_producer_preflight_audit_negative_contract(
+    name = "phase4_h4096_session_v5_per_net_report_producer_preflight_audit_negative_contract",
+)
+
+phase4_h4096_session_v5_per_net_report_producer_preflight_process_artifacts(
+    name = "phase4_h4096_session_v5_per_net_report_producer_preflight_process_artifacts",
+)
+
+cc_binary(
     name = "phase4_confirmatory_evidence_test_runner",
     testonly = True,
     srcs = ["tools/phase4_evidence_runner.cc"],
@@ -5270,6 +5356,22 @@ py_test(
 )
 
 py_test(
+    name = "phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_process_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_process_test.py",
+    ],
+    data = [
+        ":phase4_h4096_session_v5_per_net_report_producer_preflight_audit_contract",
+        ":phase4_h4096_session_v5_per_net_report_producer_preflight_audit_negative_contract",
+        ":phase4_h4096_session_v5_per_net_report_producer_preflight_process_artifacts",
+    ],
+    legacy_create_init = 0,
+    main = "tests/benchmark/phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_process_test.py",
+    python_version = "3.13",
+)
+
+py_test(
     name = "phase4_h4096_session_v5_preflight_link_surface_test",
     size = "small",
     srcs = ["tests/tools/phase4_h4096_session_v5_preflight_link_surface_test.py"],
@@ -5310,6 +5412,52 @@ py_test(
     }),
     legacy_create_init = 0,
     main = "tests/tools/phase4_h4096_session_v5_preflight_link_surface_test.py",
+    python_version = "3.13",
+)
+
+py_test(
+    name = "phase4_h4096_session_v5_per_net_report_producer_preflight_link_surface_test",
+    size = "small",
+    srcs = [
+        "tests/tools/phase4_h4096_session_v5_per_net_report_producer_preflight_link_surface_test.py",
+    ],
+    args = select({
+        ":asan_enabled": [
+            "$(rootpath @llvm//tools:llvm-nm)",
+            "$(rootpath :phase4_h4096_session_v5_per_net_report_producer_preflight_unsanitized_artifact)",
+            "$(rootpath :phase4_h4096_session_v5_unpublishable_source_per_net_report_producer_preflight_unsanitized_artifact)",
+        ],
+        ":ubsan_enabled": [
+            "$(rootpath @llvm//tools:llvm-nm)",
+            "$(rootpath :phase4_h4096_session_v5_per_net_report_producer_preflight_unsanitized_artifact)",
+            "$(rootpath :phase4_h4096_session_v5_unpublishable_source_per_net_report_producer_preflight_unsanitized_artifact)",
+        ],
+        "//conditions:default": [
+            "$(rootpath @llvm//tools:llvm-nm)",
+            "$(rootpath :phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_test_runner)",
+            "$(rootpath :phase4_confirmatory_h4096_session_v5_unpublishable_source_per_net_report_producer_preflight_test_runner)",
+        ],
+    }),
+    data = [
+        ":phase4_h4096_session_v5_per_net_report_producer_preflight_audit_contract",
+        ":phase4_h4096_session_v5_per_net_report_producer_preflight_audit_negative_contract",
+        "@llvm//tools:llvm-nm",
+    ] + select({
+        ":asan_enabled": [
+            ":phase4_h4096_session_v5_per_net_report_producer_preflight_unsanitized_artifact",
+            ":phase4_h4096_session_v5_unpublishable_source_per_net_report_producer_preflight_unsanitized_artifact",
+        ],
+        ":ubsan_enabled": [
+            ":phase4_h4096_session_v5_per_net_report_producer_preflight_unsanitized_artifact",
+            ":phase4_h4096_session_v5_unpublishable_source_per_net_report_producer_preflight_unsanitized_artifact",
+        ],
+        "//conditions:default": [
+            ":phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_test_runner",
+            ":phase4_confirmatory_h4096_session_v5_unpublishable_source_per_net_report_producer_preflight_test_runner",
+        ],
+    }),
+    legacy_create_init = 0,
+    main = "tests/tools/phase4_h4096_session_v5_per_net_report_producer_preflight_link_surface_test.py",
     python_version = "3.13",
 )
 
@@ -6653,6 +6801,22 @@ cc_test(
         ":phase4_trial_harness",
         ":targeted_regeneration",
         ":targeted_regeneration_execution",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_h4096_session_v5_per_net_report_producer_preflight_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_h4096_session_v5_per_net_report_producer_preflight_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    linkopts = ["-Wl,--gc-sections"],
+    linkstatic = True,
+    deps = [
+        ":phase4_h4096_session_v5_per_net_report_producer_preflight_test_support",
         "@googletest//:gtest_main",
     ],
 )
