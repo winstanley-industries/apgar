@@ -1305,6 +1305,22 @@ acceleration.
   runner remains absent, Protocol v3 gains no new substitution, and this
   preflight neither produces a report nor satisfies the complete-chain
   condition.
+- ADR-067 freezes the separate inactive Session-v5 same-run report-producer
+  preflight:
+  `schemas/benchmark/phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight_v1.md`.
+  Its separately named 61-field compiled-only identity binds the complete
+  Raw-v3, telemetry-v3, and report-v3 authority chains, exact cell `(10100,4)`,
+  Raw schema/Wire 2, telemetry schema 1/Wire 2, their independent
+  `20/40/240` cardinalities, the ordered six-net report shape, and both
+  Session-v5 successor budget identities. A later capability-minimal
+  implementation MAY validate that identity and source policy, then MUST
+  terminate at `P4PAIR-H4096-SESSION-V5-ACTIVATION-001`. It MUST NOT read or
+  link the existing three-way validator, any Raw, telemetry, or report
+  artifact, or any diagnostic, case/fixture/report/telemetry/artifact builder,
+  preparer, worker, allocator, serializer, output, or child capability. The
+  same-run production runner remains absent, Protocol v3 gains no new
+  substitution, and the preflight neither produces an artifact nor satisfies
+  the complete-chain condition.
 
 #### Equal-budget decision evidence
 
@@ -1882,6 +1898,202 @@ acceleration.
   `P4PAIR-H4096-SESSION-V5-ACTIVATION-001` in a capability-minimal binary before
   any producer capability. The two report successors neither activate Raw nor
   satisfy the complete consuming-publication chain.
+  The separate same-run report-producer preflight contract is frozen by
+  `docs/adr/ADR-067-phase4-session-v5-h4096-same-run-per-net-report-producer-preflight.md`
+  and
+  `schemas/benchmark/phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight_v1.md`.
+  The compiled-only
+  `Phase4H4096SessionV5SameRunPerNetReportProducerIdentity` is not a payload,
+  artifact, or eleventh Protocol-v3 substitution. Its schema-1 set of 61
+  fields MUST exactly bind the same-run Raw, telemetry, and report v3-to-v2
+  transitions and all three retained v1 predecessors; Protocol-v3-to-v2 and
+  roster-v4-to-v3 ancestry; configuration
+  `phase4_confirmatory_corpus_v2_h4096_session_v5`; exact `(10100,4)`; Raw
+  schema 2/Wire 2 with 20 pair and 40 arm attempts; telemetry schema 1/Wire 2
+  with `telemetry_required=true`, 20 pair captures, 40 arm captures, six
+  ordered nets per arm, and 240 ordered per-net rows; report schema 1 over Raw
+  Wire 2 with the
+  repetition-zero baseline-first pair, two ordered arms, six ordered nets per
+  arm, and 12 ordered per-net rows; six-net roster checksum
+  `12521697377381992336`; literal `decision_eligible=false`; Session 5/Plan
+  3/Execution 6; equal-arm `present=1,history=4096`; canonical budget checksum
+  `13645569624513409309`; and paired semantic-budget checksum
+  `12493092620111240227`.
+  The identity `RecordDecl` MUST be a public aggregate with exactly those 61
+  schema-ordered, schema-typed non-static members and no base, virtual/static/
+  anonymous/bit-field/`[[no_unique_address]]` state, user-declared lifecycle or
+  conversion, or extra method. The builder MUST explicitly initialize all 61.
+  The sole comparison declaration MUST be the non-template hidden-friend
+  equality over two const identity references, explicitly defaulted so every
+  member participates; an extra ignored member or custom/partial equality is a
+  correctness defect.
+  A separately reviewed implementation MAY add only the private
+  `phase4_h4096_session_v5_same_run_per_net_report_producer_preflight`
+  library, its semantically identical private test-only
+  `phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_test_support`
+  build, the fixtureless direct test
+  `phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_test`,
+  and the two fixtureless process runners named by ADR-067. Non-C++ Starlark
+  and Python audit targets MAY inspect only those C++ targets and their audit
+  artifacts; they MUST add no APGAR production dependency or execution
+  capability. Compiler-front-end, checker, negative-fixture, and other
+  audit-tool inputs MUST remain absent from the five C++ targets'
+  dependencies, providers, runfiles, compile inputs, and link inputs. The
+  implementation MUST validate all 61 fields before source policy and before
+  delegating exactly once to the existing same-run controller preflight as its
+  final operation. Canonical input MUST return unchanged
+  `P4PAIR-H4096-SESSION-V5-ACTIVATION-001`; code MUST NOT recognize, translate,
+  or continue after that error.
+  Each final test binary's `DefaultInfo.files`, default runfiles, and data
+  runfiles MUST contain exactly its one target-owned executable and no other
+  file, data, workspace symlink, root symlink, or empty filename. The
+  implementation library's own objects MUST define only the immutable
+  identity/preflight boundary, and its only APGAR code dependency MUST be the
+  existing Session-v5 execution preflight. Analysis MUST freeze exact direct
+  and transitive C++ dependency labels, linker-input owners/artifacts, custom
+  allocator and always-link effects, and final startup/init/fini provenance
+  for the main library, test support, direct test, and both runners. Only the
+  stated APGAR closures and checksum-pinned C++ toolchain implicit libraries
+  are permitted; a foreign repository library, extra object/archive, or
+  always-linked constructor is forbidden. The direct-test ELF may retain only
+  the exact configuration-specific pinned runtime/sanitizer startup entries,
+  its own GoogleTest registration initializers, and the exact three
+  framework-owned initializers `_GLOBAL__sub_I_gmock.cc`,
+  `_GLOBAL__sub_I_gtest.cc`, and `_GLOBAL__sub_I_gtest_death_test.cc` from
+  pinned `@googletest//:gtest_main`; no other framework or APGAR support owner
+  may contribute startup or teardown even when it is allowlisted. Both
+  production-shaped process runners MUST link neither the ordinary producer
+  preflight nor any validator,
+  diagnostic, case, preparer, worker, allocator, Raw/telemetry/report builder,
+  serializer, installer, durable output, child executable, or other
+  acquisition capability; sanitizer configurations MUST inspect those
+  runners through explicit unsanitized transitions. The fixtureless direct
+  `cc_test` alone MAY link the exact existing
+  `phase4_h4096_session_v5_execution_preflight_test_support` graph plus
+  GoogleTest so ASan and UBSan instrument the identity/composite logic.
+  Analysis MUST reject any wider direct-test dependency graph. That
+  instrumented test ELF is structural sanitizer evidence only, is not
+  capability-minimal, MUST accept no fixture, path, descriptor, Raw,
+  telemetry, report, output, environment-selected input, or child executable,
+  and MUST NOT count as producer-boundary closure evidence. Because that
+  support graph retains callable execution and allocator code, a hermetic
+  compiler-front-end semantic audit MUST additionally authenticate the actual
+  target-owned production, test-support, direct-test, and both process-runner
+  sources. It MUST use the repository's checksum-pinned hermetic Bazel LLVM
+  compiler front end and repository-owned structured checker; ambient or
+  alternate compilers are forbidden. Analysis MUST bind every source/header
+  inventory and full resolved compile/link context, including toolchain
+  features, predefined macros, sanitizer ignorelists, source/link inputs,
+  runtime attributes, and compatibility, to the corresponding Bazel target;
+  shadow source, linkstamp, extra object, or compile/link-setting substitution
+  is forbidden. The normal production identity carrier, its sole explicitly
+  defaulted hidden-friend equality, builder, and composite AST are the
+  reference, and the actual test-support identity/equality, builder/composite
+  AST, and callable edges MUST be identical under normal, ASan, and UBSan
+  configurations. Each complete producer translation unit MUST define exactly
+  the two named source functions plus the identity carrier's one inline,
+  explicitly defaulted hidden-friend `operator==`; no other function, method,
+  operator, or callable definition is permitted. It MUST have no dynamic
+  initialization/destruction, target-owned init/fini, alias, indirect
+  function, inline assembly, or other executable state. Conditional
+  preprocessing, compiler feature tests, sanitizer opt-out attributes/
+  pragmas/ignorelists, or disabling flags MUST NOT create
+  configuration-specific or uninstrumented producer behavior.
+  Analysis MUST resolve every direct or rewritten equality use to that one
+  canonical hidden-friend declaration and freeze, per configuration, its
+  emission or non-emission, linkage, owner, and multiplicity; inlining does not
+  authorize an unreviewed equality body or call edge.
+  Each producer compilation MUST have one canonical declaration identity and
+  one target-owned definition per producer function; the direct test MUST
+  declare or define neither. The audit MUST fail closed on compiler
+  diagnostics, missing configuration evidence, missing or ambiguous
+  declarations, missing or extra definitions, unresolved or indirect external
+  callables, unexpected AST shape, skipped inputs, unrequested semantic-audit
+  output, or dependency/link/startup inventory drift. Positive and negative
+  semantic-audit actions MUST expose exact target-owned success stamps created
+  only after their checks; normal, ASan, and UBSan process/link tests MUST
+  request, consume, and validate the exact owner, basename, and two-line
+  invariant/configuration content frozen by ADR-067 from their own
+  configuration. Analysis MUST validate the full declared-action-input closure
+  so cached evidence cannot outlive any audited input. It MUST prove the
+  composite's sole shared-controller call is its final direct return
+  with literal `kSameRun`/`kController` identity construction, literal
+  `kSameRun` cell construction, and the unchanged source parameter;
+  `kOrdinary`, wrappers, indirection, duplicate or conditional calls, result
+  inspection, source substitution, and continuation are forbidden. It MUST
+  separately audit the actual direct-test AST and control-flow graph in
+  normal, ASan, and UBSan and both actual runner ASTs in their normal and
+  sanitizer-reset contexts. Both runner variants MUST have only the frozen
+  argument parsing, producer call, stderr reporting, and status-2 control flow;
+  the forced variant may differ only in its exact source-policy constants.
+  Runner startup/teardown, process, file, network, environment,
+  dynamic-loading, allocation, or other external-state edges are forbidden.
+  The audit MUST cover every potentially evaluated explicit or implicit
+  declaration/call edge in the direct test, including global/default
+  initializers, constructors/destructors, allocation/deallocation, and
+  startup/teardown, and freeze every external declaration by semantic
+  identity, qualified name, and signature. No standard-library or GoogleTest
+  namespace is category-exempt. Direct or indirect acquisition calls are
+  forbidden. Only `TEST`, `EXPECT_EQ`, `EXPECT_TRUE`, `EXPECT_FALSE`,
+  `ASSERT_TRUE`, and `SCOPED_TRACE` are permitted GoogleTest macros;
+  death/exit-test macros, direct calls to their internals, and aliases are
+  forbidden child-process edges.
+  The direct `cc_test` MUST have empty args, inherited environment, and tags;
+  empty explicit environment in normal/ASan; exact
+  `UBSAN_OPTIONS=halt_on_error=1` in UBSan; default non-flaky, non-local,
+  unsharded execution; compatibility that resolves runnable in
+  normal/ASan/UBSan; no source-defined `main`; a pinned GoogleTest `main`; and
+  only non-`DISABLED_` registrations. Its exact registered tests and assertions
+  MUST run without filtering. Aside from
+  compiler-added sanitizer instrumentation, normalized test bodies,
+  control-flow graphs, and required builder/composite/assertion call
+  inventories MUST be identical across all three configurations. Required
+  calls and all 61 independent mutation/assertion paths MUST be unavoidable
+  across the complete unfiltered registration set before every successful
+  direct-test binary exit; early return, skip, dead guard, empty
+  parameterization, exception, or sanitizer-conditioned omission is
+  forbidden. Process/link/audit-consuming tests MUST have the same
+  no-filter/no-skip compatibility closure.
+  UBSan MUST be fail-live: the new test-support/direct-test compilations MUST
+  contain `-fno-sanitize-recover=all`, and the full linked support graph MUST
+  run under exact `UBSAN_OPTIONS=halt_on_error=1`. The sole permitted
+  suppression-bearing compile flag is the checksum-frozen LLVM-toolchain
+  `-fsanitize-ignorelist=external/llvm+/sanitizers/ubsan_ignore.txt`; its exact
+  two `src:` entries suppress only the pinned libc startup sources named by
+  ADR-067, and its SHA-256 is frozen there. Analysis MUST parse that exact
+  file, reject content or digest drift, and prove no entry matches any APGAR,
+  direct-test, or live-probe source. No other recovery/suppression flag,
+  inherited option, default/report hook, or runtime interposition may weaken
+  UBSan. Any sanitizer diagnostic invalidates passing evidence. An audit-only
+  signed-overflow probe compiled and run with the exact UBSan context MUST emit
+  a diagnostic and terminate nonzero before its sentinel; it MUST remain
+  outside all five C++ target closures.
+  Structured negative tripwires MUST cover carrier substitution, call
+  wrapping/indirection/duplication/continuation, source substitution, direct
+  and indirect allocator execution, local wrappers, external APGAR methods/
+  constructors/operators, process/file/environment/dynamic-loading/syscall/
+  inline-assembly edges, global initializers and implicit call edges,
+  sanitizer-conditioned, opted-out, recoverable, suppressed, or hooked code,
+  a nonfatal live UB probe, death/exit macros and internals, producer-function
+  shadowing, non-GoogleTest `main`, filtered/disabled/dead tests, foreign
+  always-link inputs, startup inside an otherwise allowlisted support owner,
+  missing, out-of-line, non-defaulted, duplicated, or additional
+  equality/operator definitions, a substituted/additional UBSan ignorelist or
+  an entry matching an audited source, orphan audit outputs, source/link-input
+  substitution, and missing
+  configuration evidence under normal, ASan, and UBSan invocations; substring
+  matching alone is not evidence.
+  Each process runner accepts exactly one
+  `--runtime_commit=<40 lowercase hex>` option. Every process-test invocation
+  MUST exit with status `2`, write nothing to stdout, and emit exactly its one
+  bounded invariant line plus one newline on stderr for source, activation,
+  or argument rejection. Poisoned Raw, telemetry, report, and
+  fixture FIFOs, output paths, environment variables, and inherited
+  descriptors MUST remain untouched. The future production runner
+  `phase4_confirmatory_h4096_session_v5_same_run_per_net_report_runner`
+  remains absent. The same-run producer preflight reads and produces no
+  artifact and does not count as an operational publication or complete-chain
+  member.
   The following H=4096 carrier, artifact, and publication contracts remain
   authoritative for validation of already captured material. Their existing
   Session-v4 execution surfaces are suspended by the Session-v5 boundary; any
