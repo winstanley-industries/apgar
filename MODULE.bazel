@@ -6,6 +6,10 @@ bazel_dep(name = "rules_cc", version = "0.2.22")
 bazel_dep(name = "rules_cuda", version = "0.3.0")
 bazel_dep(name = "platforms", version = "1.1.0")
 
+# Audit-only Starlark reads the same checksum-pinned build-setting provider
+# already selected transitively by the LLVM toolchain.
+bazel_dep(name = "bazel_skylib", version = "1.8.2", dev_dependency = True)
+
 # CUDA 13.0 supports GCC 15, while the repository's default LLVM 22/libc++
 # toolchain is intentionally newer than nvcc's supported host range.
 bazel_dep(name = "gcc_toolchain", version = "0.10.0")

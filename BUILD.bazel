@@ -37,6 +37,17 @@ load(
     "phase4_h4096_session_v5_unpublishable_preflight_audit_contract",
 )
 load(
+    "//bazel:phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_audit.bzl",
+    "phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight_process_test",
+    "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_audit_artifact",
+    "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_audit_contract",
+    "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_audit_negative_contract",
+    "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_link_surface_test",
+    "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_process_artifacts",
+    "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_startup_provenance_checker",
+    "phase4_h4096_session_v5_same_run_unpublishable_source_per_net_report_producer_preflight_audit_artifact",
+)
+load(
     "//bazel:phase4_h4096_session_v5_same_run_per_net_report_validator_audit.bzl",
     "phase4_h4096_session_v5_same_run_per_net_report_validator_audit",
     "phase4_h4096_session_v5_same_run_per_net_report_validator_audit_negative_contract",
@@ -938,6 +949,41 @@ cc_library(
         "src/benchmark/phase4_confirmatory_h4096_session_v5_per_net_report_producer_preflight_internal.h",
     ],
     copts = APGAR_COPTS,
+    deps = [":phase4_h4096_session_v5_execution_preflight_test_support"],
+)
+
+cc_library(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight",
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight.cc",
+    ],
+    hdrs = [
+        "src/benchmark/phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight_internal.h",
+    ],
+    copts = APGAR_COPTS + [
+        "-fdata-sections",
+        "-ffunction-sections",
+    ],
+    target_compatible_with = SESSION_V5_PREFLIGHT_SANITIZER_COMPATIBILITY,
+    deps = [":phase4_h4096_session_v5_execution_preflight"],
+)
+
+cc_library(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_test_support",
+    testonly = True,
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight.cc",
+    ],
+    hdrs = [
+        "src/benchmark/phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight_internal.h",
+    ],
+    copts = APGAR_COPTS + [
+        "-fdata-sections",
+        "-ffunction-sections",
+    ] + select({
+        ":ubsan_enabled": ["-fno-sanitize-recover=all"],
+        "//conditions:default": [],
+    }),
     deps = [":phase4_h4096_session_v5_execution_preflight_test_support"],
 )
 
@@ -3703,6 +3749,81 @@ cc_binary(
     deps = [":phase4_h4096_session_v5_per_net_report_producer_preflight"],
 )
 
+cc_binary(
+    name = "phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight_test_runner",
+    testonly = True,
+    srcs = [
+        "tools/phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight_test_runner.cc",
+    ],
+    copts = APGAR_COPTS,
+    linkopts = ["-Wl,--gc-sections"],
+    linkstatic = True,
+    stamp = 0,
+    target_compatible_with = SESSION_V5_PREFLIGHT_SANITIZER_COMPATIBILITY,
+    deps = [":phase4_h4096_session_v5_same_run_per_net_report_producer_preflight"],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_h4096_session_v5_same_run_unpublishable_source_per_net_report_producer_preflight_test_runner",
+    testonly = True,
+    srcs = [
+        "tools/phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight_test_runner.cc",
+    ],
+    copts = APGAR_COPTS,
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_H4096_SESSION_V5_FORCE_UNPUBLISHABLE_SOURCE_FOR_TESTING",
+    ],
+    linkopts = ["-Wl,--gc-sections"],
+    linkstatic = True,
+    stamp = 0,
+    target_compatible_with = SESSION_V5_PREFLIGHT_SANITIZER_COMPATIBILITY,
+    deps = [":phase4_h4096_session_v5_same_run_per_net_report_producer_preflight"],
+)
+
+py_binary(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_semantic_audit",
+    testonly = True,
+    srcs = [
+        "tools/phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_semantic_audit.py",
+    ],
+    legacy_create_init = 0,
+    main = "tools/phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_semantic_audit.py",
+    python_version = "3.13",
+)
+
+phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_startup_provenance_checker(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_startup_provenance_checker",
+)
+
+filegroup(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_semantic_audit_negative_fixtures",
+    testonly = True,
+    srcs = [
+        "tests/tools/phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_semantic_audit/negative_cases.json",
+        "tests/tools/phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_semantic_audit/ubsan_signed_overflow.cc",
+    ],
+)
+
+phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_audit_artifact(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_unsanitized_artifact",
+)
+
+phase4_h4096_session_v5_same_run_unpublishable_source_per_net_report_producer_preflight_audit_artifact(
+    name = "phase4_h4096_session_v5_same_run_unpublishable_source_per_net_report_producer_preflight_unsanitized_artifact",
+)
+
+phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_audit_contract(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_audit_contract",
+)
+
+phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_audit_negative_contract(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_audit_negative_contract",
+)
+
+phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_process_artifacts(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_process_artifacts",
+)
+
 phase4_h4096_session_v5_per_net_report_producer_preflight_audit_artifact(
     name = "phase4_h4096_session_v5_per_net_report_producer_preflight_unsanitized_artifact",
 )
@@ -5371,6 +5492,10 @@ py_test(
     python_version = "3.13",
 )
 
+phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight_process_test(
+    name = "phase4_confirmatory_h4096_session_v5_same_run_per_net_report_producer_preflight_process_test",
+)
+
 py_test(
     name = "phase4_h4096_session_v5_preflight_link_surface_test",
     size = "small",
@@ -5459,6 +5584,10 @@ py_test(
     legacy_create_init = 0,
     main = "tests/tools/phase4_h4096_session_v5_per_net_report_producer_preflight_link_surface_test.py",
     python_version = "3.13",
+)
+
+phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_link_surface_test(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_link_surface_test",
 )
 
 py_test(
@@ -6817,6 +6946,33 @@ cc_test(
     linkstatic = True,
     deps = [
         ":phase4_h4096_session_v5_per_net_report_producer_preflight_test_support",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_test.cc",
+        "tests/support/google_test.h",
+    ],
+    args = [],
+    copts = APGAR_COPTS + select({
+        ":ubsan_enabled": ["-fno-sanitize-recover=all"],
+        "//conditions:default": [],
+    }),
+    env = select({
+        ":ubsan_enabled": {"UBSAN_OPTIONS": "halt_on_error=1"},
+        "//conditions:default": {},
+    }),
+    env_inherit = [],
+    linkopts = ["-Wl,--gc-sections"],
+    linkstatic = True,
+    stamp = 0,
+    tags = [],
+    deps = [
+        ":phase4_h4096_session_v5_same_run_per_net_report_producer_preflight_test_support",
         "@googletest//:gtest_main",
     ],
 )
