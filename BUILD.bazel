@@ -15,6 +15,14 @@ load(
     "phase4_h4096_session_v5_generator_audit_artifact",
     "phase4_h4096_session_v5_generator_audit_contract",
 )
+load(
+    "//bazel:phase4_h4096_session_v5_preflight_audit.bzl",
+    "phase4_h4096_session_v5_preflight_audit_artifact",
+    "phase4_h4096_session_v5_preflight_audit_contract",
+    "phase4_h4096_session_v5_preflight_process_artifacts",
+    "phase4_h4096_session_v5_unpublishable_preflight_audit_artifact",
+    "phase4_h4096_session_v5_unpublishable_preflight_audit_contract",
+)
 load("//bazel:source_stamp.bzl", "source_stamp_header")
 load("//bazel:test_runfile.bzl", "test_runfile", "test_standalone_runfiles")
 
@@ -68,6 +76,19 @@ CUDA_SANITIZER_COMPATIBILITY = select({
 # the independently instrumented structural test and link-inspect the ordinary
 # generator through an explicit transition below.
 H4096_GENERATOR_SANITIZER_COMPATIBILITY = select({
+    ":asan_enabled": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+}) + select({
+    ":ubsan_enabled": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+})
+
+# Sanitizer registration likewise roots execution-capable sections in the
+# fixtureless Session-v5 preflight's shared configuration-preimage graph.
+# Keep the capability-minimal runners incompatible with instrumented builds;
+# sanitizer gates instrument the isolated direct-test support and exercise the
+# exact ordinary runner through explicit unsanitized transitions below.
+SESSION_V5_PREFLIGHT_SANITIZER_COMPATIBILITY = select({
     ":asan_enabled": ["@platforms//:incompatible"],
     "//conditions:default": [],
 }) + select({
@@ -824,6 +845,50 @@ cc_library(
     deps = [
         ":cpu_candidate_allocation_session",
         ":phase4_h4096_canonical_budget_firewall_test_support",
+        ":targeted_regeneration",
+        ":targeted_regeneration_execution",
+    ],
+)
+
+cc_library(
+    name = "phase4_h4096_session_v5_execution_preflight",
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_session_v5_execution.cc",
+        "src/benchmark/phase4_h4096_canonical_budget_internal.h",
+        "src/benchmark/phase4_h4096_session_v5_canonical_budget_internal.h",
+    ],
+    hdrs = ["src/benchmark/phase4_confirmatory_h4096_session_v5_execution_internal.h"],
+    copts = APGAR_COPTS + [
+        "-fdata-sections",
+        "-ffunction-sections",
+    ],
+    target_compatible_with = SESSION_V5_PREFLIGHT_SANITIZER_COMPATIBILITY,
+    deps = [
+        ":cpu_candidate_allocation_session",
+        ":phase3_commit",
+        ":phase4_h4096_session_v5_canonical_budget_preimage",
+        ":phase4_paired_trial_preimage",
+        ":phase4_trial_harness_preimage",
+        ":targeted_regeneration",
+        ":targeted_regeneration_execution",
+    ],
+)
+
+cc_library(
+    name = "phase4_h4096_session_v5_execution_preflight_test_support",
+    testonly = True,
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_session_v5_execution.cc",
+        "src/benchmark/phase4_h4096_canonical_budget_internal.h",
+        "src/benchmark/phase4_h4096_session_v5_canonical_budget_internal.h",
+    ],
+    hdrs = ["src/benchmark/phase4_confirmatory_h4096_session_v5_execution_internal.h"],
+    copts = APGAR_COPTS,
+    deps = [
+        ":cpu_candidate_allocation_session",
+        ":phase3_commit",
+        ":phase4_paired_trial",
+        ":phase4_trial_harness",
         ":targeted_regeneration",
         ":targeted_regeneration_execution",
     ],
@@ -3344,6 +3409,49 @@ cc_binary(
 )
 
 cc_binary(
+    name = "phase4_confirmatory_h4096_session_v5_preflight_test_runner",
+    testonly = True,
+    srcs = ["tools/phase4_confirmatory_h4096_session_v5_preflight_test_runner.cc"],
+    copts = APGAR_COPTS,
+    linkopts = ["-Wl,--gc-sections"],
+    target_compatible_with = SESSION_V5_PREFLIGHT_SANITIZER_COMPATIBILITY,
+    deps = [":phase4_h4096_session_v5_execution_preflight"],
+)
+
+cc_binary(
+    name = "phase4_confirmatory_h4096_session_v5_unpublishable_source_preflight_test_runner",
+    testonly = True,
+    srcs = ["tools/phase4_confirmatory_h4096_session_v5_preflight_test_runner.cc"],
+    copts = APGAR_COPTS,
+    defines = [
+        "APGAR_PHASE4_CONFIRMATORY_H4096_SESSION_V5_FORCE_UNPUBLISHABLE_SOURCE_FOR_TESTING",
+    ],
+    linkopts = ["-Wl,--gc-sections"],
+    target_compatible_with = SESSION_V5_PREFLIGHT_SANITIZER_COMPATIBILITY,
+    deps = [":phase4_h4096_session_v5_execution_preflight"],
+)
+
+phase4_h4096_session_v5_preflight_audit_artifact(
+    name = "phase4_h4096_session_v5_preflight_unsanitized_artifact",
+)
+
+phase4_h4096_session_v5_preflight_audit_contract(
+    name = "phase4_h4096_session_v5_preflight_audit_contract",
+)
+
+phase4_h4096_session_v5_unpublishable_preflight_audit_artifact(
+    name = "phase4_h4096_session_v5_unpublishable_preflight_unsanitized_artifact",
+)
+
+phase4_h4096_session_v5_unpublishable_preflight_audit_contract(
+    name = "phase4_h4096_session_v5_unpublishable_preflight_audit_contract",
+)
+
+phase4_h4096_session_v5_preflight_process_artifacts(
+    name = "phase4_h4096_session_v5_preflight_process_artifacts",
+)
+
+cc_binary(
     name = "phase4_confirmatory_evidence_test_runner",
     testonly = True,
     srcs = ["tools/phase4_evidence_runner.cc"],
@@ -4964,6 +5072,62 @@ py_test(
 )
 
 py_test(
+    name = "phase4_confirmatory_h4096_session_v5_preflight_process_test",
+    size = "small",
+    srcs = [
+        "tests/benchmark/phase4_confirmatory_h4096_session_v5_preflight_process_test.py",
+    ],
+    data = [":phase4_h4096_session_v5_preflight_process_artifacts"],
+    legacy_create_init = 0,
+    main = "tests/benchmark/phase4_confirmatory_h4096_session_v5_preflight_process_test.py",
+    python_version = "3.13",
+)
+
+py_test(
+    name = "phase4_h4096_session_v5_preflight_link_surface_test",
+    size = "small",
+    srcs = ["tests/tools/phase4_h4096_session_v5_preflight_link_surface_test.py"],
+    args = select({
+        ":asan_enabled": [
+            "$(rootpath @llvm//tools:llvm-nm)",
+            "$(rootpath :phase4_h4096_session_v5_preflight_unsanitized_artifact)",
+            "$(rootpath :phase4_h4096_session_v5_unpublishable_preflight_unsanitized_artifact)",
+        ],
+        ":ubsan_enabled": [
+            "$(rootpath @llvm//tools:llvm-nm)",
+            "$(rootpath :phase4_h4096_session_v5_preflight_unsanitized_artifact)",
+            "$(rootpath :phase4_h4096_session_v5_unpublishable_preflight_unsanitized_artifact)",
+        ],
+        "//conditions:default": [
+            "$(rootpath @llvm//tools:llvm-nm)",
+            "$(rootpath :phase4_confirmatory_h4096_session_v5_preflight_test_runner)",
+            "$(rootpath :phase4_confirmatory_h4096_session_v5_unpublishable_source_preflight_test_runner)",
+        ],
+    }),
+    data = [
+        ":phase4_h4096_session_v5_preflight_audit_contract",
+        ":phase4_h4096_session_v5_unpublishable_preflight_audit_contract",
+        "@llvm//tools:llvm-nm",
+    ] + select({
+        ":asan_enabled": [
+            ":phase4_h4096_session_v5_preflight_unsanitized_artifact",
+            ":phase4_h4096_session_v5_unpublishable_preflight_unsanitized_artifact",
+        ],
+        ":ubsan_enabled": [
+            ":phase4_h4096_session_v5_preflight_unsanitized_artifact",
+            ":phase4_h4096_session_v5_unpublishable_preflight_unsanitized_artifact",
+        ],
+        "//conditions:default": [
+            ":phase4_confirmatory_h4096_session_v5_preflight_test_runner",
+            ":phase4_confirmatory_h4096_session_v5_unpublishable_source_preflight_test_runner",
+        ],
+    }),
+    legacy_create_init = 0,
+    main = "tests/tools/phase4_h4096_session_v5_preflight_link_surface_test.py",
+    python_version = "3.13",
+)
+
+py_test(
     name = "phase4_per_net_report_process_test",
     size = "medium",
     srcs = ["tests/benchmark/phase4_per_net_report_process_test.py"],
@@ -6282,6 +6446,46 @@ cc_test(
         ":phase4_h4096_session_v5_canonical_budget_firewall_test_support",
         ":phase4_paired_trial",
         ":phase4_trial_harness",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_h4096_session_v5_execution_preflight_test",
+    size = "small",
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_execution_internal.h",
+        "tests/benchmark/phase4_h4096_session_v5_execution_preflight_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":cpu_candidate_allocation_session",
+        ":phase4_h4096_session_v5_execution_preflight_test_support",
+        ":phase4_paired_trial",
+        ":phase4_representative_corpus",
+        ":phase4_trial_harness",
+        ":targeted_regeneration",
+        ":targeted_regeneration_execution",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "phase4_h4096_session_v5_serializer_firewall_test",
+    size = "small",
+    srcs = [
+        "src/benchmark/phase4_confirmatory_h4096_execution_internal.h",
+        "tests/benchmark/phase4_h4096_session_v5_serializer_firewall_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    defines = ["APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT"],
+    deps = [
+        ":negotiated_prices",
+        ":phase4_paired_trial",
+        ":phase4_representative_corpus",
+        ":phase4_trial_harness_fault_test_variant",
         "@googletest//:gtest_main",
     ],
 )

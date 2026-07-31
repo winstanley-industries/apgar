@@ -15,6 +15,16 @@ inline constexpr std::uint64_t kPhase4ConfirmatoryH4096ExactCanonicalAlgorithmBu
     8'829'615'204'625'848'656ULL;
 inline constexpr std::uint64_t kPhase4ConfirmatoryH4096CalibrationCanonicalAlgorithmBudgetChecksum =
     8'230'401'457'668'518'004ULL;
+inline constexpr std::uint64_t
+    kPhase4ConfirmatoryH4096SessionV5ExactCanonicalAlgorithmBudgetChecksum =
+        13'645'569'624'513'409'309ULL;
+inline constexpr std::uint64_t
+    kPhase4ConfirmatoryH4096SessionV5CalibrationCanonicalAlgorithmBudgetChecksum =
+        7'657'176'792'159'702'821ULL;
+inline constexpr std::uint64_t kPhase4ConfirmatoryH4096SessionV5ExactPairedBudgetChecksum =
+    12'493'092'620'111'240'227ULL;
+inline constexpr std::uint64_t kPhase4ConfirmatoryH4096SessionV5CalibrationPairedBudgetChecksum =
+    13'340'538'727'848'385'478ULL;
 
 // Preserved, out-of-band authority identities. Session-v5 activation closes
 // both Corpus-v2 execution identities before fixture access until a separately
@@ -23,6 +33,7 @@ enum class Phase4TrialExecutionAuthority : std::uint8_t {
   kCorpusV1 = 0,
   kCorpusV2H2250 = 1,
   kCorpusV2H4096 = 2,
+  kCorpusV2H4096SessionV5 = 3,
 };
 
 // Pure out-of-band Session authority gate. Corpus-v2 callers must invoke this

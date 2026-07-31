@@ -22,6 +22,19 @@ enum class SameRunPublicationAuthority : std::uint8_t {
   kConfirmatoryH4096,
 };
 
+[[nodiscard]] bool IsCleanSourceCommit(std::string_view source_commit, bool source_stamped,
+                                       bool source_tree_dirty) noexcept {
+  if (!source_stamped || source_tree_dirty || source_commit.size() != 40) {
+    return false;
+  }
+  for (const char character : source_commit) {
+    if (!((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 class JsonWriter {
  public:
   void BeginObject() {
@@ -416,6 +429,9 @@ std::optional<std::string> SerializePhase4ConfirmatoryH4096SameRunDecisionTeleme
     const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
     std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty) {
+  if (!IsCleanSourceCommit(source_commit, source_stamped, source_tree_dirty)) {
+    return std::nullopt;
+  }
   return SerializePhase4SameRunDecisionTelemetryForAuthorityJsonV1(
       SameRunPublicationAuthority::kConfirmatoryH4096, capture, imported_fixture, source_commit,
       source_stamped, source_tree_dirty);

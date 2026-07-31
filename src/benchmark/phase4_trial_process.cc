@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -44,6 +45,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using internal::Phase4TrialWireMessage;
 
+constexpr std::string_view kPhase4H4096SessionV5ActivationInvariant =
+    "P4PAIR-H4096-SESSION-V5-ACTIVATION-001";
 constexpr int kWorkerRequestDescriptor = 3;
 constexpr int kWorkerResponseDescriptor = 4;
 constexpr int kMinimumPrivateDescriptor = 16;
@@ -51,6 +54,19 @@ constexpr std::uint8_t kLaunchGateToken = 0xA4;
 constexpr std::size_t kMaximumCapturedStderrBytes = 64U * 1024U;
 constexpr std::size_t kMaximumDrainBytesPerPass = 64U * 1024U;
 constexpr auto kPostKillReapGrace = std::chrono::seconds(1);
+
+#if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
+std::atomic<bool> g_phase4_representative_case_build_probe_armed{false};
+std::atomic<std::uint64_t> g_phase4_representative_case_build_probe_count{0};
+
+[[nodiscard]] bool FailStopAtPhase4RepresentativeCaseBuildForTesting() noexcept {
+  if (!g_phase4_representative_case_build_probe_armed.load(std::memory_order_acquire)) {
+    return false;
+  }
+  (void)g_phase4_representative_case_build_probe_count.fetch_add(1, std::memory_order_acq_rel);
+  return true;
+}
+#endif
 
 enum class WorkerWireMode : std::uint8_t {
   kRawV1,
@@ -66,6 +82,7 @@ using Phase4TrialExecutionAuthority = internal::Phase4TrialExecutionAuthority;
       return Phase4RepresentativeCorpusAuthority::kV1;
     case Phase4TrialExecutionAuthority::kCorpusV2H2250:
     case Phase4TrialExecutionAuthority::kCorpusV2H4096:
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096SessionV5:
       return Phase4RepresentativeCorpusAuthority::kV2;
   }
   return std::nullopt;
@@ -96,6 +113,14 @@ using Phase4TrialExecutionAuthority = internal::Phase4TrialExecutionAuthority;
       return BuildPhase4CanonicalTrialSpecForCorpusV2(cell, repetition, order);
     case Phase4TrialExecutionAuthority::kCorpusV2H4096:
       return internal::BuildPhase4CanonicalTrialSpecForCorpusV2H4096(cell, repetition, order);
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096SessionV5:
+      return Phase4TrialHarnessError{
+          .invariant_id = std::string(kPhase4H4096SessionV5ActivationInvariant),
+          .detail =
+              "Session-v5 canonical execution dispatch remains behind the immutable "
+              "activation barrier",
+          .raw_cell = std::nullopt,
+      };
   }
   return Phase4TrialHarnessError{
       .invariant_id = "P4HARNESS-EXECUTION-AUTHORITY-001",
@@ -182,6 +207,18 @@ using Phase4TrialExecutionAuthority = internal::Phase4TrialExecutionAuthority;
     case Phase4TrialExecutionAuthority::kCorpusV2H4096:
       return internal::ExecutePhase4ConfirmatoryH4096OrdinaryTrialArm(arm, spec, imported_fixture,
                                                                       preparer);
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096SessionV5:
+      return Phase4TrialArmFailure{
+          .summary =
+              Phase4PairedTrialError{
+                  .code = Phase4PairedTrialErrorCode::kUnsupportedSchema,
+                  .invariant_id = kPhase4H4096SessionV5ActivationInvariant,
+                  .detail = "Session-v5 arm execution remains behind the immutable activation "
+                            "barrier",
+                  .arm = arm,
+              },
+          .payload = std::monostate{},
+      };
   }
   return Phase4TrialArmFailure{
       .summary =
@@ -207,6 +244,18 @@ using Phase4TrialExecutionAuthority = internal::Phase4TrialExecutionAuthority;
     case Phase4TrialExecutionAuthority::kCorpusV2H4096:
       return internal::ExecutePhase4ConfirmatoryH4096SameRunTrialArm(arm, spec, imported_fixture,
                                                                      preparer);
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096SessionV5:
+      return Phase4TrialArmFailure{
+          .summary =
+              Phase4PairedTrialError{
+                  .code = Phase4PairedTrialErrorCode::kUnsupportedSchema,
+                  .invariant_id = kPhase4H4096SessionV5ActivationInvariant,
+                  .detail = "Session-v5 same-run arm execution remains behind the immutable "
+                            "activation barrier",
+                  .arm = arm,
+              },
+          .payload = std::monostate{},
+      };
   }
   return Phase4TrialArmFailure{
       .summary =
@@ -222,9 +271,15 @@ using Phase4TrialExecutionAuthority = internal::Phase4TrialExecutionAuthority;
 
 [[nodiscard]] Phase4DurableArmFailure ReconcileFailureForAuthority(
     Phase4TrialExecutionAuthority authority, Phase4TrialArmFailure failure) {
-  return authority == Phase4TrialExecutionAuthority::kCorpusV1
-             ? ReconcilePhase4TrialArmFailureV1(std::move(failure))
-             : ReconcilePhase4TrialArmFailureForCorpusV2(std::move(failure));
+  switch (authority) {
+    case Phase4TrialExecutionAuthority::kCorpusV1:
+      return ReconcilePhase4TrialArmFailureV1(std::move(failure));
+    case Phase4TrialExecutionAuthority::kCorpusV2H2250:
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096:
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096SessionV5:
+      return ReconcilePhase4TrialArmFailureForCorpusV2(std::move(failure));
+  }
+  return ReconcilePhase4TrialArmFailureForCorpusV2(std::move(failure));
 }
 
 [[nodiscard]] Phase4TrialArmRecordResult FinalizeArmForAuthority(
@@ -250,6 +305,13 @@ using Phase4TrialExecutionAuthority = internal::Phase4TrialExecutionAuthority;
                        *expected_spec, std::move(execution), observation)
                  : internal::FinalizePhase4ConfirmatoryH4096SameRunTrialArm(
                        *expected_spec, std::move(execution), observation);
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096SessionV5:
+      return Phase4PairedTrialError{
+          .code = Phase4PairedTrialErrorCode::kUnsupportedSchema,
+          .invariant_id = kPhase4H4096SessionV5ActivationInvariant,
+          .detail = "Session-v5 finalization remains behind the immutable activation barrier",
+          .arm = execution.semantics.arm,
+      };
   }
   return Phase4PairedTrialError{
       .code = Phase4PairedTrialErrorCode::kInvalidConfiguration,
@@ -281,6 +343,12 @@ using Phase4TrialExecutionAuthority = internal::Phase4TrialExecutionAuthority;
                        *expected_spec, std::move(baseline), std::move(candidate))
                  : internal::AssemblePhase4ConfirmatoryH4096SameRunPairedTrial(
                        *expected_spec, std::move(baseline), std::move(candidate));
+    case Phase4TrialExecutionAuthority::kCorpusV2H4096SessionV5:
+      return Phase4PairedTrialError{
+          .code = Phase4PairedTrialErrorCode::kUnsupportedSchema,
+          .invariant_id = kPhase4H4096SessionV5ActivationInvariant,
+          .detail = "Session-v5 pair assembly remains behind the immutable activation barrier",
+      };
   }
   return Phase4PairedTrialError{
       .code = Phase4PairedTrialErrorCode::kInvalidConfiguration,
@@ -496,6 +564,9 @@ void CloseWorkerDescriptors(WorkerProcess* worker) noexcept {
                                                             const Phase4CanonicalCellConfig& cell,
                                                             std::string_view imported_fixture_path,
                                                             WorkerWireMode wire_mode) {
+  if (authority == Phase4TrialExecutionAuthority::kCorpusV2H4096SessionV5) {
+    return {};
+  }
   std::vector<std::string> arguments;
   arguments.reserve(21);
   arguments.emplace_back(executable);
@@ -2162,6 +2233,13 @@ void RehashNondeterministicPhase4SameRunRecordForTesting(
 }
 #endif
 
+namespace {
+
+[[nodiscard]] bool AuthenticatePhase4ConfirmatoryH4096RawCell(
+    const Phase4IsolatedCellResult& result, WorkerWireMode wire_mode);
+
+}  // namespace
+
 [[nodiscard]] static bool ValidatePhase4IsolatedSameRunCellCaptureForAuthority(
     Phase4TrialExecutionAuthority execution_authority,
     const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
@@ -2196,6 +2274,15 @@ void RehashNondeterministicPhase4SameRunRecordForTesting(
       raw.artifact_checksum != ComputePhase4SameRunIsolatedCellArtifactChecksumV2(raw)) {
     return false;
   }
+  if (execution_authority == Phase4TrialExecutionAuthority::kCorpusV2H4096 &&
+      !AuthenticatePhase4ConfirmatoryH4096RawCell(raw, WorkerWireMode::kSameRunTelemetryV2)) {
+    return false;
+  }
+#if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
+  if (FailStopAtPhase4RepresentativeCaseBuildForTesting()) {
+    return false;
+  }
+#endif
   Phase4RepresentativeCaseResult built_case = BuildPhase4RepresentativeCaseForAuthority(
       *corpus, raw.config.case_id, imported_fixture, raw.config.corpus_limits);
   if (!std::holds_alternative<Phase4RepresentativeCase>(built_case)) {
@@ -3723,6 +3810,10 @@ int RunPhase4ConfirmatoryH4096SameRunWorker(Phase4TrialArm arm,
 bool ValidatePhase4ConfirmatoryH4096SameRunCellCapture(
     const Phase4IsolatedCellWithSameRunDecisionTelemetryV1& capture,
     std::string_view imported_fixture) {
+  if (!AuthenticatePhase4ConfirmatoryH4096RawCell(capture.raw_cell,
+                                                  WorkerWireMode::kSameRunTelemetryV2)) {
+    return false;
+  }
   return ValidatePhase4IsolatedSameRunCellCaptureForAuthority(
       Phase4TrialExecutionAuthority::kCorpusV2H4096, capture, imported_fixture);
 }
@@ -3748,6 +3839,34 @@ std::optional<std::string> SerializePhase4ConfirmatoryH4096SameRunCellJsonV2(
   return SerializePhase4SameRunIsolatedCellJsonV2(result, source_commit, source_stamped,
                                                   source_tree_dirty);
 }
+
+#if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
+void ReauthenticatePhase4ConfirmatoryH4096RawCellForTesting(
+    Phase4IsolatedCellResult* result) noexcept {
+  if (result == nullptr) {
+    return;
+  }
+  constexpr Phase4TrialExecutionAuthority kAuthority =
+      Phase4TrialExecutionAuthority::kCorpusV2H4096;
+  result->cell_plan_checksum = CellPlanChecksum(kAuthority, result->config);
+  result->environment.environment_checksum = HostEnvironmentChecksum(result->environment);
+  result->authority_run_identity = RunIdentity(result->config, result->controller_identity);
+  FinalizeChecksums(result);
+}
+
+void ResetPhase4RepresentativeCaseBuildProbeForTesting() noexcept {
+  g_phase4_representative_case_build_probe_armed.store(false, std::memory_order_release);
+  g_phase4_representative_case_build_probe_count.store(0, std::memory_order_release);
+}
+
+void ArmPhase4RepresentativeCaseBuildProbeForTesting() noexcept {
+  g_phase4_representative_case_build_probe_armed.store(true, std::memory_order_release);
+}
+
+std::uint64_t Phase4RepresentativeCaseBuildProbeCountForTesting() noexcept {
+  return g_phase4_representative_case_build_probe_count.load(std::memory_order_acquire);
+}
+#endif
 
 }  // namespace internal
 

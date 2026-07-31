@@ -101,6 +101,7 @@ template <typename Payload>
       return Phase4RepresentativeCorpusAuthority::kV1;
     case internal::Phase4TrialExecutionAuthority::kCorpusV2H2250:
     case internal::Phase4TrialExecutionAuthority::kCorpusV2H4096:
+    case internal::Phase4TrialExecutionAuthority::kCorpusV2H4096SessionV5:
       return Phase4RepresentativeCorpusAuthority::kV2;
   }
   return std::nullopt;
@@ -1530,6 +1531,13 @@ std::optional<Phase4PairedTrialError> PreflightPhase4CorpusV2SessionExecutionAut
                  "P4PAIR-CORPUS-V2-SESSION-AUTHORITY-001",
                  "Corpus-v2 execution is closed after Session v5 activation until a separately "
                  "reviewed successor budget and consuming authority exists",
+                 arm);
+  }
+  if (authority == Phase4TrialExecutionAuthority::kCorpusV2H4096SessionV5) {
+    return Error(Phase4PairedTrialErrorCode::kUnsupportedSchema,
+                 "P4PAIR-H4096-SESSION-V5-ACTIVATION-001",
+                 "Session-v5 H=4096 execution remains inactive until the complete separately "
+                 "reviewed consuming-publication chain coexists in one source commit",
                  arm);
   }
   return std::nullopt;

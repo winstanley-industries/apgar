@@ -61,6 +61,23 @@ SerializePhase4ConfirmatoryH4096SameRunDecisionTelemetryJsonV1(
     std::string_view imported_fixture, std::string_view source_commit, bool source_stamped,
     bool source_tree_dirty);
 
+#if defined(APGAR_PHASE4_TRIAL_FAULT_TEST_VARIANT)
+// Fault-variant-only support for constructing historical captures without
+// executing an allocator. Reauthentication uses the production-private cell,
+// environment, run, arm-attempt, pair-attempt, and Raw artifact checksum
+// domains.
+void ReauthenticatePhase4ConfirmatoryH4096RawCellForTesting(
+    Phase4IsolatedCellResult* result) noexcept;
+
+// Armed probes fail closed immediately before representative-case
+// construction. The monotonically increasing count lets serializer tests
+// distinguish an early authority rejection from a synthetic case that simply
+// ignores its fixture argument.
+void ResetPhase4RepresentativeCaseBuildProbeForTesting() noexcept;
+void ArmPhase4RepresentativeCaseBuildProbeForTesting() noexcept;
+[[nodiscard]] std::uint64_t Phase4RepresentativeCaseBuildProbeCountForTesting() noexcept;
+#endif
+
 }  // namespace apgar::benchmark::internal
 
 #endif  // APGAR_SRC_BENCHMARK_PHASE4_CONFIRMATORY_H4096_EXECUTION_INTERNAL_H_
