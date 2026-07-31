@@ -1290,6 +1290,21 @@ acceleration.
   construction, evidence serialization, durable output, or acquisition path is
   opened. The two report joins do not satisfy the complete-chain condition or
   weaken the shared Session-v5 activation barrier.
+- ADR-066 freezes the first inactive Session-v5 report-producer preflight:
+  `schemas/benchmark/phase4_confirmatory_h4096_session_v5_ordinary_per_net_report_producer_preflight_v1.md`.
+  Its separately named compiled-only ordinary producer identity binds the
+  Protocol-v3/roster-v4/Session-v5 configuration, ordinary Raw-v3 and report-v3
+  authorities and their direct predecessors, exact calibration cell
+  `(10200,8)`, unchanged Raw Wire 1 and report schema 1, both successor budget
+  identities, the ordered 64-net roster, and the explicit absence of a
+  telemetry companion. A later capability-minimal implementation MAY validate
+  that identity and source policy, then MUST terminate at
+  `P4PAIR-H4096-SESSION-V5-ACTIVATION-001`. It MUST NOT link or access a case,
+  diagnostic executor, preparer, worker, allocator, report builder, serializer,
+  artifact, output path, or acquisition-capable child. The production report
+  runner remains absent, Protocol v3 gains no new substitution, and this
+  preflight neither produces a report nor satisfies the complete-chain
+  condition.
 
 #### Equal-budget decision evidence
 
@@ -1768,6 +1783,60 @@ acceleration.
   `P4PAIR-H4096-SESSION-V5-ACTIVATION-001` in a capability-minimal binary
   before any producer capability. The ordinary report successor alone neither
   activates Raw nor satisfies the complete consuming-publication chain.
+  The first ordinary report-producer preflight contract is frozen by
+  `docs/adr/ADR-066-phase4-session-v5-h4096-ordinary-per-net-report-producer-preflight.md`
+  and
+  `schemas/benchmark/phase4_confirmatory_h4096_session_v5_ordinary_per_net_report_producer_preflight_v1.md`.
+  The compiled-only
+  `Phase4H4096SessionV5OrdinaryPerNetReportProducerIdentity` is not a payload,
+  artifact, or eleventh Protocol-v3 substitution. It MUST exactly bind the
+  ordinary report-v3-to-v2 and Raw-v3-to-v2 transitions, their retained v1
+  ancestry, Protocol-v3-to-v2 and roster-v4-to-v3 ancestry, configuration
+  `phase4_confirmatory_corpus_v2_h4096_session_v5`, exact `(10200,8)`, ordinary
+  Raw schema 1/Wire 1, report schema 1 with two ordered arms and 128 ordered
+  per-net rows, the 64-net roster checksum `718781758134362332`, literal
+  `decision_eligible=false`, Session 5/Plan 3/Execution 6,
+  `present=1,history=4096`, canonical budget checksum
+  `7657176792159702821`, paired semantic-budget checksum
+  `13340538727848385478`, and an absent telemetry companion with empty
+  telemetry authorities and zero telemetry schemas.
+  A separately reviewed implementation MAY add only the private
+  `phase4_h4096_session_v5_per_net_report_producer_preflight` library, its
+  semantically identical private test-only
+  `phase4_h4096_session_v5_per_net_report_producer_preflight_test_support`
+  build, the fixtureless direct test
+  `phase4_h4096_session_v5_per_net_report_producer_preflight_test`, and the two
+  fixtureless process runners named by ADR-066. Non-C++ Starlark and Python
+  audit targets MAY inspect only those C++ targets and their audit artifacts;
+  they MUST add no APGAR production dependency or execution capability. The
+  implementation MUST validate the complete producer identity before source
+  policy and before delegating exactly once to the existing ordinary
+  controller preflight as its final operation. Canonical input MUST return
+  unchanged `P4PAIR-H4096-SESSION-V5-ACTIVATION-001`; code MUST NOT recognize
+  that error and continue. Each final test binary's `DefaultInfo.files`,
+  default runfiles, and data runfiles MUST contain exactly its one target-owned
+  executable and no other file, data, workspace symlink, root symlink, or
+  empty filename. The implementation library's own objects MUST define only
+  the immutable identity/preflight boundary and its only APGAR code dependency
+  MUST be the existing Session-v5 execution preflight. Both
+  production-shaped process runners MUST link no diagnostic, case, preparer,
+  worker, allocator, builder, serializer, installer, durable output, child
+  executable, or other acquisition capability; sanitizer configurations MUST
+  inspect those runners through explicit unsanitized transitions. The
+  fixtureless direct `cc_test` alone MAY link the exact existing
+  `phase4_h4096_session_v5_execution_preflight_test_support` graph plus
+  GoogleTest so ASan and UBSan instrument the identity/composite logic.
+  Analysis MUST reject any wider direct-test dependency graph. That
+  instrumented test ELF is not capability-minimal, MUST accept no fixture,
+  path, descriptor, report, Raw, telemetry, output, environment-selected
+  input, or child executable, and MUST NOT count as producer-boundary closure
+  evidence. Each process-test invocation MUST exit with status `2`, write
+  nothing to stdout, and emit exactly its one bounded invariant line on stderr
+  for the activation barrier, source rejection, or argument rejection. The
+  future production runner
+  `phase4_confirmatory_h4096_session_v5_per_net_report_runner` remains absent.
+  The ordinary producer preflight produces no artifact and does not count as
+  an operational publication or complete-chain member.
   The inactive Session-v5 same-run consuming-publication successor is frozen by
   `docs/adr/ADR-065-phase4-session-v5-h4096-same-run-per-net-report.md` and
   `schemas/benchmark/phase4_confirmatory_same_run_per_net_report_publication_join_v3.md`.
