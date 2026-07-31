@@ -1311,6 +1311,51 @@ py_library(
 )
 
 py_binary(
+    name = "phase4_confirmatory_h4096_session_v5_raw_evidence_validator",
+    srcs = ["tools/validate_phase4_confirmatory_h4096_session_v5_raw_evidence.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_h4096_session_v5_raw_evidence.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_canonical_budget_roster_v4_validator_lib",
+        ":phase4_confirmatory_decision_protocol_v3_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_h4096_session_v5_raw_evidence_validator_lib",
+    srcs = ["tools/validate_phase4_confirmatory_h4096_session_v5_raw_evidence.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_confirmatory_canonical_budget_roster_v4_validator_lib",
+        ":phase4_confirmatory_decision_protocol_v3_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_representative_manifest_v2_validator_lib",
+    ],
+)
+
+py_binary(
     name = "phase4_confirmatory_raw_evidence_validator",
     srcs = ["tools/validate_phase4_confirmatory_raw_evidence.py"],
     data = [
@@ -2106,6 +2151,53 @@ py_library(
 )
 
 py_binary(
+    name = "phase4_confirmatory_h4096_session_v5_same_run_decision_telemetry_validator",
+    srcs = [
+        "tools/validate_phase4_confirmatory_h4096_session_v5_same_run_decision_telemetry.py",
+    ],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_h4096_session_v5_same_run_decision_telemetry.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_h4096_session_v5_raw_evidence_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_h4096_session_v5_same_run_decision_telemetry_validator_lib",
+    srcs = [
+        "tools/validate_phase4_confirmatory_h4096_session_v5_same_run_decision_telemetry.py",
+    ],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_confirmatory_h4096_session_v5_raw_evidence_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_binary(
     name = "phase4_confirmatory_same_run_decision_telemetry_validator",
     srcs = ["tools/validate_phase4_confirmatory_same_run_decision_telemetry.py"],
     data = [
@@ -2264,12 +2356,14 @@ py_library(
     srcs = ["tests/support/phase4_confirmatory_h4096_test_artifacts.py"],
     data = [
         "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.json",
         "schemas/benchmark/phase4_representative_manifest_v2.json",
         "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
     ],
     imports = ["."],
     deps = [
         ":phase4_confirmatory_canonical_budget_roster_v3_validator_lib",
+        ":phase4_confirmatory_canonical_budget_roster_v4_validator_lib",
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_representative_manifest_v2_validator_lib",
@@ -2309,6 +2403,35 @@ py_test(
     deps = [
         ":phase4_confirmatory_h4096_raw_evidence_validator_lib",
         ":phase4_confirmatory_h4096_same_run_decision_telemetry_validator_lib",
+        ":phase4_confirmatory_h4096_test_artifacts_lib",
+        ":phase4_raw_evidence_validator_lib",
+        ":phase4_same_run_decision_telemetry_validator_lib",
+    ],
+)
+
+py_test(
+    name = "phase4_confirmatory_h4096_session_v5_raw_evidence_validator_test",
+    size = "small",
+    srcs = ["tests/tools/validate_phase4_confirmatory_h4096_session_v5_raw_evidence_test.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_confirmatory_h4096_session_v5_raw_evidence_validator",
+        ":phase4_confirmatory_h4096_session_v5_same_run_decision_telemetry_validator",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_confirmatory_h4096_session_v5_raw_evidence_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_h4096_raw_evidence_validator_lib",
+        ":phase4_confirmatory_h4096_same_run_decision_telemetry_validator_lib",
+        ":phase4_confirmatory_h4096_session_v5_raw_evidence_validator_lib",
+        ":phase4_confirmatory_h4096_session_v5_same_run_decision_telemetry_validator_lib",
         ":phase4_confirmatory_h4096_test_artifacts_lib",
         ":phase4_raw_evidence_validator_lib",
         ":phase4_same_run_decision_telemetry_validator_lib",

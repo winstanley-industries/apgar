@@ -114,8 +114,10 @@ target or create an allocation outcome.
   but it declares no fixture, cannot allocate or serialize, and cannot emit
   evidence.
 - Freeze the inactive implementation error as
-  `P4PAIR-H4096-SESSION-V5-ACTIVATION-001`. Every acquisition-free
-  implementation slice must add discriminating direct and process tests that:
+  `P4PAIR-H4096-SESSION-V5-ACTIVATION-001`. Any acquisition-free slice that
+  implements the reserved execution identity or a controller, worker,
+  finalizer, or serializer surface must add discriminating direct and process
+  tests that:
   - prove valid controller, ordinary-worker, and same-run-worker inputs reach
     exactly that immutable error before fixture, request, preparer, output, or
     serialization sentinels can be touched;
@@ -128,11 +130,14 @@ target or create an allocation outcome.
   - prove historical and successor entry points and artifacts cross-reject in
     both directions while Protocol v2, roster v3, their goldens, and existing
     Session-v4 acceptance remain unchanged; and
-  - use only pure synthetic artifacts to prove bounded-regular-file input,
-    Raw-first same-run validation, atomic companion association, corruption
-    rejection, expected-commit enforcement, and rejection of all-failure Raw.
-    These tests must not construct a representative case, open a fixture, or
-    execute an allocator.
+  - prove direct finalizer and serializer calls cannot bypass preflight or the
+    activation barrier.
+- Every validator implementation slice must use only pure synthetic artifacts
+  to prove bounded-regular-file input, Raw-first same-run validation, atomic
+  companion association, corruption rejection, expected-commit enforcement,
+  bidirectional predecessor/successor rejection, and rejection of all-failure
+  Raw. These tests must not construct a representative case, open a fixture,
+  or execute an allocator.
 - Before either cell may run, separately reviewed Session-v5 successors for
   both per-net report joins, both operational-measurement publications, and
   the exact-small snapshot/Oracle chain must coexist with the Raw runner and

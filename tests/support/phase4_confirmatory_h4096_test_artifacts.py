@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from tools import validate_phase4_confirmatory_canonical_budget_roster_v3 as budget_v3
+from tools import validate_phase4_confirmatory_canonical_budget_roster_v4 as budget_v4
 from tools import validate_phase4_per_net_report as report_validator
 from tools import validate_phase4_raw_evidence as raw_validator
 from tools import validate_phase4_representative_manifest_v2 as corpus_v2
@@ -74,7 +75,7 @@ def _environment() -> dict[str, object]:
     return result
 
 
-def _lifecycle(repetition: int, candidate: bool) -> dict[str, int]:
+def _lifecycle(repetition: int, candidate: bool, workers: int) -> dict[str, int]:
     if not candidate:
         return {
             "workers_started_before": 0,
@@ -85,8 +86,8 @@ def _lifecycle(repetition: int, candidate: bool) -> dict[str, int]:
             "invocations_completed_after": 0,
         }
     return {
-        "workers_started_before": 4,
-        "workers_started_after": 4,
+        "workers_started_before": workers,
+        "workers_started_after": workers,
         "invocations_started_before": repetition + 1,
         "invocations_started_after": repetition + 2,
         "invocations_completed_before": repetition + 1,
@@ -123,7 +124,7 @@ def _semantics(
         "requested_pool_size": pool,
         "repetition_index": repetition,
         "root_seed": raw_validator.compute_canonical_root_seed(document, corpus_version=2),
-        "preparation_worker_count": 4,
+        "preparation_worker_count": document["config"]["preparation_worker_count"],
         "baseline_sweeps": pool + 2,
         "candidate_regeneration_epochs": 2,
         "candidate_columns_per_epoch": net_count,
@@ -186,7 +187,11 @@ def _record(
         order=order,
         budget_checksum=budget_checksum,
     )
-    lifecycle = _lifecycle(repetition, candidate)
+    lifecycle = _lifecycle(
+        repetition,
+        candidate,
+        document["config"]["preparation_worker_count"],
+    )
     observation: dict[str, object] = {
         "schema_version": 1,
         "authority_kind": 0,
@@ -328,9 +333,13 @@ def make_raw(
     same_run: bool,
     h4096: bool,
     repetitions: int = 1,
+    workers: int = 4,
     canonical_confirmatory_caps: bool = False,
+    session_v5: bool = False,
 ) -> dict[str, object]:
     """Build one complete synthetic Corpus-v2 Raw artifact."""
+    if session_v5 and not h4096:
+        raise ValueError("Session-v5 synthetic Raw requires the H=4096 authority")
     corpus_checksum, cases, h2250_budgets = (
         raw_validator._frozen_confirmatory_representative_manifest()
     )
@@ -339,7 +348,7 @@ def make_raw(
         "schema_version": 1,
         "case_id": case_id,
         "requested_pool_size": pool,
-        "preparation_worker_count": 4,
+        "preparation_worker_count": workers,
         "repetitions": repetitions,
         "maximum_setup_elapsed_nanoseconds": (
             300_000_000_000 if canonical_confirmatory_caps else 3_000
@@ -374,9 +383,12 @@ def make_raw(
             "artifact_checksum": 0,
         }
     )
-    canonical_budgets = (
-        budget_v3.budget_map(budget_v3.validate_roster()) if h4096 else h2250_budgets
-    )
+    if session_v5:
+        canonical_budgets = budget_v4.budget_map(budget_v4.validate_roster())
+    elif h4096:
+        canonical_budgets = budget_v3.budget_map(budget_v3.validate_roster())
+    else:
+        canonical_budgets = h2250_budgets
     algorithm_budget_checksum = canonical_budgets[(case_id, pool)]
     paired_budget_checksum = raw_validator.compute_canonical_budget_checksum(
         result,

@@ -1699,12 +1699,14 @@ acceleration.
   strict validators only behind fixed error
   `P4PAIR-H4096-SESSION-V5-ACTIVATION-001` before every fixture, request,
   preparer, worker, allocator, output, and serializer capability, or without a
-  fixture-bearing production target. Direct and process tests MUST prove that
-  valid controller and both worker modes reach exactly that barrier, all
-  authority perturbations fail earlier, no runtime or testing input bypasses
-  it, old/new authorities cross-reject, and strict validators preserve
-  bounded-input, Raw-first, atomic-join, expected-commit, corruption, and
-  all-failure rejection using synthetic artifacts only. Before either cell may
+  fixture-bearing production target. Any slice implementing that execution
+  identity or a controller, worker, finalizer, or serializer MUST use direct
+  and process tests to prove valid inputs reach exactly that barrier, all
+  authority perturbations fail earlier, and no runtime or testing input
+  bypasses it. Validator-only slices MUST use synthetic artifacts to prove
+  old/new cross-rejection plus bounded-input, Raw-first, atomic-join,
+  expected-commit, corruption, and all-failure rejection without constructing
+  a case, opening a fixture, or executing an allocator. Before either cell may
   run, separately reviewed Session-v5 successors for both report joins, both
   operational publications, and the exact-small snapshot/Oracle chain MUST
   coexist with the Raw boundary in one clean stamped source commit. Raw alone
