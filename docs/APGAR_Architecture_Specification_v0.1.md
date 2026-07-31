@@ -1276,6 +1276,20 @@ acceleration.
   serialization, durable output, or acquisition path is opened. This one join
   does not satisfy the complete-chain condition or weaken the shared
   Session-v5 activation barrier.
+- ADR-065 freezes the inactive Session-v5 same-run consuming-publication
+  successor:
+  `schemas/benchmark/phase4_confirmatory_same_run_per_net_report_publication_join_v3.md`.
+  It binds exact `(10100,4)` Raw Evidence schema 2/Wire 2, its atomic Same-Run
+  Decision Telemetry schema 1/Telemetry Wire 2 companion, and unchanged Per-Net
+  Report Artifact schema 1 under Protocol v3, roster v4, Session v5, and both
+  independent successor budget identities. Contract and validator-only work
+  MAY use synthetic artifacts and fixed canonical authority data, but the
+  production report runner remains absent. Raw MUST authenticate before
+  sidecar access, and the sidecar MUST completely join before report access.
+  No diagnostic execution, case construction, preparer, allocator, report
+  construction, evidence serialization, durable output, or acquisition path is
+  opened. The two report joins do not satisfy the complete-chain condition or
+  weaken the shared Session-v5 activation barrier.
 
 #### Equal-budget decision evidence
 
@@ -1754,6 +1768,51 @@ acceleration.
   `P4PAIR-H4096-SESSION-V5-ACTIVATION-001` in a capability-minimal binary
   before any producer capability. The ordinary report successor alone neither
   activates Raw nor satisfies the complete consuming-publication chain.
+  The inactive Session-v5 same-run consuming-publication successor is frozen by
+  `docs/adr/ADR-065-phase4-session-v5-h4096-same-run-per-net-report.md` and
+  `schemas/benchmark/phase4_confirmatory_same_run_per_net_report_publication_join_v3.md`.
+  It binds only exact `(10100,4)` Raw Evidence schema 2/Wire 2 under
+  `phase4_confirmatory_same_run_raw_evidence_v3`, its complete Same-Run Decision
+  Telemetry schema 1/Telemetry Wire 2 companion under
+  `phase4_confirmatory_same_run_decision_telemetry_v3`, and unchanged Per-Net
+  Report Artifact schema 1 under
+  `phase4_confirmatory_same_run_per_net_report_publication_join_v3`. The
+  boundary MUST authenticate Protocol v3 checksum `4963299999381388941`, roster
+  v4 checksum `12316700735749461907`, complete predecessor ancestry and
+  manifests, canonical algorithm-budget checksum `13645569624513409309`, and
+  independently reconstructed paired semantic-budget checksum
+  `12493092620111240227`, plus the exact six-net roster checksum
+  `12521697377381992336`. Historical
+  Protocol-v2/roster-v3/Session-v4 same-run authorities remain unchanged, and
+  the two configurations MUST cross-reject even after dependent checksums are
+  recomputed.
+  The separately named strict offline validator MUST completely authenticate
+  bounded regular Session-v5 Raw and its successful-arm witness before opening
+  the bounded regular sidecar. It MUST authenticate the sidecar's clean source
+  envelope and completely join every Raw cell, environment, controller,
+  process, dispatch, pair, arm, outcome, six-net roster, column, artifact, and
+  source identity before opening the bounded regular report. It MUST then
+  authenticate the report's clean source envelope before requiring exact
+  configuration, Raw, repetition-zero baseline-first arm, complete semantic,
+  telemetry, per-net closure, and ordered six-net roster equality. Raw remains
+  outcome/timing authority, telemetry remains exact-rejection guardrail
+  authority, and the report remains diagnostic only. The validator MUST emit
+  authentication status only, never the guardrail result, a statistic, a
+  completion result, or a decision. The authority suffixes do not change the
+  existing payload, wire, canonical key order, checksum-domain, or permanent
+  `decision_eligible=false` contracts.
+  Contract and validator-only implementation authorize no telemetry or report
+  producer, board fixture, case construction, diagnostic execution, preparer,
+  worker, allocator, report builder, evidence serializer, durable output, or
+  acquisition capability. Its executable, declared outputs, default/data
+  runfiles, and files MUST pass an exact pure-validator/fixed-authority-data
+  allowlist audit; any workspace symlink, root symlink, or empty filename MUST
+  reject. The future production runner remains absent. A later
+  producer-preflight slice MUST validate its own complete immutable same-run
+  report identity and then stop at
+  `P4PAIR-H4096-SESSION-V5-ACTIVATION-001` in a capability-minimal binary before
+  any producer capability. The two report successors neither activate Raw nor
+  satisfy the complete consuming-publication chain.
   The following H=4096 carrier, artifact, and publication contracts remain
   authoritative for validation of already captured material. Their existing
   Session-v4 execution surfaces are suspended by the Session-v5 boundary; any
