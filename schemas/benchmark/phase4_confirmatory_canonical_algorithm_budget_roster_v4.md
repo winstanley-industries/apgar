@@ -172,4 +172,6 @@ ADR-062 and
 acquisition-free Protocol-v3 authority binding roster v4. Separately reviewed
 development acquisition and consuming-publication authorities must bind the
 complete successor chain from one clean stamped source commit before either
-designated development cell may run.
+designated development cell may run. ADR-063 freezes the inactive Raw
+successor boundary, but its preflight and validators alone do not satisfy that
+complete-chain condition or authorize fixture-backed execution.

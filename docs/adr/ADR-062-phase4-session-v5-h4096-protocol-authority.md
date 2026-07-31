@@ -70,6 +70,9 @@ allocation outcome has been observed.
   decision execution.
 - Require separately reviewed Session-v5 development execution/acquisition and
   consuming-publication authorities before either initial cell may run.
+  ADR-063 freezes an inactive Raw successor contract and permits only
+  acquisition-free implementation behind a pre-fixture closure; Raw
+  validation alone does not satisfy the complete consuming-publication chain.
   Heldout observation additionally requires one clean stamped source commit
   containing exact Protocol v3 and roster v4 plus the complete reviewed
   execution and publication chain. A protocol/roster-only commit is

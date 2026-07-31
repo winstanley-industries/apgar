@@ -84,7 +84,9 @@ create an execution capability.
   v3. ADR-062 activates the separately reviewed acquisition-free Protocol-v3
   authority binding roster v4. Separately reviewed development acquisition
   and consuming-publication authorities remain required, and a
-  protocol/roster commit alone is insufficient for execution.
+  protocol/roster commit alone is insufficient for execution. ADR-063 freezes
+  the inactive Raw successor boundary but does not satisfy that complete-chain
+  condition or authorize either development cell to run.
 
 ## Consequences
 

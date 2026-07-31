@@ -308,3 +308,9 @@ rechecksummed ancestry, namespace, state, or firewall forgeries.
 The protocol contains no Session-v5 allocation outcome, family result,
 guardrail result, hardware observation, source commit, acquisition
 authorization, or completion decision.
+
+ADR-063 freezes the inactive Session-v5/H=4096 Raw successor boundary.
+Acquisition-free preflight and validator implementation under that contract
+does not satisfy the required complete execution and consuming-publication
+chain, authorize fixture-backed execution, or change any field of this
+canonical artifact.

@@ -1252,6 +1252,18 @@ acceleration.
   authority authorizes no execution or acquisition. Separately reviewed
   Session-v5 development execution, acquisition, and consuming-publication
   authorities remain required.
+- ADR-063 freezes the inactive Session-v5/H=4096 Raw successor boundary.
+  Future separately named entry points are fixed to exact `(10100,4)` over
+  atomic Raw-Wire-2/Telemetry-Wire-2 and calibration `(10200,8)` over ordinary
+  Raw Wire 1, bound to Protocol v3, roster v4, the complete Session-v5
+  canonical preimages, and fresh v3 artifact authorities. Raw preflight,
+  serialization, and strict validators MAY be implemented and reviewed while
+  acquisition remains closed. Until both per-net report joins, both
+  operational publications, and the exact-small snapshot/Oracle successor
+  chain coexist in one clean stamped source commit, a fixture-bearing
+  production target MUST be absent or fail immutably before fixture, case,
+  preparer, worker, allocator, or artifact access. Raw implementation or
+  validation alone MUST NOT authorize either development cell to run.
 
 #### Equal-budget decision evidence
 
@@ -1668,6 +1680,36 @@ acceleration.
   validator are implemented; the authority alone MUST NOT open a fixture,
   preparer, worker, allocator, Raw, report, operational, Oracle, matrix,
   publication, or acquisition path.
+  The inactive Raw successor contract is frozen by
+  `docs/adr/ADR-063-phase4-session-v5-h4096-raw-authority.md`. It reserves
+  separately named Session-v5 controller, worker, serializer, and validator
+  boundaries fixed out of band to
+  `phase4_confirmatory_corpus_v2_h4096_session_v5`, exact `(10100,4)` through
+  atomic Raw Evidence schema 2/Wire 2 plus Same-Run Decision Telemetry schema
+  1/Wire 2, and calibration `(10200,8)` through Raw Evidence schema 1/Wire 1.
+  The boundaries MUST authenticate Protocol v3 checksum
+  `4963299999381388941`, roster v4 checksum `12316700735749461907`, complete
+  roster ancestry and manifests, and per-cell canonical budget checksums
+  `13645569624513409309` and `7657176792159702821`. They MUST independently
+  reconstruct paired semantic budget checksums `12493092620111240227` and
+  `13340538727848385478`; neither may alias the canonical budget checksum or
+  predecessor Session-v4 paired values. Existing Session-v4 entry points
+  remain unchanged and closed by the Session-v5 firewall.
+  Acquisition-free implementation MAY add a consumed execution identity and
+  strict validators only behind fixed error
+  `P4PAIR-H4096-SESSION-V5-ACTIVATION-001` before every fixture, request,
+  preparer, worker, allocator, output, and serializer capability, or without a
+  fixture-bearing production target. Direct and process tests MUST prove that
+  valid controller and both worker modes reach exactly that barrier, all
+  authority perturbations fail earlier, no runtime or testing input bypasses
+  it, old/new authorities cross-reject, and strict validators preserve
+  bounded-input, Raw-first, atomic-join, expected-commit, corruption, and
+  all-failure rejection using synthetic artifacts only. Before either cell may
+  run, separately reviewed Session-v5 successors for both report joins, both
+  operational publications, and the exact-small snapshot/Oracle chain MUST
+  coexist with the Raw boundary in one clean stamped source commit. Raw alone
+  authorizes no allocation observation, downstream artifact, campaign,
+  heldout execution, Phase 4 claim, or M1 claim.
   The following H=4096 carrier, artifact, and publication contracts remain
   authoritative for validation of already captured material. Their existing
   Session-v4 execution surfaces are suspended by the Session-v5 boundary; any
