@@ -16,6 +16,11 @@ load(
     "phase4_h4096_session_v5_generator_audit_contract",
 )
 load(
+    "//bazel:phase4_h4096_session_v5_per_net_report_validator_audit.bzl",
+    "phase4_h4096_session_v5_per_net_report_validator_audit",
+    "phase4_h4096_session_v5_per_net_report_validator_audit_negative_contract",
+)
+load(
     "//bazel:phase4_h4096_session_v5_preflight_audit.bzl",
     "phase4_h4096_session_v5_preflight_audit_artifact",
     "phase4_h4096_session_v5_preflight_audit_contract",
@@ -2503,6 +2508,34 @@ py_test(
     ],
 )
 
+py_test(
+    name = "phase4_confirmatory_h4096_session_v5_per_net_report_validator_test",
+    size = "small",
+    srcs = ["tests/tools/validate_phase4_confirmatory_h4096_session_v5_per_net_report_test.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+        ":phase4_confirmatory_h4096_session_v5_per_net_report_validator",
+        ":phase4_h4096_session_v5_per_net_report_validator_audit_negative_contract",
+        ":phase4_h4096_session_v5_per_net_report_validator_runfiles_audit",
+    ],
+    legacy_create_init = 0,
+    main = "tests/tools/validate_phase4_confirmatory_h4096_session_v5_per_net_report_test.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_h4096_per_net_report_validator_lib",
+        ":phase4_confirmatory_h4096_session_v5_per_net_report_validator_lib",
+        ":phase4_confirmatory_h4096_test_artifacts_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+    ],
+)
+
 py_binary(
     name = "phase4_workload_net_roster_manifest_validator",
     srcs = ["tools/validate_phase4_workload_net_roster_manifest.py"],
@@ -2637,6 +2670,59 @@ py_library(
         ":phase4_per_net_report_validator_lib",
         ":phase4_raw_evidence_validator_lib",
     ],
+)
+
+py_binary(
+    name = "phase4_confirmatory_h4096_session_v5_per_net_report_validator",
+    srcs = ["tools/validate_phase4_confirmatory_h4096_session_v5_per_net_report.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    legacy_create_init = 0,
+    main = "tools/validate_phase4_confirmatory_h4096_session_v5_per_net_report.py",
+    python_version = "3.13",
+    deps = [
+        ":phase4_confirmatory_decision_protocol_v3_validator_lib",
+        ":phase4_confirmatory_h4096_session_v5_raw_evidence_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+    ],
+)
+
+py_library(
+    name = "phase4_confirmatory_h4096_session_v5_per_net_report_validator_lib",
+    srcs = ["tools/validate_phase4_confirmatory_h4096_session_v5_per_net_report.py"],
+    data = [
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v3.json",
+        "schemas/benchmark/phase4_confirmatory_canonical_algorithm_budget_roster_v4.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v1.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v2.json",
+        "schemas/benchmark/phase4_confirmatory_decision_protocol_v3.json",
+        "schemas/benchmark/phase4_representative_manifest_v2.json",
+        "schemas/benchmark/phase4_workload_net_roster_manifest_v2.json",
+    ],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":phase4_confirmatory_decision_protocol_v3_validator_lib",
+        ":phase4_confirmatory_h4096_session_v5_raw_evidence_validator_lib",
+        ":phase4_per_net_report_validator_lib",
+        ":phase4_raw_evidence_validator_lib",
+    ],
+)
+
+phase4_h4096_session_v5_per_net_report_validator_audit(
+    name = "phase4_h4096_session_v5_per_net_report_validator_runfiles_audit",
+)
+
+phase4_h4096_session_v5_per_net_report_validator_audit_negative_contract(
+    name = "phase4_h4096_session_v5_per_net_report_validator_audit_negative_contract",
 )
 
 py_binary(
