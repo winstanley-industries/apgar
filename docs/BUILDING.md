@@ -206,7 +206,21 @@ owned host payload and device-memory counters remain the subsystem comparisons.
 
 GitHub Actions runs lint, build, and test checks on Ubuntu and build and test
 checks on macOS. Separate Linux jobs run the test suite under AddressSanitizer
-and UndefinedBehaviorSanitizer. All CI builds reject dependency-lock changes.
+and UndefinedBehaviorSanitizer. All CI builds reject dependency-lock changes,
+the Linux job verifies the complete module graph against the lockfile, and a
+`zizmor` job checks workflow security.
+
+After those gates pass on a same-repository pull request, the `Claude Code
+review` job captures an immutable metadata, diff, and prior-review snapshot,
+runs the repository's architecture-first `/pr-review` command, and requires
+exactly one fresh formal Claude verdict bound to the current PR head. Fork and
+Dependabot pull requests do not consume the token. Configure the organization
+Actions secret `CLAUDE_CODE_OAUTH_TOKEN` and grant APGAR access before enabling
+this required check.
+The Claude action refuses token-backed execution when the workflow differs from
+the copy on the default branch, so the bootstrap pull request and later workflow
+changes require manual review; ordinary pull requests are enforced after the
+workflow reaches `main`.
 
 The workflow uses GitHub-hosted `ubuntu-24.04` and `macos-15` runners by
 default. To migrate a job to an on-premises runner without changing its status
