@@ -55,7 +55,7 @@ Use this checklist selectively after reading the current architecture, phase ADR
 - Check tests and docs against the actual current scope; a deleted target can silently remove promised coverage while `bazel test //...` stays green.
 - Record which gates ran on the captured OID and which were only inherited from another session.
 
-## 7. Performance and architecture altitude
+## 7. Performance, simplification, and delivery
 
 - Profile by reasoning before suggesting changes: name the hot loop, repeated lookup/oracle/allocation/hash, frequency, upper bound, and cheaper equivalent.
 - Inspect duplicate symmetric geometry checks, per-neighbor tree searches, map allocation in search state, repeated fingerprinting/sorting, and avoidable copies.
@@ -63,6 +63,21 @@ Use this checklist selectively after reading the current architecture, phase ADR
 - Prefer one authoritative conversion/validation mechanism to scattered call-site checks.
 - Flag special cases only when a deeper existing abstraction can handle them now; otherwise keep them as explicitly labeled design notes.
 - Rank performance below correctness unless it violates a stated memory/latency bound or makes a supported input practically unusable.
+- Trace the change to its active epic row or requested outcome. Name the runnable
+  behavior, validated evidence, or mechanical decision that closes the slice.
+- Count new persistent concepts: schemas, artifact kinds, authorities,
+  validators, wrappers, and Bazel targets. Require each independent seam to be
+  necessary now, and consolidate self-authenticating parallel representations.
+- Compare control-plane surface with delivered domain behavior. Flag a slice
+  that can only validate its own scaffolding when the task promises an
+  allocator, router, benchmark, or decision observation.
+- Keep campaign-only work conditional on readiness, preserve bounded stop
+  gates, and allow valid negative results to terminate a hypothesis.
+- Match integrity machinery to the declared threat model. Separate reproducible
+  trusted-runner provenance from hostile-operator attestation.
+- Apply the epic's file/line/concept budget before review. Re-sequence an
+  oversized slice instead of treating archived or sunk work as a reason to
+  finish it.
 
 ## Candidate quality bar
 
@@ -74,6 +89,7 @@ A useful candidate answers all of these:
 4. Which code path or contract proves reachability?
 5. What root-cause direction would fix it?
 6. What regression would fail before the fix and pass afterward?
+7. What current delivery decision does fixing it enable or protect?
 
 Reject vague style preferences, hypothetical future features with no current effect, and findings whose failure scenario contradicts a proved Board IR or schema invariant.
 

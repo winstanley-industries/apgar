@@ -6,7 +6,9 @@ This file governs work throughout the repository.
 
 1. Read `docs/APGAR_Architecture_Specification_v0.1.md`.
 2. Read `docs/KICKOFF.md` for the research rationale behind the specification.
-3. Keep the current milestone and explicit non-goals in view; do not implement
+3. When work belongs to an active epic, read `docs/epics/README.md` and the
+   active epic before planning or editing.
+4. Keep the current milestone and explicit non-goals in view; do not implement
    deferred specialty routing while foundation contracts are unsettled.
 
 When documents disagree, the architecture specification is authoritative.
@@ -47,6 +49,8 @@ architecture specification is explicitly revised.
 
 - Prefer small vertical slices with observable inputs and outputs over empty
   subsystem scaffolding.
+- For epic work, update the epic's current-state summary and task table in the
+  same pull request as the corresponding implementation or evidence change.
 - Keep global coordinates in signed 64-bit database units. Quantize imported
   floating-point coordinates once at the adapter boundary.
 - Make boundary equality and one-unit perturbations explicit in geometry tests.
