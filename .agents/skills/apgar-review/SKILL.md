@@ -1,6 +1,6 @@
 ---
 name: apgar-review
-description: Perform architecture-first, high-recall code reviews for the APGAR repository. Use when reviewing an APGAR working-tree diff, branch, commit range, pull request, implementation phase, geometry/compiler/router/GPU change, or when auditing fixes against APGAR correctness contracts, M1 scope, schemas, ADRs, determinism, exact geometry, Bazel gates, and CPU/GPU differential-test requirements.
+description: Perform architecture-first, high-recall code reviews for the APGAR repository, including mandatory delivery-value and complexity checks. Use when reviewing an APGAR working-tree diff, branch, commit range, pull request, implementation phase, geometry/compiler/router/GPU change, or when auditing fixes against APGAR correctness contracts, M1 scope, epic sequencing, schemas, ADRs, determinism, exact geometry, Bazel gates, CPU/GPU differential-test requirements, and over-engineering risk.
 ---
 
 # APGAR Review
@@ -49,12 +49,51 @@ Map changed behavior to named requirements before judging implementation:
 - explicit unsupported/delegated rules;
 - current milestone deliverables and non-goals;
 - versioned schemas, hashes, replay, and telemetry contracts.
+- the active epic task, its observable acceptance evidence, dependencies, stop
+  gates, complexity budget, and declared threat model when an epic governs the
+  change.
 
 Treat the architecture specification as authoritative when documents disagree. Do not report a deferred M1 capability as a defect merely because a later architecture seam anticipates it. Report a seam as a current defect only when today's implementation violates a current contract, makes legal input wrong, silently weakens behavior, or forces a contradiction with an accepted design.
 
 Read [references/review-angles.md](references/review-angles.md) for the detailed APGAR finder checklist and verdict rubric.
 
-## 3. Find candidates independently
+## 3. Enforce the complexity and delivery gate
+
+Give every reviewed slice one explicit verdict:
+
+- `DELIVERY-CLEAR`: the slice is a bounded path to an observable current
+  decision; or
+- `RESEQUENCE`: the slice adds unjustified concepts, couples independent
+  outcomes, or builds later-stage machinery before its prerequisite result.
+
+Derive the intended outcome from the active epic task when one exists, and from
+the user's requested change otherwise. Test the slice with these questions:
+
+1. Does it deliver runnable behavior, validated evidence, or a mechanically
+   derived decision that its acceptance rule can actually observe?
+2. Is it the smallest credible path to the current decision, with later-stage
+   or campaign-only work still conditional on its declared gate?
+3. Does a local behavior or configuration change propagate through multiple
+   new schemas, artifact kinds, authorities, validators, or wrappers? Prefer a
+   single generic boundary or ordinary data/configuration when it preserves the
+   contract.
+4. Does the robustness machinery match the accepted threat model? Do not
+   require hostile-operator attestation for a trusted canonical runner without
+   an accepted contract.
+5. Can a valid negative result stop the work, or does the design turn every
+   failed hypothesis into more mandatory infrastructure?
+6. Is the change within the active task's file/line/concept budget? If not,
+   identify a behavior-preserving split; do not grant a size exception because
+   code already exists elsewhere.
+
+Count persistent concepts and producer/consumer seams, not generated code or a
+raw line total alone. Treat historical or archived work as evidence and donor
+material, never as an automatic backlog. Report `RESEQUENCE` only with a
+concrete delivery, coupling, maintainability, or contract failure and the
+smallest useful split or deletion. Do not turn taste or minimal abstractions
+required by a current correctness contract into over-engineering findings.
+
+## 4. Find candidates independently
 
 Always perform a direct read of the core changed files yourself. Builds and tests supplement review; they do not replace source reasoning.
 
@@ -65,7 +104,8 @@ At high effort, run six independent finder passes. When subagents are available,
 3. producer/consumer and cross-file representation trace;
 4. arithmetic, determinism, platform, lifetime, and corruption audit;
 5. adversarial test, schema/ADR, build-target, and gate audit;
-6. hot-path efficiency, reuse, simplification, and architectural-altitude audit.
+6. hot-path efficiency, reuse, simplification, architectural-altitude, and
+   delivery-value audit.
 
 For focused effort, combine adjacent angles but cover every correctness-critical angle relevant to the changed subsystem. For exhaustive effort, split performance, reuse, simplification, security/robustness, and conventions into separate passes.
 
@@ -80,7 +120,7 @@ Require each finder to return at most six candidates with:
 
 Bias finders toward recall. Do not let them silently discard a candidate with a realistic failure scenario; precision belongs in verification. Rank current correctness and contract violations above cleanup.
 
-## 4. Deduplicate and verify
+## 5. Deduplicate and verify
 
 Deduplicate candidates only when location, mechanism, and failure are the same. Independent rediscovery increases confidence but does not replace verification.
 
@@ -94,7 +134,7 @@ The verifier must read the relevant implementation, callers/callees, contract te
 
 Use narrow probes or Bazel targets where they materially discriminate a candidate. Place probe artifacts in `.agent-scratch/`. Do not edit production files during review.
 
-## 5. Re-check scope and run gates
+## 6. Re-check scope and run gates
 
 Before reporting a working-tree review, run:
 
@@ -111,7 +151,7 @@ If verification reports drift:
 
 Run the narrowest relevant Bazel targets when useful. For a requested comprehensive or pre-commit review, verify the repository gates in `AGENTS.md`: `bazel lint`, `bazel build //...`, `bazel test //...`, sanitizer configurations expected by the current project, and `bazel test --lockfile_mode=error //...`. GPU changes additionally require CPU/GPU differential checks and replay coverage. Report every gate not run; green gates do not erase source-level findings.
 
-## 6. Report the review
+## 7. Report the review
 
 Lead with actionable findings, ranked by severity. For each retained finding include:
 
@@ -125,6 +165,8 @@ Lead with actionable findings, ranked by severity. For each retained finding inc
 
 Then state:
 
+- the `DELIVERY-CLEAR` or `RESEQUENCE` verdict and the observable outcome used
+  to judge it;
 - captured base/head and whether the final drift check passed;
 - gates run and gates not run;
 - verified-clean high-risk areas actually inspected;
