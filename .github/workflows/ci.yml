@@ -133,15 +133,10 @@ jobs:
           SANITIZER_RESULT: ${{ needs.sanitizer.result }}
           ZIZMOR_RESULT: ${{ needs.zizmor.result }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          CLAUDE_AUTH_CONFIGURED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
           if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "Dependabot-authored PR; the Bazel and zizmor CI gates are sufficient."
-          elif [ "$CLAUDE_AUTH_CONFIGURED" != true ]; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is not available to this repository; grant APGAR access to the organization Actions secret."
-            exit 1
           elif [ "$LINUX_RESULT" = success ] \
             && [ "$MACOS_RESULT" = success ] \
             && [ "$SANITIZER_RESULT" = success ] \
