@@ -59,7 +59,10 @@ cc_library(
 
 cc_library(
     name = "exact_geometry",
-    srcs = ["src/geometry/exact.cc"],
+    srcs = [
+        "src/geometry/exact.cc",
+        "src/geometry/exact_internal.h",
+    ],
     hdrs = ["include/apgar/geometry/exact.h"],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",
@@ -727,8 +730,10 @@ cc_test(
     copts = APGAR_COPTS,
     deps = [
         ":board_ir",
+        ":candidate_contract",
         ":exact_geometry",
         ":geometry_compiler",
+        ":planar_route",
         "@googletest//:gtest_main",
     ],
 )

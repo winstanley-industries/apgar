@@ -88,14 +88,19 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 
 ## Current state
 
-- The active branch contains the complete Phase 3 baseline and no Phase 4
-  implementation.
+- The active branch started from the complete Phase 3 baseline; P4R-02A1 is the
+  first Phase 4 implementation slice after the governance-only P4R-01.
 - The former 71-commit Phase 4 lineage is recoverable from the remote archive
   and is not an active backlog.
 - ADR-068 establishes the clean restart and behavior-by-behavior salvage rule.
-- P4R-01 is approved and durably identified by PR #3. P4R-02 is ready after
-  that foundation merges: establish authentic multi-net inputs and
-  independently checked resource accounting before selection or pricing.
+- P4R-01 is approved and durably identified by PR #3.
+- The approved P4R-02 split separates the prerequisite per-net routing contract
+  from the authentic workload and accounting slice. Scope tracing then showed
+  that the prerequisite itself crosses more than the 12-file task budget, so it
+  is split again without changing its outcome: P4R-02A1 establishes prepared,
+  retained, fail-closed compilation contexts; P4R-02A2 authenticates those
+  contexts through route production and exact candidate admission.
+- P4R-02A1 is active. Selection and resource accounting remain closed.
 
 ## Salvage ledger
 
@@ -114,8 +119,10 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | Task | PR-sized outcome | Depends on | Acceptance evidence | Status | PR / commit / evidence |
 | --- | --- | --- | --- | --- | --- |
 | P4R-01 | Establish the clean branch, archived donor, ADR-068, epic governance, and APGAR complexity gate. | Phase 3 baseline | Exact archive/base identities; docs links; APGAR review; repository gates. | `done` | [PR #3](https://github.com/winstanley-industries/apgar/pull/3) |
-| P4R-02 | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-01 | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `ready` | — |
-| P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02 | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `planned` | — |
+| P4R-02A1 | Add prepared per-net routing profiles retained by exact CompiledBoard contexts. | P4R-01 | Two distinct nets compile from one immutable snapshot with net-specific exact obstacle ownership; invalid profiles fail closed; downstream route/candidate consumers reject non-default contexts pending P4R-02A2. | `active` | — |
+| P4R-02A2 | Bind prepared-context identity through CPU/GPU producer evidence, route admission, and exact immutable-candidate admission. | P4R-02A1 | Distinct-net requests produce and exactly admit correctly attributed immutable candidates; relabeled or mismatched context evidence fails closed. | `planned` | — |
+| P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2 | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `planned` | — |
+| P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `planned` | — |
 | P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `planned` | — |
 | P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `planned` | — |
 | P4R-06 | Add bounded negotiated prices and a deterministic targeted-regeneration plan. | P4R-05 | Replayable price updates, stable hotset/targets, declared caps, and no generator-side global mutation. | `planned` | — |
@@ -133,8 +140,10 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 
 ## Decision and stop gates
 
-- Do not begin selection until P4R-02 independently validates resource usage and
-  overuse semantics.
+- Do not begin selection until P4R-02B independently validates resource usage
+  and overuse semantics. P4R-02A1 contexts are intentionally fail-closed to
+  downstream routing and candidate admission until P4R-02A2 authenticates the
+  retained per-net profile identity end to end.
 - Do not acquire readiness until P4R-12 freezes its workload identities,
   configurations, budgets, and rule. Do not begin campaign tooling or inspect
   heldout outcomes until readiness passes and P4R-14 freezes the campaign and

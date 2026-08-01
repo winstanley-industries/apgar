@@ -10,7 +10,9 @@
 #include <vector>
 
 #include "apgar/board_ir/board.h"
+#include "apgar/candidates/route_candidate.h"
 #include "apgar/geometry/exact.h"
+#include "apgar/routing/planar_route.h"
 #include "tests/support/board_builder.h"
 #include "tests/support/compiler_builder.h"
 #include "tests/support/google_test.h"
@@ -208,6 +210,74 @@ TEST(CompiledBoardTest, PropagatesStableBoardProfileAndRuleBucketIdentity) {
   EXPECT_EQ(first.rule_bucket().clearance, board.data().routing_profile.clearance);
   EXPECT_EQ(first.rule_bucket().allowed_layers, board.data().routing_profile.allowed_layers);
   EXPECT_EQ(first.rule_bucket().allowed_headings, board.data().routing_profile.allowed_headings);
+  EXPECT_EQ(first.routing_profile(), board.data().routing_profile);
+}
+
+TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstreamFailsClosed) {
+  constexpr board_ir::EntityRef kSecondNet{.id = 11, .generation = 0};
+  constexpr board_ir::EntityRef kThirdTerminal{.id = 22, .generation = 0};
+  constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
+
+  BoardData data = test_support::ValidM1BoardData();
+  data.nets[1].terminals = {kThirdTerminal, kFourthTerminal};
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kThirdTerminal,
+      .net = kSecondNet,
+      .component = "U4",
+      .pin = "1",
+      .center = Point64{.x = 0, .y = 20},
+      .connection_region =
+          AxisAlignedBox64{.min = Point64{.x = -10, .y = 10}, .max = Point64{.x = 10, .y = 30}},
+      .layers = {0, 31},
+  });
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kFourthTerminal,
+      .net = kSecondNet,
+      .component = "U5",
+      .pin = "1",
+      .center = Point64{.x = 100, .y = 20},
+      .connection_region =
+          AxisAlignedBox64{.min = Point64{.x = 90, .y = 10}, .max = Point64{.x = 110, .y = 30}},
+      .layers = {0, 31},
+  });
+  const BoardSnapshot board = Snapshot(std::move(data));
+
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = kSecondNet;
+  second_profile.allowed_layers = {31, 0};
+  board_ir::RoutingProfilePreparationResult prepared =
+      board_ir::PrepareRoutingProfile(board, second_profile);
+  ASSERT_TRUE(std::holds_alternative<board_ir::RoutingProfile>(prepared));
+  second_profile = std::get<board_ir::RoutingProfile>(std::move(prepared));
+  EXPECT_EQ(second_profile.allowed_layers, (std::vector<board_ir::LayerId>{0, 31}));
+
+  const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
+  CompileResult second_result =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), second_profile);
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(second_result));
+  const CompiledBoard second = std::get<CompiledBoard>(std::move(second_result));
+
+  EXPECT_EQ(second.routing_profile(), second_profile);
+  EXPECT_EQ(second.rule_bucket(), DeriveM1RuleBucket(second_profile));
+  EXPECT_EQ(candidates::AssociationsFor(board, second).routing_profile_fingerprint,
+            routing::FingerprintRoutingProfile(second_profile));
+  EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
+  EXPECT_TRUE(second.EdgeIsLegal(0, 3, 0, Direction::kEast));
+  EXPECT_FALSE(routing::ValidateCompiledBoardAssociation(board, first).has_value());
+  EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, second),
+            routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
+
+  board_ir::RoutingProfile stale = second_profile;
+  ++stale.net.generation;
+  const board_ir::RoutingProfilePreparationResult stale_preparation =
+      board_ir::PrepareRoutingProfile(board, stale);
+  ASSERT_TRUE(std::holds_alternative<board_ir::BoardValidationError>(stale_preparation));
+  EXPECT_EQ(std::get<board_ir::BoardValidationError>(stale_preparation).code,
+            board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  const CompileResult stale_compile =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), stale);
+  ASSERT_TRUE(std::holds_alternative<CompileError>(stale_compile));
+  EXPECT_EQ(std::get<CompileError>(stale_compile).code, CompileErrorCode::kInvalidProfile);
 }
 
 TEST(CompiledBoardTest, ReportsDefinedMemoryAndConservatismTelemetry) {

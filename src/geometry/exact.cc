@@ -7,6 +7,8 @@
 #include <string>
 #include <utility>
 
+#include "src/geometry/exact_internal.h"
+
 namespace apgar::geometry {
 namespace {
 
@@ -361,6 +363,13 @@ SegmentClearanceResult SweptTraceClearanceAtLeast(board_ir::Segment64 centerline
 
 MovementValidationResult ValidateMovement(const board_ir::BoardSnapshot& board,
                                           board_ir::LayerId layer, board_ir::Segment64 centerline) {
+  return internal::ValidateMovementForPreparedProfile(board, board.data().routing_profile, layer,
+                                                      centerline);
+}
+
+MovementValidationResult internal::ValidateMovementForPreparedProfile(
+    const board_ir::BoardSnapshot& board, const board_ir::RoutingProfile& profile,
+    board_ir::LayerId layer, board_ir::Segment64 centerline) {
   if (!board_ir::PointIsValid(centerline.start) || !board_ir::PointIsValid(centerline.end)) {
     return Failure(MovementViolationCode::kCoordinateOutOfRange,
                    "Movement endpoint exceeds the validated coordinate range");
@@ -371,7 +380,6 @@ MovementValidationResult ValidateMovement(const board_ir::BoardSnapshot& board,
   }
 
   const board_ir::HeadingMask heading = HeadingFor(centerline);
-  const board_ir::RoutingProfile& profile = board.data().routing_profile;
   if (heading == 0 || (profile.allowed_headings & heading) == 0) {
     return Failure(MovementViolationCode::kUnsupportedHeading,
                    "Movement heading is not supported by the routing profile");

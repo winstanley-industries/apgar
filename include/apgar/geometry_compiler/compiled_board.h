@@ -210,6 +210,9 @@ class CompiledBoard {
   }
   [[nodiscard]] std::uint32_t compiler_version() const noexcept { return compiler_version_; }
   [[nodiscard]] const RuleBucketV1& rule_bucket() const noexcept { return rule_bucket_; }
+  [[nodiscard]] const board_ir::RoutingProfile& routing_profile() const noexcept {
+    return routing_profile_;
+  }
   [[nodiscard]] const CompilerProfile& profile() const noexcept { return profile_; }
   [[nodiscard]] const CompilerTelemetry& telemetry() const noexcept { return telemetry_; }
   [[nodiscard]] std::span<const SparseTile> tiles() const noexcept { return tiles_; }
@@ -226,12 +229,13 @@ class CompiledBoard {
 
  private:
   CompiledBoard(std::uint64_t source_board_content_hash, std::uint64_t compiler_profile_fingerprint,
-                RuleBucketV1 rule_bucket, CompilerProfile profile, std::vector<SparseTile> tiles,
-                CompilerTelemetry telemetry)
+                RuleBucketV1 rule_bucket, board_ir::RoutingProfile routing_profile,
+                CompilerProfile profile, std::vector<SparseTile> tiles, CompilerTelemetry telemetry)
       : source_board_content_hash_(source_board_content_hash),
         compiler_profile_fingerprint_(compiler_profile_fingerprint),
         compiler_version_(kGeometryCompilerVersion),
         rule_bucket_(std::move(rule_bucket)),
+        routing_profile_(std::move(routing_profile)),
         profile_(std::move(profile)),
         tiles_(std::move(tiles)),
         telemetry_(telemetry) {}
@@ -240,12 +244,16 @@ class CompiledBoard {
   std::uint64_t compiler_profile_fingerprint_;
   std::uint32_t compiler_version_;
   RuleBucketV1 rule_bucket_;
+  board_ir::RoutingProfile routing_profile_;
   CompilerProfile profile_;
   std::vector<SparseTile> tiles_;
   CompilerTelemetry telemetry_;
 
   friend std::variant<CompiledBoard, CompileError> CompileBoard(const board_ir::BoardSnapshot&,
                                                                 CompilerProfile);
+  friend std::variant<CompiledBoard, CompileError> CompileBoard(const board_ir::BoardSnapshot&,
+                                                                CompilerProfile,
+                                                                board_ir::RoutingProfile);
   friend class CompiledBoardTestPeer;
 };
 
@@ -253,6 +261,9 @@ using CompileResult = std::variant<CompiledBoard, CompileError>;
 
 [[nodiscard]] CompileResult CompileBoard(const board_ir::BoardSnapshot& board,
                                          CompilerProfile profile);
+[[nodiscard]] CompileResult CompileBoard(const board_ir::BoardSnapshot& board,
+                                         CompilerProfile profile,
+                                         board_ir::RoutingProfile routing_profile);
 
 [[nodiscard]] std::uint64_t FingerprintCompilerProfile(CompilerProfile profile);
 [[nodiscard]] RuleBucketV1 DeriveM1RuleBucket(const board_ir::RoutingProfile& profile);
