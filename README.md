@@ -49,3 +49,11 @@ The `bazel` command must be Bazelisk. The repository wrapper adds `bazel lint`
 and forwards normal commands to the version pinned in `.bazelversion`. See
 [Building APGAR](docs/BUILDING.md) for toolchain, sanitizer, lint, and
 hermeticity details.
+
+GitHub Actions runs the Bazel gates on Linux and macOS, exercises ASan and UBSan,
+and checks workflow security with `zizmor`. After those gates pass on a
+same-repository pull request, Claude Code performs an APGAR-specific,
+architecture-first review and requires one fresh formal verdict for the exact PR
+head. The review uses the organization Actions secret
+`CLAUDE_CODE_OAUTH_TOKEN`, with APGAR granted access; fork and Dependabot pull
+requests do not consume the token.
