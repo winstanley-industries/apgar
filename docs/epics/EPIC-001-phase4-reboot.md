@@ -6,7 +6,7 @@
 | Outcome | `pending` |
 | Owner | APGAR maintainers |
 | Started | August 1, 2026 |
-| Last reviewed | August 1, 2026 foundation scope |
+| Last reviewed | August 1, 2026 ([PR #3](https://github.com/winstanley-industries/apgar/pull/3)) |
 | Active baseline | `1a0d6600111c44e7f915b039190f9125d37d4a06` |
 | Archived donor | `1f68ded7ff36547c3ffb8a0629482ad425786106` on `archive/phase4-pre-reset-2026-08-01` |
 | Governing architecture | [Global Allocator](../APGAR_Architecture_Specification_v0.1.md#14-global-allocator), [Benchmark Plan](../APGAR_Architecture_Specification_v0.1.md#26-benchmark-and-evaluation-plan), [Roadmap](../APGAR_Architecture_Specification_v0.1.md#29-implementation-roadmap) |
@@ -93,10 +93,9 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 - The former 71-commit Phase 4 lineage is recoverable from the remote archive
   and is not an active backlog.
 - ADR-068 establishes the clean restart and behavior-by-behavior salvage rule.
-- The foundation task is active in this pull request. After its immutable
-  acceptance identity is recorded, the first implementation task can become
-  ready: establish authentic multi-net inputs and independently checked
-  resource accounting before selection or pricing.
+- P4R-01 is approved and durably identified by PR #3. P4R-02 is ready after
+  that foundation merges: establish authentic multi-net inputs and
+  independently checked resource accounting before selection or pricing.
 
 ## Salvage ledger
 
@@ -114,8 +113,8 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 
 | Task | PR-sized outcome | Depends on | Acceptance evidence | Status | PR / commit / evidence |
 | --- | --- | --- | --- | --- | --- |
-| P4R-01 | Establish the clean branch, archived donor, ADR-068, epic governance, and APGAR complexity gate. | Phase 3 baseline | Exact archive/base identities; docs links; APGAR review; repository gates. | `active` | Pending PR publication. |
-| P4R-02 | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-01 | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `planned` | — |
+| P4R-01 | Establish the clean branch, archived donor, ADR-068, epic governance, and APGAR complexity gate. | Phase 3 baseline | Exact archive/base identities; docs links; APGAR review; repository gates. | `done` | [PR #3](https://github.com/winstanley-industries/apgar/pull/3) |
+| P4R-02 | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-01 | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `ready` | — |
 | P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02 | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `planned` | — |
 | P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `planned` | — |
 | P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `planned` | — |
