@@ -26,6 +26,11 @@ using board_ir::BoardData;
 using board_ir::BoardSnapshot;
 using board_ir::Point64;
 
+constexpr board_ir::EntityRef kSecondNet{.id = 11, .generation = 0};
+constexpr board_ir::EntityRef kEmptyNet{.id = 12, .generation = 0};
+constexpr board_ir::EntityRef kThirdTerminal{.id = 22, .generation = 0};
+constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
+
 [[nodiscard]] BoardSnapshot Snapshot(BoardData data) {
   BoardCreationResult result = board_ir::CreateBoardSnapshot(std::move(data));
   EXPECT_TRUE(std::holds_alternative<BoardSnapshot>(result));
@@ -38,6 +43,41 @@ using board_ir::Point64;
       << (std::holds_alternative<CompileError>(result) ? std::get<CompileError>(result).detail
                                                        : "");
   return std::get<CompiledBoard>(std::move(result));
+}
+
+[[nodiscard]] BoardData MultiNetBoardData() {
+  BoardData data = test_support::ValidM1BoardData();
+  data.layers.push_back(board_ir::Layer{
+      .ref = board_ir::EntityRef{.id = 3, .generation = 0},
+      .routing_id = 99,
+      .name = "internal-signal",
+      .physical_order = 2,
+      .type = board_ir::LayerType::kSignal,
+      .routable = false,
+  });
+  data.nets[1].terminals = {kThirdTerminal, kFourthTerminal};
+  data.nets.push_back(board_ir::Net{.ref = kEmptyNet, .name = "EMPTY", .terminals = {}});
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kThirdTerminal,
+      .net = kSecondNet,
+      .component = "U4",
+      .pin = "1",
+      .center = Point64{.x = 0, .y = 20},
+      .connection_region =
+          AxisAlignedBox64{.min = Point64{.x = -10, .y = 10}, .max = Point64{.x = 10, .y = 30}},
+      .layers = {0},
+  });
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kFourthTerminal,
+      .net = kSecondNet,
+      .component = "U5",
+      .pin = "1",
+      .center = Point64{.x = 100, .y = 20},
+      .connection_region =
+          AxisAlignedBox64{.min = Point64{.x = 90, .y = 10}, .max = Point64{.x = 110, .y = 30}},
+      .layers = {31},
+  });
+  return data;
 }
 
 [[nodiscard]] Point64 ExactPoint(const CompilerProfile& profile, LatticeIndex index) {
@@ -214,33 +254,7 @@ TEST(CompiledBoardTest, PropagatesStableBoardProfileAndRuleBucketIdentity) {
 }
 
 TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstreamFailsClosed) {
-  constexpr board_ir::EntityRef kSecondNet{.id = 11, .generation = 0};
-  constexpr board_ir::EntityRef kThirdTerminal{.id = 22, .generation = 0};
-  constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
-
-  BoardData data = test_support::ValidM1BoardData();
-  data.nets[1].terminals = {kThirdTerminal, kFourthTerminal};
-  data.terminals.push_back(board_ir::Terminal{
-      .ref = kThirdTerminal,
-      .net = kSecondNet,
-      .component = "U4",
-      .pin = "1",
-      .center = Point64{.x = 0, .y = 20},
-      .connection_region =
-          AxisAlignedBox64{.min = Point64{.x = -10, .y = 10}, .max = Point64{.x = 10, .y = 30}},
-      .layers = {0, 31},
-  });
-  data.terminals.push_back(board_ir::Terminal{
-      .ref = kFourthTerminal,
-      .net = kSecondNet,
-      .component = "U5",
-      .pin = "1",
-      .center = Point64{.x = 100, .y = 20},
-      .connection_region =
-          AxisAlignedBox64{.min = Point64{.x = 90, .y = 10}, .max = Point64{.x = 110, .y = 30}},
-      .layers = {0, 31},
-  });
-  const BoardSnapshot board = Snapshot(std::move(data));
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
 
   board_ir::RoutingProfile second_profile = board.data().routing_profile;
   second_profile.net = kSecondNet;
@@ -278,6 +292,64 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
       CompileBoard(board, test_support::DefaultCompilerProfile({0}), stale);
   ASSERT_TRUE(std::holds_alternative<CompileError>(stale_compile));
   EXPECT_EQ(std::get<CompileError>(stale_compile).code, CompileErrorCode::kInvalidProfile);
+}
+
+TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  board_ir::RoutingProfile valid = board.data().routing_profile;
+  valid.net = kSecondNet;
+
+  const auto expect_rejected = [&](board_ir::RoutingProfile profile,
+                                   board_ir::BoardValidationCode expected_code) {
+    const board_ir::RoutingProfilePreparationResult result =
+        board_ir::PrepareRoutingProfile(board, std::move(profile));
+    ASSERT_TRUE(std::holds_alternative<board_ir::BoardValidationError>(result));
+    EXPECT_EQ(std::get<board_ir::BoardValidationError>(result).code, expected_code);
+  };
+
+  board_ir::RoutingProfile invalid = valid;
+  invalid.net = kEmptyNet;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kNotM1Board);
+
+  invalid = valid;
+  invalid.nominal_width = 0;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  invalid.nominal_width = board_ir::kMaxAbsDbCoord + 1;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+
+  invalid = valid;
+  invalid.clearance = -1;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  invalid.clearance = board_ir::kMaxAbsDbCoord + 1;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+
+  invalid = valid;
+  invalid.allowed_layers.clear();
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  invalid.allowed_layers = {0, 0};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  invalid.allowed_layers = {1'000};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  invalid.allowed_layers = {99};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  invalid.allowed_layers = {0};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+
+  invalid = valid;
+  invalid.allowed_headings = 0;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  invalid.allowed_headings = static_cast<board_ir::HeadingMask>(1U << 7U);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+
+  // PrepareRoutingProfile accepts an immutable, already validated snapshot, so
+  // stale terminal references cannot reach it. Snapshot admission rejects that
+  // malformed ownership before any profile can be prepared.
+  BoardData stale_terminal = MultiNetBoardData();
+  ++stale_terminal.nets[1].terminals.back().generation;
+  const BoardCreationResult stale_result = board_ir::CreateBoardSnapshot(std::move(stale_terminal));
+  ASSERT_TRUE(std::holds_alternative<board_ir::BoardValidationError>(stale_result));
+  EXPECT_EQ(std::get<board_ir::BoardValidationError>(stale_result).code,
+            board_ir::BoardValidationCode::kInvalidReference);
 }
 
 TEST(CompiledBoardTest, ReportsDefinedMemoryAndConservatismTelemetry) {

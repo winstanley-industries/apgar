@@ -6,10 +6,9 @@
 
 namespace apgar::geometry::internal {
 
-// Source-private exact oracle for an already prepared routing profile. Public
-// callers cannot substitute an unvalidated net identity to change obstacle
-// ownership semantics; trusted compilers obtain this profile from Board IR's
-// preparation boundary.
+// Source-private exact oracle for an already prepared routing profile. This
+// internal header is a layering convention rather than a capability boundary;
+// trusted callers must obtain the profile from Board IR's preparation API.
 [[nodiscard]] MovementValidationResult ValidateMovementForPreparedProfile(
     const board_ir::BoardSnapshot& board, const board_ir::RoutingProfile& routing_profile,
     board_ir::LayerId layer, board_ir::Segment64 centerline);
