@@ -360,7 +360,7 @@ CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile
   if (const auto* error = std::get_if<board_ir::BoardValidationError>(&prepared);
       error != nullptr) {
     return Error(
-        CompileErrorCode::kInvalidProfile,
+        CompileErrorCode::kInvalidRoutingProfile,
         "Routing profile is invalid for the supplied Board IR snapshot: " + error->message);
   }
   routing_profile = std::get<board_ir::RoutingProfile>(std::move(prepared));

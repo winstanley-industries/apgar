@@ -256,23 +256,27 @@ TEST(CompiledBoardTest, PropagatesStableBoardProfileAndRuleBucketIdentity) {
 TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstreamFailsClosed) {
   const BoardSnapshot board = Snapshot(MultiNetBoardData());
 
-  board_ir::RoutingProfile second_profile = board.data().routing_profile;
-  second_profile.net = kSecondNet;
-  second_profile.allowed_layers = {31, 0};
+  board_ir::RoutingProfile unsorted_profile = board.data().routing_profile;
+  unsorted_profile.net = kSecondNet;
+  unsorted_profile.clearance = 3;
+  unsorted_profile.allowed_layers = {31, 0};
   board_ir::RoutingProfilePreparationResult prepared =
-      board_ir::PrepareRoutingProfile(board, second_profile);
+      board_ir::PrepareRoutingProfile(board, unsorted_profile);
   ASSERT_TRUE(std::holds_alternative<board_ir::RoutingProfile>(prepared));
-  second_profile = std::get<board_ir::RoutingProfile>(std::move(prepared));
+  const board_ir::RoutingProfile second_profile =
+      std::get<board_ir::RoutingProfile>(std::move(prepared));
   EXPECT_EQ(second_profile.allowed_layers, (std::vector<board_ir::LayerId>{0, 31}));
 
   const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
   CompileResult second_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), second_profile);
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), unsorted_profile);
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(second_result));
   const CompiledBoard second = std::get<CompiledBoard>(std::move(second_result));
 
   EXPECT_EQ(second.routing_profile(), second_profile);
   EXPECT_EQ(second.rule_bucket(), DeriveM1RuleBucket(second_profile));
+  EXPECT_NE(second.rule_bucket().identity,
+            DeriveM1RuleBucket(board.data().routing_profile).identity);
   EXPECT_EQ(candidates::AssociationsFor(board, second).routing_profile_fingerprint,
             routing::FingerprintRoutingProfile(second_profile));
   EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
@@ -280,6 +284,17 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
   EXPECT_FALSE(routing::ValidateCompiledBoardAssociation(board, first).has_value());
   EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, second),
             routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
+
+  board_ir::RoutingProfile restricted_headings = second_profile;
+  restricted_headings.allowed_headings =
+      static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal) |
+      static_cast<board_ir::HeadingMask>(board_ir::Heading::kVertical);
+  const CompileResult restricted_result =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), restricted_headings);
+  ASSERT_TRUE(std::holds_alternative<CompileError>(restricted_result));
+  EXPECT_EQ(std::get<CompileError>(restricted_result).code, CompileErrorCode::kInvalidProfile);
+  EXPECT_EQ(std::get<CompileError>(restricted_result).detail,
+            "Compiler headings are not allowed by the Board IR routing profile");
 
   board_ir::RoutingProfile stale = second_profile;
   ++stale.net.generation;
@@ -291,7 +306,7 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
   const CompileResult stale_compile =
       CompileBoard(board, test_support::DefaultCompilerProfile({0}), stale);
   ASSERT_TRUE(std::holds_alternative<CompileError>(stale_compile));
-  EXPECT_EQ(std::get<CompileError>(stale_compile).code, CompileErrorCode::kInvalidProfile);
+  EXPECT_EQ(std::get<CompileError>(stale_compile).code, CompileErrorCode::kInvalidRoutingProfile);
 }
 
 TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {
@@ -372,7 +387,16 @@ TEST(CompiledBoardTest, ReportsDefinedMemoryAndConservatismTelemetry) {
   EXPECT_EQ(telemetry.blocked_directional_edges, 0U);
   EXPECT_EQ(telemetry.false_blocked_directional_edges, 0U);
   EXPECT_EQ(telemetry.false_blocked_rate_parts_per_billion, 0U);
-  EXPECT_GT(telemetry.estimated_host_bytes, sizeof(CompiledBoard));
+  std::uint64_t expected_host_bytes = sizeof(CompiledBoard);
+  expected_host_bytes += compiled.profile().active_regions.size() * sizeof(ActiveRegion);
+  expected_host_bytes += compiled.rule_bucket().allowed_layers.size() * sizeof(board_ir::LayerId);
+  expected_host_bytes +=
+      compiled.routing_profile().allowed_layers.size() * sizeof(board_ir::LayerId);
+  expected_host_bytes += compiled.tiles().size() * sizeof(SparseTile);
+  for (const SparseTile& tile : compiled.tiles()) {
+    expected_host_bytes += tile.nodes.size() * sizeof(CompiledNode);
+  }
+  EXPECT_EQ(telemetry.estimated_host_bytes, expected_host_bytes);
 }
 
 TEST(CompiledBoardTest, CountsRepresentedNodesAfterOverlappingRegionDeduplication) {

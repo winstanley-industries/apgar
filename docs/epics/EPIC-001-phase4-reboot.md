@@ -6,7 +6,7 @@
 | Outcome | `pending` |
 | Owner | APGAR maintainers |
 | Started | August 1, 2026 |
-| Last reviewed | August 1, 2026 ([PR #3](https://github.com/winstanley-industries/apgar/pull/3)) |
+| Last reviewed | August 1, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5)) |
 | Active baseline | `1a0d6600111c44e7f915b039190f9125d37d4a06` |
 | Archived donor | `1f68ded7ff36547c3ffb8a0629482ad425786106` on `archive/phase4-pre-reset-2026-08-01` |
 | Governing architecture | [Global Allocator](../APGAR_Architecture_Specification_v0.1.md#14-global-allocator), [Benchmark Plan](../APGAR_Architecture_Specification_v0.1.md#26-benchmark-and-evaluation-plan), [Roadmap](../APGAR_Architecture_Specification_v0.1.md#29-implementation-roadmap) |

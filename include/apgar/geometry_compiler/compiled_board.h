@@ -185,6 +185,7 @@ struct CompilerTelemetry {
 
 enum class CompileErrorCode : std::uint8_t {
   kInvalidProfile,
+  kInvalidRoutingProfile,
   kUnrepresentableProfile,
   kUnsupported,
   kInternalInvariant,
