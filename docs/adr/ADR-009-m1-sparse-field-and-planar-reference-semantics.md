@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** July 17, 2026
+**Amended:** August 2, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5))
 **Applies to:** Geometry compiler and deterministic CPU reference router
 
 ## Context
@@ -30,9 +31,19 @@ rather than explicitly requested active work.
 - H/V/45 mask bits are set only after the exact Board IR movement oracle accepts
   the complete adjacent swept envelope. Diagonals are checked as exact diagonal
   capsules; endpoint occupancy is not a substitute for the corner envelope.
-- The M1 rule bucket is derived from width, clearance, allowed layers, and
-  headings in the Board IR routing profile. Compiler and fixture dimensions do
-  not redefine rules.
+- The established M1 numeric-rule identity remains derived from width,
+  clearance, allowed layers, and headings in the Board IR routing profile.
+  Compiler and fixture dimensions do not redefine rules. The complete in-memory
+  bucket key additionally carries routed-net identity because exact static-
+  obstacle interaction depends on ownership. `PreparedRoutingProfile` is the
+  Board-IR-issued, source-snapshot-bound capability for selecting that context,
+  and `CompiledBoard` retains it.
+- V1 device, replay, CPU-route evidence, and candidate associations do not yet
+  serialize retained-profile identity. They therefore reject non-default
+  compiled contexts through the full in-memory association check. A later
+  enabling slice must add a separately versioned identity or a V2 domain and
+  corresponding schema bumps; it must not reinterpret the existing
+  `APGAR-M1-RULE-BUCKET-V1` scalar.
 - CPU A* is planar. Requests keep distinct endpoint-layer fields so exact
   through-via transitions can be added later, but differing layers return a
   structured unsupported result now.
@@ -47,6 +58,9 @@ rather than explicitly requested active work.
 
 - A compiled-legal edge implies exact legality against every represented static
   obstacle, including at tile boundaries and diagonal corners.
+- Multiple exact compiled contexts may be prepared from one immutable snapshot,
+  but only the snapshot's default context may enter current durable producer,
+  device, replay, or candidate-admission paths.
 - Users must choose active regions large enough to contain desired planar
   routes. A disconnected sparse field is distinguishable from malformed input
   and unsupported layer transitions.

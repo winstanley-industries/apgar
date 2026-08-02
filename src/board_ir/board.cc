@@ -61,15 +61,14 @@ void Normalize(BoardData& data) {
 }
 
 [[nodiscard]] std::optional<BoardValidationError> ValidateRoutingProfile(
-    const BoardData& data, const RoutingProfile& profile) {
+    const BoardData& data, const RoutingProfile& profile, BoardValidationCode terminal_count_code) {
   const Net* target_net = FindNetInData(data, profile.net);
   if (target_net == nullptr) {
     return Error(BoardValidationCode::kInvalidRoutingProfile,
                  "Routing profile refers to an unknown or stale net");
   }
   if (target_net->terminals.size() != 2) {
-    return Error(BoardValidationCode::kNotM1Board,
-                 "M1 routing profiles require exactly two terminals");
+    return Error(terminal_count_code, "M1 routing profiles require exactly two terminals");
   }
   if (profile.nominal_width <= 0 || profile.nominal_width > kMaxAbsDbCoord ||
       profile.clearance < 0 || profile.clearance > kMaxAbsDbCoord ||
@@ -274,7 +273,7 @@ void Normalize(BoardData& data) {
   }
 
   if (std::optional<BoardValidationError> error =
-          ValidateRoutingProfile(data, data.routing_profile);
+          ValidateRoutingProfile(data, data.routing_profile, BoardValidationCode::kNotM1Board);
       error.has_value()) {
     return error;
   }
@@ -396,7 +395,8 @@ BoardCreationResult CreateBoardSnapshot(BoardData data) {
 RoutingProfilePreparationResult PrepareRoutingProfile(const BoardSnapshot& board,
                                                       RoutingProfile profile) {
   std::ranges::sort(profile.allowed_layers);
-  if (std::optional<BoardValidationError> error = ValidateRoutingProfile(board.data(), profile);
+  if (std::optional<BoardValidationError> error = ValidateRoutingProfile(
+          board.data(), profile, BoardValidationCode::kInvalidRoutingProfile);
       error.has_value()) {
     return std::move(*error);
   }

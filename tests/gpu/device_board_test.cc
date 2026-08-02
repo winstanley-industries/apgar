@@ -379,6 +379,54 @@ TEST(DeviceCompiledBoardTest, FlatteningIsStableAndAccountsEveryOwnedByte) {
   EXPECT_EQ(first.header.estimated_persistent_device_bytes, expected_bytes);
 }
 
+TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextBeforeDevicePublication) {
+  constexpr board_ir::EntityRef kThirdTerminal{.id = 22, .generation = 0};
+  constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
+  BoardData data = test_support::ValidM1BoardData();
+  const board_ir::EntityRef second_net = data.nets[1].ref;
+  data.nets[1].terminals = {kThirdTerminal, kFourthTerminal};
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kThirdTerminal,
+      .net = second_net,
+      .component = "U4",
+      .pin = "1",
+      .center = board_ir::Point64{.x = 0, .y = 20},
+      .connection_region = board_ir::AxisAlignedBox64{.min = board_ir::Point64{.x = -10, .y = 10},
+                                                      .max = board_ir::Point64{.x = 10, .y = 30}},
+      .layers = {0},
+  });
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kFourthTerminal,
+      .net = second_net,
+      .component = "U5",
+      .pin = "1",
+      .center = board_ir::Point64{.x = 100, .y = 20},
+      .connection_region = board_ir::AxisAlignedBox64{.min = board_ir::Point64{.x = 90, .y = 10},
+                                                      .max = board_ir::Point64{.x = 110, .y = 30}},
+      .layers = {0},
+  });
+  const BoardSnapshot board = Snapshot(std::move(data));
+
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = second_net;
+  board_ir::RoutingProfilePreparationResult preparation =
+      board_ir::PrepareRoutingProfile(board, std::move(second_profile));
+  ASSERT_TRUE(std::holds_alternative<board_ir::PreparedRoutingProfile>(preparation));
+  geometry_compiler::CompileResult compile_result = geometry_compiler::CompileBoard(
+      board, test_support::DefaultCompilerProfile({0}),
+      std::get<board_ir::PreparedRoutingProfile>(std::move(preparation)));
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(compile_result));
+  const CompiledBoard compiled = std::get<CompiledBoard>(std::move(compile_result));
+  ASSERT_NE(compiled.rule_bucket().routed_net, board.data().routing_profile.net);
+
+  const DeviceCompiledBoardResult result = BuildDeviceCompiledBoardV1(board, compiled);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(result));
+  const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(result);
+  EXPECT_EQ(failure.code, PlanarGpuFailureCode::kValidationFailed);
+  EXPECT_EQ(failure.detail,
+            "Compiled board rule bucket is stale or does not match the BoardSnapshot");
+}
+
 TEST(DeviceCompiledBoardTest, PreparedLookupIsCanonicalExactAndSeparatelyAccounted) {
   const BoardSnapshot board = Snapshot();
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));

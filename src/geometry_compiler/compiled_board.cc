@@ -184,8 +184,8 @@ void Normalize(CompilerProfile& profile) {
   bytes += static_cast<UWide>(board.profile().active_regions.size()) * sizeof(ActiveRegion);
   bytes +=
       static_cast<UWide>(board.rule_bucket().allowed_layers.size()) * sizeof(board_ir::LayerId);
-  bytes +=
-      static_cast<UWide>(board.routing_profile().allowed_layers.size()) * sizeof(board_ir::LayerId);
+  bytes += static_cast<UWide>(board.prepared_routing_profile().profile().allowed_layers.size()) *
+           sizeof(board_ir::LayerId);
   bytes += static_cast<UWide>(board.tiles().size()) * sizeof(SparseTile);
   for (const SparseTile& tile : board.tiles()) {
     bytes += static_cast<UWide>(tile.nodes.size()) * sizeof(CompiledNode);

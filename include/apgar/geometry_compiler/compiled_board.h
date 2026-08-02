@@ -212,9 +212,6 @@ class CompiledBoard {
   }
   [[nodiscard]] std::uint32_t compiler_version() const noexcept { return compiler_version_; }
   [[nodiscard]] const RuleBucketV1& rule_bucket() const noexcept { return rule_bucket_; }
-  [[nodiscard]] const board_ir::RoutingProfile& routing_profile() const noexcept {
-    return prepared_routing_profile_.profile();
-  }
   [[nodiscard]] const board_ir::PreparedRoutingProfile& prepared_routing_profile() const noexcept {
     return prepared_routing_profile_;
   }
@@ -254,8 +251,6 @@ class CompiledBoard {
   std::vector<SparseTile> tiles_;
   CompilerTelemetry telemetry_;
 
-  friend std::variant<CompiledBoard, CompileError> CompileBoard(const board_ir::BoardSnapshot&,
-                                                                CompilerProfile);
   friend std::variant<CompiledBoard, CompileError> CompileBoard(const board_ir::BoardSnapshot&,
                                                                 CompilerProfile,
                                                                 board_ir::PreparedRoutingProfile);

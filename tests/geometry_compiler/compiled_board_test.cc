@@ -171,7 +171,7 @@ void ExpectEveryCompiledLegalEdgeIsExactLegal(const BoardSnapshot& board,
 void ExpectCompiledEdgesMatchPreparedProfile(const BoardSnapshot& board,
                                              const board_ir::RoutingProfile& requested_profile,
                                              const CompiledBoard& compiled) {
-  EXPECT_EQ(compiled.routing_profile(), requested_profile);
+  EXPECT_EQ(compiled.prepared_routing_profile().profile(), requested_profile);
   std::uint64_t observed_edges = 0;
   std::uint64_t observed_legal_edges = 0;
   for (const SparseTile& tile : compiled.tiles()) {
@@ -340,7 +340,7 @@ TEST(CompiledBoardTest, PropagatesStableBoardProfileAndRuleBucketIdentity) {
   EXPECT_EQ(first.rule_bucket().clearance, board.data().routing_profile.clearance);
   EXPECT_EQ(first.rule_bucket().allowed_layers, board.data().routing_profile.allowed_layers);
   EXPECT_EQ(first.rule_bucket().allowed_headings, board.data().routing_profile.allowed_headings);
-  EXPECT_EQ(first.routing_profile(), board.data().routing_profile);
+  EXPECT_EQ(first.prepared_routing_profile().profile(), board.data().routing_profile);
 }
 
 TEST(CompiledBoardTest, CanonicalizesPreparedProfileLayers) {
@@ -384,12 +384,12 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(second_result));
   const CompiledBoard second = std::get<CompiledBoard>(std::move(second_result));
 
-  EXPECT_EQ(second.routing_profile(), second_profile);
+  EXPECT_EQ(second.prepared_routing_profile().profile(), second_profile);
   EXPECT_EQ(second.rule_bucket(), DeriveM1RuleBucket(second_profile));
   EXPECT_EQ(first.rule_bucket().routed_net, board.data().routing_profile.net);
   EXPECT_EQ(second.rule_bucket().routed_net, kSecondNet);
   EXPECT_EQ(second.rule_bucket().identity, first.rule_bucket().identity);
-  EXPECT_NE(routing::FingerprintRoutingProfile(second.routing_profile()),
+  EXPECT_NE(routing::FingerprintRoutingProfile(second.prepared_routing_profile().profile()),
             routing::FingerprintRoutingProfile(board.data().routing_profile));
   EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(second.EdgeIsLegal(0, 3, 0, Direction::kEast));
@@ -421,8 +421,10 @@ TEST(CompiledBoardTest, NonDefaultContextFailsClosedAtRouteAndAdmission) {
   const routing::CpuRouteResult route_result =
       routing::RouteWithCpuAStar(board, net_only_board, request);
   ASSERT_TRUE(std::holds_alternative<routing::RouteFailure>(route_result));
-  EXPECT_EQ(std::get<routing::RouteFailure>(route_result).code,
-            routing::RouteFailureCode::kValidationFailed);
+  const routing::RouteFailure& route_failure = std::get<routing::RouteFailure>(route_result);
+  EXPECT_EQ(route_failure.code, routing::RouteFailureCode::kValidationFailed);
+  EXPECT_EQ(route_failure.detail,
+            "Compiled board rule bucket is stale or does not match the BoardSnapshot");
 
   candidates::GeneratedRouteCandidate generated =
       test_support::CandidateDraft(board, first, request);
@@ -531,7 +533,7 @@ TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {
 
   board_ir::RoutingProfile invalid = valid;
   invalid.net = kEmptyNet;
-  expect_rejected(invalid, board_ir::BoardValidationCode::kNotM1Board,
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
                   "M1 routing profiles require exactly two terminals");
 
   invalid = valid;
@@ -634,8 +636,8 @@ TEST(CompiledBoardTest, ReportsDefinedMemoryAndConservatismTelemetry) {
   std::uint64_t expected_host_bytes = sizeof(CompiledBoard);
   expected_host_bytes += compiled.profile().active_regions.size() * sizeof(ActiveRegion);
   expected_host_bytes += compiled.rule_bucket().allowed_layers.size() * sizeof(board_ir::LayerId);
-  expected_host_bytes +=
-      compiled.routing_profile().allowed_layers.size() * sizeof(board_ir::LayerId);
+  expected_host_bytes += compiled.prepared_routing_profile().profile().allowed_layers.size() *
+                         sizeof(board_ir::LayerId);
   expected_host_bytes += compiled.tiles().size() * sizeof(SparseTile);
   for (const SparseTile& tile : compiled.tiles()) {
     expected_host_bytes += tile.nodes.size() * sizeof(CompiledNode);
