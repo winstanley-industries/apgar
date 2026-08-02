@@ -94,8 +94,9 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   and is not an active backlog.
 - ADR-068 establishes the clean restart and behavior-by-behavior salvage rule.
 - P4R-01 is approved and durably identified by PR #3.
-- The approved P4R-02 split separates the prerequisite per-net routing contract
-  from the authentic workload and accounting slice. Scope tracing then showed
+- The [P4R-02 split approved before implementation and recorded in PR #5](https://github.com/winstanley-industries/apgar/pull/5#issuecomment-5155778005)
+  separates the prerequisite per-net routing contract from the authentic
+  workload and accounting slice. Scope tracing then showed
   that the prerequisite itself crosses more than the 12-file task budget, so it
   is split again without changing its outcome: P4R-02A1 establishes prepared,
   retained, fail-closed compilation contexts; P4R-02A2 authenticates those
@@ -121,7 +122,7 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | --- | --- | --- | --- | --- | --- |
 | P4R-01 | Establish the clean branch, archived donor, ADR-068, epic governance, and APGAR complexity gate. | Phase 3 baseline | Exact archive/base identities; docs links; APGAR review; repository gates. | `done` | [PR #3](https://github.com/winstanley-industries/apgar/pull/3) |
 | P4R-02A1 | Add prepared per-net routing profiles retained by exact CompiledBoard contexts. | P4R-01 | Two distinct nets compile from one immutable snapshot with selective net-specific exact obstacle ownership; invalid profiles fail closed; CPU route and exact-candidate consumers reject non-default contexts pending P4R-02A2. | `done` | [PR #5](https://github.com/winstanley-industries/apgar/pull/5) |
-| P4R-02A2 | Bind prepared-context identity through CPU/GPU producer evidence, route admission, and exact immutable-candidate admission. | P4R-02A1 | Distinct-net requests produce and exactly admit correctly attributed immutable candidates; CPU, GPU, and replay producers derive one retained-profile identity; exact candidate self-clearance and terminal validation consume the CompiledBoard's retained routing profile rather than the Board IR default; relabeled or mismatched context evidence fails closed with a typed routing-profile mismatch and context-neutral detail rather than the temporary rule-bucket diagnostic; architecture Section 9.1 records routed-net identity as the M1 obstacle-interaction axis; the Board IR schema owns the prepared-profile contract. | `ready` | — |
+| P4R-02A2 | Bind prepared-context identity through CPU/GPU producer evidence, route admission, and exact immutable-candidate admission. | P4R-02A1 | Distinct-net requests produce and exactly admit correctly attributed immutable candidates; CPU, GPU, and replay producers derive one retained-profile identity; exact candidate self-clearance and terminal validation consume the CompiledBoard's retained routing profile rather than the Board IR default; relabeled or mismatched context evidence fails closed with a typed routing-profile mismatch and context-neutral detail rather than the temporary rule-bucket diagnostic; architecture Section 9.1 records routed-net identity as the M1 obstacle-interaction axis. | `ready` | — |
 | P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2 | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `planned` | — |
 | P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `planned` | — |
 | P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `planned` | — |

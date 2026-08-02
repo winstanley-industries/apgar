@@ -365,6 +365,13 @@ void AddBox(StableHashBuilder& hash, const AxisAlignedBox64& box) {
 
 }  // namespace
 
+struct internal::PreparedRoutingProfileFactory {
+  [[nodiscard]] static PreparedRoutingProfile Make(RoutingProfile profile,
+                                                   std::uint64_t source_board_content_hash) {
+    return PreparedRoutingProfile(std::move(profile), source_board_content_hash);
+  }
+};
+
 const Layer* BoardSnapshot::FindLayer(LayerId id) const noexcept {
   return FindLayerInData(data_, id);
 }
@@ -400,7 +407,7 @@ RoutingProfilePreparationResult PrepareRoutingProfile(const BoardSnapshot& board
       error.has_value()) {
     return std::move(*error);
   }
-  return profile;
+  return internal::PreparedRoutingProfileFactory::Make(std::move(profile), board.content_hash());
 }
 
 }  // namespace apgar::board_ir

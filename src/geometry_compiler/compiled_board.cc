@@ -350,21 +350,26 @@ bool CompiledBoard::EdgeIsLegal(board_ir::LayerId layer, std::int64_t lattice_x,
 }
 
 CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile profile) {
-  return CompileBoard(board, std::move(profile), board.data().routing_profile);
-}
-
-CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile profile,
-                           board_ir::RoutingProfile routing_profile) {
-  Normalize(profile);
   board_ir::RoutingProfilePreparationResult prepared =
-      board_ir::PrepareRoutingProfile(board, std::move(routing_profile));
+      board_ir::PrepareRoutingProfile(board, board.data().routing_profile);
   if (const auto* error = std::get_if<board_ir::BoardValidationError>(&prepared);
       error != nullptr) {
     return Error(
-        CompileErrorCode::kInvalidRoutingProfile,
-        "Routing profile is invalid for the supplied Board IR snapshot: " + error->message);
+        CompileErrorCode::kInternalInvariant,
+        "Validated Board IR default routing profile could not be prepared: " + error->message);
   }
-  routing_profile = std::get<board_ir::RoutingProfile>(std::move(prepared));
+  return CompileBoard(board, std::move(profile),
+                      std::get<board_ir::PreparedRoutingProfile>(std::move(prepared)));
+}
+
+CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile profile,
+                           board_ir::PreparedRoutingProfile prepared_routing_profile) {
+  Normalize(profile);
+  if (prepared_routing_profile.source_board_content_hash() != board.content_hash()) {
+    return Error(CompileErrorCode::kInvalidRoutingProfile,
+                 "Prepared routing profile belongs to a different Board IR snapshot");
+  }
+  board_ir::RoutingProfile routing_profile = prepared_routing_profile.profile();
   if (std::optional<CompileError> error = ValidateProfile(profile, routing_profile);
       error.has_value()) {
     return std::move(*error);
@@ -453,7 +458,7 @@ CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile
         }
         const geometry::MovementValidationResult exact =
             geometry::internal::ValidateMovementForPreparedProfile(
-                board, routing_profile, key.layer,
+                board, prepared_routing_profile, key.layer,
                 board_ir::Segment64{.start = *start, .end = *end});
         if (exact.legal()) {
           source_mask |= MaskFor(direction);

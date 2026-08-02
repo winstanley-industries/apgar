@@ -6,11 +6,10 @@
 
 namespace apgar::geometry::internal {
 
-// Source-private exact oracle for an already prepared routing profile. This
-// internal header is a layering convention rather than a capability boundary;
-// trusted callers must obtain the profile from Board IR's preparation API.
+// Source-private exact oracle for a routing profile whose type proves Board IR
+// preparation. The implementation also verifies its source-snapshot binding.
 [[nodiscard]] MovementValidationResult ValidateMovementForPreparedProfile(
-    const board_ir::BoardSnapshot& board, const board_ir::RoutingProfile& routing_profile,
+    const board_ir::BoardSnapshot& board, const board_ir::PreparedRoutingProfile& routing_profile,
     board_ir::LayerId layer, board_ir::Segment64 centerline);
 
 }  // namespace apgar::geometry::internal

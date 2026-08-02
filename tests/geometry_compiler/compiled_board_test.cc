@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -28,6 +29,7 @@ using board_ir::BoardCreationResult;
 using board_ir::BoardData;
 using board_ir::BoardSnapshot;
 using board_ir::Point64;
+using board_ir::PreparedRoutingProfile;
 
 constexpr board_ir::EntityRef kSecondNet{.id = 11, .generation = 0};
 constexpr board_ir::EntityRef kEmptyNet{.id = 12, .generation = 0};
@@ -46,6 +48,17 @@ constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
       << (std::holds_alternative<CompileError>(result) ? std::get<CompileError>(result).detail
                                                        : "");
   return std::get<CompiledBoard>(std::move(result));
+}
+
+[[nodiscard]] PreparedRoutingProfile Prepare(const BoardSnapshot& board,
+                                             board_ir::RoutingProfile profile) {
+  board_ir::RoutingProfilePreparationResult result =
+      board_ir::PrepareRoutingProfile(board, std::move(profile));
+  EXPECT_TRUE(std::holds_alternative<PreparedRoutingProfile>(result))
+      << (std::holds_alternative<board_ir::BoardValidationError>(result)
+              ? std::get<board_ir::BoardValidationError>(result).message
+              : "");
+  return std::get<PreparedRoutingProfile>(std::move(result));
 }
 
 [[nodiscard]] BoardData MultiNetBoardData() {
@@ -330,19 +343,19 @@ TEST(CompiledBoardTest, CanonicalizesPreparedProfileLayers) {
   unsorted_profile.allowed_layers = {31, 0};
   board_ir::RoutingProfilePreparationResult prepared =
       board_ir::PrepareRoutingProfile(board, unsorted_profile);
-  ASSERT_TRUE(std::holds_alternative<board_ir::RoutingProfile>(prepared));
+  ASSERT_TRUE(std::holds_alternative<PreparedRoutingProfile>(prepared));
   const board_ir::RoutingProfile second_profile =
-      std::get<board_ir::RoutingProfile>(std::move(prepared));
+      std::get<PreparedRoutingProfile>(std::move(prepared)).profile();
   EXPECT_EQ(second_profile.allowed_layers, (std::vector<board_ir::LayerId>{0, 31}));
 
   board_ir::RoutingProfile sorted_profile = unsorted_profile;
   std::ranges::sort(sorted_profile.allowed_layers);
-  CompileResult unsorted_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), unsorted_profile);
-  CompileResult sorted_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), sorted_profile);
-  CompileResult repeat_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), unsorted_profile);
+  CompileResult unsorted_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                               Prepare(board, unsorted_profile));
+  CompileResult sorted_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                             Prepare(board, sorted_profile));
+  CompileResult repeat_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                             Prepare(board, unsorted_profile));
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(unsorted_result));
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(sorted_result));
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(repeat_result));
@@ -363,8 +376,8 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
   second_profile.clearance = 3;
 
   const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
-  CompileResult second_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), second_profile);
+  CompileResult second_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                             Prepare(board, second_profile));
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(second_result));
   const CompiledBoard second = std::get<CompiledBoard>(std::move(second_result));
 
@@ -379,8 +392,8 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
 
   board_ir::RoutingProfile net_only_profile = board.data().routing_profile;
   net_only_profile.net = kSecondNet;
-  CompileResult net_only_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), net_only_profile);
+  CompileResult net_only_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                               Prepare(board, net_only_profile));
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(net_only_result));
   const CompiledBoard net_only_board = std::get<CompiledBoard>(std::move(net_only_result));
   EXPECT_EQ(net_only_board.rule_bucket().identity,
@@ -390,8 +403,8 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
 
   board_ir::RoutingProfile tightened_profile = board.data().routing_profile;
   tightened_profile.clearance = 20;
-  CompileResult tightened_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), tightened_profile);
+  CompileResult tightened_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                                Prepare(board, tightened_profile));
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(tightened_result));
   const CompiledBoard tightened = std::get<CompiledBoard>(std::move(tightened_result));
   EXPECT_TRUE(first.EdgeIsLegal(0, 2, 0, Direction::kEast));
@@ -401,31 +414,13 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
   ExpectCompiledEdgesMatchPreparedProfile(board, tightened_profile, tightened);
 }
 
-TEST(CompiledBoardTest, RetainedProfileDrivesCandidateAssociationIdentity) {
-  const BoardSnapshot board = Snapshot(MultiNetBoardData());
-  const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
-  board_ir::RoutingProfile net_only_profile = board.data().routing_profile;
-  net_only_profile.net = kSecondNet;
-  CompileResult net_only_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), net_only_profile);
-  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(net_only_result));
-  const CompiledBoard net_only_board = std::get<CompiledBoard>(std::move(net_only_result));
-
-  EXPECT_NE(candidates::AssociationsFor(board, net_only_board).routing_profile_fingerprint,
-            candidates::AssociationsFor(board, first).routing_profile_fingerprint);
-  EXPECT_EQ(candidates::AssociationsFor(board, net_only_board).routing_profile_fingerprint,
-            routing::FingerprintRoutingProfile(net_only_profile));
-  EXPECT_EQ(candidates::AssociationsFor(board, net_only_board).rule_bucket_identity,
-            candidates::AssociationsFor(board, first).rule_bucket_identity);
-}
-
 TEST(CompiledBoardTest, NonDefaultContextFailsClosedAtRouteAndAdmission) {
   const BoardSnapshot board = Snapshot(MultiNetBoardData());
   const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
   board_ir::RoutingProfile net_only_profile = board.data().routing_profile;
   net_only_profile.net = kSecondNet;
-  CompileResult net_only_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), net_only_profile);
+  CompileResult net_only_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                               Prepare(board, net_only_profile));
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(net_only_result));
   const CompiledBoard net_only_board = std::get<CompiledBoard>(std::move(net_only_result));
 
@@ -465,8 +460,8 @@ TEST(CompiledBoardTest, SeparatesRoutingProfileAndCompilerProfileErrors) {
   restricted_headings.allowed_headings =
       static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal) |
       static_cast<board_ir::HeadingMask>(board_ir::Heading::kVertical);
-  const CompileResult restricted_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), restricted_headings);
+  const CompileResult restricted_result = CompileBoard(
+      board, test_support::DefaultCompilerProfile({0}), Prepare(board, restricted_headings));
   ASSERT_TRUE(std::holds_alternative<CompileError>(restricted_result));
   EXPECT_EQ(std::get<CompileError>(restricted_result).code, CompileErrorCode::kInvalidProfile);
   EXPECT_EQ(std::get<CompileError>(restricted_result).detail,
@@ -474,8 +469,8 @@ TEST(CompiledBoardTest, SeparatesRoutingProfileAndCompilerProfileErrors) {
 
   board_ir::RoutingProfile restricted_layers = board.data().routing_profile;
   restricted_layers.allowed_layers = {31};
-  const CompileResult restricted_layer_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), restricted_layers);
+  const CompileResult restricted_layer_result = CompileBoard(
+      board, test_support::DefaultCompilerProfile({0}), Prepare(board, restricted_layers));
   ASSERT_TRUE(std::holds_alternative<CompileError>(restricted_layer_result));
   EXPECT_EQ(std::get<CompileError>(restricted_layer_result).code,
             CompileErrorCode::kInvalidProfile);
@@ -489,10 +484,17 @@ TEST(CompiledBoardTest, SeparatesRoutingProfileAndCompilerProfileErrors) {
   ASSERT_TRUE(std::holds_alternative<board_ir::BoardValidationError>(stale_preparation));
   EXPECT_EQ(std::get<board_ir::BoardValidationError>(stale_preparation).code,
             board_ir::BoardValidationCode::kInvalidRoutingProfile);
-  const CompileResult stale_compile =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), stale);
-  ASSERT_TRUE(std::holds_alternative<CompileError>(stale_compile));
-  EXPECT_EQ(std::get<CompileError>(stale_compile).code, CompileErrorCode::kInvalidRoutingProfile);
+  const PreparedRoutingProfile second_prepared = Prepare(board, second_profile);
+  BoardData revised_data = MultiNetBoardData();
+  ++revised_data.revision;
+  const BoardSnapshot revised_board = Snapshot(std::move(revised_data));
+  const CompileResult mismatched_snapshot =
+      CompileBoard(revised_board, test_support::DefaultCompilerProfile({0}), second_prepared);
+  ASSERT_TRUE(std::holds_alternative<CompileError>(mismatched_snapshot));
+  EXPECT_EQ(std::get<CompileError>(mismatched_snapshot).code,
+            CompileErrorCode::kInvalidRoutingProfile);
+  EXPECT_EQ(std::get<CompileError>(mismatched_snapshot).detail,
+            "Prepared routing profile belongs to a different Board IR snapshot");
 }
 
 TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {
@@ -501,46 +503,61 @@ TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {
   valid.net = kSecondNet;
 
   const auto expect_rejected = [&](board_ir::RoutingProfile profile,
-                                   board_ir::BoardValidationCode expected_code) {
+                                   board_ir::BoardValidationCode expected_code,
+                                   std::string_view expected_message) {
     const board_ir::RoutingProfilePreparationResult result =
         board_ir::PrepareRoutingProfile(board, std::move(profile));
     ASSERT_TRUE(std::holds_alternative<board_ir::BoardValidationError>(result));
-    EXPECT_EQ(std::get<board_ir::BoardValidationError>(result).code, expected_code);
+    const board_ir::BoardValidationError& error = std::get<board_ir::BoardValidationError>(result);
+    EXPECT_EQ(error.code, expected_code);
+    EXPECT_EQ(error.message, expected_message);
   };
 
   board_ir::RoutingProfile invalid = valid;
   invalid.net = kEmptyNet;
-  expect_rejected(invalid, board_ir::BoardValidationCode::kNotM1Board);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kNotM1Board,
+                  "M1 routing profiles require exactly two terminals");
 
   invalid = valid;
   invalid.nominal_width = 0;
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
   invalid.nominal_width = board_ir::kMaxAbsDbCoord + 1;
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
 
   invalid = valid;
   invalid.clearance = -1;
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
   invalid.clearance = board_ir::kMaxAbsDbCoord + 1;
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
 
   invalid = valid;
   invalid.allowed_layers.clear();
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
-  invalid.allowed_layers = {0, 0};
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
-  invalid.allowed_layers = {1'000};
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
-  invalid.allowed_layers = {99};
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
+  invalid.allowed_layers = {0, 0, 31};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile layers contain duplicates");
+  invalid.allowed_layers = {0, 31, 1'000};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile contains an unavailable signal layer");
+  invalid.allowed_layers = {0, 31, 99};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile contains an unavailable signal layer");
   invalid.allowed_layers = {0};
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Every routed-net terminal must intersect an allowed routing layer");
 
   invalid = valid;
   invalid.allowed_headings = 0;
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
   invalid.allowed_headings = static_cast<board_ir::HeadingMask>(1U << 7U);
-  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
 
   // PrepareRoutingProfile accepts an immutable, already validated snapshot, so
   // stale terminal references cannot reach it. Snapshot admission rejects that

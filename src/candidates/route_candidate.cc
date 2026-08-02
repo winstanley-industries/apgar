@@ -1200,7 +1200,7 @@ CandidateAssociations AssociationsFor(
       .compiler_profile_fingerprint = compiled_board.compiler_profile_fingerprint(),
       .geometry_compiler_version = compiled_board.compiler_version(),
       .routing_profile_fingerprint =
-          routing::FingerprintRoutingProfile(compiled_board.routing_profile()),
+          routing::FingerprintRoutingProfile(board.data().routing_profile),
       .rule_bucket_identity = compiled_board.rule_bucket().identity,
   };
 }

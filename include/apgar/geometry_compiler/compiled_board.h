@@ -254,7 +254,7 @@ class CompiledBoard {
                                                                 CompilerProfile);
   friend std::variant<CompiledBoard, CompileError> CompileBoard(const board_ir::BoardSnapshot&,
                                                                 CompilerProfile,
-                                                                board_ir::RoutingProfile);
+                                                                board_ir::PreparedRoutingProfile);
   friend class CompiledBoardTestPeer;
 };
 
@@ -264,7 +264,7 @@ using CompileResult = std::variant<CompiledBoard, CompileError>;
                                          CompilerProfile profile);
 [[nodiscard]] CompileResult CompileBoard(const board_ir::BoardSnapshot& board,
                                          CompilerProfile profile,
-                                         board_ir::RoutingProfile routing_profile);
+                                         board_ir::PreparedRoutingProfile routing_profile);
 
 [[nodiscard]] std::uint64_t FingerprintCompilerProfile(CompilerProfile profile);
 [[nodiscard]] RuleBucketV1 DeriveM1RuleBucket(const board_ir::RoutingProfile& profile);

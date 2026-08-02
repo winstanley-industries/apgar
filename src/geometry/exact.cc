@@ -361,15 +361,12 @@ SegmentClearanceResult SweptTraceClearanceAtLeast(board_ir::Segment64 centerline
   };
 }
 
-MovementValidationResult ValidateMovement(const board_ir::BoardSnapshot& board,
-                                          board_ir::LayerId layer, board_ir::Segment64 centerline) {
-  return internal::ValidateMovementForPreparedProfile(board, board.data().routing_profile, layer,
-                                                      centerline);
-}
+namespace {
 
-MovementValidationResult internal::ValidateMovementForPreparedProfile(
-    const board_ir::BoardSnapshot& board, const board_ir::RoutingProfile& profile,
-    board_ir::LayerId layer, board_ir::Segment64 centerline) {
+MovementValidationResult ValidateMovementForProfile(const board_ir::BoardSnapshot& board,
+                                                    const board_ir::RoutingProfile& profile,
+                                                    board_ir::LayerId layer,
+                                                    board_ir::Segment64 centerline) {
   if (!board_ir::PointIsValid(centerline.start) || !board_ir::PointIsValid(centerline.end)) {
     return Failure(MovementViolationCode::kCoordinateOutOfRange,
                    "Movement endpoint exceeds the validated coordinate range");
@@ -411,6 +408,23 @@ MovementValidationResult internal::ValidateMovementForPreparedProfile(
     }
   }
   return {};
+}
+
+}  // namespace
+
+MovementValidationResult ValidateMovement(const board_ir::BoardSnapshot& board,
+                                          board_ir::LayerId layer, board_ir::Segment64 centerline) {
+  return ValidateMovementForProfile(board, board.data().routing_profile, layer, centerline);
+}
+
+MovementValidationResult internal::ValidateMovementForPreparedProfile(
+    const board_ir::BoardSnapshot& board, const board_ir::PreparedRoutingProfile& prepared_profile,
+    board_ir::LayerId layer, board_ir::Segment64 centerline) {
+  if (prepared_profile.source_board_content_hash() != board.content_hash()) {
+    return Failure(MovementViolationCode::kLayerNotAllowed,
+                   "Prepared routing profile belongs to a different Board IR snapshot");
+  }
+  return ValidateMovementForProfile(board, prepared_profile.profile(), layer, centerline);
 }
 
 }  // namespace apgar::geometry
