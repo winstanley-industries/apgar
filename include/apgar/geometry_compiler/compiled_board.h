@@ -120,6 +120,7 @@ struct LatticeIndex {
 
 struct RuleBucketV1 {
   std::uint64_t identity;
+  board_ir::EntityRef routed_net;
   board_ir::DbCoord nominal_width;
   board_ir::DbCoord clearance;
   std::vector<board_ir::LayerId> allowed_layers;

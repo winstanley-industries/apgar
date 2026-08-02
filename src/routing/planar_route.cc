@@ -30,14 +30,6 @@ std::optional<CompiledBoardAssociationIssue> ValidateCompiledBoardAssociation(
       geometry_compiler::FingerprintCompilerProfile(compiled_board.profile())) {
     return CompiledBoardAssociationIssue::kProfileFingerprintMismatch;
   }
-  // P4R-02A1 prepares and compiles exact per-net contexts, but downstream
-  // request/candidate validation and producer evidence do not yet authenticate
-  // the retained profile identity. Fail closed until P4R-02A2 carries it
-  // through route production and candidate admission, then replace this
-  // temporary rule-bucket diagnostic with a typed routing-profile mismatch.
-  if (compiled_board.routing_profile() != board.data().routing_profile) {
-    return CompiledBoardAssociationIssue::kRuleBucketMismatch;
-  }
   if (compiled_board.rule_bucket() !=
       geometry_compiler::DeriveM1RuleBucket(board.data().routing_profile)) {
     return CompiledBoardAssociationIssue::kRuleBucketMismatch;

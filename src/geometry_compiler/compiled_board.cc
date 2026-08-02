@@ -297,6 +297,7 @@ std::uint64_t FingerprintCompilerProfile(CompilerProfile profile) {
 RuleBucketV1 DeriveM1RuleBucket(const board_ir::RoutingProfile& profile) {
   RuleBucketV1 bucket{
       .identity = 0,
+      .routed_net = profile.net,
       .nominal_width = profile.nominal_width,
       .clearance = profile.clearance,
       .allowed_layers = profile.allowed_layers,

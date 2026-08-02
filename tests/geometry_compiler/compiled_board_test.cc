@@ -101,6 +101,14 @@ constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
       .owner_net = data.routing_profile.net,
       .provenance = "U6/pad-1",
   });
+  data.obstacles.push_back(board_ir::Obstacle{
+      .ref = board_ir::EntityRef{.id = 32, .generation = 0},
+      .layer = 0,
+      .bounds =
+          AxisAlignedBox64{.min = Point64{.x = -15, .y = 15}, .max = Point64{.x = -5, .y = 25}},
+      .owner_net = std::nullopt,
+      .provenance = "board-keepout",
+  });
   return data;
 }
 
@@ -381,12 +389,16 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
 
   EXPECT_EQ(second.routing_profile(), second_profile);
   EXPECT_EQ(second.rule_bucket(), DeriveM1RuleBucket(second_profile));
+  EXPECT_EQ(first.rule_bucket().routed_net, board.data().routing_profile.net);
+  EXPECT_EQ(second.rule_bucket().routed_net, kSecondNet);
   EXPECT_EQ(second.rule_bucket().identity,
             DeriveM1RuleBucket(board.data().routing_profile).identity);
   EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(second.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(first.EdgeIsLegal(0, 7, 0, Direction::kEast));
   EXPECT_FALSE(second.EdgeIsLegal(0, 7, 0, Direction::kEast));
+  EXPECT_FALSE(first.EdgeIsLegal(0, -2, 2, Direction::kEast));
+  EXPECT_FALSE(second.EdgeIsLegal(0, -2, 2, Direction::kEast));
   ExpectCompiledEdgesMatchPreparedProfile(board, second_profile, second);
 }
 
@@ -538,6 +550,12 @@ TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {
   invalid.allowed_layers = {0};
   expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
                   "Every routed-net terminal must intersect an allowed routing layer");
+
+  board_ir::RoutingProfile narrowed_default = board.data().routing_profile;
+  narrowed_default.allowed_layers = {0};
+  expect_rejected(
+      narrowed_default, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+      "Prepared routing profiles may differ from the Board IR default only by routed net");
 
   invalid = valid;
   invalid.allowed_headings = 0;
