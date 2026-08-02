@@ -12,6 +12,7 @@
 #include "apgar/board_ir/board.h"
 #include "apgar/candidates/route_candidate.h"
 #include "apgar/geometry/exact.h"
+#include "apgar/routing/candidate_policy.h"
 #include "apgar/routing/cpu_astar.h"
 #include "apgar/routing/planar_route.h"
 #include "tests/support/board_builder.h"
@@ -79,6 +80,14 @@ constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
           AxisAlignedBox64{.min = Point64{.x = 90, .y = 10}, .max = Point64{.x = 110, .y = 30}},
       .layers = {31},
   });
+  data.obstacles.push_back(board_ir::Obstacle{
+      .ref = board_ir::EntityRef{.id = 31, .generation = 0},
+      .layer = 0,
+      .bounds =
+          AxisAlignedBox64{.min = Point64{.x = 70, .y = -10}, .max = Point64{.x = 80, .y = 10}},
+      .owner_net = data.routing_profile.net,
+      .provenance = "U6/pad-1",
+  });
   return data;
 }
 
@@ -139,7 +148,9 @@ void ExpectEveryCompiledLegalEdgeIsExactLegal(const BoardSnapshot& board,
 }
 
 void ExpectCompiledEdgesMatchPreparedProfile(const BoardSnapshot& board,
+                                             const board_ir::RoutingProfile& requested_profile,
                                              const CompiledBoard& compiled) {
+  EXPECT_EQ(compiled.routing_profile(), requested_profile);
   std::uint64_t observed_edges = 0;
   std::uint64_t observed_legal_edges = 0;
   for (const SparseTile& tile : compiled.tiles()) {
@@ -156,7 +167,7 @@ void ExpectCompiledEdgesMatchPreparedProfile(const BoardSnapshot& board,
         }
         ++observed_edges;
         const std::optional<bool> exact =
-            ExactEdgeIsLegalForProfile(board, compiled.routing_profile(), tile.key.layer,
+            ExactEdgeIsLegalForProfile(board, requested_profile, tile.key.layer,
                                        board_ir::Segment64{
                                            .start = ExactPoint(compiled.profile(), index),
                                            .end = ExactPoint(compiled.profile(), neighbor),
@@ -323,6 +334,26 @@ TEST(CompiledBoardTest, CanonicalizesPreparedProfileLayers) {
   const board_ir::RoutingProfile second_profile =
       std::get<board_ir::RoutingProfile>(std::move(prepared));
   EXPECT_EQ(second_profile.allowed_layers, (std::vector<board_ir::LayerId>{0, 31}));
+
+  board_ir::RoutingProfile sorted_profile = unsorted_profile;
+  std::ranges::sort(sorted_profile.allowed_layers);
+  CompileResult unsorted_result =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), unsorted_profile);
+  CompileResult sorted_result =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), sorted_profile);
+  CompileResult repeat_result =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), unsorted_profile);
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(unsorted_result));
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(sorted_result));
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(repeat_result));
+  const CompiledBoard unsorted = std::get<CompiledBoard>(std::move(unsorted_result));
+  const CompiledBoard sorted = std::get<CompiledBoard>(std::move(sorted_result));
+  const CompiledBoard repeat = std::get<CompiledBoard>(std::move(repeat_result));
+  EXPECT_EQ(unsorted, sorted);
+  EXPECT_EQ(unsorted, repeat);
+  EXPECT_EQ(unsorted.rule_bucket().identity, sorted.rule_bucket().identity);
+  EXPECT_EQ(routing::FingerprintRoutingProfile(unsorted.routing_profile()),
+            routing::FingerprintRoutingProfile(sorted.routing_profile()));
 }
 
 TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
@@ -343,6 +374,8 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
             DeriveM1RuleBucket(board.data().routing_profile).identity);
   EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(second.EdgeIsLegal(0, 3, 0, Direction::kEast));
+  EXPECT_TRUE(first.EdgeIsLegal(0, 7, 0, Direction::kEast));
+  EXPECT_FALSE(second.EdgeIsLegal(0, 7, 0, Direction::kEast));
 
   board_ir::RoutingProfile net_only_profile = board.data().routing_profile;
   net_only_profile.net = kSecondNet;
@@ -353,6 +386,7 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
   EXPECT_EQ(net_only_board.rule_bucket().identity,
             DeriveM1RuleBucket(board.data().routing_profile).identity);
   EXPECT_TRUE(net_only_board.EdgeIsLegal(0, 3, 0, Direction::kEast));
+  EXPECT_FALSE(net_only_board.EdgeIsLegal(0, 7, 0, Direction::kEast));
 
   board_ir::RoutingProfile tightened_profile = board.data().routing_profile;
   tightened_profile.clearance = 20;
@@ -362,8 +396,9 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
   const CompiledBoard tightened = std::get<CompiledBoard>(std::move(tightened_result));
   EXPECT_TRUE(first.EdgeIsLegal(0, 2, 0, Direction::kEast));
   EXPECT_FALSE(tightened.EdgeIsLegal(0, 2, 0, Direction::kEast));
-  ExpectCompiledEdgesMatchPreparedProfile(board, net_only_board);
-  ExpectCompiledEdgesMatchPreparedProfile(board, tightened);
+  ExpectCompiledEdgesMatchPreparedProfile(board, second_profile, second);
+  ExpectCompiledEdgesMatchPreparedProfile(board, net_only_profile, net_only_board);
+  ExpectCompiledEdgesMatchPreparedProfile(board, tightened_profile, tightened);
 }
 
 TEST(CompiledBoardTest, RetainedProfileDrivesCandidateAssociationIdentity) {

@@ -732,6 +732,7 @@ cc_test(
     deps = [
         ":board_ir",
         ":candidate_contract",
+        ":candidate_policy",
         ":cpu_astar",
         ":cpu_route_evidence_test_support",
         ":exact_geometry",
