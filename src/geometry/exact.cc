@@ -7,8 +7,6 @@
 #include <string>
 #include <utility>
 
-#include "src/geometry/exact_internal.h"
-
 namespace apgar::geometry {
 namespace {
 
@@ -421,7 +419,7 @@ MovementValidationResult internal::ValidateMovementForPreparedProfile(
     const board_ir::BoardSnapshot& board, const board_ir::PreparedRoutingProfile& prepared_profile,
     board_ir::LayerId layer, board_ir::Segment64 centerline) {
   if (prepared_profile.source_board_content_hash() != board.content_hash()) {
-    return Failure(MovementViolationCode::kLayerNotAllowed,
+    return Failure(MovementViolationCode::kPreparedProfileSnapshotMismatch,
                    "Prepared routing profile belongs to a different Board IR snapshot");
   }
   return ValidateMovementForProfile(board, prepared_profile.profile(), layer, centerline);

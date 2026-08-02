@@ -11,10 +11,6 @@
 
 namespace apgar::board_ir {
 
-namespace internal {
-struct PreparedRoutingProfileFactory;
-}
-
 using DbCoord = std::int64_t;
 using EntityId = std::uint64_t;
 using Generation = std::uint32_t;
@@ -166,6 +162,8 @@ struct BoardValidationError {
   std::string message;
 };
 
+class BoardSnapshot;
+
 // Immutable capability proving that one routing profile was canonicalized and
 // validated against the identified BoardSnapshot. Callers can inspect the
 // retained profile but cannot construct prepared state directly.
@@ -185,7 +183,8 @@ class PreparedRoutingProfile {
   RoutingProfile profile_;
   std::uint64_t source_board_content_hash_;
 
-  friend struct internal::PreparedRoutingProfileFactory;
+  friend std::variant<PreparedRoutingProfile, BoardValidationError> PrepareRoutingProfile(
+      const BoardSnapshot& board, RoutingProfile profile);
 };
 
 class BoardSnapshot {
@@ -215,9 +214,9 @@ using RoutingProfilePreparationResult = std::variant<PreparedRoutingProfile, Boa
 
 // Canonicalizes and validates a per-net M1 routing profile against one
 // immutable BoardSnapshot, returning prepared state bound to that snapshot's
-// content hash. Board IR v1 retains one default profile for source
-// compatibility; callers prepare additional net-specific profiles through this
-// boundary instead of substituting unvalidated ownership semantics.
+// content hash. Board IR v1 retains one authoritative rule profile; additional
+// prepared contexts may change only its routed net and therefore its obstacle
+// ownership semantics.
 [[nodiscard]] RoutingProfilePreparationResult PrepareRoutingProfile(const BoardSnapshot& board,
                                                                     RoutingProfile profile);
 

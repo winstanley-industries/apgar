@@ -14,7 +14,6 @@
 
 #include "apgar/board_ir/stable_hash.h"
 #include "apgar/geometry/exact.h"
-#include "src/geometry/exact_internal.h"
 
 namespace apgar::geometry_compiler {
 namespace {

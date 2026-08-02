@@ -59,10 +59,7 @@ cc_library(
 
 cc_library(
     name = "exact_geometry",
-    srcs = [
-        "src/geometry/exact.cc",
-        "src/geometry/exact_internal.h",
-    ],
+    srcs = ["src/geometry/exact.cc"],
     hdrs = ["include/apgar/geometry/exact.h"],
     copts = APGAR_COPTS,
     strip_include_prefix = "include",

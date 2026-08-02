@@ -54,6 +54,7 @@ enum class MovementViolationCode : std::uint8_t {
   kUnknownLayer,
   kLayerNotAllowed,
   kStaticObstacleConflict,
+  kPreparedProfileSnapshotMismatch,
 };
 
 struct MovementValidationResult {
@@ -67,6 +68,16 @@ struct MovementValidationResult {
 [[nodiscard]] MovementValidationResult ValidateMovement(const board_ir::BoardSnapshot& board,
                                                         board_ir::LayerId layer,
                                                         board_ir::Segment64 centerline);
+
+namespace internal {
+
+// Exact oracle for a routing profile whose type proves Board IR preparation.
+// The source-snapshot binding is checked before any geometry is evaluated.
+[[nodiscard]] MovementValidationResult ValidateMovementForPreparedProfile(
+    const board_ir::BoardSnapshot& board, const board_ir::PreparedRoutingProfile& routing_profile,
+    board_ir::LayerId layer, board_ir::Segment64 centerline);
+
+}  // namespace internal
 
 }  // namespace apgar::geometry
 

@@ -365,13 +365,6 @@ void AddBox(StableHashBuilder& hash, const AxisAlignedBox64& box) {
 
 }  // namespace
 
-struct internal::PreparedRoutingProfileFactory {
-  [[nodiscard]] static PreparedRoutingProfile Make(RoutingProfile profile,
-                                                   std::uint64_t source_board_content_hash) {
-    return PreparedRoutingProfile(std::move(profile), source_board_content_hash);
-  }
-};
-
 const Layer* BoardSnapshot::FindLayer(LayerId id) const noexcept {
   return FindLayerInData(data_, id);
 }
@@ -407,7 +400,18 @@ RoutingProfilePreparationResult PrepareRoutingProfile(const BoardSnapshot& board
       error.has_value()) {
     return std::move(*error);
   }
-  return internal::PreparedRoutingProfileFactory::Make(std::move(profile), board.content_hash());
+  const RoutingProfile& authoritative = board.data().routing_profile;
+  if (profile.nominal_width != authoritative.nominal_width ||
+      profile.clearance != authoritative.clearance ||
+      profile.allowed_layers != authoritative.allowed_layers ||
+      profile.allowed_headings != authoritative.allowed_headings) {
+    return BoardValidationError{
+        .code = BoardValidationCode::kInvalidRoutingProfile,
+        .message =
+            "Prepared routing profiles may differ from the Board IR default only by routed net",
+    };
+  }
+  return PreparedRoutingProfile(std::move(profile), board.content_hash());
 }
 
 }  // namespace apgar::board_ir

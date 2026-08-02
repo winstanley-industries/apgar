@@ -339,7 +339,6 @@ TEST(CompiledBoardTest, CanonicalizesPreparedProfileLayers) {
   const BoardSnapshot board = Snapshot(MultiNetBoardData());
   board_ir::RoutingProfile unsorted_profile = board.data().routing_profile;
   unsorted_profile.net = kSecondNet;
-  unsorted_profile.clearance = 3;
   unsorted_profile.allowed_layers = {31, 0};
   board_ir::RoutingProfilePreparationResult prepared =
       board_ir::PrepareRoutingProfile(board, unsorted_profile);
@@ -373,7 +372,6 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
   const BoardSnapshot board = Snapshot(MultiNetBoardData());
   board_ir::RoutingProfile second_profile = board.data().routing_profile;
   second_profile.net = kSecondNet;
-  second_profile.clearance = 3;
 
   const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
   CompileResult second_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
@@ -383,35 +381,13 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
 
   EXPECT_EQ(second.routing_profile(), second_profile);
   EXPECT_EQ(second.rule_bucket(), DeriveM1RuleBucket(second_profile));
-  EXPECT_NE(second.rule_bucket().identity,
+  EXPECT_EQ(second.rule_bucket().identity,
             DeriveM1RuleBucket(board.data().routing_profile).identity);
   EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(second.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(first.EdgeIsLegal(0, 7, 0, Direction::kEast));
   EXPECT_FALSE(second.EdgeIsLegal(0, 7, 0, Direction::kEast));
-
-  board_ir::RoutingProfile net_only_profile = board.data().routing_profile;
-  net_only_profile.net = kSecondNet;
-  CompileResult net_only_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
-                                               Prepare(board, net_only_profile));
-  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(net_only_result));
-  const CompiledBoard net_only_board = std::get<CompiledBoard>(std::move(net_only_result));
-  EXPECT_EQ(net_only_board.rule_bucket().identity,
-            DeriveM1RuleBucket(board.data().routing_profile).identity);
-  EXPECT_TRUE(net_only_board.EdgeIsLegal(0, 3, 0, Direction::kEast));
-  EXPECT_FALSE(net_only_board.EdgeIsLegal(0, 7, 0, Direction::kEast));
-
-  board_ir::RoutingProfile tightened_profile = board.data().routing_profile;
-  tightened_profile.clearance = 20;
-  CompileResult tightened_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
-                                                Prepare(board, tightened_profile));
-  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(tightened_result));
-  const CompiledBoard tightened = std::get<CompiledBoard>(std::move(tightened_result));
-  EXPECT_TRUE(first.EdgeIsLegal(0, 2, 0, Direction::kEast));
-  EXPECT_FALSE(tightened.EdgeIsLegal(0, 2, 0, Direction::kEast));
   ExpectCompiledEdgesMatchPreparedProfile(board, second_profile, second);
-  ExpectCompiledEdgesMatchPreparedProfile(board, net_only_profile, net_only_board);
-  ExpectCompiledEdgesMatchPreparedProfile(board, tightened_profile, tightened);
 }
 
 TEST(CompiledBoardTest, NonDefaultContextFailsClosedAtRouteAndAdmission) {
@@ -456,25 +432,12 @@ TEST(CompiledBoardTest, SeparatesRoutingProfileAndCompilerProfileErrors) {
   board_ir::RoutingProfile second_profile = board.data().routing_profile;
   second_profile.net = kSecondNet;
 
-  board_ir::RoutingProfile restricted_headings = second_profile;
-  restricted_headings.allowed_headings =
-      static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal) |
-      static_cast<board_ir::HeadingMask>(board_ir::Heading::kVertical);
-  const CompileResult restricted_result = CompileBoard(
-      board, test_support::DefaultCompilerProfile({0}), Prepare(board, restricted_headings));
-  ASSERT_TRUE(std::holds_alternative<CompileError>(restricted_result));
-  EXPECT_EQ(std::get<CompileError>(restricted_result).code, CompileErrorCode::kInvalidProfile);
-  EXPECT_EQ(std::get<CompileError>(restricted_result).detail,
-            "Compiler headings are not allowed by the Board IR routing profile");
-
-  board_ir::RoutingProfile restricted_layers = board.data().routing_profile;
-  restricted_layers.allowed_layers = {31};
-  const CompileResult restricted_layer_result = CompileBoard(
-      board, test_support::DefaultCompilerProfile({0}), Prepare(board, restricted_layers));
-  ASSERT_TRUE(std::holds_alternative<CompileError>(restricted_layer_result));
-  EXPECT_EQ(std::get<CompileError>(restricted_layer_result).code,
+  const CompileResult invalid_compiler_profile = CompileBoard(
+      board, test_support::DefaultCompilerProfile({99}), Prepare(board, second_profile));
+  ASSERT_TRUE(std::holds_alternative<CompileError>(invalid_compiler_profile));
+  EXPECT_EQ(std::get<CompileError>(invalid_compiler_profile).code,
             CompileErrorCode::kInvalidProfile);
-  EXPECT_EQ(std::get<CompileError>(restricted_layer_result).detail,
+  EXPECT_EQ(std::get<CompileError>(invalid_compiler_profile).detail,
             "Active-region layers must belong to the routing rule bucket");
 
   board_ir::RoutingProfile stale = second_profile;
@@ -495,6 +458,31 @@ TEST(CompiledBoardTest, SeparatesRoutingProfileAndCompilerProfileErrors) {
             CompileErrorCode::kInvalidRoutingProfile);
   EXPECT_EQ(std::get<CompileError>(mismatched_snapshot).detail,
             "Prepared routing profile belongs to a different Board IR snapshot");
+}
+
+TEST(CompiledBoardTest, PreparedExactOracleChecksSnapshotBindingDirectly) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = kSecondNet;
+  const PreparedRoutingProfile prepared = Prepare(board, second_profile);
+  constexpr board_ir::Segment64 kClearMovement{
+      .start = Point64{.x = 0, .y = 40},
+      .end = Point64{.x = 10, .y = 40},
+  };
+
+  const geometry::MovementValidationResult accepted =
+      geometry::internal::ValidateMovementForPreparedProfile(board, prepared, 0, kClearMovement);
+  EXPECT_TRUE(accepted.legal()) << accepted.detail;
+
+  BoardData revised_data = MultiNetBoardData();
+  ++revised_data.revision;
+  const BoardSnapshot revised_board = Snapshot(std::move(revised_data));
+  const geometry::MovementValidationResult rejected =
+      geometry::internal::ValidateMovementForPreparedProfile(revised_board, prepared, 0,
+                                                             kClearMovement);
+  EXPECT_FALSE(rejected.legal());
+  EXPECT_EQ(rejected.code, geometry::MovementViolationCode::kPreparedProfileSnapshotMismatch);
+  EXPECT_EQ(rejected.detail, "Prepared routing profile belongs to a different Board IR snapshot");
 }
 
 TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {
@@ -558,6 +546,25 @@ TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {
   invalid.allowed_headings = static_cast<board_ir::HeadingMask>(1U << 7U);
   expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
                   "Routing profile dimensions, layers, or headings are invalid");
+
+  invalid = valid;
+  ++invalid.clearance;
+  expect_rejected(
+      invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+      "Prepared routing profiles may differ from the Board IR default only by routed net");
+
+  invalid = valid;
+  ++invalid.nominal_width;
+  expect_rejected(
+      invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+      "Prepared routing profiles may differ from the Board IR default only by routed net");
+
+  invalid = valid;
+  invalid.allowed_headings = static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal) |
+                             static_cast<board_ir::HeadingMask>(board_ir::Heading::kVertical);
+  expect_rejected(
+      invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+      "Prepared routing profiles may differ from the Board IR default only by routed net");
 
   // PrepareRoutingProfile accepts an immutable, already validated snapshot, so
   // stale terminal references cannot reach it. Snapshot admission rejects that
