@@ -921,6 +921,7 @@ cc_test(
     srcs = [
         "tests/routing/cpu_astar_test.cc",
         "tests/support/board_builder.h",
+        "tests/support/compiled_board_test_access.h",
         "tests/support/compiler_builder.h",
         "tests/support/google_test.h",
         "tests/support/routing_builder.h",
@@ -933,6 +934,7 @@ cc_test(
         ":cpu_astar",
         ":geometry_compiler",
         ":kicad_fixture_adapter",
+        ":planar_route",
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],

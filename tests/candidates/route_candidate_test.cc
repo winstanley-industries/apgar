@@ -70,7 +70,7 @@ static_assert(std::is_const_v<
       .telemetry = {},
       .producer_evidence = {},
   };
-  test_support::CpuRouteFaultDecorator::Reseal(route);
+  test_support::CpuRouteFaultDecorator::Reseal(route, compiled);
   const CandidateDraftBuildResult result = BuildGeneratedCandidateFromCpuRoute(
       board, compiled, request, policy, route,
       CandidateSchedulingIdentity{.batch_identity = 17, .query_identity = query_identity});
@@ -106,6 +106,42 @@ TEST(RouteCandidateTest, CpuDraftIsCanonicalStableAndExactlyAdmitted) {
       first);
   ASSERT_TRUE(std::holds_alternative<RouteCandidate>(admitted));
   EXPECT_EQ(std::get<RouteCandidate>(admitted).data(), first);
+}
+
+TEST(RouteCandidateTest, NonDefaultCpuEvidenceRemainsFailClosedAtCandidateBuilder) {
+  const BoardSnapshot board = Snapshot(test_support::MultiNetM1BoardData());
+  const EntityRef second_net = board.data().nets[1].ref;
+  const CompiledBoard prepared = test_support::CompilePreparedNet(
+      board, second_net, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest prepared_request = test_support::RequestForNet(board, second_net);
+  const routing::CpuRouteResult route_result =
+      routing::RouteWithCpuAStar(board, prepared, prepared_request);
+  ASSERT_TRUE(std::holds_alternative<routing::CpuRoute>(route_result));
+  const routing::NormalizedCandidateGenerationPolicy prepared_policy =
+      NormalizePolicy(prepared, prepared_request);
+
+  const CandidateDraftBuildResult prepared_rejection = BuildGeneratedCandidateFromCpuRoute(
+      board, prepared, prepared_request, prepared_policy, std::get<routing::CpuRoute>(route_result),
+      CandidateSchedulingIdentity{.batch_identity = 31, .query_identity = 37});
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(prepared_rejection));
+  EXPECT_EQ(std::get<CandidateRejection>(prepared_rejection).code,
+            CandidateRejectionCode::kAssociationMismatch);
+  EXPECT_EQ(std::get<CandidateRejection>(prepared_rejection).invariant_id,
+            "candidate.builder.compiled_board_association.v1");
+
+  const CompiledBoard default_compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  EXPECT_EQ(default_compiled.rule_bucket().identity, prepared.rule_bucket().identity);
+  const routing::NormalizedCandidateGenerationPolicy default_policy =
+      NormalizePolicy(default_compiled, prepared_request);
+  const CandidateDraftBuildResult request_rejection = BuildGeneratedCandidateFromCpuRoute(
+      board, default_compiled, prepared_request, default_policy,
+      std::get<routing::CpuRoute>(route_result),
+      CandidateSchedulingIdentity{.batch_identity = 41, .query_identity = 43});
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(request_rejection));
+  EXPECT_EQ(std::get<CandidateRejection>(request_rejection).code,
+            CandidateRejectionCode::kInvalidInput);
+  EXPECT_EQ(std::get<CandidateRejection>(request_rejection).invariant_id,
+            "candidate.builder.route_request.v1");
 }
 
 TEST(RouteCandidateTest, CanonicalV1IdentitySignaturesChecksumAndBytesHaveGoldenValues) {
@@ -764,7 +800,7 @@ TEST(RouteCandidateTest, CpuBuilderDerivesCpuOnlyProvenanceFromTypedEvidence) {
 
   routing::CpuRoute stale_route = route;
   ++stale_route.source_board_content_hash;
-  test_support::CpuRouteFaultDecorator::Reseal(stale_route);
+  test_support::CpuRouteFaultDecorator::Reseal(stale_route, compiled);
   const CandidateDraftBuildResult stale = BuildGeneratedCandidateFromCpuRoute(
       board, compiled, request, policy, stale_route,
       CandidateSchedulingIdentity{.batch_identity = 91, .query_identity = 93});
@@ -969,7 +1005,7 @@ TEST(RouteCandidateTest, BuilderFailuresRetainVersionedExactAndResourceDiagnosti
         .telemetry = {},
         .producer_evidence = {},
     };
-    test_support::CpuRouteFaultDecorator::Reseal(route);
+    test_support::CpuRouteFaultDecorator::Reseal(route, compiled);
     return BuildGeneratedCandidateFromCpuRoute(
         board, compiled, request, policy, route,
         CandidateSchedulingIdentity{.batch_identity = 107, .query_identity = 109});
@@ -1063,7 +1099,7 @@ TEST(RouteCandidateTest, BuilderChecksPrimitiveBoundBeforeDraftAllocation) {
         .telemetry = {},
         .producer_evidence = {},
     };
-    test_support::CpuRouteFaultDecorator::Reseal(route);
+    test_support::CpuRouteFaultDecorator::Reseal(route, compiled);
     return BuildGeneratedCandidateFromCpuRoute(
         board, compiled, request, policy, route,
         CandidateSchedulingIdentity{.batch_identity = 113, .query_identity = 127});

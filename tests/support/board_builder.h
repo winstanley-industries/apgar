@@ -88,6 +88,35 @@ namespace apgar::test_support {
   };
 }
 
+[[nodiscard]] inline board_ir::BoardData MultiNetM1BoardData() {
+  constexpr board_ir::EntityRef kThirdTerminal{.id = 22, .generation = 0};
+  constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
+  board_ir::BoardData data = ValidM1BoardData();
+  const board_ir::EntityRef second_net = data.nets[1].ref;
+  data.nets[1].terminals = {kThirdTerminal, kFourthTerminal};
+  data.obstacles[0].bounds =
+      board_ir::AxisAlignedBox64{.min = {.x = 40, .y = 10}, .max = {.x = 60, .y = 30}};
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kThirdTerminal,
+      .net = second_net,
+      .component = "U4",
+      .pin = "1",
+      .center = {.x = 0, .y = 20},
+      .connection_region = {.min = {.x = -10, .y = 10}, .max = {.x = 10, .y = 30}},
+      .layers = {0},
+  });
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kFourthTerminal,
+      .net = second_net,
+      .component = "U5",
+      .pin = "1",
+      .center = {.x = 100, .y = 20},
+      .connection_region = {.min = {.x = 90, .y = 10}, .max = {.x = 110, .y = 30}},
+      .layers = {0},
+  });
+  return data;
+}
+
 }  // namespace apgar::test_support
 
 #endif  // APGAR_TESTS_SUPPORT_BOARD_BUILDER_H_

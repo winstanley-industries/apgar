@@ -15,11 +15,8 @@ using Wide = __int128_t;
   return std::ranges::binary_search(terminal.layers, layer);
 }
 
-}  // namespace
-
-std::optional<CompiledBoardAssociationIssue> ValidateCompiledBoardAssociation(
-    const board_ir::BoardSnapshot& board,
-    const geometry_compiler::CompiledBoard& compiled_board) noexcept {
+[[nodiscard]] std::optional<CompiledBoardAssociationIssue> ValidateAssociationPrefix(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board) {
   if (compiled_board.source_board_content_hash() != board.content_hash()) {
     return CompiledBoardAssociationIssue::kSourceBoardMismatch;
   }
@@ -30,8 +27,37 @@ std::optional<CompiledBoardAssociationIssue> ValidateCompiledBoardAssociation(
       geometry_compiler::FingerprintCompilerProfile(compiled_board.profile())) {
     return CompiledBoardAssociationIssue::kProfileFingerprintMismatch;
   }
+  return std::nullopt;
+}
+
+}  // namespace
+
+std::optional<CompiledBoardAssociationIssue> ValidateCompiledBoardAssociation(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board) {
+  if (const std::optional<CompiledBoardAssociationIssue> issue =
+          ValidateAssociationPrefix(board, compiled_board);
+      issue.has_value()) {
+    return issue;
+  }
   if (compiled_board.rule_bucket() !=
       geometry_compiler::DeriveM1RuleBucket(board.data().routing_profile)) {
+    return CompiledBoardAssociationIssue::kRuleBucketMismatch;
+  }
+  return std::nullopt;
+}
+
+std::optional<CompiledBoardAssociationIssue> ValidatePreparedCompiledBoardAssociation(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board) {
+  if (const std::optional<CompiledBoardAssociationIssue> issue =
+          ValidateAssociationPrefix(board, compiled_board);
+      issue.has_value()) {
+    return issue;
+  }
+  const board_ir::PreparedRoutingProfile& prepared = compiled_board.prepared_routing_profile();
+  if (prepared.source_board_content_hash() != board.content_hash()) {
+    return CompiledBoardAssociationIssue::kSourceBoardMismatch;
+  }
+  if (compiled_board.rule_bucket() != geometry_compiler::DeriveM1RuleBucket(prepared.profile())) {
     return CompiledBoardAssociationIssue::kRuleBucketMismatch;
   }
   return std::nullopt;
@@ -40,7 +66,7 @@ std::optional<CompiledBoardAssociationIssue> ValidateCompiledBoardAssociation(
 std::optional<RouteRequestAdmissionIssue> ValidateTwoTerminalRouteRequest(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     const CpuRouteRequest& request) noexcept {
-  const board_ir::RoutingProfile& routing = board.data().routing_profile;
+  const board_ir::RoutingProfile& routing = compiled_board.prepared_routing_profile().profile();
   if (request.net != routing.net || board.FindNet(request.net) == nullptr) {
     return RouteRequestAdmissionIssue::kRoutingProfileNetMismatch;
   }

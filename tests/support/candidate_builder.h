@@ -19,7 +19,10 @@ namespace apgar::test_support {
 // seam after constructing or mutating a CpuRoute payload.
 class CpuRouteFaultDecorator {
  public:
-  static void Reseal(routing::CpuRoute& route) { ResealCpuRouteEvidenceForTest(route); }
+  static void Reseal(routing::CpuRoute& route,
+                     const geometry_compiler::CompiledBoard& producing_compiled_board) {
+    ResealCpuRouteEvidenceForTest(route, producing_compiled_board);
+  }
 };
 
 [[nodiscard]] inline routing::NormalizedCandidateGenerationPolicy NormalizePolicy(

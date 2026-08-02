@@ -44,8 +44,13 @@ enum class CompiledBoardAssociationIssue : std::uint8_t {
 };
 
 [[nodiscard]] std::optional<CompiledBoardAssociationIssue> ValidateCompiledBoardAssociation(
-    const board_ir::BoardSnapshot& board,
-    const geometry_compiler::CompiledBoard& compiled_board) noexcept;
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board);
+
+// Authenticates the complete retained prepared context. Durable consumers that
+// do not yet carry APGAR-ROUTING-PROFILE-V1 identity must continue to use the
+// default-only validator above.
+[[nodiscard]] std::optional<CompiledBoardAssociationIssue> ValidatePreparedCompiledBoardAssociation(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board);
 
 enum class RouteRequestAdmissionIssue : std::uint8_t {
   kRoutingProfileNetMismatch,

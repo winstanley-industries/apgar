@@ -181,7 +181,7 @@ struct CandidateCase {
       .telemetry = {},
       .producer_evidence = {},
   };
-  test_support::CpuRouteFaultDecorator::Reseal(route);
+  test_support::CpuRouteFaultDecorator::Reseal(route, compiled);
   CandidateDraftBuildResult result = BuildGeneratedCandidateFromCpuRoute(
       board, compiled, request, policy, route,
       CandidateSchedulingIdentity{.batch_identity = 99, .query_identity = query_identity});
@@ -262,7 +262,7 @@ struct CandidateCase {
       .telemetry = {},
       .producer_evidence = {},
   };
-  test_support::CpuRouteFaultDecorator::Reseal(route);
+  test_support::CpuRouteFaultDecorator::Reseal(route, compiled);
   CandidateDraftBuildResult result = BuildGeneratedCandidateFromCpuRoute(
       board, compiled, candidate_case.request, policy, route,
       CandidateSchedulingIdentity{.batch_identity = 99, .query_identity = query_identity});

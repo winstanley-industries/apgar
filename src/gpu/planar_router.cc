@@ -287,7 +287,7 @@ struct CandidateBatchWorkspaceView {
   switch (*issue) {
     case routing::RouteRequestAdmissionIssue::kRoutingProfileNetMismatch:
       return Failure(PlanarGpuFailureCode::kInvalidInput,
-                     "GPU route request does not name the Board IR routing-profile net");
+                     "GPU route request does not match the prepared routing context");
     case routing::RouteRequestAdmissionIssue::kInvalidOrCoincidentEndpoints:
       return Failure(PlanarGpuFailureCode::kInvalidInput,
                      "GPU route endpoints must be distinct valid exact coordinates");
@@ -807,6 +807,10 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
     const UntrustedKernelResultView& untrusted,
     const routing::NormalizedCandidateGenerationPolicy* candidate_policy,
     bool batch_telemetry_validated = false, const PreparedPlanarCompiledView* prepared = nullptr) {
+  if (routing::ValidateCompiledBoardAssociation(board, compiled_board).has_value()) {
+    return Failure(PlanarGpuFailureCode::kValidationFailed,
+                   "GPU reconstruction requires the Board IR default routing context");
+  }
   if (!DescribePlanarGenerator(generator).has_value()) {
     return Failure(PlanarGpuFailureCode::kInvalidInput,
                    "GPU route validation names an unknown planar generator");

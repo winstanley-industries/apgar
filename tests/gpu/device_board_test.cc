@@ -447,7 +447,31 @@ TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtDurableGpuBounda
   std::unique_ptr<PreparedPlanarCompiledView> prepared =
       std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
   ASSERT_NE(prepared, nullptr);
-  const CpuRouteRequest request = TwoTerminalRequest(board);
+  const board_ir::Net* routed_net = board.FindNet(second_net);
+  ASSERT_NE(routed_net, nullptr);
+  ASSERT_EQ(routed_net->terminals.size(), 2U);
+  const board_ir::Terminal* start = board.FindTerminal(routed_net->terminals[0]);
+  const board_ir::Terminal* goal = board.FindTerminal(routed_net->terminals[1]);
+  ASSERT_NE(start, nullptr);
+  ASSERT_NE(goal, nullptr);
+  const CpuRouteRequest request{
+      .net = second_net,
+      .start = start->center,
+      .goal = goal->center,
+      .start_layer = 0,
+      .goal_layer = 0,
+      .candidate_policy = {},
+  };
+  DeviceCompiledBoardV1 raw_device = std::get<DeviceCompiledBoardV1>(default_device);
+  const UntrustedKernelResult raw_result = StraightEastResult(compiled, &raw_device, request, true);
+  const PlanarGpuRouteResult raw_rejection =
+      Validate(board, compiled, raw_device, request, raw_result);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(raw_rejection));
+  const PlanarGpuFailure& raw_failure = std::get<PlanarGpuFailure>(raw_rejection);
+  EXPECT_EQ(raw_failure.code, PlanarGpuFailureCode::kValidationFailed);
+  EXPECT_EQ(raw_failure.detail, "GPU reconstruction requires the Board IR default routing context");
+  EXPECT_FALSE(raw_failure.telemetry.has_value());
+
   const PlanarGpuRouteResult prepared_rejection =
       RouteWithPreparedPlanarGpuBackend(board, compiled, request, PlanarRoutePolicy{}, *prepared);
   ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(prepared_rejection));
@@ -458,10 +482,8 @@ TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtDurableGpuBounda
   EXPECT_EQ(backend.executions, 0U);
 }
 
-TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtCpuAndCandidateConsumers) {
-  // P4R-02A2a moves the CPU guard, P4R-02A2b moves the candidate guard, and
-  // P4R-02A2e moves the exact-oracle cases to native targets with explicit
-  // headers and direct Bazel dependencies.
+TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtCandidateConsumer) {
+  // P4R-02A2b relocates this remaining A1 guard to the native candidate target.
   BoardData data = MultiNetBoardDataForContextTests();
   data.obstacles.clear();
   const BoardSnapshot board = Snapshot(std::move(data));
@@ -477,19 +499,7 @@ TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtCpuAndCandidateC
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(compile_result));
   const CompiledBoard non_default = std::get<CompiledBoard>(std::move(compile_result));
 
-  EXPECT_FALSE(routing::ValidateCompiledBoardAssociation(board, default_compiled).has_value());
-  EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, non_default),
-            routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
   const CpuRouteRequest request = TwoTerminalRequest(board);
-  const routing::CpuRouteResult rejected_route =
-      routing::RouteWithCpuAStar(board, non_default, request);
-  ASSERT_TRUE(std::holds_alternative<routing::RouteFailure>(rejected_route));
-  const routing::RouteFailure& route_failure = std::get<routing::RouteFailure>(rejected_route);
-  EXPECT_EQ(route_failure.code, routing::RouteFailureCode::kValidationFailed);
-  EXPECT_EQ(route_failure.detail,
-            "Compiled board rule bucket is stale or does not match the BoardSnapshot");
-  EXPECT_FALSE(route_failure.telemetry.has_value());
-
   const routing::CpuRouteResult default_route_result =
       routing::RouteWithCpuAStar(board, default_compiled, request);
   ASSERT_TRUE(std::holds_alternative<routing::CpuRoute>(default_route_result));

@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** July 17, 2026
-**Amended:** August 2, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5), [PR #13](https://github.com/winstanley-industries/apgar/pull/13))
+**Amended:** August 2, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5), [PR #13](https://github.com/winstanley-industries/apgar/pull/13), [PR #6](https://github.com/winstanley-industries/apgar/pull/6))
 **Applies to:** Geometry compiler and deterministic CPU reference router
 
 ## Context
@@ -38,14 +38,16 @@ rather than explicitly requested active work.
   obstacle interaction depends on ownership. `PreparedRoutingProfile` is the
   Board-IR-issued, source-snapshot-bound capability for selecting that context,
   and `CompiledBoard` retains it.
-- Device, replay, and CPU-route evidence do not yet carry retained-profile
-  identity. They therefore reject non-default compiled contexts through the
-  full in-memory association check. A later enabling slice adds the existing
-  net-sensitive `APGAR-ROUTING-PROFILE-V1` fingerprint; it must not reinterpret
-  the existing `APGAR-M1-RULE-BUCKET-V1` scalar. Candidate associations already
-  carry that routing-profile fingerprint, so their producer must source the
-  existing field from the retained profile rather than introduce another
-  version.
+- CPU A* producer evidence seals the retained `APGAR-ROUTING-PROFILE-V1`
+  fingerprint and admits non-default compiled contexts only after the complete
+  prepared association is authenticated. Device and replay evidence do not
+  yet carry retained-profile identity, so those paths continue to reject
+  non-default compiled contexts. A later enabling slice adds the existing
+  net-sensitive routing-profile fingerprint; it must not reinterpret the
+  existing `APGAR-M1-RULE-BUCKET-V1` scalar. Candidate associations already
+  carry that fingerprint, so their
+  producer must source that existing field from the retained profile before
+  candidate admission can accept a non-default context.
 - APGAR has no released serialization compatibility boundary. Before the first
   release, a checked-in V1 durable schema may acquire a missing retained-profile
   field in place only when its schema document, every checked-in producer and
@@ -68,8 +70,9 @@ rather than explicitly requested active work.
 - A compiled-legal edge implies exact legality against every represented static
   obstacle, including at tile boundaries and diagonal corners.
 - Multiple exact compiled contexts may be prepared from one immutable snapshot,
-  but only the snapshot's default context may enter current durable producer,
-  device, replay, or candidate-admission paths.
+  and CPU A* may route an authenticated retained context. Device, replay, and
+  candidate-admission paths remain restricted to the snapshot's default context
+  until their own retained-profile identity slices land.
 - Users must choose active regions large enough to contain desired planar
   routes. A disconnected sparse field is distinguishable from malformed input
   and unsupported layer transitions.

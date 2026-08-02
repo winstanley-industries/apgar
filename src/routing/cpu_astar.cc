@@ -93,7 +93,7 @@ struct QueueGreater {
                      "Compiled board profile fingerprint does not match its profile payload");
     case CompiledBoardAssociationIssue::kRuleBucketMismatch:
       return Failure(RouteFailureCode::kValidationFailed,
-                     "Compiled board rule bucket is stale or does not match the BoardSnapshot");
+                     "Compiled board prepared routing context is invalid or mismatched");
   }
   return Failure(RouteFailureCode::kInternalInvariant,
                  "Compiled-board association validator returned an unknown issue");
@@ -103,7 +103,7 @@ struct QueueGreater {
   switch (issue) {
     case RouteRequestAdmissionIssue::kRoutingProfileNetMismatch:
       return Failure(RouteFailureCode::kInvalidRequest,
-                     "CPU route request does not name the Board IR routing-profile net");
+                     "CPU route request does not match the prepared routing context");
     case RouteRequestAdmissionIssue::kInvalidOrCoincidentEndpoints:
       return Failure(RouteFailureCode::kInvalidRequest,
                      "CPU route endpoints must be distinct valid exact coordinates");
@@ -211,8 +211,8 @@ struct QueueGreater {
 }
 
 [[nodiscard]] std::optional<RouteFailure> ValidateExactSegments(
-    const board_ir::BoardSnapshot& board, const CpuRouteRequest& request,
-    std::span<const LayerSegment> segments) {
+    const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
+    const CpuRouteRequest& request, std::span<const LayerSegment> segments) {
   if (request.start_layer != request.goal_layer) {
     return Failure(RouteFailureCode::kUnsupportedLayerTransition,
                    "M1 compiled fields are planar; exact through-via transitions are not defined");
@@ -231,8 +231,8 @@ struct QueueGreater {
       return Failure(RouteFailureCode::kValidationFailed,
                      "Reconstructed route segments are not exactly contiguous");
     }
-    const geometry::MovementValidationResult exact =
-        geometry::ValidateMovement(board, segment.layer, segment.centerline);
+    const geometry::MovementValidationResult exact = geometry::ValidateMovement(
+        board, compiled_board.prepared_routing_profile(), segment.layer, segment.centerline);
     if (!exact.legal()) {
       return Failure(RouteFailureCode::kValidationFailed,
                      "Exact reconstructed-route validation failed: " + exact.detail,
@@ -261,12 +261,20 @@ bool CpuRouteHasAuthenticatedAStarEvidence(const CpuRoute& route) noexcept {
          evidence->total_cost == route.total_cost && evidence->segments == route.segments;
 }
 
+std::optional<std::uint64_t> AuthenticatedCpuRouteRoutingProfileFingerprint(
+    const CpuRoute& route) noexcept {
+  if (!CpuRouteHasAuthenticatedAStarEvidence(route)) {
+    return std::nullopt;
+  }
+  return route.producer_evidence.evidence->routing_profile_fingerprint;
+}
+
 std::optional<RouteFailure> ValidateReconstructedRoute(const board_ir::BoardSnapshot& board,
                                                        const CompiledBoard& compiled_board,
                                                        const CpuRouteRequest& request,
                                                        std::span<const LayerSegment> segments) {
   if (std::optional<CompiledBoardAssociationIssue> association =
-          ValidateCompiledBoardAssociation(board, compiled_board);
+          ValidatePreparedCompiledBoardAssociation(board, compiled_board);
       association.has_value()) {
     return AssociationFailure(*association);
   }
@@ -280,7 +288,7 @@ std::optional<RouteFailure> ValidateReconstructedRoute(const board_ir::BoardSnap
   if (std::holds_alternative<CandidatePolicyError>(normalized_policy)) {
     return PolicyFailure(std::get<CandidatePolicyError>(normalized_policy));
   }
-  return ValidateExactSegments(board, request, segments);
+  return ValidateExactSegments(board, compiled_board, request, segments);
 }
 
 std::optional<RouteFailure> ValidateReconstructedRouteWithNormalizedPolicy(
@@ -288,7 +296,7 @@ std::optional<RouteFailure> ValidateReconstructedRouteWithNormalizedPolicy(
     const CpuRouteRequest& request, const NormalizedCandidateGenerationPolicy& normalized_policy,
     std::span<const LayerSegment> segments) {
   if (std::optional<CompiledBoardAssociationIssue> association =
-          ValidateCompiledBoardAssociation(board, compiled_board);
+          ValidatePreparedCompiledBoardAssociation(board, compiled_board);
       association.has_value()) {
     return AssociationFailure(*association);
   }
@@ -303,14 +311,14 @@ std::optional<RouteFailure> ValidateReconstructedRouteWithNormalizedPolicy(
     return Failure(RouteFailureCode::kInternalInvariant,
                    "Preflight-normalized candidate policy has a stale identity");
   }
-  return ValidateExactSegments(board, request, segments);
+  return ValidateExactSegments(board, compiled_board, request, segments);
 }
 
 CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                                  const CompiledBoard& compiled_board,
                                  const CpuRouteRequest& request) {
   if (std::optional<CompiledBoardAssociationIssue> association =
-          ValidateCompiledBoardAssociation(board, compiled_board);
+          ValidatePreparedCompiledBoardAssociation(board, compiled_board);
       association.has_value()) {
     return AssociationFailure(*association);
   }
@@ -563,7 +571,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
   }
 
   std::vector<LayerSegment> segments = CoalesceSegments(request.start_layer, points);
-  if (std::optional<RouteFailure> invalid = ValidateExactSegments(board, request, segments);
+  if (std::optional<RouteFailure> invalid =
+          ValidateExactSegments(board, compiled_board, request, segments);
       invalid.has_value()) {
     invalid->telemetry = telemetry;
     return std::move(*invalid);
@@ -586,6 +595,8 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
           .source_board_content_hash = route.source_board_content_hash,
           .compiler_profile_fingerprint = route.compiler_profile_fingerprint,
           .compiler_version = route.compiler_version,
+          .routing_profile_fingerprint =
+              FingerprintRoutingProfile(compiled_board.prepared_routing_profile().profile()),
           .rule_bucket_identity = route.rule_bucket_identity,
           .candidate_policy_identity = route.candidate_policy_identity,
           .total_cost = route.total_cost,

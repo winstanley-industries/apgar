@@ -11,6 +11,7 @@ struct CpuRouteProducerEvidence {
   std::uint64_t source_board_content_hash = 0;
   std::uint64_t compiler_profile_fingerprint = 0;
   std::uint32_t compiler_version = 0;
+  std::uint64_t routing_profile_fingerprint = 0;
   std::uint64_t rule_bucket_identity = 0;
   std::uint64_t candidate_policy_identity = 0;
   std::uint64_t total_cost = 0;
