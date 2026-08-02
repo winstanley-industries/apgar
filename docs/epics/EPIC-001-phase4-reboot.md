@@ -96,12 +96,15 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 - P4R-01 is approved and durably identified by PR #3.
 - The [P4R-02 split approved before implementation and recorded in PR #5](https://github.com/winstanley-industries/apgar/pull/5#issuecomment-5155778005)
   separates the prerequisite per-net routing contract from the authentic
-  workload and accounting slice. That recorded owner approval, together with
-  the epic's pre-existing task budget, authorizes further budget-driven,
-  outcome-preserving subdivision of the prerequisite. Scope tracing therefore
-  split it into P4R-02A1, which establishes prepared, retained, fail-closed
-  compilation contexts, and P4R-02A2, which authenticates those contexts
-  through route production and exact candidate admission.
+  workload and accounting slice. Pre-implementation scope tracing then found
+  that the prerequisite could not fit the epic's 12-file task budget: A1 uses
+  the 12 files in PR #5, while end-to-end identity additionally requires at
+  least `cpu_astar.{h,cc}`, `route_candidate.{h,cc}`, `planar_router.{h,cc}`,
+  and their three native test surfaces. That 21-file lower bound excludes the
+  replay schema and replay tests. The epic's pre-existing split-before-review
+  rule therefore requires P4R-02A1, which establishes prepared, retained,
+  fail-closed compilation contexts, and P4R-02A2, which authenticates those
+  contexts through route production and exact candidate admission.
 - P4R-02A1 is complete in PR #5, and P4R-02A2 is ready. Selection and resource
   accounting remain closed.
 

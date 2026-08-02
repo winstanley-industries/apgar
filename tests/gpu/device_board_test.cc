@@ -379,7 +379,7 @@ TEST(DeviceCompiledBoardTest, FlatteningIsStableAndAccountsEveryOwnedByte) {
   EXPECT_EQ(first.header.estimated_persistent_device_bytes, expected_bytes);
 }
 
-TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextBeforeDevicePublication) {
+TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtDurableGpuBoundaries) {
   constexpr board_ir::EntityRef kThirdTerminal{.id = 22, .generation = 0};
   constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
   BoardData data = test_support::ValidM1BoardData();
@@ -419,12 +419,35 @@ TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextBeforeDevicePublic
   const CompiledBoard compiled = std::get<CompiledBoard>(std::move(compile_result));
   ASSERT_NE(compiled.rule_bucket().routed_net, board.data().routing_profile.net);
 
+  const CompiledBoard default_compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const DeviceCompiledBoardResult default_device =
+      BuildDeviceCompiledBoardV1(board, default_compiled);
+  ASSERT_TRUE(std::holds_alternative<DeviceCompiledBoardV1>(default_device));
+  EXPECT_EQ(default_compiled.rule_bucket().identity, compiled.rule_bucket().identity);
+
   const DeviceCompiledBoardResult result = BuildDeviceCompiledBoardV1(board, compiled);
   ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(result));
   const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(result);
   EXPECT_EQ(failure.code, PlanarGpuFailureCode::kValidationFailed);
   EXPECT_EQ(failure.detail,
             "Compiled board rule bucket is stale or does not match the BoardSnapshot");
+
+  ScriptedBackend backend(UntrustedKernelResult{});
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, default_compiled, backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+  ASSERT_NE(prepared, nullptr);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
+  const PlanarGpuRouteResult prepared_rejection =
+      RouteWithPreparedPlanarGpuBackend(board, compiled, request, PlanarRoutePolicy{}, *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(prepared_rejection));
+  const PlanarGpuFailure& prepared_failure = std::get<PlanarGpuFailure>(prepared_rejection);
+  EXPECT_EQ(prepared_failure.code, PlanarGpuFailureCode::kValidationFailed);
+  EXPECT_EQ(prepared_failure.detail,
+            "Prepared GPU view no longer matches the BoardSnapshot and CompiledBoard");
+  EXPECT_EQ(backend.executions, 0U);
 }
 
 TEST(DeviceCompiledBoardTest, PreparedLookupIsCanonicalExactAndSeparatelyAccounted) {

@@ -425,6 +425,7 @@ TEST(CompiledBoardTest, NonDefaultContextFailsClosedAtRouteAndAdmission) {
   EXPECT_EQ(route_failure.code, routing::RouteFailureCode::kValidationFailed);
   EXPECT_EQ(route_failure.detail,
             "Compiled board rule bucket is stale or does not match the BoardSnapshot");
+  EXPECT_FALSE(route_failure.telemetry.has_value());
 
   candidates::GeneratedRouteCandidate generated =
       test_support::CandidateDraft(board, first, request);
