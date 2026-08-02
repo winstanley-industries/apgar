@@ -708,7 +708,7 @@ enum class PredecessorCostValidation : std::uint8_t {
       device.header.source_board_content_hash != compiled.source_board_content_hash() ||
       device.header.compiler_version != compiled.compiler_version() ||
       device.header.compiler_profile_fingerprint != compiled.compiler_profile_fingerprint() ||
-      device.header.rule_bucket_identity != compiled.rule_bucket().identity ||
+      device.header.rule_bucket_identity != compiled.rule_bucket().numeric_rule_identity() ||
       prepared_routing_profile_fingerprint !=
           routing::FingerprintRoutingProfile(compiled.prepared_routing_profile().profile())) {
     return Failure(PlanarGpuFailureCode::kValidationFailed,

@@ -128,7 +128,8 @@ TEST(CpuAStarTest, RepeatedCompilationAndRoutingAreExternallyIdentical) {
   EXPECT_EQ(std::get<CpuRoute>(first).source_board_content_hash, board.content_hash());
   EXPECT_EQ(std::get<CpuRoute>(first).compiler_profile_fingerprint,
             first_compiled.compiler_profile_fingerprint());
-  EXPECT_EQ(std::get<CpuRoute>(first).rule_bucket_identity, first_compiled.rule_bucket().identity);
+  EXPECT_EQ(std::get<CpuRoute>(first).rule_bucket_identity,
+            first_compiled.rule_bucket().numeric_rule_identity());
   const CandidatePolicyResult normalized_default =
       NormalizeCandidateGenerationPolicy(first_compiled, CandidateGenerationPolicy{});
   ASSERT_TRUE(std::holds_alternative<NormalizedCandidateGenerationPolicy>(normalized_default));

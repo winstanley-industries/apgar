@@ -386,7 +386,7 @@ TEST(DeviceCompiledBoardTest, FlatteningIsStableAndAccountsEveryOwnedByte) {
   EXPECT_EQ(first.header.schema_version, kDeviceCompiledBoardSchemaVersion);
   EXPECT_EQ(first.header.source_board_content_hash, board.content_hash());
   EXPECT_EQ(first.header.compiler_profile_fingerprint, compiled.compiler_profile_fingerprint());
-  EXPECT_EQ(first.header.rule_bucket_identity, compiled.rule_bucket().identity);
+  EXPECT_EQ(first.header.rule_bucket_identity, compiled.rule_bucket().numeric_rule_identity());
   EXPECT_EQ(first.header.represented_nodes, compiled.telemetry().represented_nodes);
   EXPECT_EQ(first.header.represented_states,
             compiled.telemetry().represented_nodes * kIncomingHeadingCount);
@@ -419,7 +419,8 @@ TEST(DeviceCompiledBoardTest, AuthenticatesNonDefaultPreparedContextAtGpuBoundar
   const DeviceCompiledBoardResult default_device =
       BuildDeviceCompiledBoardV1(board, default_compiled);
   ASSERT_TRUE(std::holds_alternative<DeviceCompiledBoardV1>(default_device));
-  EXPECT_EQ(default_compiled.rule_bucket().identity, compiled.rule_bucket().identity);
+  EXPECT_EQ(default_compiled.rule_bucket().numeric_rule_identity(),
+            compiled.rule_bucket().numeric_rule_identity());
 
   const DeviceCompiledBoardResult result = BuildDeviceCompiledBoardV1(board, compiled);
   ASSERT_TRUE(std::holds_alternative<DeviceCompiledBoardV1>(result));

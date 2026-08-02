@@ -155,7 +155,7 @@ DeviceCompiledBoardResult BuildDeviceCompiledBoardV1(const board_ir::BoardSnapsh
   device.header.compiler_version = compiled_board.compiler_version();
   device.header.source_board_content_hash = compiled_board.source_board_content_hash();
   device.header.compiler_profile_fingerprint = compiled_board.compiler_profile_fingerprint();
-  device.header.rule_bucket_identity = compiled_board.rule_bucket().identity;
+  device.header.rule_bucket_identity = compiled_board.rule_bucket().numeric_rule_identity();
   device.header.represented_nodes = compiled_board.telemetry().represented_nodes;
   device.header.represented_states = static_cast<std::uint64_t>(state_count);
   device.header.lattice_origin = compiled_board.profile().lattice_origin;

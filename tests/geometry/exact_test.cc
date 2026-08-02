@@ -1,5 +1,6 @@
 #include "apgar/geometry/exact.h"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -261,6 +262,115 @@ TEST(MovementValidationTest, RejectsHeadingsOutsideTheM1Contract) {
       board, 0, Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 10, .y = 5}});
 
   EXPECT_EQ(result.code, MovementViolationCode::kUnsupportedHeading);
+}
+
+TEST(MovementValidationTest, PreparedProfileAuthenticatesContextAndPreservesValidationOrder) {
+  board_ir::BoardData board_data = test_support::MultiNetM1BoardData();
+  board_data.layers.push_back(board_ir::Layer{
+      .ref = board_ir::EntityRef{.id = 3, .generation = 0},
+      .routing_id = 99,
+      .name = "declared-non-routable",
+      .physical_order = 2,
+      .type = board_ir::LayerType::kSignal,
+      .routable = false,
+  });
+  BoardCreationResult board_result = board_ir::CreateBoardSnapshot(std::move(board_data));
+  ASSERT_TRUE(std::holds_alternative<BoardSnapshot>(board_result));
+  const BoardSnapshot& board = std::get<BoardSnapshot>(board_result);
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = board.data().nets[1].ref;
+  board_ir::RoutingProfilePreparationResult preparation =
+      board_ir::PrepareRoutingProfile(board, std::move(second_profile));
+  ASSERT_TRUE(std::holds_alternative<board_ir::PreparedRoutingProfile>(preparation));
+  const board_ir::PreparedRoutingProfile& prepared =
+      std::get<board_ir::PreparedRoutingProfile>(preparation);
+  constexpr Segment64 kSecondNetOwnedMovement{
+      .start = Point64{.x = 40, .y = 20},
+      .end = Point64{.x = 50, .y = 20},
+  };
+
+  const MovementValidationResult default_conflict =
+      ValidateMovement(board, 0, kSecondNetOwnedMovement);
+  EXPECT_EQ(default_conflict.code, MovementViolationCode::kStaticObstacleConflict);
+  EXPECT_EQ(default_conflict.obstacle, (board_ir::EntityRef{.id = 30, .generation = 0}));
+  const MovementValidationResult accepted =
+      ValidateMovement(board, prepared, 0, kSecondNetOwnedMovement);
+  EXPECT_TRUE(accepted.legal()) << accepted.detail;
+
+  board_ir::RoutingProfile first_profile = board.data().routing_profile;
+  first_profile.net = board.data().nets[0].ref;
+  board_ir::RoutingProfilePreparationResult first_preparation =
+      board_ir::PrepareRoutingProfile(board, std::move(first_profile));
+  ASSERT_TRUE(std::holds_alternative<board_ir::PreparedRoutingProfile>(first_preparation));
+  const board_ir::PreparedRoutingProfile& first_prepared =
+      std::get<board_ir::PreparedRoutingProfile>(first_preparation);
+  const MovementValidationResult foreign_owned =
+      ValidateMovement(board, first_prepared, 0, kSecondNetOwnedMovement);
+  EXPECT_EQ(foreign_owned.code, MovementViolationCode::kStaticObstacleConflict);
+  EXPECT_EQ(foreign_owned.obstacle, (board_ir::EntityRef{.id = 30, .generation = 0}));
+
+  EXPECT_EQ(ValidateMovement(board, prepared, 1'000, kSecondNetOwnedMovement).code,
+            MovementViolationCode::kUnknownLayer);
+  EXPECT_EQ(ValidateMovement(board, prepared, 99, kSecondNetOwnedMovement).code,
+            MovementViolationCode::kLayerNotAllowed);
+  EXPECT_EQ(
+      ValidateMovement(board, prepared, 0,
+                       Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 0, .y = 0}})
+          .code,
+      MovementViolationCode::kDegenerateSegment);
+  EXPECT_EQ(ValidateMovement(board, prepared, 0,
+                             Segment64{.start = Point64{.x = board_ir::kMaxAbsDbCoord + 1, .y = 0},
+                                       .end = Point64{.x = 0, .y = 0}})
+                .code,
+            MovementViolationCode::kCoordinateOutOfRange);
+  EXPECT_EQ(
+      ValidateMovement(board, prepared, 0,
+                       Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 10, .y = 5}})
+          .code,
+      MovementViolationCode::kUnsupportedHeading);
+
+  board_ir::BoardData revised_data = test_support::MultiNetM1BoardData();
+  revised_data.layers.push_back(board_ir::Layer{
+      .ref = board_ir::EntityRef{.id = 3, .generation = 0},
+      .routing_id = 99,
+      .name = "declared-non-routable",
+      .physical_order = 2,
+      .type = board_ir::LayerType::kSignal,
+      .routable = false,
+  });
+  ++revised_data.revision;
+  BoardCreationResult revised_result = board_ir::CreateBoardSnapshot(std::move(revised_data));
+  ASSERT_TRUE(std::holds_alternative<BoardSnapshot>(revised_result));
+  const BoardSnapshot& revised = std::get<BoardSnapshot>(revised_result);
+  const MovementValidationResult mismatched =
+      ValidateMovement(revised, prepared, 0, kSecondNetOwnedMovement);
+  EXPECT_EQ(mismatched.code, MovementViolationCode::kPreparedProfileSnapshotMismatch);
+  EXPECT_EQ(mismatched.detail, "Prepared routing profile belongs to a different Board IR snapshot");
+  EXPECT_FALSE(mismatched.obstacle.has_value());
+
+  const MovementValidationResult binding_precedes_geometry =
+      ValidateMovement(revised, prepared, 99, kSecondNetOwnedMovement);
+  EXPECT_EQ(binding_precedes_geometry.code,
+            MovementViolationCode::kPreparedProfileSnapshotMismatch);
+  EXPECT_EQ(binding_precedes_geometry.detail,
+            "Prepared routing profile belongs to a different Board IR snapshot");
+  EXPECT_FALSE(binding_precedes_geometry.obstacle.has_value());
+
+  constexpr std::array<Segment64, 3> kInvalidMovements{{
+      Segment64{.start = Point64{.x = board_ir::kMaxAbsDbCoord + 1, .y = 0},
+                .end = Point64{.x = 0, .y = 0}},
+      Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 0, .y = 0}},
+      Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 10, .y = 5}},
+  }};
+  for (const Segment64 invalid_movement : kInvalidMovements) {
+    const MovementValidationResult binding_precedes_invalid_movement =
+        ValidateMovement(revised, prepared, 0, invalid_movement);
+    EXPECT_EQ(binding_precedes_invalid_movement.code,
+              MovementViolationCode::kPreparedProfileSnapshotMismatch);
+    EXPECT_EQ(binding_precedes_invalid_movement.detail,
+              "Prepared routing profile belongs to a different Board IR snapshot");
+    EXPECT_FALSE(binding_precedes_invalid_movement.obstacle.has_value());
+  }
 }
 
 }  // namespace
