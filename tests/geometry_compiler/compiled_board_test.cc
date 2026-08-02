@@ -147,6 +147,10 @@ void ExpectEveryCompiledLegalEdgeIsExactLegal(const BoardSnapshot& board,
   EXPECT_EQ(observed_legal_edges, compiled.telemetry().legal_directional_edges);
 }
 
+// Structural full-field differential: this independently enumerates every
+// represented direction but intentionally shares the accepted exact clearance
+// primitive. The hand-computed ownership goldens in
+// CompilesNetSpecificObstacleOwnership pin the semantic ownership axis.
 [[nodiscard]] std::optional<bool> ExactEdgeIsLegalForProfile(
     const BoardSnapshot& board, const board_ir::RoutingProfile& routing_profile,
     board_ir::LayerId layer, board_ir::Segment64 centerline) {

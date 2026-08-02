@@ -119,6 +119,9 @@ struct LatticeIndex {
     const CompilerProfile& profile, LatticeIndex index) noexcept;
 
 struct RuleBucketV1 {
+  // Legacy APGAR-M1-RULE-BUCKET-V1 numeric-rule scalar. It intentionally does
+  // not identify the complete bucket once obstacle-interaction context is
+  // present; association must compare the full struct.
   std::uint64_t identity;
   board_ir::EntityRef routed_net;
   board_ir::DbCoord nominal_width;
