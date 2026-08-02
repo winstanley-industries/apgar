@@ -224,7 +224,7 @@ TEST(RouteCandidateTest, AdmissionRejectsACompiledBoardFromAnotherSnapshotAtItsN
             "candidate.builder.compiled_board_association.v1");
 }
 
-TEST(RouteCandidateTest, GpuProducerRemainsDefaultContextOnlyUntilDeviceEvidenceCarriesIdentity) {
+TEST(RouteCandidateTest, GpuProducerAcceptsPreparedContextAfterDeviceEvidenceCarriesIdentity) {
   BoardData data = test_support::MultiNetM1BoardData();
   data.obstacles.clear();
   const BoardSnapshot board = Snapshot(std::move(data));
@@ -235,25 +235,51 @@ TEST(RouteCandidateTest, GpuProducerRemainsDefaultContextOnlyUntilDeviceEvidence
   const routing::CpuRouteResult route_result = routing::RouteWithCpuAStar(board, prepared, request);
   ASSERT_TRUE(std::holds_alternative<routing::CpuRoute>(route_result));
   const routing::CpuRoute& route = std::get<routing::CpuRoute>(route_result);
+  const CandidateProvenance cuda_provenance{
+      .generator = CandidateGeneratorKind::kCudaFrontier,
+      .generator_version = 1,
+      .backend = CandidateBackendKind::kCuda,
+      .supported_device_class = "cuda-sm_120",
+      .deterministic_seed = policy.policy.deterministic_seed,
+      .batch_identity = 67,
+      .query_identity = 71,
+      .candidate_ordinal = policy.policy.candidate_ordinal,
+  };
 
   const CandidateDraftBuildResult result =
       internal::BuildGeneratedCandidateFromValidatedPlanarRoute(
           board, prepared, request, policy, AssociationsFor(board, prepared), policy.identity,
-          route.total_cost, route.segments,
-          CandidateProvenance{
-              .generator = CandidateGeneratorKind::kCudaFrontier,
-              .generator_version = 1,
-              .backend = CandidateBackendKind::kCuda,
-              .supported_device_class = "cuda-sm_120",
-              .deterministic_seed = policy.policy.deterministic_seed,
-              .batch_identity = 67,
-              .query_identity = 71,
-              .candidate_ordinal = policy.policy.candidate_ordinal,
-          },
+          route.total_cost, route.segments, cuda_provenance,
           internal::CandidateProducerAuthority::kAuthenticatedCudaBatch);
-  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(result));
-  EXPECT_EQ(std::get<CandidateRejection>(result).invariant_id,
-            "candidate.builder.compiled_board_association.v1");
+  ASSERT_TRUE(std::holds_alternative<GeneratedRouteCandidate>(result));
+  EXPECT_EQ(std::get<GeneratedRouteCandidate>(result).associations,
+            AssociationsFor(board, prepared));
+
+  CandidateAssociations relabeled_associations = AssociationsFor(board, prepared);
+  ++relabeled_associations.routing_profile_fingerprint;
+  const CandidateDraftBuildResult relabeled =
+      internal::BuildGeneratedCandidateFromValidatedPlanarRoute(
+          board, prepared, request, policy, relabeled_associations, policy.identity,
+          route.total_cost, route.segments, cuda_provenance,
+          internal::CandidateProducerAuthority::kAuthenticatedCudaBatch);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(relabeled));
+  const CandidateRejection& relabeled_rejection = std::get<CandidateRejection>(relabeled);
+  EXPECT_EQ(relabeled_rejection.code, CandidateRejectionCode::kAssociationMismatch);
+  EXPECT_EQ(relabeled_rejection.invariant_id, "candidate.builder.planar_route_association.v1");
+  EXPECT_EQ(relabeled_rejection.associations, relabeled_associations);
+
+  BoardData foreign_data = board.data();
+  ++foreign_data.revision;
+  const BoardSnapshot foreign_board = Snapshot(std::move(foreign_data));
+  const CandidateDraftBuildResult stale_context =
+      internal::BuildGeneratedCandidateFromValidatedPlanarRoute(
+          foreign_board, prepared, request, policy, AssociationsFor(board, prepared),
+          policy.identity, route.total_cost, route.segments, cuda_provenance,
+          internal::CandidateProducerAuthority::kAuthenticatedCudaBatch);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(stale_context));
+  const CandidateRejection& stale_rejection = std::get<CandidateRejection>(stale_context);
+  EXPECT_EQ(stale_rejection.code, CandidateRejectionCode::kAssociationMismatch);
+  EXPECT_EQ(stale_rejection.invariant_id, "candidate.builder.compiled_board_association.v1");
 }
 
 TEST(RouteCandidateTest, PreparedAdmissionPinsForeignObstacleEqualityAndOneUnitViolation) {

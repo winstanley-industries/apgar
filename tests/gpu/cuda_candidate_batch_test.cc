@@ -36,7 +36,9 @@ using routing::CpuRouteResult;
 using routing::EdgeResourceKey;
 
 using test_support::Compile;
+using test_support::CompilePreparedNet;
 using test_support::ReadFixture;
+using test_support::RequestForNet;
 using test_support::Snapshot;
 using test_support::TwoTerminalRequest;
 
@@ -605,9 +607,10 @@ TEST(CudaCandidateBatchTest, SingleQueryApiDelegatesNonDefaultPolicyToBatchOfOne
 }
 
 TEST(CudaCandidateBatchTest, SealedBatchItemAuthenticatesCudaCandidateProvenance) {
-  const BoardSnapshot board = Snapshot();
-  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  CpuRouteRequest request = TwoTerminalRequest(board);
+  const BoardSnapshot board = Snapshot(test_support::MultiNetM1BoardData());
+  const CompiledBoard compiled = CompilePreparedNet(board, board.data().nets[1].ref,
+                                                    test_support::DefaultCompilerProfile({0}));
+  CpuRouteRequest request = RequestForNet(board, board.data().nets[1].ref);
   request.candidate_policy.deterministic_seed = 0x7345;
   request.candidate_policy.candidate_ordinal = 7;
   const routing::CandidatePolicyResult normalized_result =
@@ -669,8 +672,13 @@ TEST(CudaCandidateBatchTest, SealedBatchItemAuthenticatesCudaCandidateProvenance
       candidates::BuildGeneratedCandidateFromGpuBatchItem(board, compiled, query, normalized, batch,
                                                           copied_item);
   ASSERT_TRUE(std::holds_alternative<candidates::GeneratedRouteCandidate>(built));
-  const candidates::CandidateProvenance& provenance =
-      std::get<candidates::GeneratedRouteCandidate>(built).provenance;
+  const candidates::GeneratedRouteCandidate& candidate =
+      std::get<candidates::GeneratedRouteCandidate>(built);
+  EXPECT_EQ(candidate.associations.routing_profile_fingerprint,
+            routing::FingerprintRoutingProfile(compiled.prepared_routing_profile().profile()));
+  EXPECT_NE(candidate.associations.routing_profile_fingerprint,
+            routing::FingerprintRoutingProfile(board.data().routing_profile));
+  const candidates::CandidateProvenance& provenance = candidate.provenance;
   EXPECT_EQ(provenance.generator, candidates::CandidateGeneratorKind::kCudaSweep);
   EXPECT_EQ(provenance.backend, candidates::CandidateBackendKind::kCuda);
   EXPECT_EQ(provenance.batch_identity, batch.batch_id);

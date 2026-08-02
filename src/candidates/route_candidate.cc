@@ -1463,9 +1463,7 @@ namespace {
   };
 
   const std::optional<routing::CompiledBoardAssociationIssue> compiled_board_issue =
-      producer_authority == internal::CandidateProducerAuthority::kCpuRoute
-          ? routing::ValidatePreparedCompiledBoardAssociation(board, compiled_board)
-          : routing::ValidateCompiledBoardAssociation(board, compiled_board);
+      routing::ValidatePreparedCompiledBoardAssociation(board, compiled_board);
   if (compiled_board_issue.has_value()) {
     return reject(Failure(CandidateLifecycleStage::kGenerated,
                           CandidateRejectionCode::kAssociationMismatch,

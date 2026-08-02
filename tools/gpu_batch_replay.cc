@@ -284,7 +284,7 @@ int Replay(std::string_view artifact_path) {
   const apgar::gpu::DeviceCompiledBoardV1& device =
       std::get<apgar::gpu::DeviceCompiledBoardV1>(device_result);
   const std::uint64_t routing_profile_fingerprint =
-      apgar::routing::FingerprintRoutingProfile(board.data().routing_profile);
+      apgar::routing::FingerprintRoutingProfile(compiled.prepared_routing_profile().profile());
   const apgar::routing::CandidatePolicyResult normalized_result =
       apgar::routing::NormalizeCandidateGenerationPolicy(compiled, artifact->candidate_policy);
   if (!std::holds_alternative<apgar::routing::NormalizedCandidateGenerationPolicy>(

@@ -12,8 +12,10 @@
 #include "apgar/gpu/cuda_backend.h"
 #include "apgar/gpu/fault_injecting_backend.h"
 #include "apgar/gpu/planar_router.h"
+#include "apgar/routing/planar_route.h"
 #include "apgar/tooling/replay.h"
 #include "apgar/tooling/runfiles.h"
+#include "tools/gpu_replay_context.h"
 
 namespace {
 
@@ -113,10 +115,10 @@ int Replay(std::string_view artifact_path) {
     std::cerr << "replay layer differs from the versioned corpus case\n";
     return 2;
   }
-  apgar::gpu::DeviceCompiledBoardResult device_result =
-      apgar::gpu::BuildDeviceCompiledBoardV1(board, compiled);
+  apgar::tooling::GpuReplayDeviceContextV1 device_result =
+      apgar::tooling::PrepareDefaultGpuReplayDeviceContextV1(board, compiled);
   if (!std::holds_alternative<apgar::gpu::DeviceCompiledBoardV1>(device_result)) {
-    std::cerr << "device-view compilation failed\n";
+    std::cerr << std::get<std::string>(device_result) << '\n';
     return 2;
   }
   const apgar::gpu::DeviceCompiledBoardV1& device =

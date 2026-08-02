@@ -154,10 +154,11 @@ static_assert(kNoIncomingHeading == routing::kNoIncomingDirection);
 // workspace; validation and reconstruction borrow checked slices synchronously
 // instead of allocating per-query or label/predecessor copies.
 struct UntrustedKernelResultView {
-  std::uint32_t schema_version = kDeviceCompiledBoardSchemaVersion;
+  std::uint32_t schema_version = 0;
   std::uint64_t source_board_content_hash = 0;
   std::uint64_t compiler_profile_fingerprint = 0;
   std::uint32_t compiler_version = 0;
+  std::uint64_t routing_profile_fingerprint = 0;
   std::uint64_t rule_bucket_identity = 0;
   std::uint64_t device_view_fingerprint = 0;
   PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
@@ -207,6 +208,7 @@ struct CandidateBatchWorkspaceView {
       .source_board_content_hash = result.source_board_content_hash,
       .compiler_profile_fingerprint = result.compiler_profile_fingerprint,
       .compiler_version = result.compiler_version,
+      .routing_profile_fingerprint = result.routing_profile_fingerprint,
       .rule_bucket_identity = result.rule_bucket_identity,
       .device_view_fingerprint = result.device_view_fingerprint,
       .generator = result.generator,
@@ -379,15 +381,24 @@ using DeviceEndpointResult = std::variant<DeviceEndpoints, PlanarGpuFailure>;
 
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidateRawAssociations(
     const DeviceCompiledBoardV1& device, std::uint32_t start_node, std::uint32_t goal_node,
-    PlanarGenerator generator, const UntrustedKernelResultView& untrusted) {
-  if (untrusted.schema_version != kDeviceCompiledBoardSchemaVersion ||
-      untrusted.source_board_content_hash != device.header.source_board_content_hash ||
+    PlanarGenerator generator, std::uint32_t expected_schema_version,
+    std::uint64_t expected_routing_profile_fingerprint,
+    const UntrustedKernelResultView& untrusted) {
+  if (untrusted.schema_version != expected_schema_version) {
+    return Failure(PlanarGpuFailureCode::kValidationFailed,
+                   "GPU result schema does not match the route evidence contract");
+  }
+  if (untrusted.source_board_content_hash != device.header.source_board_content_hash ||
       untrusted.compiler_profile_fingerprint != device.header.compiler_profile_fingerprint ||
       untrusted.compiler_version != device.header.compiler_version ||
       untrusted.rule_bucket_identity != device.header.rule_bucket_identity ||
       untrusted.device_view_fingerprint != device.header.device_view_fingerprint) {
     return Failure(PlanarGpuFailureCode::kValidationFailed,
                    "GPU result associations do not match the immutable device view");
+  }
+  if (untrusted.routing_profile_fingerprint != expected_routing_profile_fingerprint) {
+    return Failure(PlanarGpuFailureCode::kValidationFailed,
+                   "GPU result prepared routing context is invalid or mismatched");
   }
   if (untrusted.start_node != start_node || untrusted.goal_node != goal_node ||
       untrusted.generator != generator) {
@@ -411,7 +422,7 @@ using DeviceEndpointResult = std::variant<DeviceEndpoints, PlanarGpuFailure>;
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
                    "GPU persistent-memory telemetry disagrees with deterministic accounting");
   }
-  UWide expected_batch_bytes = sizeof(DeviceResultHeaderV1);
+  UWide expected_batch_bytes = sizeof(DeviceRouteResultHeaderV1);
   expected_batch_bytes += static_cast<UWide>(device.header.represented_states) *
                           (sizeof(std::uint64_t) + sizeof(std::uint32_t));
   if (descriptor->workspace == PlanarGeneratorWorkspace::kFrontier) {
@@ -688,8 +699,8 @@ enum class PredecessorCostValidation : std::uint8_t {
 
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidatePreparedAssociations(
     const board_ir::BoardSnapshot& board, const CompiledBoard& compiled,
-    const DeviceCompiledBoardV1& device) {
-  if (routing::ValidateCompiledBoardAssociation(board, compiled).has_value()) {
+    const DeviceCompiledBoardV1& device, std::uint64_t prepared_routing_profile_fingerprint) {
+  if (routing::ValidatePreparedCompiledBoardAssociation(board, compiled).has_value()) {
     return Failure(PlanarGpuFailureCode::kValidationFailed,
                    "Prepared GPU view no longer matches the BoardSnapshot and CompiledBoard");
   }
@@ -697,7 +708,9 @@ enum class PredecessorCostValidation : std::uint8_t {
       device.header.source_board_content_hash != compiled.source_board_content_hash() ||
       device.header.compiler_version != compiled.compiler_version() ||
       device.header.compiler_profile_fingerprint != compiled.compiler_profile_fingerprint() ||
-      device.header.rule_bucket_identity != compiled.rule_bucket().identity) {
+      device.header.rule_bucket_identity != compiled.rule_bucket().identity ||
+      prepared_routing_profile_fingerprint !=
+          routing::FingerprintRoutingProfile(compiled.prepared_routing_profile().profile())) {
     return Failure(PlanarGpuFailureCode::kValidationFailed,
                    "Prepared GPU view associations do not match this compiled route field");
   }
@@ -800,36 +813,52 @@ CandidateBatchReadbackResult IPlanarRouteBackend::ReadbackCandidateBatch(
                       .detail = "Backend does not implement candidate-batch readback"};
 }
 
+struct GpuRouteEvidenceExpectation {
+  explicit GpuRouteEvidenceExpectation(
+      std::uint32_t expected_result_schema, bool telemetry_is_already_validated = false,
+      const PreparedPlanarCompiledView* prepared_view = nullptr) noexcept
+      : result_schema(expected_result_schema),
+        telemetry_already_validated(telemetry_is_already_validated),
+        prepared(prepared_view) {}
+
+  std::uint32_t result_schema;
+  bool telemetry_already_validated;
+  const PreparedPlanarCompiledView* prepared = nullptr;
+};
+
 PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
     const board_ir::BoardSnapshot& board, const CompiledBoard& compiled_board,
     const DeviceCompiledBoardV1& device_board, const routing::CpuRouteRequest& request,
     PlanarGenerator generator, const BackendMetadata& backend,
     const UntrustedKernelResultView& untrusted,
     const routing::NormalizedCandidateGenerationPolicy* candidate_policy,
-    bool batch_telemetry_validated = false, const PreparedPlanarCompiledView* prepared = nullptr) {
-  if (routing::ValidateCompiledBoardAssociation(board, compiled_board).has_value()) {
+    GpuRouteEvidenceExpectation expectation) {
+  if (routing::ValidatePreparedCompiledBoardAssociation(board, compiled_board).has_value()) {
     return Failure(PlanarGpuFailureCode::kValidationFailed,
-                   "GPU reconstruction requires the Board IR default routing context");
+                   "GPU reconstruction requires an authenticated retained routing context");
   }
   if (!DescribePlanarGenerator(generator).has_value()) {
     return Failure(PlanarGpuFailureCode::kInvalidInput,
                    "GPU route validation names an unknown planar generator");
   }
   DeviceEndpointResult endpoint_result =
-      ResolveDeviceEndpoints(compiled_board, device_board, request, prepared);
+      ResolveDeviceEndpoints(compiled_board, device_board, request, expectation.prepared);
   if (std::holds_alternative<PlanarGpuFailure>(endpoint_result)) {
     return std::get<PlanarGpuFailure>(std::move(endpoint_result));
   }
   const DeviceEndpoints endpoints = std::get<DeviceEndpoints>(endpoint_result);
-  if (!batch_telemetry_validated) {
+  if (!expectation.telemetry_already_validated) {
     if (std::optional<PlanarGpuFailure> invalid =
             ValidateKernelTelemetry(device_board, generator, untrusted);
         invalid.has_value()) {
       return std::move(*invalid);
     }
   }
+  const std::uint64_t routing_profile_fingerprint =
+      routing::FingerprintRoutingProfile(compiled_board.prepared_routing_profile().profile());
   if (std::optional<PlanarGpuFailure> association = ValidateRawAssociations(
-          device_board, endpoints.start_node, endpoints.goal_node, generator, untrusted);
+          device_board, endpoints.start_node, endpoints.goal_node, generator,
+          expectation.result_schema, routing_profile_fingerprint, untrusted);
       association.has_value()) {
     return WithTelemetry(std::move(*association), untrusted.telemetry);
   }
@@ -924,6 +953,7 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
       .source_board_content_hash = untrusted.source_board_content_hash,
       .compiler_profile_fingerprint = untrusted.compiler_profile_fingerprint,
       .compiler_version = untrusted.compiler_version,
+      .routing_profile_fingerprint = untrusted.routing_profile_fingerprint,
       .rule_bucket_identity = untrusted.rule_bucket_identity,
       .device_view_fingerprint = untrusted.device_view_fingerprint,
       .generator = generator,
@@ -1087,6 +1117,7 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRouteWithPolicy(
       .source_board_content_hash = header.source_board_content_hash,
       .compiler_profile_fingerprint = header.compiler_profile_fingerprint,
       .compiler_version = header.compiler_version,
+      .routing_profile_fingerprint = header.routing_profile_fingerprint,
       .rule_bucket_identity = header.rule_bucket_identity,
       .device_view_fingerprint = header.device_view_fingerprint,
       .generator = header.generator,
@@ -1113,9 +1144,9 @@ PlanarGpuRouteResult ValidateAndReconstructGpuRoute(const board_ir::BoardSnapsho
   }
   const routing::NormalizedCandidateGenerationPolicy normalized_policy =
       std::get<routing::NormalizedCandidateGenerationPolicy>(std::move(normalized_result));
-  return ValidateAndReconstructGpuRouteWithPolicy(board, compiled_board, device_board, request,
-                                                  generator, backend, KernelResultView(untrusted),
-                                                  &normalized_policy, false);
+  return ValidateAndReconstructGpuRouteWithPolicy(
+      board, compiled_board, device_board, request, generator, backend, KernelResultView(untrusted),
+      &normalized_policy, GpuRouteEvidenceExpectation{kDeviceRouteResultSchemaVersion});
 }
 
 PreparedPlanarCompiledViewResult PreparePlanarCompiledView(const board_ir::BoardSnapshot& board,
@@ -1143,9 +1174,9 @@ PreparedPlanarCompiledViewResult PreparePlanarCompiledView(const board_ir::Board
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
                    "Backend returned a null uploaded compiled view");
   }
-  return std::unique_ptr<PreparedPlanarCompiledView>(
-      new PreparedPlanarCompiledView(backend, std::move(device), std::move(node_lookup),
-                                     std::move(metadata), std::move(uploaded)));
+  return std::unique_ptr<PreparedPlanarCompiledView>(new PreparedPlanarCompiledView(
+      backend, std::move(device), std::move(node_lookup), std::move(metadata), std::move(uploaded),
+      routing::FingerprintRoutingProfile(compiled_board.prepared_routing_profile().profile())));
 } catch (const std::bad_alloc&) {
   return Failure(PlanarGpuFailureCode::kResourceExhausted,
                  "GPU preparation host allocation failed while building the immutable view");
@@ -1229,8 +1260,8 @@ PlanarGpuRouteResult RouteWithPreparedPlanarGpuBackend(const board_ir::BoardSnap
     return Failure(PlanarGpuFailureCode::kInternalInvariant,
                    "Prepared GPU view has no live backend upload");
   }
-  if (std::optional<PlanarGpuFailure> invalid =
-          ValidatePreparedAssociations(board, compiled_board, prepared.device_board_);
+  if (std::optional<PlanarGpuFailure> invalid = ValidatePreparedAssociations(
+          board, compiled_board, prepared.device_board_, prepared.routing_profile_fingerprint());
       invalid.has_value()) {
     return std::move(*invalid);
   }
@@ -1249,6 +1280,7 @@ PlanarGpuRouteResult RouteWithPreparedPlanarGpuBackend(const board_ir::BoardSnap
       .generator = policy.generator,
       .start_node = endpoints.start_node,
       .goal_node = endpoints.goal_node,
+      .routing_profile_fingerprint = prepared.routing_profile_fingerprint(),
       .maximum_rounds = policy.maximum_rounds,
       .maximum_device_bytes = policy.maximum_device_bytes,
       .cancellation = policy.cancellation,
@@ -1276,9 +1308,9 @@ PlanarGpuRouteResult RouteWithPreparedPlanarGpuBackend(const board_ir::BoardSnap
       invalid.has_value()) {
     return std::move(*invalid);
   }
-  if (std::optional<PlanarGpuFailure> association =
-          ValidateRawAssociations(prepared.device_board_, endpoints.start_node, endpoints.goal_node,
-                                  policy.generator, kernel);
+  if (std::optional<PlanarGpuFailure> association = ValidateRawAssociations(
+          prepared.device_board_, endpoints.start_node, endpoints.goal_node, policy.generator,
+          kDeviceRouteResultSchemaVersion, prepared.routing_profile_fingerprint(), kernel);
       association.has_value()) {
     return WithTelemetry(std::move(*association), untrusted.telemetry);
   }
@@ -1301,9 +1333,10 @@ PlanarGpuRouteResult RouteWithPreparedPlanarGpuBackend(const board_ir::BoardSnap
   }
   switch (untrusted.completion) {
     case KernelCompletion::kReached:
-      return ValidateAndReconstructGpuRouteWithPolicy(board, compiled_board, prepared.device_board_,
-                                                      request, policy.generator, prepared.metadata_,
-                                                      kernel, &normalized_policy, true, &prepared);
+      return ValidateAndReconstructGpuRouteWithPolicy(
+          board, compiled_board, prepared.device_board_, request, policy.generator,
+          prepared.metadata_, kernel, &normalized_policy,
+          GpuRouteEvidenceExpectation{kDeviceRouteResultSchemaVersion, true, &prepared});
     case KernelCompletion::kDisconnected:
       if (std::optional<PlanarGpuFailure> invalid =
               ValidateDisconnectedResult(prepared.device_board_, kernel);
@@ -1798,7 +1831,8 @@ using CandidateBatchHostPreflightResult =
                    "GPU candidate query work telemetry exceeds deterministic bounds", std::nullopt,
                    query_telemetry, "gpu.batch.query.telemetry.v1");
   }
-  UntrustedKernelResultView completion_view;
+  UntrustedKernelResultView completion_view{};
+  completion_view.schema_version = header.schema_version;
   completion_view.completion = header.completion;
   completion_view.telemetry = query_telemetry;
   return ValidateCompletionTelemetry(completion_view, maximum_rounds);
@@ -1929,10 +1963,11 @@ using CandidateBatchHostPreflightResult =
   }
   const DeviceCandidateBatchResultV1& header = query.header;
   return UntrustedKernelResultView{
-      .schema_version = kDeviceCompiledBoardSchemaVersion,
+      .schema_version = header.schema_version,
       .source_board_content_hash = header.source_board_content_hash,
       .compiler_profile_fingerprint = header.compiler_profile_fingerprint,
       .compiler_version = header.compiler_version,
+      .routing_profile_fingerprint = header.routing_profile_fingerprint,
       .rule_bucket_identity = header.rule_bucket_identity,
       .device_view_fingerprint = header.device_view_fingerprint,
       .generator = header.generator,
@@ -1976,8 +2011,8 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
   IPlanarRouteBackend& backend = prepared.backend();
   const UploadedCompiledView& upload = prepared.uploaded();
   const DeviceCompiledBoardV1& device = prepared.device_board();
-  if (std::optional<PlanarGpuFailure> invalid =
-          ValidatePreparedAssociations(board, compiled_board, device);
+  if (std::optional<PlanarGpuFailure> invalid = ValidatePreparedAssociations(
+          board, compiled_board, device, prepared.routing_profile_fingerprint());
       invalid.has_value()) {
     return BuildUnexecutedBatch(std::move(preflight), policy, *invalid,
                                 "prepared-view-association-failed");
@@ -2009,7 +2044,7 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
   backend_request.queries.reserve(preflight.admitted.size());
   backend_request.policy_edges.reserve(static_cast<std::size_t>(preflight.aggregate_policy_edges));
   const std::uint64_t routing_profile_fingerprint =
-      routing::FingerprintRoutingProfile(board.data().routing_profile);
+      routing::FingerprintRoutingProfile(compiled_board.prepared_routing_profile().profile());
 
   for (HostAdmittedCandidateBatchQuery& host_admitted : preflight.admitted) {
     const std::size_t item_index = host_admitted.item_index;
@@ -2311,11 +2346,13 @@ void SetAdmittedBatchFailure(std::span<const AdmittedCandidateBatchQuery> admitt
     }
     switch (kernel.completion) {
       case KernelCompletion::kReached:
-        ReplaceUnsealedResult(item, ValidateAndReconstructGpuRouteWithPolicy(
-                                        board, compiled_board, device,
-                                        preflight.ordered[admitted_query.item_index]->request,
-                                        policy.generator, prepared.metadata(), kernel,
-                                        &admitted_query.normalized_policy, true, &prepared));
+        ReplaceUnsealedResult(
+            item,
+            ValidateAndReconstructGpuRouteWithPolicy(
+                board, compiled_board, device,
+                preflight.ordered[admitted_query.item_index]->request, policy.generator,
+                prepared.metadata(), kernel, &admitted_query.normalized_policy,
+                GpuRouteEvidenceExpectation{kDeviceCandidateBatchSchemaVersion, true, &prepared}));
         break;
       case KernelCompletion::kDisconnected:
         if (std::optional<PlanarGpuFailure> invalid = ValidateDisconnectedResult(device, kernel);

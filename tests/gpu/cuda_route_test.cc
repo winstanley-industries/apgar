@@ -84,6 +84,8 @@ void ExpectDifferentialSuccess(const BoardSnapshot& board, const CompiledBoard& 
   EXPECT_EQ(first_route.policy_identity, second_route.policy_identity);
   EXPECT_EQ(first_route.lattice_path, second_route.lattice_path);
   EXPECT_EQ(first_route.segments, second_route.segments);
+  EXPECT_EQ(first_route.routing_profile_fingerprint,
+            routing::FingerprintRoutingProfile(compiled.prepared_routing_profile().profile()));
   EXPECT_EQ(first_route.backend.backend, "cuda");
   EXPECT_GE(first_route.backend.compute_capability_major, 12U);
   EXPECT_GT(first_route.telemetry.examined_work, 0U);
@@ -94,6 +96,41 @@ TEST(CudaPlanarRouteTest, FrontierAndSweepMatchCpuCostAndRepeatExactly) {
   const BoardSnapshot board = Snapshot();
   const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
   const CpuRouteRequest request = TwoTerminalRequest(board);
+
+  ExpectDifferentialSuccess(board, compiled, request, PlanarGenerator::kBucketedFrontier);
+  ExpectDifferentialSuccess(board, compiled, request, PlanarGenerator::kHeadingAwareSweep);
+}
+
+TEST(CudaPlanarRouteTest, NonDefaultPreparedNetMatchesCpuAndRetainsContextIdentity) {
+  const BoardSnapshot board = Snapshot(test_support::MultiNetM1BoardData());
+  const board_ir::EntityRef second_net = board.data().nets[1].ref;
+  board_ir::RoutingProfile profile = board.data().routing_profile;
+  profile.net = second_net;
+  board_ir::RoutingProfilePreparationResult preparation =
+      board_ir::PrepareRoutingProfile(board, std::move(profile));
+  ASSERT_TRUE(std::holds_alternative<board_ir::PreparedRoutingProfile>(preparation));
+  geometry_compiler::CompileResult compile_result = geometry_compiler::CompileBoard(
+      board, test_support::DefaultCompilerProfile({0}),
+      std::get<board_ir::PreparedRoutingProfile>(std::move(preparation)));
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(compile_result));
+  const CompiledBoard compiled = std::get<CompiledBoard>(std::move(compile_result));
+  const board_ir::Net* net = board.FindNet(second_net);
+  ASSERT_NE(net, nullptr);
+  ASSERT_EQ(net->terminals.size(), 2U);
+  const board_ir::Terminal* start = board.FindTerminal(net->terminals[0]);
+  const board_ir::Terminal* goal = board.FindTerminal(net->terminals[1]);
+  ASSERT_NE(start, nullptr);
+  ASSERT_NE(goal, nullptr);
+  const CpuRouteRequest request{
+      .net = second_net,
+      .start = start->center,
+      .goal = goal->center,
+      .start_layer = 0,
+      .goal_layer = 0,
+      .candidate_policy = {},
+  };
+  EXPECT_NE(routing::FingerprintRoutingProfile(compiled.prepared_routing_profile().profile()),
+            routing::FingerprintRoutingProfile(board.data().routing_profile));
 
   ExpectDifferentialSuccess(board, compiled, request, PlanarGenerator::kBucketedFrontier);
   ExpectDifferentialSuccess(board, compiled, request, PlanarGenerator::kHeadingAwareSweep);

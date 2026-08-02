@@ -23,6 +23,7 @@
 namespace apgar::gpu {
 
 inline constexpr std::uint32_t kDeviceCompiledBoardSchemaVersion = 1;
+inline constexpr std::uint32_t kDeviceRouteResultSchemaVersion = 1;
 inline constexpr std::uint32_t kDeviceCandidateBatchSchemaVersion = 1;
 inline constexpr std::uint32_t kDeviceCandidateCompactPathSchemaVersion = 1;
 inline constexpr std::uint8_t kIncomingHeadingCount = 9;
@@ -221,21 +222,23 @@ struct DeviceRunV1 {
 };
 static_assert(sizeof(DeviceRunV1) == 12);
 
-struct DeviceResultHeaderV1 {
-  std::uint32_t schema_version = kDeviceCompiledBoardSchemaVersion;
+struct DeviceRouteResultHeaderV1 {
+  std::uint32_t schema_version = kDeviceRouteResultSchemaVersion;
   std::uint32_t compiler_version = 0;
   std::uint32_t start_node = kInvalidNodeIndex;
   std::uint32_t goal_node = kInvalidNodeIndex;
   std::uint64_t source_board_content_hash = 0;
   std::uint64_t compiler_profile_fingerprint = 0;
+  std::uint64_t routing_profile_fingerprint = 0;
   std::uint64_t rule_bucket_identity = 0;
   std::uint64_t device_view_fingerprint = 0;
   PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
   std::array<std::uint8_t, 7> reserved{};
 
-  friend bool operator==(const DeviceResultHeaderV1&, const DeviceResultHeaderV1&) = default;
+  friend bool operator==(const DeviceRouteResultHeaderV1&,
+                         const DeviceRouteResultHeaderV1&) = default;
 };
-static_assert(sizeof(DeviceResultHeaderV1) == 56);
+static_assert(sizeof(DeviceRouteResultHeaderV1) == 64);
 
 struct DeviceCompiledBoardV1 {
   DeviceCompiledHeaderV1 header;
@@ -296,9 +299,10 @@ enum class KernelCompletion : std::uint8_t {
 };
 
 struct UntrustedKernelResult {
-  std::uint32_t schema_version = kDeviceCompiledBoardSchemaVersion;
+  std::uint32_t schema_version = kDeviceRouteResultSchemaVersion;
   std::uint64_t source_board_content_hash = 0;
   std::uint64_t compiler_profile_fingerprint = 0;
+  std::uint64_t routing_profile_fingerprint = 0;
   std::uint32_t compiler_version = 0;
   std::uint64_t rule_bucket_identity = 0;
   std::uint64_t device_view_fingerprint = 0;
@@ -323,6 +327,7 @@ struct BackendExecutionRequest {
   PlanarGenerator generator;
   std::uint32_t start_node;
   std::uint32_t goal_node;
+  std::uint64_t routing_profile_fingerprint = 0;
   std::uint32_t maximum_rounds;
   std::uint64_t maximum_device_bytes;
   const std::atomic_bool* cancellation;
@@ -598,6 +603,8 @@ struct PlanarGpuRoute {
   std::uint64_t source_board_content_hash = 0;
   std::uint64_t compiler_profile_fingerprint = 0;
   std::uint32_t compiler_version = 0;
+  std::uint64_t routing_profile_fingerprint = 0;
+  // APGAR-M1-RULE-BUCKET-V1 is the legacy numeric-rule scalar only.
   std::uint64_t rule_bucket_identity = 0;
   std::uint64_t device_view_fingerprint = 0;
   PlanarGenerator generator = PlanarGenerator::kBucketedFrontier;
@@ -634,6 +641,9 @@ class PreparedPlanarCompiledView {
   [[nodiscard]] std::uint64_t prepared_node_lookup_host_bytes() const noexcept {
     return static_cast<std::uint64_t>(node_lookup_.size()) * sizeof(std::uint32_t);
   }
+  [[nodiscard]] std::uint64_t routing_profile_fingerprint() const noexcept {
+    return routing_profile_fingerprint_;
+  }
   [[nodiscard]] std::optional<std::uint32_t> FindNodeIndex(
       board_ir::LayerId layer, geometry_compiler::LatticeIndex index) const noexcept;
   [[nodiscard]] bool has_authenticated_cuda_producer() const noexcept {
@@ -653,18 +663,21 @@ class PreparedPlanarCompiledView {
       PreparedPlanarCompiledView& prepared);
   PreparedPlanarCompiledView(IPlanarRouteBackend& backend, DeviceCompiledBoardV1 device_board,
                              std::vector<std::uint32_t> node_lookup, BackendMetadata metadata,
-                             std::unique_ptr<UploadedCompiledView> uploaded)
+                             std::unique_ptr<UploadedCompiledView> uploaded,
+                             std::uint64_t routing_profile_fingerprint)
       : backend_(&backend),
         device_board_(std::move(device_board)),
         node_lookup_(std::move(node_lookup)),
         metadata_(std::move(metadata)),
-        uploaded_(std::move(uploaded)) {}
+        uploaded_(std::move(uploaded)),
+        routing_profile_fingerprint_(routing_profile_fingerprint) {}
 
   IPlanarRouteBackend* const backend_;
   const DeviceCompiledBoardV1 device_board_;
   const std::vector<std::uint32_t> node_lookup_;
   const BackendMetadata metadata_;
   std::unique_ptr<UploadedCompiledView> uploaded_;
+  const std::uint64_t routing_profile_fingerprint_;
   bool authenticated_cuda_producer_ = false;
 };
 

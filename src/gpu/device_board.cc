@@ -42,7 +42,7 @@ struct NodeKey {
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidateAssociation(
     const board_ir::BoardSnapshot& board, const CompiledBoard& compiled) {
   const std::optional<routing::CompiledBoardAssociationIssue> issue =
-      routing::ValidateCompiledBoardAssociation(board, compiled);
+      routing::ValidatePreparedCompiledBoardAssociation(board, compiled);
   if (!issue.has_value()) {
     return std::nullopt;
   }
@@ -58,7 +58,7 @@ struct NodeKey {
                      "Compiled board profile fingerprint does not match its payload");
     case routing::CompiledBoardAssociationIssue::kRuleBucketMismatch:
       return Failure(PlanarGpuFailureCode::kValidationFailed,
-                     "Compiled board rule bucket is stale or does not match the BoardSnapshot");
+                     "Compiled board prepared routing context is invalid or mismatched");
   }
   return Failure(PlanarGpuFailureCode::kInternalInvariant,
                  "Compiled-board association validator returned an unknown issue");
