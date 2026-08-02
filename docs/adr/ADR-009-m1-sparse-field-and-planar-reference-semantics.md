@@ -38,12 +38,15 @@ rather than explicitly requested active work.
   obstacle interaction depends on ownership. `PreparedRoutingProfile` is the
   Board-IR-issued, source-snapshot-bound capability for selecting that context,
   and `CompiledBoard` retains it.
-- V1 device, replay, CPU-route evidence, and candidate associations do not yet
-  serialize retained-profile identity. They therefore reject non-default
-  compiled contexts through the full in-memory association check. A later
-  enabling slice must add a separately versioned identity or a V2 domain and
-  corresponding schema bumps; it must not reinterpret the existing
-  `APGAR-M1-RULE-BUCKET-V1` scalar.
+- V1 device, replay, and CPU-route evidence do not yet carry retained-profile
+  identity. They therefore reject non-default compiled contexts through the
+  full in-memory association check. A later enabling slice must add a separately
+  versioned identity, or a V2 domain and schema bump where a persistent field is
+  absent; it must not reinterpret the existing `APGAR-M1-RULE-BUCKET-V1`
+  scalar. Candidate associations already carry an
+  `APGAR-ROUTING-PROFILE-V1` fingerprint that includes routed net, so their
+  producer must source that existing field from the retained profile rather
+  than introduce another version.
 - CPU A* is planar. Requests keep distinct endpoint-layer fields so exact
   through-via transitions can be added later, but differing layers return a
   structured unsupported result now.

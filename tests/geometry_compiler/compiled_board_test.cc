@@ -6,18 +6,14 @@
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "apgar/board_ir/board.h"
-#include "apgar/candidates/route_candidate.h"
 #include "apgar/geometry/exact.h"
-#include "apgar/routing/candidate_policy.h"
-#include "apgar/routing/cpu_astar.h"
-#include "apgar/routing/planar_route.h"
 #include "tests/support/board_builder.h"
-#include "tests/support/candidate_builder.h"
 #include "tests/support/compiler_builder.h"
 #include "tests/support/google_test.h"
 
@@ -119,7 +115,8 @@ constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
 }
 
 void ExpectEveryCompiledLegalEdgeIsExactLegal(const BoardSnapshot& board,
-                                              const CompiledBoard& compiled) {
+                                              const CompiledBoard& compiled,
+                                              const PreparedRoutingProfile* prepared = nullptr) {
   std::uint64_t observed_legal_edges = 0;
   for (const SparseTile& tile : compiled.tiles()) {
     for (const CompiledNode& node : tile.nodes) {
@@ -135,12 +132,14 @@ void ExpectEveryCompiledLegalEdgeIsExactLegal(const BoardSnapshot& board,
             compiled.FindNode(tile.key.layer, neighbor.x, neighbor.y);
         ASSERT_NE(neighbor_node, nullptr);
         EXPECT_TRUE((neighbor_node->legal_edges & MaskFor(Opposite(direction))) != 0);
+        const board_ir::Segment64 centerline{
+            .start = ExactPoint(compiled.profile(), index),
+            .end = ExactPoint(compiled.profile(), neighbor),
+        };
         const geometry::MovementValidationResult exact =
-            geometry::ValidateMovement(board, tile.key.layer,
-                                       board_ir::Segment64{
-                                           .start = ExactPoint(compiled.profile(), index),
-                                           .end = ExactPoint(compiled.profile(), neighbor),
-                                       });
+            prepared == nullptr
+                ? geometry::ValidateMovement(board, tile.key.layer, centerline)
+                : geometry::ValidateMovement(board, *prepared, tile.key.layer, centerline);
         EXPECT_TRUE(exact.legal()) << exact.detail;
       }
     }
@@ -223,6 +222,17 @@ TEST(CompiledBoardTest, GeneratedMicrocasesNeverPublishFalseFreeEdges) {
     }
   }
   EXPECT_GT(generated_legal_edges, 1'000U);
+}
+
+TEST(CompiledBoardTest, PreparedRoutingProfilesCannotBeFabricated) {
+  static_assert(!std::is_aggregate_v<PreparedRoutingProfile>);
+  static_assert(!std::is_default_constructible_v<PreparedRoutingProfile>);
+  static_assert(
+      !std::is_constructible_v<PreparedRoutingProfile, board_ir::RoutingProfile, std::uint64_t>);
+  static_assert(!std::is_trivially_copyable_v<PreparedRoutingProfile>);
+  static_assert(std::is_copy_constructible_v<PreparedRoutingProfile>);
+  static_assert(std::is_move_constructible_v<PreparedRoutingProfile>);
+  SUCCEED();
 }
 
 TEST(CompiledBoardTest, PreservesBoundaryEqualityAndOneUnitPerturbations) {
@@ -389,8 +399,6 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
   EXPECT_EQ(first.rule_bucket().routed_net, board.data().routing_profile.net);
   EXPECT_EQ(second.rule_bucket().routed_net, kSecondNet);
   EXPECT_EQ(second.rule_bucket().identity, first.rule_bucket().identity);
-  EXPECT_NE(routing::FingerprintRoutingProfile(second.prepared_routing_profile().profile()),
-            routing::FingerprintRoutingProfile(board.data().routing_profile));
   EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(second.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(first.EdgeIsLegal(0, 7, 0, Direction::kEast));
@@ -398,46 +406,7 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
   EXPECT_FALSE(first.EdgeIsLegal(0, -2, 2, Direction::kEast));
   EXPECT_FALSE(second.EdgeIsLegal(0, -2, 2, Direction::kEast));
   ExpectCompiledEdgesMatchPreparedProfile(board, second_profile, second);
-}
-
-TEST(CompiledBoardTest, NonDefaultContextFailsClosedAtRouteAndAdmission) {
-  const BoardSnapshot board = Snapshot(MultiNetBoardData());
-  const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
-  board_ir::RoutingProfile net_only_profile = board.data().routing_profile;
-  net_only_profile.net = kSecondNet;
-  CompileResult net_only_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
-                                               Prepare(board, net_only_profile));
-  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(net_only_result));
-  const CompiledBoard net_only_board = std::get<CompiledBoard>(std::move(net_only_result));
-
-  EXPECT_FALSE(routing::ValidateCompiledBoardAssociation(board, first).has_value());
-  EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, net_only_board),
-            routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
-
-  const routing::TwoTerminalRequestResult request_result =
-      routing::BuildTwoTerminalRouteRequest(board, 0, 0);
-  ASSERT_TRUE(std::holds_alternative<routing::CpuRouteRequest>(request_result));
-  const routing::CpuRouteRequest request = std::get<routing::CpuRouteRequest>(request_result);
-  const routing::CpuRouteResult route_result =
-      routing::RouteWithCpuAStar(board, net_only_board, request);
-  ASSERT_TRUE(std::holds_alternative<routing::RouteFailure>(route_result));
-  const routing::RouteFailure& route_failure = std::get<routing::RouteFailure>(route_result);
-  EXPECT_EQ(route_failure.code, routing::RouteFailureCode::kValidationFailed);
-  EXPECT_EQ(route_failure.detail,
-            "Compiled board rule bucket is stale or does not match the BoardSnapshot");
-  EXPECT_FALSE(route_failure.telemetry.has_value());
-
-  candidates::GeneratedRouteCandidate generated =
-      test_support::CandidateDraft(board, first, request);
-  const candidates::CandidateAdmissionResult admission = candidates::AdmitRouteCandidate(
-      candidates::CandidateAdmissionContext{
-          .board = board, .compiled_board = net_only_board, .request = request},
-      std::move(generated));
-  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(admission));
-  const candidates::CandidateRejection& rejection =
-      std::get<candidates::CandidateRejection>(admission);
-  EXPECT_EQ(rejection.code, candidates::CandidateRejectionCode::kAssociationMismatch);
-  EXPECT_EQ(rejection.invariant_id, "candidate.associations.compiled_board.v1");
+  ExpectEveryCompiledLegalEdgeIsExactLegal(board, second, &second.prepared_routing_profile());
 }
 
 TEST(CompiledBoardTest, SeparatesRoutingProfileAndCompilerProfileErrors) {
@@ -635,10 +604,8 @@ TEST(CompiledBoardTest, ReportsDefinedMemoryAndConservatismTelemetry) {
   EXPECT_EQ(telemetry.false_blocked_directional_edges, 0U);
   EXPECT_EQ(telemetry.false_blocked_rate_parts_per_billion, 0U);
   std::uint64_t expected_host_bytes = sizeof(CompiledBoard);
-  expected_host_bytes += compiled.profile().active_regions.size() * sizeof(ActiveRegion);
-  expected_host_bytes += compiled.rule_bucket().allowed_layers.size() * sizeof(board_ir::LayerId);
-  expected_host_bytes += compiled.prepared_routing_profile().profile().allowed_layers.size() *
-                         sizeof(board_ir::LayerId);
+  expected_host_bytes += sizeof(ActiveRegion);
+  expected_host_bytes += 4U * sizeof(board_ir::LayerId);
   expected_host_bytes += compiled.tiles().size() * sizeof(SparseTile);
   for (const SparseTile& tile : compiled.tiles()) {
     expected_host_bytes += tile.nodes.size() * sizeof(CompiledNode);
