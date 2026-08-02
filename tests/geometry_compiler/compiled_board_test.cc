@@ -311,9 +311,8 @@ TEST(CompiledBoardTest, PropagatesStableBoardProfileAndRuleBucketIdentity) {
   EXPECT_EQ(first.routing_profile(), board.data().routing_profile);
 }
 
-TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstreamFailsClosed) {
+TEST(CompiledBoardTest, CanonicalizesPreparedProfileLayers) {
   const BoardSnapshot board = Snapshot(MultiNetBoardData());
-
   board_ir::RoutingProfile unsorted_profile = board.data().routing_profile;
   unsorted_profile.net = kSecondNet;
   unsorted_profile.clearance = 3;
@@ -324,10 +323,17 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
   const board_ir::RoutingProfile second_profile =
       std::get<board_ir::RoutingProfile>(std::move(prepared));
   EXPECT_EQ(second_profile.allowed_layers, (std::vector<board_ir::LayerId>{0, 31}));
+}
+
+TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = kSecondNet;
+  second_profile.clearance = 3;
 
   const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
   CompileResult second_result =
-      CompileBoard(board, test_support::DefaultCompilerProfile({0}), unsorted_profile);
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), second_profile);
   ASSERT_TRUE(std::holds_alternative<CompiledBoard>(second_result));
   const CompiledBoard second = std::get<CompiledBoard>(std::move(second_result));
 
@@ -335,13 +341,8 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
   EXPECT_EQ(second.rule_bucket(), DeriveM1RuleBucket(second_profile));
   EXPECT_NE(second.rule_bucket().identity,
             DeriveM1RuleBucket(board.data().routing_profile).identity);
-  EXPECT_EQ(candidates::AssociationsFor(board, second).routing_profile_fingerprint,
-            routing::FingerprintRoutingProfile(second_profile));
   EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(second.EdgeIsLegal(0, 3, 0, Direction::kEast));
-  EXPECT_FALSE(routing::ValidateCompiledBoardAssociation(board, first).has_value());
-  EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, second),
-            routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
 
   board_ir::RoutingProfile net_only_profile = board.data().routing_profile;
   net_only_profile.net = kSecondNet;
@@ -352,12 +353,6 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
   EXPECT_EQ(net_only_board.rule_bucket().identity,
             DeriveM1RuleBucket(board.data().routing_profile).identity);
   EXPECT_TRUE(net_only_board.EdgeIsLegal(0, 3, 0, Direction::kEast));
-  EXPECT_NE(candidates::AssociationsFor(board, net_only_board).routing_profile_fingerprint,
-            candidates::AssociationsFor(board, first).routing_profile_fingerprint);
-  EXPECT_EQ(candidates::AssociationsFor(board, net_only_board).rule_bucket_identity,
-            candidates::AssociationsFor(board, first).rule_bucket_identity);
-  EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, net_only_board),
-            routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
 
   board_ir::RoutingProfile tightened_profile = board.data().routing_profile;
   tightened_profile.clearance = 20;
@@ -369,6 +364,39 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
   EXPECT_FALSE(tightened.EdgeIsLegal(0, 2, 0, Direction::kEast));
   ExpectCompiledEdgesMatchPreparedProfile(board, net_only_board);
   ExpectCompiledEdgesMatchPreparedProfile(board, tightened);
+}
+
+TEST(CompiledBoardTest, RetainedProfileDrivesCandidateAssociationIdentity) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
+  board_ir::RoutingProfile net_only_profile = board.data().routing_profile;
+  net_only_profile.net = kSecondNet;
+  CompileResult net_only_result =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), net_only_profile);
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(net_only_result));
+  const CompiledBoard net_only_board = std::get<CompiledBoard>(std::move(net_only_result));
+
+  EXPECT_NE(candidates::AssociationsFor(board, net_only_board).routing_profile_fingerprint,
+            candidates::AssociationsFor(board, first).routing_profile_fingerprint);
+  EXPECT_EQ(candidates::AssociationsFor(board, net_only_board).routing_profile_fingerprint,
+            routing::FingerprintRoutingProfile(net_only_profile));
+  EXPECT_EQ(candidates::AssociationsFor(board, net_only_board).rule_bucket_identity,
+            candidates::AssociationsFor(board, first).rule_bucket_identity);
+}
+
+TEST(CompiledBoardTest, NonDefaultContextFailsClosedAtRouteAndAdmission) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
+  board_ir::RoutingProfile net_only_profile = board.data().routing_profile;
+  net_only_profile.net = kSecondNet;
+  CompileResult net_only_result =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), net_only_profile);
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(net_only_result));
+  const CompiledBoard net_only_board = std::get<CompiledBoard>(std::move(net_only_result));
+
+  EXPECT_FALSE(routing::ValidateCompiledBoardAssociation(board, first).has_value());
+  EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, net_only_board),
+            routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
 
   const routing::TwoTerminalRequestResult request_result =
       routing::BuildTwoTerminalRouteRequest(board, 0, 0);
@@ -391,6 +419,12 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
       std::get<candidates::CandidateRejection>(admission);
   EXPECT_EQ(rejection.code, candidates::CandidateRejectionCode::kAssociationMismatch);
   EXPECT_EQ(rejection.invariant_id, "candidate.associations.compiled_board.v1");
+}
+
+TEST(CompiledBoardTest, SeparatesRoutingProfileAndCompilerProfileErrors) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = kSecondNet;
 
   board_ir::RoutingProfile restricted_headings = second_profile;
   restricted_headings.allowed_headings =
