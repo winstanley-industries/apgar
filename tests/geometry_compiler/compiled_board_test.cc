@@ -483,26 +483,31 @@ TEST(CompiledBoardTest, PreparedExactOracleChecksSnapshotBindingDirectly) {
   board_ir::RoutingProfile second_profile = board.data().routing_profile;
   second_profile.net = kSecondNet;
   const PreparedRoutingProfile prepared = Prepare(board, second_profile);
-  constexpr board_ir::Segment64 kClearMovement{
-      .start = Point64{.x = 0, .y = 40},
-      .end = Point64{.x = 10, .y = 40},
+  constexpr board_ir::Segment64 kSecondNetOwnedMovement{
+      .start = Point64{.x = 40, .y = 0},
+      .end = Point64{.x = 50, .y = 0},
   };
 
+  const geometry::MovementValidationResult default_context =
+      geometry::ValidateMovement(board, 0, kSecondNetOwnedMovement);
+  EXPECT_EQ(default_context.code, geometry::MovementViolationCode::kStaticObstacleConflict);
+  EXPECT_EQ(default_context.obstacle, (board_ir::EntityRef{.id = 30, .generation = 0}));
+
   const geometry::MovementValidationResult accepted =
-      geometry::ValidateMovement(board, prepared, 0, kClearMovement);
+      geometry::ValidateMovement(board, prepared, 0, kSecondNetOwnedMovement);
   EXPECT_TRUE(accepted.legal()) << accepted.detail;
 
   BoardData revised_data = MultiNetBoardData();
   ++revised_data.revision;
   const BoardSnapshot revised_board = Snapshot(std::move(revised_data));
   const geometry::MovementValidationResult rejected =
-      geometry::ValidateMovement(revised_board, prepared, 0, kClearMovement);
+      geometry::ValidateMovement(revised_board, prepared, 0, kSecondNetOwnedMovement);
   EXPECT_FALSE(rejected.legal());
   EXPECT_EQ(rejected.code, geometry::MovementViolationCode::kPreparedProfileSnapshotMismatch);
   EXPECT_EQ(rejected.detail, "Prepared routing profile belongs to a different Board IR snapshot");
 
   const geometry::MovementValidationResult binding_precedes_geometry =
-      geometry::ValidateMovement(revised_board, prepared, 99, kClearMovement);
+      geometry::ValidateMovement(revised_board, prepared, 99, kSecondNetOwnedMovement);
   EXPECT_EQ(binding_precedes_geometry.code,
             geometry::MovementViolationCode::kPreparedProfileSnapshotMismatch);
   EXPECT_FALSE(binding_precedes_geometry.obstacle.has_value());

@@ -372,7 +372,7 @@ CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile
     return Error(CompileErrorCode::kInvalidRoutingProfile,
                  "Prepared routing profile belongs to a different Board IR snapshot");
   }
-  board_ir::RoutingProfile routing_profile = prepared_routing_profile.profile();
+  const board_ir::RoutingProfile& routing_profile = prepared_routing_profile.profile();
   if (std::optional<CompileError> error = ValidateProfile(profile, routing_profile);
       error.has_value()) {
     return std::move(*error);
@@ -514,7 +514,7 @@ CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile
   const std::uint64_t profile_fingerprint = FingerprintCompilerProfile(profile);
   RuleBucketV1 rule_bucket = DeriveM1RuleBucket(routing_profile);
   CompiledBoard compiled(board.content_hash(), profile_fingerprint, std::move(rule_bucket),
-                         std::move(routing_profile), std::move(profile), std::move(tiles),
+                         std::move(prepared_routing_profile), std::move(profile), std::move(tiles),
                          telemetry);
   compiled.telemetry_.estimated_host_bytes = EstimateHostBytes(compiled);
   return compiled;
