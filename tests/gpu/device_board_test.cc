@@ -14,8 +14,11 @@
 
 #include "apgar/board_ir/board.h"
 #include "apgar/candidates/gpu_candidate_adapter.h"
+#include "apgar/candidates/route_candidate.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "apgar/gpu/planar_router.h"
+#include "apgar/routing/cpu_astar.h"
+#include "apgar/routing/planar_route.h"
 #include "tests/support/board_builder.h"
 #include "tests/support/compiler_builder.h"
 #include "tests/support/google_test.h"

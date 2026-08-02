@@ -473,6 +473,25 @@ TEST(CompiledBoardTest, PreparedExactOracleChecksSnapshotBindingDirectly) {
       geometry::ValidateMovement(board, prepared, 0, kSecondNetOwnedMovement);
   EXPECT_TRUE(accepted.legal()) << accepted.detail;
 
+  const geometry::MovementValidationResult unknown_layer =
+      geometry::ValidateMovement(board, prepared, 1'000, kSecondNetOwnedMovement);
+  EXPECT_EQ(unknown_layer.code, geometry::MovementViolationCode::kUnknownLayer);
+  const geometry::MovementValidationResult degenerate = geometry::ValidateMovement(
+      board, prepared, 0,
+      board_ir::Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 0, .y = 0}});
+  EXPECT_EQ(degenerate.code, geometry::MovementViolationCode::kDegenerateSegment);
+  const geometry::MovementValidationResult out_of_range =
+      geometry::ValidateMovement(board, prepared, 0,
+                                 board_ir::Segment64{
+                                     .start = Point64{.x = board_ir::kMaxAbsDbCoord + 1, .y = 0},
+                                     .end = Point64{.x = 0, .y = 0},
+                                 });
+  EXPECT_EQ(out_of_range.code, geometry::MovementViolationCode::kCoordinateOutOfRange);
+  const geometry::MovementValidationResult unsupported_heading = geometry::ValidateMovement(
+      board, prepared, 0,
+      board_ir::Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 10, .y = 5}});
+  EXPECT_EQ(unsupported_heading.code, geometry::MovementViolationCode::kUnsupportedHeading);
+
   BoardData revised_data = MultiNetBoardData();
   ++revised_data.revision;
   const BoardSnapshot revised_board = Snapshot(std::move(revised_data));
