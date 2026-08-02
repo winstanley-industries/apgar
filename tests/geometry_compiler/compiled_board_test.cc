@@ -605,7 +605,9 @@ TEST(CompiledBoardTest, ReportsDefinedMemoryAndConservatismTelemetry) {
   EXPECT_EQ(telemetry.false_blocked_rate_parts_per_billion, 0U);
   std::uint64_t expected_host_bytes = sizeof(CompiledBoard);
   expected_host_bytes += sizeof(ActiveRegion);
-  expected_host_bytes += 4U * sizeof(board_ir::LayerId);
+  expected_host_bytes += (compiled.rule_bucket().allowed_layers.size() +
+                          compiled.prepared_routing_profile().profile().allowed_layers.size()) *
+                         sizeof(board_ir::LayerId);
   expected_host_bytes += compiled.tiles().size() * sizeof(SparseTile);
   for (const SparseTile& tile : compiled.tiles()) {
     expected_host_bytes += tile.nodes.size() * sizeof(CompiledNode);

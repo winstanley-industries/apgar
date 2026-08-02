@@ -456,6 +456,9 @@ TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtDurableGpuBounda
 }
 
 TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtCpuAndCandidateConsumers) {
+  // P4R-02A1 keeps this cross-consumer regression in an already-touched target
+  // to honor its hard file cap. P4R-02A2 relocates each assertion to its native
+  // CPU A* or candidate-admission target with explicit direct dependencies.
   BoardData data = MultiNetBoardDataForContextTests();
   data.obstacles.clear();
   const BoardSnapshot board = Snapshot(std::move(data));
