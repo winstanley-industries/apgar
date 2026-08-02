@@ -71,6 +71,7 @@ struct CpuRoute {
   std::uint64_t source_board_content_hash;
   std::uint64_t compiler_profile_fingerprint;
   std::uint32_t compiler_version;
+  // APGAR-M1-RULE-BUCKET-V1 is the legacy numeric-rule scalar only.
   std::uint64_t rule_bucket_identity;
   std::uint64_t candidate_policy_identity;
   std::uint64_t total_cost;
@@ -99,6 +100,12 @@ using CpuRouteResult = std::variant<CpuRoute, RouteFailure>;
 // candidate construction. Publicly fabricated aggregates or aggregates whose
 // authenticated fields were subsequently relabeled return false.
 [[nodiscard]] bool CpuRouteHasAuthenticatedAStarEvidence(const CpuRoute& route) noexcept;
+
+// Returns the APGAR-ROUTING-PROFILE-V1 identity sealed by CPU A* evidence, or
+// no value for a route without authenticated producer evidence. P4R-02A2b
+// candidate production will compare the value with its retained context.
+[[nodiscard]] std::optional<std::uint64_t> AuthenticatedCpuRouteRoutingProfileFingerprint(
+    const CpuRoute& route) noexcept;
 
 // Public for differential and corruption tests. Every returned route passes
 // this exact validator after reconstruction; compiled masks are never accepted

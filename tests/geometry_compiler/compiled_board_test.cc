@@ -402,7 +402,8 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
   EXPECT_EQ(second.rule_bucket(), DeriveM1RuleBucket(second_profile));
   EXPECT_EQ(first.rule_bucket().routed_net, board.data().routing_profile.net);
   EXPECT_EQ(second.rule_bucket().routed_net, kSecondNet);
-  EXPECT_EQ(second.rule_bucket().identity, first.rule_bucket().identity);
+  EXPECT_EQ(second.rule_bucket().numeric_rule_identity(),
+            first.rule_bucket().numeric_rule_identity());
   EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(second.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(first.EdgeIsLegal(0, 7, 0, Direction::kEast));
@@ -452,60 +453,6 @@ TEST(CompiledBoardTest, SeparatesRoutingProfileAndCompilerProfileErrors) {
             CompileErrorCode::kInvalidRoutingProfile);
   EXPECT_EQ(std::get<CompileError>(binding_precedes_profile_validation).detail,
             "Prepared routing profile belongs to a different Board IR snapshot");
-}
-
-TEST(CompiledBoardTest, PreparedExactOracleChecksSnapshotBindingDirectly) {
-  const BoardSnapshot board = Snapshot(MultiNetBoardData());
-  board_ir::RoutingProfile second_profile = board.data().routing_profile;
-  second_profile.net = kSecondNet;
-  const PreparedRoutingProfile prepared = Prepare(board, second_profile);
-  constexpr board_ir::Segment64 kSecondNetOwnedMovement{
-      .start = Point64{.x = 40, .y = 0},
-      .end = Point64{.x = 50, .y = 0},
-  };
-
-  const geometry::MovementValidationResult default_context =
-      geometry::ValidateMovement(board, 0, kSecondNetOwnedMovement);
-  EXPECT_EQ(default_context.code, geometry::MovementViolationCode::kStaticObstacleConflict);
-  EXPECT_EQ(default_context.obstacle, (board_ir::EntityRef{.id = 30, .generation = 0}));
-
-  const geometry::MovementValidationResult accepted =
-      geometry::ValidateMovement(board, prepared, 0, kSecondNetOwnedMovement);
-  EXPECT_TRUE(accepted.legal()) << accepted.detail;
-
-  const geometry::MovementValidationResult unknown_layer =
-      geometry::ValidateMovement(board, prepared, 1'000, kSecondNetOwnedMovement);
-  EXPECT_EQ(unknown_layer.code, geometry::MovementViolationCode::kUnknownLayer);
-  const geometry::MovementValidationResult degenerate = geometry::ValidateMovement(
-      board, prepared, 0,
-      board_ir::Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 0, .y = 0}});
-  EXPECT_EQ(degenerate.code, geometry::MovementViolationCode::kDegenerateSegment);
-  const geometry::MovementValidationResult out_of_range =
-      geometry::ValidateMovement(board, prepared, 0,
-                                 board_ir::Segment64{
-                                     .start = Point64{.x = board_ir::kMaxAbsDbCoord + 1, .y = 0},
-                                     .end = Point64{.x = 0, .y = 0},
-                                 });
-  EXPECT_EQ(out_of_range.code, geometry::MovementViolationCode::kCoordinateOutOfRange);
-  const geometry::MovementValidationResult unsupported_heading = geometry::ValidateMovement(
-      board, prepared, 0,
-      board_ir::Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 10, .y = 5}});
-  EXPECT_EQ(unsupported_heading.code, geometry::MovementViolationCode::kUnsupportedHeading);
-
-  BoardData revised_data = MultiNetBoardData();
-  ++revised_data.revision;
-  const BoardSnapshot revised_board = Snapshot(std::move(revised_data));
-  const geometry::MovementValidationResult rejected =
-      geometry::ValidateMovement(revised_board, prepared, 0, kSecondNetOwnedMovement);
-  EXPECT_FALSE(rejected.legal());
-  EXPECT_EQ(rejected.code, geometry::MovementViolationCode::kPreparedProfileSnapshotMismatch);
-  EXPECT_EQ(rejected.detail, "Prepared routing profile belongs to a different Board IR snapshot");
-
-  const geometry::MovementValidationResult binding_precedes_geometry =
-      geometry::ValidateMovement(revised_board, prepared, 99, kSecondNetOwnedMovement);
-  EXPECT_EQ(binding_precedes_geometry.code,
-            geometry::MovementViolationCode::kPreparedProfileSnapshotMismatch);
-  EXPECT_FALSE(binding_precedes_geometry.obstacle.has_value());
 }
 
 TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {

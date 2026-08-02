@@ -310,7 +310,7 @@ RuleBucketV1 DeriveM1RuleBucket(const board_ir::RoutingProfile& profile) {
   board_ir::StableHashBuilder hash;
   // V1 is the established numeric-rule identity, not the complete in-memory
   // bucket key. Do not add routed_net under this domain: durable propagation
-  // requires a separately versioned identity or a V2 tag and schema bump.
+  // uses the independent net-sensitive APGAR-ROUTING-PROFILE-V1 fingerprint.
   hash.AddString("APGAR-M1-RULE-BUCKET-V1");
   hash.AddI64(bucket.nominal_width);
   hash.AddI64(bucket.clearance);

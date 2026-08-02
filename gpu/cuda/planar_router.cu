@@ -245,7 +245,7 @@ class CudaPendingRouteExecution final : public PendingRouteExecution {
   BackendExecutionRequest request{};
   KernelCompletion completion = KernelCompletion::kDisconnected;
   KernelTelemetry telemetry;
-  DeviceBuffer<DeviceResultHeaderV1> result_header;
+  DeviceBuffer<DeviceRouteResultHeaderV1> result_header;
   DeviceBuffer<std::uint64_t> labels;
   DeviceBuffer<std::uint32_t> predecessors;
 };
@@ -293,17 +293,20 @@ inline constexpr std::uint32_t kBatchQueryBudgetExhausted = 3;
 inline constexpr std::uint32_t kBatchQueryCancelled = 4;
 
 __global__ void InitializeResultHeader(const DeviceCompiledHeaderV1* compiled,
-                                       DeviceResultHeaderV1* result, std::uint32_t start_node,
-                                       std::uint32_t goal_node, PlanarGenerator generator) {
+                                       DeviceRouteResultHeaderV1* result, std::uint32_t start_node,
+                                       std::uint32_t goal_node,
+                                       std::uint64_t routing_profile_fingerprint,
+                                       PlanarGenerator generator) {
   if (blockIdx.x != 0 || threadIdx.x != 0) {
     return;
   }
-  result->schema_version = compiled->schema_version;
+  result->schema_version = kDeviceRouteResultSchemaVersion;
   result->compiler_version = compiled->compiler_version;
   result->start_node = start_node;
   result->goal_node = goal_node;
   result->source_board_content_hash = compiled->source_board_content_hash;
   result->compiler_profile_fingerprint = compiled->compiler_profile_fingerprint;
+  result->routing_profile_fingerprint = routing_profile_fingerprint;
   result->rule_bucket_identity = compiled->rule_bucket_identity;
   result->device_view_fingerprint = compiled->device_view_fingerprint;
   result->generator = generator;
@@ -1470,6 +1473,7 @@ template <typename T>
     std::uint32_t* active) {
   InitializeResultHeader<<<1, 1>>>(uploaded.device_header.get(), execution.result_header.get(),
                                    execution.request.start_node, execution.request.goal_node,
+                                   execution.request.routing_profile_fingerprint,
                                    execution.request.generator);
   if (std::optional<BackendError> error = CheckLaunch("InitializeResultHeader launch");
       error.has_value()) {
@@ -2084,7 +2088,7 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
     execution->device = current_device;
     execution->request = request;
     const std::uint64_t state_count = uploaded->header.represented_states;
-    const std::uint64_t base_batch_bytes = sizeof(DeviceResultHeaderV1) +
+    const std::uint64_t base_batch_bytes = sizeof(DeviceRouteResultHeaderV1) +
                                            state_count * sizeof(std::uint64_t) +
                                            state_count * sizeof(std::uint32_t);
     const std::uint64_t algorithm_bytes =
@@ -2802,7 +2806,7 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
       return BackendError{.code = BackendErrorCode::kBackendFailure,
                           .detail = "CUDA readback current device differs from execution device"};
     }
-    DeviceResultHeaderV1 result_header;
+    DeviceRouteResultHeaderV1 result_header;
     cudaError_t status = cudaMemcpy(&result_header, execution->result_header.get(),
                                     sizeof(result_header), cudaMemcpyDeviceToHost);
     if (status != cudaSuccess) {
@@ -2812,6 +2816,7 @@ class CudaPlanarRouteBackendImpl final : public IPlanarRouteBackend {
         .schema_version = result_header.schema_version,
         .source_board_content_hash = result_header.source_board_content_hash,
         .compiler_profile_fingerprint = result_header.compiler_profile_fingerprint,
+        .routing_profile_fingerprint = result_header.routing_profile_fingerprint,
         .compiler_version = result_header.compiler_version,
         .rule_bucket_identity = result_header.rule_bucket_identity,
         .device_view_fingerprint = result_header.device_view_fingerprint,

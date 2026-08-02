@@ -331,7 +331,7 @@ TEST(RouteCandidatePropertyTest,
       .telemetry = {},
       .producer_evidence = {},
   };
-  test_support::CpuRouteFaultDecorator::Reseal(route);
+  test_support::CpuRouteFaultDecorator::Reseal(route, compiled);
   return BuildGeneratedCandidateFromCpuRoute(
       board, compiled, request, policy, route,
       CandidateSchedulingIdentity{.batch_identity = 23, .query_identity = 29});

@@ -42,7 +42,7 @@ struct NodeKey {
 [[nodiscard]] std::optional<PlanarGpuFailure> ValidateAssociation(
     const board_ir::BoardSnapshot& board, const CompiledBoard& compiled) {
   const std::optional<routing::CompiledBoardAssociationIssue> issue =
-      routing::ValidateCompiledBoardAssociation(board, compiled);
+      routing::ValidatePreparedCompiledBoardAssociation(board, compiled);
   if (!issue.has_value()) {
     return std::nullopt;
   }
@@ -58,7 +58,7 @@ struct NodeKey {
                      "Compiled board profile fingerprint does not match its payload");
     case routing::CompiledBoardAssociationIssue::kRuleBucketMismatch:
       return Failure(PlanarGpuFailureCode::kValidationFailed,
-                     "Compiled board rule bucket is stale or does not match the BoardSnapshot");
+                     "Compiled board prepared routing context is invalid or mismatched");
   }
   return Failure(PlanarGpuFailureCode::kInternalInvariant,
                  "Compiled-board association validator returned an unknown issue");
@@ -155,7 +155,7 @@ DeviceCompiledBoardResult BuildDeviceCompiledBoardV1(const board_ir::BoardSnapsh
   device.header.compiler_version = compiled_board.compiler_version();
   device.header.source_board_content_hash = compiled_board.source_board_content_hash();
   device.header.compiler_profile_fingerprint = compiled_board.compiler_profile_fingerprint();
-  device.header.rule_bucket_identity = compiled_board.rule_bucket().identity;
+  device.header.rule_bucket_identity = compiled_board.rule_bucket().numeric_rule_identity();
   device.header.represented_nodes = compiled_board.telemetry().represented_nodes;
   device.header.represented_states = static_cast<std::uint64_t>(state_count);
   device.header.lattice_origin = compiled_board.profile().lattice_origin;

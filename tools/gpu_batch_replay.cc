@@ -284,7 +284,7 @@ int Replay(std::string_view artifact_path) {
   const apgar::gpu::DeviceCompiledBoardV1& device =
       std::get<apgar::gpu::DeviceCompiledBoardV1>(device_result);
   const std::uint64_t routing_profile_fingerprint =
-      apgar::routing::FingerprintRoutingProfile(board.data().routing_profile);
+      apgar::routing::FingerprintRoutingProfile(compiled.prepared_routing_profile().profile());
   const apgar::routing::CandidatePolicyResult normalized_result =
       apgar::routing::NormalizeCandidateGenerationPolicy(compiled, artifact->candidate_policy);
   if (!std::holds_alternative<apgar::routing::NormalizedCandidateGenerationPolicy>(
@@ -297,7 +297,7 @@ int Replay(std::string_view artifact_path) {
   if (board.content_hash() != artifact->expected_board_hash ||
       compiled.compiler_profile_fingerprint() != artifact->expected_profile_fingerprint ||
       compiled.compiler_version() != artifact->expected_compiler_version ||
-      compiled.rule_bucket().identity != artifact->expected_rule_bucket_identity ||
+      compiled.rule_bucket().numeric_rule_identity() != artifact->expected_rule_bucket_identity ||
       routing_profile_fingerprint != artifact->expected_routing_profile_fingerprint ||
       device.header.device_view_fingerprint != artifact->expected_device_fingerprint ||
       normalized.identity != artifact->expected_policy_identity) {
@@ -305,7 +305,7 @@ int Replay(std::string_view artifact_path) {
               << ": replay semantic associations differ: board=" << board.content_hash()
               << " compiler_profile=" << compiled.compiler_profile_fingerprint()
               << " compiler_version=" << compiled.compiler_version()
-              << " rule_bucket=" << compiled.rule_bucket().identity
+              << " rule_bucket=" << compiled.rule_bucket().numeric_rule_identity()
               << " routing_profile=" << routing_profile_fingerprint
               << " device=" << device.header.device_view_fingerprint
               << " policy=" << normalized.identity << '\n';

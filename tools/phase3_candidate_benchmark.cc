@@ -1572,7 +1572,7 @@ void PreparedUploadBenchmark(benchmark::State& state, CaseContext* context,
   hash.AddString("APGAR-PHASE3-BENCHMARK-SEED-V1");
   hash.AddU64(test_case.board.content_hash());
   hash.AddU64(test_case.compiled_board.compiler_profile_fingerprint());
-  hash.AddU64(test_case.compiled_board.rule_bucket().identity);
+  hash.AddU64(test_case.compiled_board.rule_bucket().numeric_rule_identity());
   return hash.Finish();
 }
 
@@ -1928,7 +1928,8 @@ struct EvidenceLabels {
             ";routing_profile_fingerprint=" +
             std::to_string(
                 apgar::routing::FingerprintRoutingProfile(test_case.board.data().routing_profile)) +
-            ";rule_bucket=" + std::to_string(test_case.compiled_board.rule_bucket().identity) +
+            ";rule_bucket=" +
+            std::to_string(test_case.compiled_board.rule_bucket().numeric_rule_identity()) +
             ";nodes=" + std::to_string(test_case.compiled_board.telemetry().represented_nodes) +
             ";legal_edges=" +
             std::to_string(test_case.compiled_board.telemetry().legal_directional_edges) +

@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** July 17, 2026
-**Amended:** August 2, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5))
+**Amended:** August 2, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5), [PR #13](https://github.com/winstanley-industries/apgar/pull/13), [PR #6](https://github.com/winstanley-industries/apgar/pull/6), [PR #10](https://github.com/winstanley-industries/apgar/pull/10), [PR #7](https://github.com/winstanley-industries/apgar/pull/7), [PR #11](https://github.com/winstanley-industries/apgar/pull/11))
 **Applies to:** Geometry compiler and deterministic CPU reference router
 
 ## Context
@@ -38,15 +38,21 @@ rather than explicitly requested active work.
   obstacle interaction depends on ownership. `PreparedRoutingProfile` is the
   Board-IR-issued, source-snapshot-bound capability for selecting that context,
   and `CompiledBoard` retains it.
-- V1 device, replay, and CPU-route evidence do not yet carry retained-profile
-  identity. They therefore reject non-default compiled contexts through the
-  full in-memory association check. A later enabling slice must add a separately
-  versioned identity, or a V2 domain and schema bump where a persistent field is
-  absent; it must not reinterpret the existing `APGAR-M1-RULE-BUCKET-V1`
-  scalar. Candidate associations already carry an
-  `APGAR-ROUTING-PROFILE-V1` fingerprint that includes routed net, so their
-  producer must source that existing field from the retained profile rather
-  than introduce another version.
+- CPU-route producer evidence, candidate associations, device-route result
+  evidence, and GPU invariant replay artifacts carry the existing
+  `APGAR-ROUTING-PROFILE-V1` fingerprint. Their complete association checks may
+  therefore authenticate the retained compiled context. APGAR is unreleased,
+  so missing device-result and replay fields are added to the current V1
+  contracts in place; migration versions begin only after a public
+  compatibility boundary exists. No path may reinterpret the existing
+  `APGAR-M1-RULE-BUCKET-V1` scalar.
+- Before the first release, a checked-in V1 durable schema may acquire a missing
+  retained-profile field in place only when its schema document, every
+  checked-in producer and consumer, and every checked-in artifact change
+  atomically. The explicit schema version remains `1`, and old development
+  layouts must fail structural validation rather than be guessed or migrated.
+  After the first release, an incompatible persistent layout change requires a
+  new major schema version.
 - CPU A* is planar. Requests keep distinct endpoint-layer fields so exact
   through-via transitions can be added later, but differing layers return a
   structured unsupported result now.
@@ -61,9 +67,12 @@ rather than explicitly requested active work.
 
 - A compiled-legal edge implies exact legality against every represented static
   obstacle, including at tile boundaries and diagonal corners.
-- Multiple exact compiled contexts may be prepared from one immutable snapshot,
-  but only the snapshot's default context may enter current durable producer,
-  device, replay, or candidate-admission paths.
+- Multiple exact compiled contexts may be prepared from one immutable snapshot.
+  Authenticated CPU, candidate, and GPU route paths may consume them. GPU replay
+  artifacts bind whichever retained prepared profile their fixture compiler
+  selects; the canonical checked artifact selects the default profile. The
+  checksum-valid wrong-profile artifact is deliberately unbindable negative
+  evidence for the pre-backend association gate, not replay authority.
 - Users must choose active regions large enough to contain desired planar
   routes. A disconnected sparse field is distinguishable from malformed input
   and unsupported layer transitions.

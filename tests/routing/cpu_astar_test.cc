@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <utility>
@@ -10,41 +11,14 @@
 #include "apgar/adapters/kicad_fixture.h"
 #include "apgar/board_ir/board.h"
 #include "apgar/geometry_compiler/compiled_board.h"
+#include "apgar/routing/candidate_policy.h"
+#include "apgar/routing/planar_route.h"
 #include "src/routing/cpu_astar_internal.h"
 #include "tests/support/board_builder.h"
+#include "tests/support/compiled_board_test_access.h"
 #include "tests/support/compiler_builder.h"
 #include "tests/support/google_test.h"
 #include "tests/support/routing_builder.h"
-
-namespace apgar::geometry_compiler {
-
-class CompiledBoardTestPeer {
- public:
-  static bool AddLegalEdge(CompiledBoard& board, board_ir::LayerId layer, std::int64_t lattice_x,
-                           std::int64_t lattice_y, Direction direction) {
-    for (SparseTile& tile : board.tiles_) {
-      if (tile.key.layer != layer) {
-        continue;
-      }
-      for (CompiledNode& node : tile.nodes) {
-        const LatticeIndex index = GlobalLatticeIndex(board.profile_, tile.key, node.local_index);
-        if (index.x == lattice_x && index.y == lattice_y) {
-          node.legal_edges |= MaskFor(direction);
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  static void CorruptProfileFingerprint(CompiledBoard& board) {
-    ++board.compiler_profile_fingerprint_;
-  }
-
-  static void CorruptRuleBucketIdentity(CompiledBoard& board) { ++board.rule_bucket_.identity; }
-};
-
-}  // namespace apgar::geometry_compiler
 
 namespace apgar::routing {
 namespace {
@@ -57,7 +31,9 @@ using geometry_compiler::ActiveRegion;
 using geometry_compiler::CompiledBoard;
 using geometry_compiler::CompilerProfile;
 using test_support::Compile;
+using test_support::CompilePreparedNet;
 using test_support::ReadFixture;
+using test_support::RequestForNet;
 using test_support::Snapshot;
 using test_support::TwoTerminalRequest;
 
@@ -152,12 +128,112 @@ TEST(CpuAStarTest, RepeatedCompilationAndRoutingAreExternallyIdentical) {
   EXPECT_EQ(std::get<CpuRoute>(first).source_board_content_hash, board.content_hash());
   EXPECT_EQ(std::get<CpuRoute>(first).compiler_profile_fingerprint,
             first_compiled.compiler_profile_fingerprint());
-  EXPECT_EQ(std::get<CpuRoute>(first).rule_bucket_identity, first_compiled.rule_bucket().identity);
+  EXPECT_EQ(std::get<CpuRoute>(first).rule_bucket_identity,
+            first_compiled.rule_bucket().numeric_rule_identity());
   const CandidatePolicyResult normalized_default =
       NormalizeCandidateGenerationPolicy(first_compiled, CandidateGenerationPolicy{});
   ASSERT_TRUE(std::holds_alternative<NormalizedCandidateGenerationPolicy>(normalized_default));
   EXPECT_EQ(std::get<CpuRoute>(first).candidate_policy_identity,
             std::get<NormalizedCandidateGenerationPolicy>(normalized_default).identity);
+}
+
+TEST(CpuAStarTest, RoutesAndAuthenticatesTheRetainedPreparedNetContext) {
+  const BoardSnapshot board = Snapshot(test_support::MultiNetM1BoardData());
+  const CompiledBoard compiled = CompilePreparedNet(board, board.data().nets[1].ref,
+                                                    test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = RequestForNet(board, compiled.rule_bucket().routed_net);
+
+  EXPECT_EQ(ValidateCompiledBoardAssociation(board, compiled),
+            CompiledBoardAssociationIssue::kRuleBucketMismatch);
+  EXPECT_FALSE(ValidatePreparedCompiledBoardAssociation(board, compiled).has_value());
+  const CpuRouteResult result = RouteWithCpuAStar(board, compiled, request);
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(result));
+  const CpuRoute& route = std::get<CpuRoute>(result);
+  EXPECT_TRUE(CpuRouteHasAuthenticatedAStarEvidence(route));
+  EXPECT_EQ(AuthenticatedCpuRouteRoutingProfileFingerprint(route),
+            FingerprintRoutingProfile(compiled.prepared_routing_profile().profile()));
+  EXPECT_NE(AuthenticatedCpuRouteRoutingProfileFingerprint(route),
+            FingerprintRoutingProfile(board.data().routing_profile));
+
+  CpuRoute cleared = route;
+  cleared.producer_evidence.evidence.reset();
+  EXPECT_FALSE(CpuRouteHasAuthenticatedAStarEvidence(cleared));
+  EXPECT_FALSE(AuthenticatedCpuRouteRoutingProfileFingerprint(cleared).has_value());
+
+  CpuRoute relabeled = route;
+  ++relabeled.rule_bucket_identity;
+  EXPECT_FALSE(CpuRouteHasAuthenticatedAStarEvidence(relabeled));
+  EXPECT_FALSE(AuthenticatedCpuRouteRoutingProfileFingerprint(relabeled).has_value());
+
+  CpuRoute resegmented = route;
+  ++resegmented.segments.front().centerline.end.x;
+  EXPECT_FALSE(CpuRouteHasAuthenticatedAStarEvidence(resegmented));
+  EXPECT_FALSE(AuthenticatedCpuRouteRoutingProfileFingerprint(resegmented).has_value());
+
+  CpuRoute diagnostic_only = route;
+  ++diagnostic_only.telemetry.queue_pops;
+  diagnostic_only.lattice_path.clear();
+  EXPECT_TRUE(CpuRouteHasAuthenticatedAStarEvidence(diagnostic_only));
+  EXPECT_EQ(AuthenticatedCpuRouteRoutingProfileFingerprint(diagnostic_only),
+            FingerprintRoutingProfile(compiled.prepared_routing_profile().profile()));
+
+  const CpuRouteResult relabeled_request =
+      RouteWithCpuAStar(board, compiled, TwoTerminalRequest(board, 0, 0));
+  ASSERT_TRUE(std::holds_alternative<RouteFailure>(relabeled_request));
+  EXPECT_EQ(std::get<RouteFailure>(relabeled_request).code, RouteFailureCode::kInvalidRequest);
+  EXPECT_EQ(std::get<RouteFailure>(relabeled_request).detail,
+            "CPU route request does not match the prepared routing context");
+  EXPECT_FALSE(std::get<RouteFailure>(relabeled_request).telemetry.has_value());
+}
+
+TEST(CpuAStarTest, PreparedExactValidationPinsClearanceEqualityAndOneUnitViolation) {
+  BoardData equality_data = test_support::MultiNetM1BoardData();
+  equality_data.obstacles.push_back(board_ir::Obstacle{
+      .ref = board_ir::EntityRef{.id = 31, .generation = 0},
+      .layer = 0,
+      .bounds =
+          AxisAlignedBox64{.min = Point64{.x = 40, .y = 30}, .max = Point64{.x = 60, .y = 40}},
+      .owner_net = equality_data.nets[0].ref,
+      .provenance = "foreign/equality",
+  });
+  const BoardSnapshot equality_board = Snapshot(std::move(equality_data));
+  const CompiledBoard equality_compiled = CompilePreparedNet(
+      equality_board, equality_board.data().nets[1].ref, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest equality_request =
+      RequestForNet(equality_board, equality_board.data().nets[1].ref);
+  const std::array equality_segment{LayerSegment{
+      .layer = 0,
+      .centerline =
+          board_ir::Segment64{.start = equality_request.start, .end = equality_request.goal},
+  }};
+  EXPECT_FALSE(ValidateReconstructedRoute(equality_board, equality_compiled, equality_request,
+                                          equality_segment)
+                   .has_value());
+
+  BoardData one_unit_data = test_support::MultiNetM1BoardData();
+  one_unit_data.obstacles.push_back(board_ir::Obstacle{
+      .ref = board_ir::EntityRef{.id = 31, .generation = 0},
+      .layer = 0,
+      .bounds =
+          AxisAlignedBox64{.min = Point64{.x = 40, .y = 29}, .max = Point64{.x = 60, .y = 39}},
+      .owner_net = one_unit_data.nets[0].ref,
+      .provenance = "foreign/one-unit-inside",
+  });
+  const BoardSnapshot one_unit_board = Snapshot(std::move(one_unit_data));
+  const CompiledBoard one_unit_compiled = CompilePreparedNet(
+      one_unit_board, one_unit_board.data().nets[1].ref, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest one_unit_request =
+      RequestForNet(one_unit_board, one_unit_board.data().nets[1].ref);
+  const std::array one_unit_segment{LayerSegment{
+      .layer = 0,
+      .centerline =
+          board_ir::Segment64{.start = one_unit_request.start, .end = one_unit_request.goal},
+  }};
+  const std::optional<RouteFailure> rejected = ValidateReconstructedRoute(
+      one_unit_board, one_unit_compiled, one_unit_request, one_unit_segment);
+  ASSERT_TRUE(rejected.has_value());
+  EXPECT_EQ(rejected->code, RouteFailureCode::kValidationFailed);
+  EXPECT_EQ(rejected->obstacle, (board_ir::EntityRef{.id = 31, .generation = 0}));
 }
 
 TEST(CpuAStarTest, CheapDiagonalHeuristicRemainsAdmissible) {
@@ -362,6 +438,9 @@ TEST(CpuAStarTest, RejectsStaleBoardAndProfileAssociationsBeforeSearch) {
       RouteWithCpuAStar(board, stale_bucket, TwoTerminalRequest(board, 0, 0));
   ASSERT_TRUE(std::holds_alternative<RouteFailure>(invalid_bucket));
   EXPECT_EQ(std::get<RouteFailure>(invalid_bucket).code, RouteFailureCode::kValidationFailed);
+  EXPECT_EQ(std::get<RouteFailure>(invalid_bucket).detail,
+            "Compiled board prepared routing context is invalid or mismatched");
+  EXPECT_FALSE(std::get<RouteFailure>(invalid_bucket).telemetry.has_value());
 }
 
 TEST(CpuAStarIntegrationTest, RoutesKiCadFixtureAroundFrontBlockerAndDirectlyOnBack) {

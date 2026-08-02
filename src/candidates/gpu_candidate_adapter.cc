@@ -143,6 +143,7 @@ CandidateDraftBuildResult BuildGeneratedCandidateFromGpuBatchItemImpl(
   route_associations.board_content_hash = route->source_board_content_hash;
   route_associations.compiler_profile_fingerprint = route->compiler_profile_fingerprint;
   route_associations.geometry_compiler_version = route->compiler_version;
+  route_associations.routing_profile_fingerprint = route->routing_profile_fingerprint;
   route_associations.rule_bucket_identity = route->rule_bucket_identity;
   if (!item.has_validated_route_evidence() ||
       item.validated_batch_schema_version() != batch.schema_version ||

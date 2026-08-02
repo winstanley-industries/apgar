@@ -347,6 +347,7 @@ cc_binary(
     copts = APGAR_COPTS,
     data = [
         "replays/gpu/goal_predecessor_self_cycle_v1.replay",
+        "replays/gpu/goal_predecessor_self_cycle_wrong_routing_profile_v1.replay",
         "tests/fixtures/m1_exactness.kicad_pcb",
     ],
     tags = [
@@ -355,13 +356,8 @@ cc_binary(
     ],
     target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     deps = [
-        ":board_ir",
         ":cuda_planar_route_backend",
-        ":gpu_fault_injecting_backend",
-        ":gpu_planar_router",
-        ":planar_benchmark_corpus",
-        ":replay_parser",
-        ":tool_runfiles",
+        ":gpu_replay_runner",
     ],
 )
 
@@ -615,6 +611,7 @@ cc_test(
     copts = APGAR_COPTS,
     data = [
         "replays/gpu/goal_predecessor_self_cycle_v1.replay",
+        "replays/gpu/goal_predecessor_self_cycle_wrong_routing_profile_v1.replay",
         "tests/fixtures/m1_exactness.kicad_pcb",
     ],
     tags = [
@@ -623,13 +620,87 @@ cc_test(
     ],
     target_compatible_with = CUDA_SANITIZER_COMPATIBILITY,
     deps = [
-        ":board_ir",
         ":cuda_planar_route_backend",
+        ":gpu_replay_runner",
+    ],
+)
+
+cc_library(
+    name = "gpu_replay_parser",
+    srcs = ["tools/gpu_replay_parser.cc"],
+    hdrs = ["tools/gpu_replay_parser.h"],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":geometry_compiler",
         ":gpu_fault_injecting_backend",
         ":gpu_planar_router",
-        ":planar_benchmark_corpus",
         ":replay_parser",
+    ],
+)
+
+cc_library(
+    name = "gpu_replay_runner",
+    srcs = ["tools/gpu_replay_runner.cc"],
+    hdrs = ["tools/gpu_replay_runner.h"],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":geometry_compiler",
+        ":gpu_fault_injecting_backend",
+        ":gpu_planar_router",
+        ":gpu_replay_parser",
+        ":planar_benchmark_corpus",
         ":tool_runfiles",
+    ],
+)
+
+cc_test(
+    name = "gpu_replay_parser_test",
+    size = "small",
+    srcs = [
+        "tests/gpu_replay_parser_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/gpu/goal_predecessor_self_cycle_v1.replay",
+        "replays/gpu/goal_predecessor_self_cycle_wrong_routing_profile_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    deps = [
+        ":board_ir",
+        ":candidate_policy",
+        ":geometry_compiler",
+        ":gpu_planar_router",
+        ":gpu_replay_parser",
+        ":planar_benchmark_corpus",
+        ":planar_route",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "gpu_replay_runner_test",
+    size = "small",
+    srcs = [
+        "tests/gpu_replay_runner_test.cc",
+        "tests/support/google_test.h",
+    ],
+    copts = APGAR_COPTS,
+    data = [
+        "replays/gpu/goal_predecessor_self_cycle_v1.replay",
+        "replays/gpu/goal_predecessor_self_cycle_wrong_routing_profile_v1.replay",
+        "tests/fixtures/m1_exactness.kicad_pcb",
+    ],
+    deps = [
+        ":gpu_replay_runner",
+        "@googletest//:gtest_main",
     ],
 )
 
@@ -739,6 +810,7 @@ cc_test(
     srcs = [
         "tests/gpu/device_board_test.cc",
         "tests/support/board_builder.h",
+        "tests/support/compiled_board_test_access.h",
         "tests/support/compiler_builder.h",
         "tests/support/google_test.h",
         "tests/support/routing_builder.h",
@@ -746,9 +818,11 @@ cc_test(
     copts = APGAR_COPTS,
     deps = [
         ":board_ir",
+        ":candidate_policy",
         ":geometry_compiler",
         ":gpu_candidate_adapter",
         ":gpu_planar_router",
+        ":planar_route",
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],
@@ -841,6 +915,7 @@ cc_test(
     name = "route_candidate_test",
     size = "small",
     srcs = [
+        "src/candidates/route_candidate_internal.h",
         "tests/candidates/route_candidate_test.cc",
         "tests/support/board_builder.h",
         "tests/support/candidate_builder.h",
@@ -921,6 +996,7 @@ cc_test(
     srcs = [
         "tests/routing/cpu_astar_test.cc",
         "tests/support/board_builder.h",
+        "tests/support/compiled_board_test_access.h",
         "tests/support/compiler_builder.h",
         "tests/support/google_test.h",
         "tests/support/routing_builder.h",
@@ -933,6 +1009,7 @@ cc_test(
         ":cpu_astar",
         ":geometry_compiler",
         ":kicad_fixture_adapter",
+        ":planar_route",
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],

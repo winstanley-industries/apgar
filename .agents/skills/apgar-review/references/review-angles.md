@@ -75,9 +75,11 @@ Use this checklist selectively after reading the current architecture, phase ADR
   gates, and allow valid negative results to terminate a hypothesis.
 - Match integrity machinery to the declared threat model. Separate reproducible
   trusted-runner provenance from hostile-operator attestation.
-- Apply the epic's file/line/concept budget before review. Re-sequence an
-  oversized slice instead of treating archived or sunk work as a reason to
-  finish it.
+- Compare the slice with the epic's file/line/concept guidance. Above-guidance
+  work needs a cohesion and reviewability rationale, but size alone is not a
+  re-sequencing verdict. Split when the surface contains independent outcomes,
+  unjustified concepts, or is impractical to review; archived or sunk work is
+  not itself a reason to keep a slice coupled.
 
 ## Candidate quality bar
 

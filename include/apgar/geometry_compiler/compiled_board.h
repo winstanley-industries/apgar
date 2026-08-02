@@ -119,15 +119,20 @@ struct LatticeIndex {
     const CompilerProfile& profile, LatticeIndex index) noexcept;
 
 struct RuleBucketV1 {
-  // Legacy APGAR-M1-RULE-BUCKET-V1 numeric-rule scalar. It intentionally does
-  // not identify the complete bucket once obstacle-interaction context is
-  // present; association must compare the full struct.
+  // Legacy APGAR-M1-RULE-BUCKET-V1 numeric-rule scalar. It never authenticates
+  // routed-net context; once obstacle interaction is present, association must
+  // compare the full struct.
   std::uint64_t identity;
   board_ir::EntityRef routed_net;
   board_ir::DbCoord nominal_width;
   board_ir::DbCoord clearance;
   std::vector<board_ir::LayerId> allowed_layers;
   board_ir::HeadingMask allowed_headings;
+
+  // Convention: durable producers and readers use this explicit spelling. The
+  // public field remains for source compatibility with the established v1
+  // aggregate, so this is not a mechanically enforced access restriction.
+  [[nodiscard]] std::uint64_t numeric_rule_identity() const noexcept { return identity; }
 
   friend bool operator==(const RuleBucketV1&, const RuleBucketV1&) = default;
 };

@@ -50,14 +50,14 @@ Map changed behavior to named requirements before judging implementation:
 - current milestone deliverables and non-goals;
 - versioned schemas, hashes, replay, and telemetry contracts.
 - the active epic task, its observable acceptance evidence, dependencies, stop
-  gates, complexity budget, and declared threat model when an epic governs the
+  gates, complexity guidance, and declared threat model when an epic governs the
   change.
 
 Treat the architecture specification as authoritative when documents disagree. Do not report a deferred M1 capability as a defect merely because a later architecture seam anticipates it. Report a seam as a current defect only when today's implementation violates a current contract, makes legal input wrong, silently weakens behavior, or forces a contradiction with an accepted design.
 
 Read [references/review-angles.md](references/review-angles.md) for the detailed APGAR finder checklist and verdict rubric.
 
-## 3. Enforce the complexity and delivery gate
+## 3. Assess complexity and enforce the delivery gate
 
 Give every reviewed slice one explicit verdict:
 
@@ -82,9 +82,11 @@ the user's requested change otherwise. Test the slice with these questions:
    an accepted contract.
 5. Can a valid negative result stop the work, or does the design turn every
    failed hypothesis into more mandatory infrastructure?
-6. Is the change within the active task's file/line/concept budget? If not,
-   identify a behavior-preserving split; do not grant a size exception because
-   code already exists elsewhere.
+6. How does the change compare with the active task's file/line/concept
+   guidance? Above-guidance work needs a concise cohesion and reviewability
+   rationale. Numeric thresholds alone are not a `RESEQUENCE` verdict; identify
+   a behavior-preserving split only when the review finds independent outcomes,
+   unjustified concepts, or an impractical review surface.
 
 Count persistent concepts and producer/consumer seams, not generated code or a
 raw line total alone. Treat historical or archived work as evidence and donor
