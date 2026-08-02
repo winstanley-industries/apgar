@@ -43,6 +43,69 @@ void Normalize(BoardData& data) {
   return BoardValidationError{.code = code, .message = std::move(message)};
 }
 
+[[nodiscard]] const Layer* FindLayerInData(const BoardData& data, LayerId id) noexcept {
+  const auto layer = std::ranges::lower_bound(data.layers, id, {}, &Layer::routing_id);
+  return layer != data.layers.end() && layer->routing_id == id ? &*layer : nullptr;
+}
+
+[[nodiscard]] const Net* FindNetInData(const BoardData& data, EntityRef ref) noexcept {
+  const auto net = std::ranges::lower_bound(data.nets, ref.id, {},
+                                            [](const Net& value) { return value.ref.id; });
+  return net != data.nets.end() && net->ref == ref ? &*net : nullptr;
+}
+
+[[nodiscard]] const Terminal* FindTerminalInData(const BoardData& data, EntityRef ref) noexcept {
+  const auto terminal = std::ranges::lower_bound(
+      data.terminals, ref.id, {}, [](const Terminal& value) { return value.ref.id; });
+  return terminal != data.terminals.end() && terminal->ref == ref ? &*terminal : nullptr;
+}
+
+[[nodiscard]] std::optional<BoardValidationError> ValidateRoutingProfile(
+    const BoardData& data, const RoutingProfile& profile, BoardValidationCode terminal_count_code) {
+  const Net* target_net = FindNetInData(data, profile.net);
+  if (target_net == nullptr) {
+    return Error(BoardValidationCode::kInvalidRoutingProfile,
+                 "Routing profile refers to an unknown or stale net");
+  }
+  if (target_net->terminals.size() != 2) {
+    return Error(terminal_count_code, "M1 routing profiles require exactly two terminals");
+  }
+  if (profile.nominal_width <= 0 || profile.nominal_width > kMaxAbsDbCoord ||
+      profile.clearance < 0 || profile.clearance > kMaxAbsDbCoord ||
+      profile.allowed_layers.empty() || profile.allowed_headings == 0 ||
+      (profile.allowed_headings & static_cast<HeadingMask>(~kM1HeadingMask)) != 0) {
+    return Error(BoardValidationCode::kInvalidRoutingProfile,
+                 "Routing profile dimensions, layers, or headings are invalid");
+  }
+  if (std::ranges::adjacent_find(profile.allowed_layers) != profile.allowed_layers.end()) {
+    return Error(BoardValidationCode::kInvalidRoutingProfile,
+                 "Routing profile layers contain duplicates");
+  }
+  for (LayerId layer_id : profile.allowed_layers) {
+    const Layer* layer = FindLayerInData(data, layer_id);
+    if (layer == nullptr || !layer->routable || layer->type != LayerType::kSignal) {
+      return Error(BoardValidationCode::kInvalidRoutingProfile,
+                   "Routing profile contains an unavailable signal layer");
+    }
+  }
+  for (EntityRef terminal_ref : target_net->terminals) {
+    const Terminal* terminal = FindTerminalInData(data, terminal_ref);
+    if (terminal == nullptr) {
+      return Error(BoardValidationCode::kInvalidReference,
+                   "Routing profile terminal reference is stale");
+    }
+    const bool has_routable_connection =
+        std::ranges::any_of(terminal->layers, [&](LayerId terminal_layer) {
+          return std::ranges::binary_search(profile.allowed_layers, terminal_layer);
+        });
+    if (!has_routable_connection) {
+      return Error(BoardValidationCode::kInvalidRoutingProfile,
+                   "Every routed-net terminal must intersect an allowed routing layer");
+    }
+  }
+  return std::nullopt;
+}
+
 [[nodiscard]] std::optional<BoardValidationError> Validate(const BoardData& data) {
   if (data.schema_version != kBoardSchemaVersion) {
     return Error(BoardValidationCode::kUnsupportedSchema,
@@ -209,45 +272,10 @@ void Normalize(BoardData& data) {
     }
   }
 
-  const RoutingProfile& profile = data.routing_profile;
-  const auto target_net = nets.find(profile.net.id);
-  if (target_net == nets.end() || target_net->second->ref != profile.net) {
-    return Error(BoardValidationCode::kInvalidRoutingProfile,
-                 "Routing profile refers to an unknown or stale net");
-  }
-  if (target_net->second->terminals.size() != 2) {
-    return Error(BoardValidationCode::kNotM1Board,
-                 "M1 routing profiles require exactly two terminals");
-  }
-  if (profile.nominal_width <= 0 || profile.nominal_width > kMaxAbsDbCoord ||
-      profile.clearance < 0 || profile.clearance > kMaxAbsDbCoord ||
-      profile.allowed_layers.empty() || profile.allowed_headings == 0 ||
-      (profile.allowed_headings & static_cast<HeadingMask>(~kM1HeadingMask)) != 0) {
-    return Error(BoardValidationCode::kInvalidRoutingProfile,
-                 "Routing profile dimensions, layers, or headings are invalid");
-  }
-  if (std::ranges::adjacent_find(profile.allowed_layers) != profile.allowed_layers.end()) {
-    return Error(BoardValidationCode::kInvalidRoutingProfile,
-                 "Routing profile layers contain duplicates");
-  }
-  for (LayerId layer_id : profile.allowed_layers) {
-    const auto layer = layers.find(layer_id);
-    if (layer == layers.end() || !layer->second->routable ||
-        layer->second->type != LayerType::kSignal) {
-      return Error(BoardValidationCode::kInvalidRoutingProfile,
-                   "Routing profile contains an unavailable signal layer");
-    }
-  }
-  for (EntityRef terminal_ref : target_net->second->terminals) {
-    const Terminal& terminal = *terminals.at(terminal_ref.id);
-    const bool has_routable_connection =
-        std::ranges::any_of(terminal.layers, [&](LayerId terminal_layer) {
-          return std::ranges::binary_search(profile.allowed_layers, terminal_layer);
-        });
-    if (!has_routable_connection) {
-      return Error(BoardValidationCode::kInvalidRoutingProfile,
-                   "Every routed-net terminal must intersect an allowed routing layer");
-    }
+  if (std::optional<BoardValidationError> error =
+          ValidateRoutingProfile(data, data.routing_profile, BoardValidationCode::kNotM1Board);
+      error.has_value()) {
+    return error;
   }
 
   return std::nullopt;
@@ -337,20 +365,15 @@ void AddBox(StableHashBuilder& hash, const AxisAlignedBox64& box) {
 }  // namespace
 
 const Layer* BoardSnapshot::FindLayer(LayerId id) const noexcept {
-  const auto layer = std::ranges::lower_bound(data_.layers, id, {}, &Layer::routing_id);
-  return layer != data_.layers.end() && layer->routing_id == id ? &*layer : nullptr;
+  return FindLayerInData(data_, id);
 }
 
 const Net* BoardSnapshot::FindNet(EntityRef ref) const noexcept {
-  const auto net = std::ranges::lower_bound(data_.nets, ref.id, {},
-                                            [](const Net& value) { return value.ref.id; });
-  return net != data_.nets.end() && net->ref == ref ? &*net : nullptr;
+  return FindNetInData(data_, ref);
 }
 
 const Terminal* BoardSnapshot::FindTerminal(EntityRef ref) const noexcept {
-  const auto terminal = std::ranges::lower_bound(
-      data_.terminals, ref.id, {}, [](const Terminal& value) { return value.ref.id; });
-  return terminal != data_.terminals.end() && terminal->ref == ref ? &*terminal : nullptr;
+  return FindTerminalInData(data_, ref);
 }
 
 std::span<const Obstacle> BoardSnapshot::ObstaclesOnLayer(LayerId layer) const noexcept {
@@ -367,6 +390,28 @@ BoardCreationResult CreateBoardSnapshot(BoardData data) {
   }
   const std::uint64_t content_hash = ContentHash(data);
   return BoardSnapshot(std::move(data), content_hash);
+}
+
+RoutingProfilePreparationResult PrepareRoutingProfile(const BoardSnapshot& board,
+                                                      RoutingProfile profile) {
+  std::ranges::sort(profile.allowed_layers);
+  if (std::optional<BoardValidationError> error = ValidateRoutingProfile(
+          board.data(), profile, BoardValidationCode::kInvalidRoutingProfile);
+      error.has_value()) {
+    return std::move(*error);
+  }
+  const RoutingProfile& authoritative = board.data().routing_profile;
+  if (profile.nominal_width != authoritative.nominal_width ||
+      profile.clearance != authoritative.clearance ||
+      profile.allowed_layers != authoritative.allowed_layers ||
+      profile.allowed_headings != authoritative.allowed_headings) {
+    return BoardValidationError{
+        .code = BoardValidationCode::kInvalidRoutingProfile,
+        .message =
+            "Prepared routing profiles may differ from the Board IR default only by routed net",
+    };
+  }
+  return PreparedRoutingProfile(std::move(profile), board.content_hash());
 }
 
 }  // namespace apgar::board_ir

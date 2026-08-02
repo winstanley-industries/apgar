@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -23,6 +25,12 @@ using board_ir::BoardCreationResult;
 using board_ir::BoardData;
 using board_ir::BoardSnapshot;
 using board_ir::Point64;
+using board_ir::PreparedRoutingProfile;
+
+constexpr board_ir::EntityRef kSecondNet{.id = 11, .generation = 0};
+constexpr board_ir::EntityRef kEmptyNet{.id = 12, .generation = 0};
+constexpr board_ir::EntityRef kThirdTerminal{.id = 22, .generation = 0};
+constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
 
 [[nodiscard]] BoardSnapshot Snapshot(BoardData data) {
   BoardCreationResult result = board_ir::CreateBoardSnapshot(std::move(data));
@@ -38,6 +46,68 @@ using board_ir::Point64;
   return std::get<CompiledBoard>(std::move(result));
 }
 
+[[nodiscard]] PreparedRoutingProfile Prepare(const BoardSnapshot& board,
+                                             board_ir::RoutingProfile profile) {
+  board_ir::RoutingProfilePreparationResult result =
+      board_ir::PrepareRoutingProfile(board, std::move(profile));
+  EXPECT_TRUE(std::holds_alternative<PreparedRoutingProfile>(result))
+      << (std::holds_alternative<board_ir::BoardValidationError>(result)
+              ? std::get<board_ir::BoardValidationError>(result).message
+              : "");
+  return std::get<PreparedRoutingProfile>(std::move(result));
+}
+
+[[nodiscard]] BoardData MultiNetBoardData() {
+  BoardData data = test_support::ValidM1BoardData();
+  data.layers.push_back(board_ir::Layer{
+      .ref = board_ir::EntityRef{.id = 3, .generation = 0},
+      .routing_id = 99,
+      .name = "internal-signal",
+      .physical_order = 2,
+      .type = board_ir::LayerType::kSignal,
+      .routable = false,
+  });
+  data.nets[1].terminals = {kThirdTerminal, kFourthTerminal};
+  data.nets.push_back(board_ir::Net{.ref = kEmptyNet, .name = "EMPTY", .terminals = {}});
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kThirdTerminal,
+      .net = kSecondNet,
+      .component = "U4",
+      .pin = "1",
+      .center = Point64{.x = 0, .y = 20},
+      .connection_region =
+          AxisAlignedBox64{.min = Point64{.x = -10, .y = 10}, .max = Point64{.x = 10, .y = 30}},
+      .layers = {0},
+  });
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kFourthTerminal,
+      .net = kSecondNet,
+      .component = "U5",
+      .pin = "1",
+      .center = Point64{.x = 100, .y = 20},
+      .connection_region =
+          AxisAlignedBox64{.min = Point64{.x = 90, .y = 10}, .max = Point64{.x = 110, .y = 30}},
+      .layers = {31},
+  });
+  data.obstacles.push_back(board_ir::Obstacle{
+      .ref = board_ir::EntityRef{.id = 31, .generation = 0},
+      .layer = 0,
+      .bounds =
+          AxisAlignedBox64{.min = Point64{.x = 70, .y = -10}, .max = Point64{.x = 80, .y = 10}},
+      .owner_net = data.routing_profile.net,
+      .provenance = "U6/pad-1",
+  });
+  data.obstacles.push_back(board_ir::Obstacle{
+      .ref = board_ir::EntityRef{.id = 32, .generation = 0},
+      .layer = 0,
+      .bounds =
+          AxisAlignedBox64{.min = Point64{.x = -15, .y = 15}, .max = Point64{.x = -5, .y = 25}},
+      .owner_net = std::nullopt,
+      .provenance = "board-keepout",
+  });
+  return data;
+}
+
 [[nodiscard]] Point64 ExactPoint(const CompilerProfile& profile, LatticeIndex index) {
   const std::optional<Point64> point = LatticeIndexToExactPoint(profile, index);
   EXPECT_TRUE(point.has_value());
@@ -45,7 +115,8 @@ using board_ir::Point64;
 }
 
 void ExpectEveryCompiledLegalEdgeIsExactLegal(const BoardSnapshot& board,
-                                              const CompiledBoard& compiled) {
+                                              const CompiledBoard& compiled,
+                                              const PreparedRoutingProfile* prepared = nullptr) {
   std::uint64_t observed_legal_edges = 0;
   for (const SparseTile& tile : compiled.tiles()) {
     for (const CompiledNode& node : tile.nodes) {
@@ -61,16 +132,80 @@ void ExpectEveryCompiledLegalEdgeIsExactLegal(const BoardSnapshot& board,
             compiled.FindNode(tile.key.layer, neighbor.x, neighbor.y);
         ASSERT_NE(neighbor_node, nullptr);
         EXPECT_TRUE((neighbor_node->legal_edges & MaskFor(Opposite(direction))) != 0);
+        const board_ir::Segment64 centerline{
+            .start = ExactPoint(compiled.profile(), index),
+            .end = ExactPoint(compiled.profile(), neighbor),
+        };
         const geometry::MovementValidationResult exact =
-            geometry::ValidateMovement(board, tile.key.layer,
-                                       board_ir::Segment64{
-                                           .start = ExactPoint(compiled.profile(), index),
-                                           .end = ExactPoint(compiled.profile(), neighbor),
-                                       });
+            prepared == nullptr
+                ? geometry::ValidateMovement(board, tile.key.layer, centerline)
+                : geometry::ValidateMovement(board, *prepared, tile.key.layer, centerline);
         EXPECT_TRUE(exact.legal()) << exact.detail;
       }
     }
   }
+  EXPECT_EQ(observed_legal_edges, compiled.telemetry().legal_directional_edges);
+}
+
+// Structural full-field differential: this independently enumerates every
+// represented direction but intentionally shares the accepted exact clearance
+// primitive. The hand-computed ownership goldens in
+// CompilesNetSpecificObstacleOwnership pin the semantic ownership axis.
+[[nodiscard]] std::optional<bool> ExactEdgeIsLegalForProfile(
+    const BoardSnapshot& board, const board_ir::RoutingProfile& routing_profile,
+    board_ir::LayerId layer, board_ir::Segment64 centerline) {
+  for (const board_ir::Obstacle& obstacle : board.ObstaclesOnLayer(layer)) {
+    if (obstacle.owner_net.has_value() && *obstacle.owner_net == routing_profile.net) {
+      continue;
+    }
+    const geometry::SegmentClearanceResult clearance = geometry::SweptTraceClearanceAtLeast(
+        centerline, obstacle.bounds, routing_profile.nominal_width, routing_profile.clearance);
+    if (!clearance.ok()) {
+      ADD_FAILURE() << clearance.detail;
+      return std::nullopt;
+    }
+    if (!clearance.clearance_satisfied) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void ExpectCompiledEdgesMatchPreparedProfile(const BoardSnapshot& board,
+                                             const board_ir::RoutingProfile& requested_profile,
+                                             const CompiledBoard& compiled) {
+  EXPECT_EQ(compiled.prepared_routing_profile().profile(), requested_profile);
+  std::uint64_t observed_edges = 0;
+  std::uint64_t observed_legal_edges = 0;
+  for (const SparseTile& tile : compiled.tiles()) {
+    for (const CompiledNode& node : tile.nodes) {
+      const LatticeIndex index = GlobalLatticeIndex(compiled.profile(), tile.key, node.local_index);
+      for (Direction direction : kStableDirectionOrder) {
+        if ((compiled.profile().heading_mask & HeadingFor(direction)) == 0) {
+          continue;
+        }
+        const DirectionDelta delta = DeltaFor(direction);
+        const LatticeIndex neighbor{.x = index.x + delta.x, .y = index.y + delta.y};
+        if (compiled.FindNode(tile.key.layer, neighbor.x, neighbor.y) == nullptr) {
+          continue;
+        }
+        ++observed_edges;
+        const std::optional<bool> exact =
+            ExactEdgeIsLegalForProfile(board, requested_profile, tile.key.layer,
+                                       board_ir::Segment64{
+                                           .start = ExactPoint(compiled.profile(), index),
+                                           .end = ExactPoint(compiled.profile(), neighbor),
+                                       });
+        ASSERT_TRUE(exact.has_value());
+        const bool compiled_legal = (node.legal_edges & MaskFor(direction)) != 0;
+        EXPECT_EQ(compiled_legal, *exact)
+            << "layer=" << tile.key.layer << " x=" << index.x << " y=" << index.y
+            << " direction=" << static_cast<unsigned int>(direction);
+        observed_legal_edges += compiled_legal ? 1U : 0U;
+      }
+    }
+  }
+  EXPECT_EQ(observed_edges, compiled.telemetry().represented_directional_edges);
   EXPECT_EQ(observed_legal_edges, compiled.telemetry().legal_directional_edges);
 }
 
@@ -91,6 +226,17 @@ TEST(CompiledBoardTest, GeneratedMicrocasesNeverPublishFalseFreeEdges) {
     }
   }
   EXPECT_GT(generated_legal_edges, 1'000U);
+}
+
+TEST(CompiledBoardTest, PreparedRoutingProfilesCannotBeFabricated) {
+  static_assert(!std::is_aggregate_v<PreparedRoutingProfile>);
+  static_assert(!std::is_default_constructible_v<PreparedRoutingProfile>);
+  static_assert(
+      !std::is_constructible_v<PreparedRoutingProfile, board_ir::RoutingProfile, std::uint64_t>);
+  static_assert(!std::is_trivially_copyable_v<PreparedRoutingProfile>);
+  static_assert(std::is_copy_constructible_v<PreparedRoutingProfile>);
+  static_assert(std::is_move_constructible_v<PreparedRoutingProfile>);
+  SUCCEED();
 }
 
 TEST(CompiledBoardTest, PreservesBoundaryEqualityAndOneUnitPerturbations) {
@@ -208,6 +354,256 @@ TEST(CompiledBoardTest, PropagatesStableBoardProfileAndRuleBucketIdentity) {
   EXPECT_EQ(first.rule_bucket().clearance, board.data().routing_profile.clearance);
   EXPECT_EQ(first.rule_bucket().allowed_layers, board.data().routing_profile.allowed_layers);
   EXPECT_EQ(first.rule_bucket().allowed_headings, board.data().routing_profile.allowed_headings);
+  EXPECT_EQ(first.prepared_routing_profile().profile(), board.data().routing_profile);
+}
+
+TEST(CompiledBoardTest, CanonicalizesPreparedProfileLayers) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  board_ir::RoutingProfile unsorted_profile = board.data().routing_profile;
+  unsorted_profile.net = kSecondNet;
+  unsorted_profile.allowed_layers = {31, 0};
+  board_ir::RoutingProfilePreparationResult prepared =
+      board_ir::PrepareRoutingProfile(board, unsorted_profile);
+  ASSERT_TRUE(std::holds_alternative<PreparedRoutingProfile>(prepared));
+  const board_ir::RoutingProfile second_profile =
+      std::get<PreparedRoutingProfile>(std::move(prepared)).profile();
+  EXPECT_EQ(second_profile.allowed_layers, (std::vector<board_ir::LayerId>{0, 31}));
+
+  board_ir::RoutingProfile sorted_profile = unsorted_profile;
+  std::ranges::sort(sorted_profile.allowed_layers);
+  CompileResult unsorted_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                               Prepare(board, unsorted_profile));
+  CompileResult sorted_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                             Prepare(board, sorted_profile));
+  CompileResult repeat_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                             Prepare(board, unsorted_profile));
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(unsorted_result));
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(sorted_result));
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(repeat_result));
+  const CompiledBoard unsorted = std::get<CompiledBoard>(std::move(unsorted_result));
+  const CompiledBoard sorted = std::get<CompiledBoard>(std::move(sorted_result));
+  const CompiledBoard repeat = std::get<CompiledBoard>(std::move(repeat_result));
+  EXPECT_EQ(unsorted, sorted);
+  EXPECT_EQ(unsorted, repeat);
+}
+
+TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = kSecondNet;
+
+  const CompiledBoard first = Compile(board, test_support::DefaultCompilerProfile({0}));
+  CompileResult second_result = CompileBoard(board, test_support::DefaultCompilerProfile({0}),
+                                             Prepare(board, second_profile));
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(second_result));
+  const CompiledBoard second = std::get<CompiledBoard>(std::move(second_result));
+
+  EXPECT_EQ(second.prepared_routing_profile().profile(), second_profile);
+  EXPECT_EQ(second.rule_bucket(), DeriveM1RuleBucket(second_profile));
+  EXPECT_EQ(first.rule_bucket().routed_net, board.data().routing_profile.net);
+  EXPECT_EQ(second.rule_bucket().routed_net, kSecondNet);
+  EXPECT_EQ(second.rule_bucket().identity, first.rule_bucket().identity);
+  EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
+  EXPECT_TRUE(second.EdgeIsLegal(0, 3, 0, Direction::kEast));
+  EXPECT_TRUE(first.EdgeIsLegal(0, 7, 0, Direction::kEast));
+  EXPECT_FALSE(second.EdgeIsLegal(0, 7, 0, Direction::kEast));
+  EXPECT_FALSE(first.EdgeIsLegal(0, -2, 2, Direction::kEast));
+  EXPECT_FALSE(second.EdgeIsLegal(0, -2, 2, Direction::kEast));
+  ExpectCompiledEdgesMatchPreparedProfile(board, second_profile, second);
+  ExpectEveryCompiledLegalEdgeIsExactLegal(board, second, &second.prepared_routing_profile());
+}
+
+TEST(CompiledBoardTest, SeparatesRoutingProfileAndCompilerProfileErrors) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = kSecondNet;
+
+  const CompileResult invalid_compiler_profile = CompileBoard(
+      board, test_support::DefaultCompilerProfile({99}), Prepare(board, second_profile));
+  ASSERT_TRUE(std::holds_alternative<CompileError>(invalid_compiler_profile));
+  EXPECT_EQ(std::get<CompileError>(invalid_compiler_profile).code,
+            CompileErrorCode::kInvalidProfile);
+  EXPECT_EQ(std::get<CompileError>(invalid_compiler_profile).detail,
+            "Active-region layers must belong to the routing rule bucket");
+
+  board_ir::RoutingProfile stale = second_profile;
+  ++stale.net.generation;
+  const board_ir::RoutingProfilePreparationResult stale_preparation =
+      board_ir::PrepareRoutingProfile(board, stale);
+  ASSERT_TRUE(std::holds_alternative<board_ir::BoardValidationError>(stale_preparation));
+  EXPECT_EQ(std::get<board_ir::BoardValidationError>(stale_preparation).code,
+            board_ir::BoardValidationCode::kInvalidRoutingProfile);
+  const PreparedRoutingProfile second_prepared = Prepare(board, second_profile);
+  BoardData revised_data = MultiNetBoardData();
+  ++revised_data.revision;
+  const BoardSnapshot revised_board = Snapshot(std::move(revised_data));
+  const CompileResult mismatched_snapshot =
+      CompileBoard(revised_board, test_support::DefaultCompilerProfile({0}), second_prepared);
+  ASSERT_TRUE(std::holds_alternative<CompileError>(mismatched_snapshot));
+  EXPECT_EQ(std::get<CompileError>(mismatched_snapshot).code,
+            CompileErrorCode::kInvalidRoutingProfile);
+  EXPECT_EQ(std::get<CompileError>(mismatched_snapshot).detail,
+            "Prepared routing profile belongs to a different Board IR snapshot");
+
+  const CompileResult binding_precedes_profile_validation =
+      CompileBoard(revised_board, test_support::DefaultCompilerProfile({99}), second_prepared);
+  ASSERT_TRUE(std::holds_alternative<CompileError>(binding_precedes_profile_validation));
+  EXPECT_EQ(std::get<CompileError>(binding_precedes_profile_validation).code,
+            CompileErrorCode::kInvalidRoutingProfile);
+  EXPECT_EQ(std::get<CompileError>(binding_precedes_profile_validation).detail,
+            "Prepared routing profile belongs to a different Board IR snapshot");
+}
+
+TEST(CompiledBoardTest, PreparedExactOracleChecksSnapshotBindingDirectly) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = kSecondNet;
+  const PreparedRoutingProfile prepared = Prepare(board, second_profile);
+  constexpr board_ir::Segment64 kSecondNetOwnedMovement{
+      .start = Point64{.x = 40, .y = 0},
+      .end = Point64{.x = 50, .y = 0},
+  };
+
+  const geometry::MovementValidationResult default_context =
+      geometry::ValidateMovement(board, 0, kSecondNetOwnedMovement);
+  EXPECT_EQ(default_context.code, geometry::MovementViolationCode::kStaticObstacleConflict);
+  EXPECT_EQ(default_context.obstacle, (board_ir::EntityRef{.id = 30, .generation = 0}));
+
+  const geometry::MovementValidationResult accepted =
+      geometry::ValidateMovement(board, prepared, 0, kSecondNetOwnedMovement);
+  EXPECT_TRUE(accepted.legal()) << accepted.detail;
+
+  const geometry::MovementValidationResult unknown_layer =
+      geometry::ValidateMovement(board, prepared, 1'000, kSecondNetOwnedMovement);
+  EXPECT_EQ(unknown_layer.code, geometry::MovementViolationCode::kUnknownLayer);
+  const geometry::MovementValidationResult degenerate = geometry::ValidateMovement(
+      board, prepared, 0,
+      board_ir::Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 0, .y = 0}});
+  EXPECT_EQ(degenerate.code, geometry::MovementViolationCode::kDegenerateSegment);
+  const geometry::MovementValidationResult out_of_range =
+      geometry::ValidateMovement(board, prepared, 0,
+                                 board_ir::Segment64{
+                                     .start = Point64{.x = board_ir::kMaxAbsDbCoord + 1, .y = 0},
+                                     .end = Point64{.x = 0, .y = 0},
+                                 });
+  EXPECT_EQ(out_of_range.code, geometry::MovementViolationCode::kCoordinateOutOfRange);
+  const geometry::MovementValidationResult unsupported_heading = geometry::ValidateMovement(
+      board, prepared, 0,
+      board_ir::Segment64{.start = Point64{.x = 0, .y = 0}, .end = Point64{.x = 10, .y = 5}});
+  EXPECT_EQ(unsupported_heading.code, geometry::MovementViolationCode::kUnsupportedHeading);
+
+  BoardData revised_data = MultiNetBoardData();
+  ++revised_data.revision;
+  const BoardSnapshot revised_board = Snapshot(std::move(revised_data));
+  const geometry::MovementValidationResult rejected =
+      geometry::ValidateMovement(revised_board, prepared, 0, kSecondNetOwnedMovement);
+  EXPECT_FALSE(rejected.legal());
+  EXPECT_EQ(rejected.code, geometry::MovementViolationCode::kPreparedProfileSnapshotMismatch);
+  EXPECT_EQ(rejected.detail, "Prepared routing profile belongs to a different Board IR snapshot");
+
+  const geometry::MovementValidationResult binding_precedes_geometry =
+      geometry::ValidateMovement(revised_board, prepared, 99, kSecondNetOwnedMovement);
+  EXPECT_EQ(binding_precedes_geometry.code,
+            geometry::MovementViolationCode::kPreparedProfileSnapshotMismatch);
+  EXPECT_FALSE(binding_precedes_geometry.obstacle.has_value());
+}
+
+TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardData());
+  board_ir::RoutingProfile valid = board.data().routing_profile;
+  valid.net = kSecondNet;
+
+  const auto expect_rejected = [&](board_ir::RoutingProfile profile,
+                                   board_ir::BoardValidationCode expected_code,
+                                   std::string_view expected_message) {
+    const board_ir::RoutingProfilePreparationResult result =
+        board_ir::PrepareRoutingProfile(board, std::move(profile));
+    ASSERT_TRUE(std::holds_alternative<board_ir::BoardValidationError>(result));
+    const board_ir::BoardValidationError& error = std::get<board_ir::BoardValidationError>(result);
+    EXPECT_EQ(error.code, expected_code);
+    EXPECT_EQ(error.message, expected_message);
+  };
+
+  board_ir::RoutingProfile invalid = valid;
+  invalid.net = kEmptyNet;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "M1 routing profiles require exactly two terminals");
+
+  invalid = valid;
+  invalid.nominal_width = 0;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
+  invalid.nominal_width = board_ir::kMaxAbsDbCoord + 1;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
+
+  invalid = valid;
+  invalid.clearance = -1;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
+  invalid.clearance = board_ir::kMaxAbsDbCoord + 1;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
+
+  invalid = valid;
+  invalid.allowed_layers.clear();
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
+  invalid.allowed_layers = {0, 0, 31};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile layers contain duplicates");
+  invalid.allowed_layers = {0, 31, 1'000};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile contains an unavailable signal layer");
+  invalid.allowed_layers = {0, 31, 99};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile contains an unavailable signal layer");
+  invalid.allowed_layers = {0};
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Every routed-net terminal must intersect an allowed routing layer");
+
+  board_ir::RoutingProfile narrowed_default = board.data().routing_profile;
+  narrowed_default.allowed_layers = {0};
+  expect_rejected(
+      narrowed_default, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+      "Prepared routing profiles may differ from the Board IR default only by routed net");
+
+  invalid = valid;
+  invalid.allowed_headings = 0;
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
+  invalid.allowed_headings = static_cast<board_ir::HeadingMask>(1U << 7U);
+  expect_rejected(invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+                  "Routing profile dimensions, layers, or headings are invalid");
+
+  invalid = valid;
+  ++invalid.clearance;
+  expect_rejected(
+      invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+      "Prepared routing profiles may differ from the Board IR default only by routed net");
+
+  invalid = valid;
+  ++invalid.nominal_width;
+  expect_rejected(
+      invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+      "Prepared routing profiles may differ from the Board IR default only by routed net");
+
+  invalid = valid;
+  invalid.allowed_headings = static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal) |
+                             static_cast<board_ir::HeadingMask>(board_ir::Heading::kVertical);
+  expect_rejected(
+      invalid, board_ir::BoardValidationCode::kInvalidRoutingProfile,
+      "Prepared routing profiles may differ from the Board IR default only by routed net");
+
+  // PrepareRoutingProfile accepts an immutable, already validated snapshot, so
+  // stale terminal references cannot reach it. Snapshot admission rejects that
+  // malformed ownership before any profile can be prepared.
+  BoardData stale_terminal = MultiNetBoardData();
+  ++stale_terminal.nets[1].terminals.back().generation;
+  const BoardCreationResult stale_result = board_ir::CreateBoardSnapshot(std::move(stale_terminal));
+  ASSERT_TRUE(std::holds_alternative<board_ir::BoardValidationError>(stale_result));
+  EXPECT_EQ(std::get<board_ir::BoardValidationError>(stale_result).code,
+            board_ir::BoardValidationCode::kInvalidReference);
 }
 
 TEST(CompiledBoardTest, ReportsDefinedMemoryAndConservatismTelemetry) {
@@ -230,7 +626,16 @@ TEST(CompiledBoardTest, ReportsDefinedMemoryAndConservatismTelemetry) {
   EXPECT_EQ(telemetry.blocked_directional_edges, 0U);
   EXPECT_EQ(telemetry.false_blocked_directional_edges, 0U);
   EXPECT_EQ(telemetry.false_blocked_rate_parts_per_billion, 0U);
-  EXPECT_GT(telemetry.estimated_host_bytes, sizeof(CompiledBoard));
+  std::uint64_t expected_host_bytes = sizeof(CompiledBoard);
+  expected_host_bytes += sizeof(ActiveRegion);
+  expected_host_bytes += (compiled.rule_bucket().allowed_layers.size() +
+                          compiled.prepared_routing_profile().profile().allowed_layers.size()) *
+                         sizeof(board_ir::LayerId);
+  expected_host_bytes += compiled.tiles().size() * sizeof(SparseTile);
+  for (const SparseTile& tile : compiled.tiles()) {
+    expected_host_bytes += tile.nodes.size() * sizeof(CompiledNode);
+  }
+  EXPECT_EQ(telemetry.estimated_host_bytes, expected_host_bytes);
 }
 
 TEST(CompiledBoardTest, CountsRepresentedNodesAfterOverlappingRegionDeduplication) {

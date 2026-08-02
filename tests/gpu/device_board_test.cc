@@ -14,8 +14,11 @@
 
 #include "apgar/board_ir/board.h"
 #include "apgar/candidates/gpu_candidate_adapter.h"
+#include "apgar/candidates/route_candidate.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "apgar/gpu/planar_router.h"
+#include "apgar/routing/cpu_astar.h"
+#include "apgar/routing/planar_route.h"
 #include "tests/support/board_builder.h"
 #include "tests/support/compiler_builder.h"
 #include "tests/support/google_test.h"
@@ -43,6 +46,35 @@ using test_support::TwoTerminalRequest;
               ? std::get<PlanarGpuFailure>(result).detail
               : "");
   return std::get<DeviceCompiledBoardV1>(std::move(result));
+}
+
+[[nodiscard]] BoardData MultiNetBoardDataForContextTests() {
+  constexpr board_ir::EntityRef kThirdTerminal{.id = 22, .generation = 0};
+  constexpr board_ir::EntityRef kFourthTerminal{.id = 23, .generation = 0};
+  BoardData data = test_support::ValidM1BoardData();
+  const board_ir::EntityRef second_net = data.nets[1].ref;
+  data.nets[1].terminals = {kThirdTerminal, kFourthTerminal};
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kThirdTerminal,
+      .net = second_net,
+      .component = "U4",
+      .pin = "1",
+      .center = board_ir::Point64{.x = 0, .y = 20},
+      .connection_region = board_ir::AxisAlignedBox64{.min = board_ir::Point64{.x = -10, .y = 10},
+                                                      .max = board_ir::Point64{.x = 10, .y = 30}},
+      .layers = {0},
+  });
+  data.terminals.push_back(board_ir::Terminal{
+      .ref = kFourthTerminal,
+      .net = second_net,
+      .component = "U5",
+      .pin = "1",
+      .center = board_ir::Point64{.x = 100, .y = 20},
+      .connection_region = board_ir::AxisAlignedBox64{.min = board_ir::Point64{.x = 90, .y = 10},
+                                                      .max = board_ir::Point64{.x = 110, .y = 30}},
+      .layers = {0},
+  });
+  return data;
 }
 
 void SetBatchTelemetry(const DeviceCompiledBoardV1& device, PlanarGenerator generator,
@@ -377,6 +409,109 @@ TEST(DeviceCompiledBoardTest, FlatteningIsStableAndAccountsEveryOwnedByte) {
       first.nodes.size() * sizeof(DeviceNodeV1) + first.runs.size() * sizeof(DeviceRunV1) +
       first.run_nodes.size() * sizeof(std::uint32_t);
   EXPECT_EQ(first.header.estimated_persistent_device_bytes, expected_bytes);
+}
+
+TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtDurableGpuBoundaries) {
+  const BoardSnapshot board = Snapshot(MultiNetBoardDataForContextTests());
+  const board_ir::EntityRef second_net = board.data().nets[1].ref;
+
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = second_net;
+  board_ir::RoutingProfilePreparationResult preparation =
+      board_ir::PrepareRoutingProfile(board, std::move(second_profile));
+  ASSERT_TRUE(std::holds_alternative<board_ir::PreparedRoutingProfile>(preparation));
+  geometry_compiler::CompileResult compile_result = geometry_compiler::CompileBoard(
+      board, test_support::DefaultCompilerProfile({0}),
+      std::get<board_ir::PreparedRoutingProfile>(std::move(preparation)));
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(compile_result));
+  const CompiledBoard compiled = std::get<CompiledBoard>(std::move(compile_result));
+  ASSERT_NE(compiled.rule_bucket().routed_net, board.data().routing_profile.net);
+
+  const CompiledBoard default_compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  const DeviceCompiledBoardResult default_device =
+      BuildDeviceCompiledBoardV1(board, default_compiled);
+  ASSERT_TRUE(std::holds_alternative<DeviceCompiledBoardV1>(default_device));
+  EXPECT_EQ(default_compiled.rule_bucket().identity, compiled.rule_bucket().identity);
+
+  const DeviceCompiledBoardResult result = BuildDeviceCompiledBoardV1(board, compiled);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(result));
+  const PlanarGpuFailure& failure = std::get<PlanarGpuFailure>(result);
+  EXPECT_EQ(failure.code, PlanarGpuFailureCode::kValidationFailed);
+  EXPECT_EQ(failure.detail,
+            "Compiled board rule bucket is stale or does not match the BoardSnapshot");
+
+  ScriptedBackend backend(UntrustedKernelResult{});
+  PreparedPlanarCompiledViewResult prepared_result =
+      PreparePlanarCompiledView(board, default_compiled, backend);
+  ASSERT_TRUE(std::holds_alternative<std::unique_ptr<PreparedPlanarCompiledView>>(prepared_result));
+  std::unique_ptr<PreparedPlanarCompiledView> prepared =
+      std::get<std::unique_ptr<PreparedPlanarCompiledView>>(std::move(prepared_result));
+  ASSERT_NE(prepared, nullptr);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
+  const PlanarGpuRouteResult prepared_rejection =
+      RouteWithPreparedPlanarGpuBackend(board, compiled, request, PlanarRoutePolicy{}, *prepared);
+  ASSERT_TRUE(std::holds_alternative<PlanarGpuFailure>(prepared_rejection));
+  const PlanarGpuFailure& prepared_failure = std::get<PlanarGpuFailure>(prepared_rejection);
+  EXPECT_EQ(prepared_failure.code, PlanarGpuFailureCode::kValidationFailed);
+  EXPECT_EQ(prepared_failure.detail,
+            "Prepared GPU view no longer matches the BoardSnapshot and CompiledBoard");
+  EXPECT_EQ(backend.executions, 0U);
+}
+
+TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtCpuAndCandidateConsumers) {
+  // P4R-02A1 keeps this cross-consumer regression in an already-touched target
+  // to honor its hard file cap. P4R-02A2 relocates each assertion to its native
+  // CPU A* or candidate-admission target with explicit direct dependencies.
+  BoardData data = MultiNetBoardDataForContextTests();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard default_compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
+  board_ir::RoutingProfile second_profile = board.data().routing_profile;
+  second_profile.net = board.data().nets[1].ref;
+  board_ir::RoutingProfilePreparationResult preparation =
+      board_ir::PrepareRoutingProfile(board, std::move(second_profile));
+  ASSERT_TRUE(std::holds_alternative<board_ir::PreparedRoutingProfile>(preparation));
+  geometry_compiler::CompileResult compile_result = geometry_compiler::CompileBoard(
+      board, test_support::DefaultCompilerProfile({0}),
+      std::get<board_ir::PreparedRoutingProfile>(std::move(preparation)));
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(compile_result));
+  const CompiledBoard non_default = std::get<CompiledBoard>(std::move(compile_result));
+
+  EXPECT_FALSE(routing::ValidateCompiledBoardAssociation(board, default_compiled).has_value());
+  EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, non_default),
+            routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
+  const CpuRouteRequest request = TwoTerminalRequest(board);
+  const routing::CpuRouteResult rejected_route =
+      routing::RouteWithCpuAStar(board, non_default, request);
+  ASSERT_TRUE(std::holds_alternative<routing::RouteFailure>(rejected_route));
+  const routing::RouteFailure& route_failure = std::get<routing::RouteFailure>(rejected_route);
+  EXPECT_EQ(route_failure.code, routing::RouteFailureCode::kValidationFailed);
+  EXPECT_EQ(route_failure.detail,
+            "Compiled board rule bucket is stale or does not match the BoardSnapshot");
+  EXPECT_FALSE(route_failure.telemetry.has_value());
+
+  const routing::CpuRouteResult default_route_result =
+      routing::RouteWithCpuAStar(board, default_compiled, request);
+  ASSERT_TRUE(std::holds_alternative<routing::CpuRoute>(default_route_result));
+  routing::CandidatePolicyResult policy_result =
+      routing::NormalizeCandidateGenerationPolicy(default_compiled, request.candidate_policy);
+  ASSERT_TRUE(std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(policy_result));
+  const candidates::CandidateDraftBuildResult draft_result =
+      candidates::BuildGeneratedCandidateFromCpuRoute(
+          board, default_compiled, request,
+          std::get<routing::NormalizedCandidateGenerationPolicy>(policy_result),
+          std::get<routing::CpuRoute>(default_route_result),
+          candidates::CandidateSchedulingIdentity{.batch_identity = 1, .query_identity = 1});
+  ASSERT_TRUE(std::holds_alternative<candidates::GeneratedRouteCandidate>(draft_result));
+  const candidates::CandidateAdmissionResult admission = candidates::AdmitRouteCandidate(
+      candidates::CandidateAdmissionContext{
+          .board = board, .compiled_board = non_default, .request = request},
+      std::get<candidates::GeneratedRouteCandidate>(draft_result));
+  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(admission));
+  const candidates::CandidateRejection& rejection =
+      std::get<candidates::CandidateRejection>(admission);
+  EXPECT_EQ(rejection.code, candidates::CandidateRejectionCode::kAssociationMismatch);
+  EXPECT_EQ(rejection.invariant_id, "candidate.associations.compiled_board.v1");
 }
 
 TEST(DeviceCompiledBoardTest, PreparedLookupIsCanonicalExactAndSeparatelyAccounted) {

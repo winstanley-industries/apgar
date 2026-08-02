@@ -162,6 +162,31 @@ struct BoardValidationError {
   std::string message;
 };
 
+class BoardSnapshot;
+
+// Immutable capability proving that one routing profile was canonicalized and
+// validated against the identified BoardSnapshot. Callers can inspect the
+// retained profile but cannot construct prepared state directly.
+class PreparedRoutingProfile {
+ public:
+  [[nodiscard]] const RoutingProfile& profile() const noexcept { return profile_; }
+  [[nodiscard]] std::uint64_t source_board_content_hash() const noexcept {
+    return source_board_content_hash_;
+  }
+
+  friend bool operator==(const PreparedRoutingProfile&, const PreparedRoutingProfile&) = default;
+
+ private:
+  PreparedRoutingProfile(RoutingProfile profile, std::uint64_t source_board_content_hash)
+      : profile_(std::move(profile)), source_board_content_hash_(source_board_content_hash) {}
+
+  RoutingProfile profile_;
+  std::uint64_t source_board_content_hash_;
+
+  friend std::variant<PreparedRoutingProfile, BoardValidationError> PrepareRoutingProfile(
+      const BoardSnapshot& board, RoutingProfile profile);
+};
+
 class BoardSnapshot {
  public:
   [[nodiscard]] const BoardData& data() const noexcept { return data_; }
@@ -183,8 +208,17 @@ class BoardSnapshot {
 };
 
 using BoardCreationResult = std::variant<BoardSnapshot, BoardValidationError>;
+using RoutingProfilePreparationResult = std::variant<PreparedRoutingProfile, BoardValidationError>;
 
 [[nodiscard]] BoardCreationResult CreateBoardSnapshot(BoardData data);
+
+// Canonicalizes and validates a per-net M1 routing profile against one
+// immutable BoardSnapshot, returning prepared state bound to that snapshot's
+// content hash. Board IR v1 retains one authoritative rule profile; additional
+// prepared contexts may change only its routed net and therefore its obstacle
+// ownership semantics.
+[[nodiscard]] RoutingProfilePreparationResult PrepareRoutingProfile(const BoardSnapshot& board,
+                                                                    RoutingProfile profile);
 
 }  // namespace apgar::board_ir
 

@@ -273,11 +273,18 @@ struct RuleBucketKey {
 };
 ```
 
+For M1 static obstacle ownership, `ObstacleInteractionSignature` includes the
+routed-net identity: obstacles owned by that net may permit connection while
+unowned obstacles and obstacles owned by other nets remain blocking. Numeric
+rule-bucket identity remains derived from Board-IR-authored width, clearance,
+layers, and headings; compiled-view association must additionally authenticate
+the obstacle-interaction signature.
+
 ## 9. Geometry Compiler
 
 ### 9.1 Compiler contract
 
-The compiler transforms an immutable Board IR snapshot into one or more immutable Compiled Board views. A view is parameterized by grid profile, heading set, rule-bucket set, tile dimensions, and compiler version.
+The compiler transforms an immutable Board IR snapshot into one or more immutable Compiled Board views. A view is parameterized by grid profile, heading set, rule-bucket set, obstacle-interaction signature (routed-net identity in M1), tile dimensions, and compiler version.
 
 - **GC-001** A compiled legal edge MUST imply that its swept exact trace envelope is legal against all represented static obstacles.
 - **GC-002** Compiler conservatism MUST be measurable by comparing compiled reachability with exact local search on generated microcases.
