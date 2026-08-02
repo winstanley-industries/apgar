@@ -16,6 +16,7 @@
 #include "apgar/routing/candidate_policy.h"
 #include "apgar/routing/cpu_astar.h"
 #include "apgar/text/utf8.h"
+#include "src/candidates/route_candidate_internal.h"
 #include "tests/support/board_builder.h"
 #include "tests/support/candidate_builder.h"
 #include "tests/support/compiler_builder.h"
@@ -35,7 +36,9 @@ using routing::CpuRouteRequest;
 using routing::LayerSegment;
 using test_support::CandidateDraft;
 using test_support::Compile;
+using test_support::CompilePreparedNet;
 using test_support::NormalizePolicy;
+using test_support::RequestForNet;
 using test_support::Snapshot;
 using test_support::TwoTerminalRequest;
 
@@ -108,40 +111,202 @@ TEST(RouteCandidateTest, CpuDraftIsCanonicalStableAndExactlyAdmitted) {
   EXPECT_EQ(std::get<RouteCandidate>(admitted).data(), first);
 }
 
-TEST(RouteCandidateTest, NonDefaultCpuEvidenceRemainsFailClosedAtCandidateBuilder) {
+TEST(RouteCandidateTest, PreparedContextProductionAndAdmissionCrossAuthenticateIdentity) {
   const BoardSnapshot board = Snapshot(test_support::MultiNetM1BoardData());
-  const EntityRef second_net = board.data().nets[1].ref;
-  const CompiledBoard prepared = test_support::CompilePreparedNet(
-      board, second_net, test_support::DefaultCompilerProfile({0}));
-  const CpuRouteRequest prepared_request = test_support::RequestForNet(board, second_net);
-  const routing::CpuRouteResult route_result =
-      routing::RouteWithCpuAStar(board, prepared, prepared_request);
-  ASSERT_TRUE(std::holds_alternative<routing::CpuRoute>(route_result));
-  const routing::NormalizedCandidateGenerationPolicy prepared_policy =
-      NormalizePolicy(prepared, prepared_request);
-
-  const CandidateDraftBuildResult prepared_rejection = BuildGeneratedCandidateFromCpuRoute(
-      board, prepared, prepared_request, prepared_policy, std::get<routing::CpuRoute>(route_result),
-      CandidateSchedulingIdentity{.batch_identity = 31, .query_identity = 37});
-  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(prepared_rejection));
-  EXPECT_EQ(std::get<CandidateRejection>(prepared_rejection).code,
-            CandidateRejectionCode::kAssociationMismatch);
-  EXPECT_EQ(std::get<CandidateRejection>(prepared_rejection).invariant_id,
-            "candidate.builder.compiled_board_association.v1");
-
   const CompiledBoard default_compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  EXPECT_EQ(default_compiled.rule_bucket().identity, prepared.rule_bucket().identity);
-  const routing::NormalizedCandidateGenerationPolicy default_policy =
-      NormalizePolicy(default_compiled, prepared_request);
-  const CandidateDraftBuildResult request_rejection = BuildGeneratedCandidateFromCpuRoute(
-      board, default_compiled, prepared_request, default_policy,
-      std::get<routing::CpuRoute>(route_result),
+  const CompiledBoard second_compiled = CompilePreparedNet(
+      board, board.data().nets[1].ref, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest default_request = RequestForNet(board, board.data().nets[0].ref);
+  const CpuRouteRequest second_request = RequestForNet(board, board.data().nets[1].ref);
+  const CandidateAssociations default_associations = AssociationsFor(board, default_compiled);
+  const CandidateAssociations second_associations = AssociationsFor(board, second_compiled);
+  EXPECT_EQ(default_associations.rule_bucket_identity, second_associations.rule_bucket_identity);
+  EXPECT_NE(default_associations.routing_profile_fingerprint,
+            second_associations.routing_profile_fingerprint);
+
+  const routing::NormalizedCandidateGenerationPolicy second_policy =
+      NormalizePolicy(second_compiled, second_request);
+  const routing::CpuRouteResult second_route_result =
+      routing::RouteWithCpuAStar(board, second_compiled, second_request);
+  ASSERT_TRUE(std::holds_alternative<routing::CpuRoute>(second_route_result));
+  const CandidateDraftBuildResult second_draft_result = BuildGeneratedCandidateFromCpuRoute(
+      board, second_compiled, second_request, second_policy,
+      std::get<routing::CpuRoute>(second_route_result),
       CandidateSchedulingIdentity{.batch_identity = 41, .query_identity = 43});
-  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(request_rejection));
-  EXPECT_EQ(std::get<CandidateRejection>(request_rejection).code,
-            CandidateRejectionCode::kInvalidInput);
-  EXPECT_EQ(std::get<CandidateRejection>(request_rejection).invariant_id,
-            "candidate.builder.route_request.v1");
+  ASSERT_TRUE(std::holds_alternative<GeneratedRouteCandidate>(second_draft_result))
+      << (std::holds_alternative<CandidateRejection>(second_draft_result)
+              ? std::get<CandidateRejection>(second_draft_result).detail
+              : std::string{});
+  const GeneratedRouteCandidate second_draft =
+      std::get<GeneratedRouteCandidate>(second_draft_result);
+  EXPECT_EQ(second_draft.net, second_request.net);
+  EXPECT_EQ(second_draft.associations, second_associations);
+  EXPECT_TRUE(std::holds_alternative<RouteCandidate>(AdmitRouteCandidate(
+      CandidateAdmissionContext{
+          .board = board, .compiled_board = second_compiled, .request = second_request},
+      second_draft)));
+
+  const GeneratedRouteCandidate default_draft =
+      CandidateDraft(board, default_compiled, default_request);
+  const CandidateAdmissionResult wrong_compiled_result = AdmitRouteCandidate(
+      CandidateAdmissionContext{
+          .board = board, .compiled_board = second_compiled, .request = second_request},
+      default_draft);
+  const CandidateRejection& wrong_compiled = Rejection(wrong_compiled_result);
+  EXPECT_EQ(wrong_compiled.code, CandidateRejectionCode::kAssociationMismatch);
+  EXPECT_EQ(wrong_compiled.invariant_id, "candidate.associations.equivalence.v1");
+  EXPECT_EQ(wrong_compiled.detail,
+            "Candidate associations do not match the prepared routing context");
+
+  const CandidateAdmissionResult wrong_request_result = AdmitRouteCandidate(
+      CandidateAdmissionContext{
+          .board = board, .compiled_board = second_compiled, .request = default_request},
+      second_draft);
+  const CandidateRejection& wrong_request = Rejection(wrong_request_result);
+  EXPECT_EQ(wrong_request.code, CandidateRejectionCode::kAssociationMismatch);
+  EXPECT_EQ(wrong_request.invariant_id, "candidate.associations.route_request.v1");
+
+  const routing::CpuRoute default_route =
+      test_support::CpuRouteForCandidate(board, default_compiled, default_request);
+  const CandidateDraftBuildResult mismatched_route = BuildGeneratedCandidateFromCpuRoute(
+      board, second_compiled, second_request, second_policy, default_route,
+      CandidateSchedulingIdentity{.batch_identity = 47, .query_identity = 53});
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(mismatched_route));
+  const CandidateRejection& route_rejection = std::get<CandidateRejection>(mismatched_route);
+  EXPECT_EQ(route_rejection.invariant_id, "candidate.builder.planar_route_association.v1");
+  EXPECT_EQ(route_rejection.associations.routing_profile_fingerprint,
+            default_associations.routing_profile_fingerprint);
+
+  GeneratedRouteCandidate relabeled = second_draft;
+  relabeled.associations.routing_profile_fingerprint =
+      default_associations.routing_profile_fingerprint;
+  relabeled.id = DeriveCandidateId(relabeled.net, relabeled.associations, relabeled.policy_identity,
+                                   relabeled.provenance);
+  ASSERT_FALSE(FinalizeGeneratedCandidateDraft(relabeled).has_value());
+  const CandidateAdmissionResult relabeled_result = AdmitRouteCandidate(
+      CandidateAdmissionContext{
+          .board = board, .compiled_board = second_compiled, .request = second_request},
+      std::move(relabeled));
+  const CandidateRejection& relabeled_rejection = Rejection(relabeled_result);
+  EXPECT_EQ(relabeled_rejection.invariant_id, "candidate.associations.equivalence.v1");
+}
+
+TEST(RouteCandidateTest, AdmissionRejectsACompiledBoardFromAnotherSnapshotAtItsNativeGuard) {
+  BoardData first_data = test_support::ValidM1BoardData();
+  first_data.obstacles.clear();
+  BoardData second_data = first_data;
+  ++second_data.revision;
+  const BoardSnapshot first_board = Snapshot(std::move(first_data));
+  const BoardSnapshot second_board = Snapshot(std::move(second_data));
+  const CompiledBoard first_compiled =
+      Compile(first_board, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = TwoTerminalRequest(first_board, 0, 0);
+  const GeneratedRouteCandidate draft = CandidateDraft(first_board, first_compiled, request);
+
+  const CandidateAdmissionResult admission_result = AdmitRouteCandidate(
+      CandidateAdmissionContext{
+          .board = second_board, .compiled_board = first_compiled, .request = request},
+      draft);
+  const CandidateRejection& admission = Rejection(admission_result);
+  EXPECT_EQ(admission.code, CandidateRejectionCode::kAssociationMismatch);
+  EXPECT_EQ(admission.stage, CandidateLifecycleStage::kExactValidated);
+  EXPECT_EQ(admission.invariant_id, "candidate.associations.compiled_board.v1");
+
+  const routing::NormalizedCandidateGenerationPolicy policy =
+      NormalizePolicy(first_compiled, request);
+  const routing::CpuRoute route =
+      test_support::CpuRouteForCandidate(first_board, first_compiled, request);
+  const CandidateDraftBuildResult build = BuildGeneratedCandidateFromCpuRoute(
+      second_board, first_compiled, request, policy, route,
+      CandidateSchedulingIdentity{.batch_identity = 59, .query_identity = 61});
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(build));
+  EXPECT_EQ(std::get<CandidateRejection>(build).invariant_id,
+            "candidate.builder.compiled_board_association.v1");
+}
+
+TEST(RouteCandidateTest, GpuProducerRemainsDefaultContextOnlyUntilDeviceEvidenceCarriesIdentity) {
+  BoardData data = test_support::MultiNetM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const CompiledBoard prepared = CompilePreparedNet(board, board.data().nets[1].ref,
+                                                    test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest request = RequestForNet(board, board.data().nets[1].ref);
+  const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(prepared, request);
+  const routing::CpuRouteResult route_result = routing::RouteWithCpuAStar(board, prepared, request);
+  ASSERT_TRUE(std::holds_alternative<routing::CpuRoute>(route_result));
+  const routing::CpuRoute& route = std::get<routing::CpuRoute>(route_result);
+
+  const CandidateDraftBuildResult result =
+      internal::BuildGeneratedCandidateFromValidatedPlanarRoute(
+          board, prepared, request, policy, AssociationsFor(board, prepared), policy.identity,
+          route.total_cost, route.segments,
+          CandidateProvenance{
+              .generator = CandidateGeneratorKind::kCudaFrontier,
+              .generator_version = 1,
+              .backend = CandidateBackendKind::kCuda,
+              .supported_device_class = "cuda-sm_120",
+              .deterministic_seed = policy.policy.deterministic_seed,
+              .batch_identity = 67,
+              .query_identity = 71,
+              .candidate_ordinal = policy.policy.candidate_ordinal,
+          },
+          internal::CandidateProducerAuthority::kAuthenticatedCudaBatch);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(result));
+  EXPECT_EQ(std::get<CandidateRejection>(result).invariant_id,
+            "candidate.builder.compiled_board_association.v1");
+}
+
+TEST(RouteCandidateTest, PreparedAdmissionPinsForeignObstacleEqualityAndOneUnitViolation) {
+  BoardData equality_data = test_support::MultiNetM1BoardData();
+  equality_data.obstacles.push_back(board_ir::Obstacle{
+      .ref = EntityRef{.id = 31, .generation = 0},
+      .layer = 0,
+      .bounds =
+          AxisAlignedBox64{.min = Point64{.x = 40, .y = 30}, .max = Point64{.x = 60, .y = 40}},
+      .owner_net = equality_data.nets[0].ref,
+      .provenance = "foreign/equality",
+  });
+  const BoardSnapshot equality_board = Snapshot(std::move(equality_data));
+  const CompiledBoard equality_compiled = CompilePreparedNet(
+      equality_board, equality_board.data().nets[1].ref, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest equality_request =
+      RequestForNet(equality_board, equality_board.data().nets[1].ref);
+  const GeneratedRouteCandidate equality_candidate =
+      CandidateDraft(equality_board, equality_compiled, equality_request);
+  EXPECT_TRUE(std::holds_alternative<RouteCandidate>(
+      AdmitRouteCandidate(CandidateAdmissionContext{.board = equality_board,
+                                                    .compiled_board = equality_compiled,
+                                                    .request = equality_request},
+                          equality_candidate)));
+
+  BoardData one_unit_data = test_support::MultiNetM1BoardData();
+  one_unit_data.obstacles.push_back(board_ir::Obstacle{
+      .ref = EntityRef{.id = 31, .generation = 0},
+      .layer = 0,
+      .bounds =
+          AxisAlignedBox64{.min = Point64{.x = 40, .y = 29}, .max = Point64{.x = 60, .y = 39}},
+      .owner_net = one_unit_data.nets[0].ref,
+      .provenance = "foreign/one-unit-inside",
+  });
+  const BoardSnapshot one_unit_board = Snapshot(std::move(one_unit_data));
+  const CompiledBoard one_unit_compiled = CompilePreparedNet(
+      one_unit_board, one_unit_board.data().nets[1].ref, test_support::DefaultCompilerProfile({0}));
+  const CpuRouteRequest one_unit_request =
+      RequestForNet(one_unit_board, one_unit_board.data().nets[1].ref);
+  GeneratedRouteCandidate relabeled = equality_candidate;
+  relabeled.associations = AssociationsFor(one_unit_board, one_unit_compiled);
+  relabeled.id = DeriveCandidateId(relabeled.net, relabeled.associations, relabeled.policy_identity,
+                                   relabeled.provenance);
+  ASSERT_FALSE(FinalizeGeneratedCandidateDraft(relabeled).has_value());
+  const CandidateAdmissionResult one_unit_result =
+      AdmitRouteCandidate(CandidateAdmissionContext{.board = one_unit_board,
+                                                    .compiled_board = one_unit_compiled,
+                                                    .request = one_unit_request},
+                          std::move(relabeled));
+  const CandidateRejection& one_unit = Rejection(one_unit_result);
+  EXPECT_EQ(one_unit.code, CandidateRejectionCode::kExactValidation);
+  EXPECT_EQ(one_unit.invariant_id, "candidate.geometry.swept_clearance.v1");
+  EXPECT_EQ(one_unit.conflicting_entity, (EntityRef{.id = 31, .generation = 0}));
 }
 
 TEST(RouteCandidateTest, CanonicalV1IdentitySignaturesChecksumAndBytesHaveGoldenValues) {
@@ -797,6 +962,8 @@ TEST(RouteCandidateTest, CpuBuilderDerivesCpuOnlyProvenanceFromTypedEvidence) {
   ASSERT_TRUE(std::holds_alternative<CandidateRejection>(unauthenticated));
   EXPECT_EQ(std::get<CandidateRejection>(unauthenticated).invariant_id,
             "candidate.builder.cpu_producer_authentication.v1");
+  EXPECT_EQ(std::get<CandidateRejection>(unauthenticated).associations.routing_profile_fingerprint,
+            0U);
 
   routing::CpuRoute stale_route = route;
   ++stale_route.source_board_content_hash;
@@ -960,6 +1127,7 @@ TEST(RouteCandidateTest, OversizedPolicyBulkIsRejectedBeforeBuilderOrAdmissionCh
   EXPECT_EQ(builder_rejection.invariant_id, "candidate.policy.resource_entry_count.v1");
   EXPECT_EQ(builder_rejection.expected_value, routing::kMaximumPolicyResourceEntries);
   EXPECT_EQ(builder_rejection.actual_value, routing::kMaximumPolicyResourceEntries + 1U);
+  EXPECT_EQ(builder_rejection.associations, AssociationsFor(board, compiled));
   EXPECT_FALSE(builder_rejection.candidate_payload_checksum.has_value());
 
   forged_policy.policy.banned_resources.clear();

@@ -841,6 +841,7 @@ cc_test(
     name = "route_candidate_test",
     size = "small",
     srcs = [
+        "src/candidates/route_candidate_internal.h",
         "tests/candidates/route_candidate_test.cc",
         "tests/support/board_builder.h",
         "tests/support/candidate_builder.h",

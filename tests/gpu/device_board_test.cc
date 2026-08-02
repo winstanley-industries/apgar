@@ -17,7 +17,6 @@
 #include "apgar/candidates/route_candidate.h"
 #include "apgar/geometry_compiler/compiled_board.h"
 #include "apgar/gpu/planar_router.h"
-#include "apgar/routing/cpu_astar.h"
 #include "apgar/routing/planar_route.h"
 #include "tests/support/board_builder.h"
 #include "tests/support/compiler_builder.h"
@@ -480,48 +479,6 @@ TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtDurableGpuBounda
   EXPECT_EQ(prepared_failure.detail,
             "Prepared GPU view no longer matches the BoardSnapshot and CompiledBoard");
   EXPECT_EQ(backend.executions, 0U);
-}
-
-TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtCandidateConsumer) {
-  // P4R-02A2b relocates this remaining A1 guard to the native candidate target.
-  BoardData data = MultiNetBoardDataForContextTests();
-  data.obstacles.clear();
-  const BoardSnapshot board = Snapshot(std::move(data));
-  const CompiledBoard default_compiled = Compile(board, test_support::DefaultCompilerProfile({0}));
-  board_ir::RoutingProfile second_profile = board.data().routing_profile;
-  second_profile.net = board.data().nets[1].ref;
-  board_ir::RoutingProfilePreparationResult preparation =
-      board_ir::PrepareRoutingProfile(board, std::move(second_profile));
-  ASSERT_TRUE(std::holds_alternative<board_ir::PreparedRoutingProfile>(preparation));
-  geometry_compiler::CompileResult compile_result = geometry_compiler::CompileBoard(
-      board, test_support::DefaultCompilerProfile({0}),
-      std::get<board_ir::PreparedRoutingProfile>(std::move(preparation)));
-  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(compile_result));
-  const CompiledBoard non_default = std::get<CompiledBoard>(std::move(compile_result));
-
-  const CpuRouteRequest request = TwoTerminalRequest(board);
-  const routing::CpuRouteResult default_route_result =
-      routing::RouteWithCpuAStar(board, default_compiled, request);
-  ASSERT_TRUE(std::holds_alternative<routing::CpuRoute>(default_route_result));
-  routing::CandidatePolicyResult policy_result =
-      routing::NormalizeCandidateGenerationPolicy(default_compiled, request.candidate_policy);
-  ASSERT_TRUE(std::holds_alternative<routing::NormalizedCandidateGenerationPolicy>(policy_result));
-  const candidates::CandidateDraftBuildResult draft_result =
-      candidates::BuildGeneratedCandidateFromCpuRoute(
-          board, default_compiled, request,
-          std::get<routing::NormalizedCandidateGenerationPolicy>(policy_result),
-          std::get<routing::CpuRoute>(default_route_result),
-          candidates::CandidateSchedulingIdentity{.batch_identity = 1, .query_identity = 1});
-  ASSERT_TRUE(std::holds_alternative<candidates::GeneratedRouteCandidate>(draft_result));
-  const candidates::CandidateAdmissionResult admission = candidates::AdmitRouteCandidate(
-      candidates::CandidateAdmissionContext{
-          .board = board, .compiled_board = non_default, .request = request},
-      std::get<candidates::GeneratedRouteCandidate>(draft_result));
-  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(admission));
-  const candidates::CandidateRejection& rejection =
-      std::get<candidates::CandidateRejection>(admission);
-  EXPECT_EQ(rejection.code, candidates::CandidateRejectionCode::kAssociationMismatch);
-  EXPECT_EQ(rejection.invariant_id, "candidate.associations.compiled_board.v1");
 }
 
 TEST(DeviceCompiledBoardTest, PreparedLookupIsCanonicalExactAndSeparatelyAccounted) {
