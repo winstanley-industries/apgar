@@ -459,9 +459,9 @@ TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtDurableGpuBounda
 }
 
 TEST(DeviceCompiledBoardTest, RejectsNonDefaultPreparedContextAtCpuAndCandidateConsumers) {
-  // P4R-02A1 keeps this cross-consumer regression in an already-touched target
-  // to honor its hard file cap. P4R-02A2 relocates each assertion to its native
-  // CPU A* or candidate-admission target with explicit direct dependencies.
+  // P4R-02A2a moves the CPU guard, P4R-02A2b moves the candidate guard, and
+  // P4R-02A2e moves the exact-oracle cases to native targets with explicit
+  // headers and direct Bazel dependencies.
   BoardData data = MultiNetBoardDataForContextTests();
   data.obstacles.clear();
   const BoardSnapshot board = Snapshot(std::move(data));

@@ -64,14 +64,23 @@ Outcome is one of:
   or commit identity and acceptance evidence exist. Before final approval, the
   same pull request updates that task to `done`, refreshes current state, and
   marks at most one next task `ready`.
+- Once an ordered split is approved, dependent stacked draft pull requests may
+  be authored concurrently for review. Their existence does not advance task
+  status, pass a prerequisite gate, or permit out-of-order merge: only the
+  earliest unmerged layer may be `active`, at most its immediate successor may
+  be `ready`, and all later stacked layers remain `planned`.
 - A material change to goal, exit criteria, sequencing, scope, or stop gates is
   reviewed before dependent implementation. Add or revise an ADR when the
   change is architectural.
 - Every implementation task must expose runnable behavior, validated evidence,
   or a mechanically derived decision. A preflight that intentionally cannot
   reach the behavior is not a complete implementation task.
-- Target at most 12 hand-edited files and 1,500 hand-authored changed lines per
-  task. A projected change above 2,500 lines must be re-sequenced before review.
+- Use 12 hand-edited files and 1,500 hand-authored changed lines per task as
+  planning guidance, not approval gates. Changes above 2,500 lines receive
+  extra scrutiny and record a concise cohesion and reviewability rationale.
+  Numeric thresholds alone do not require re-sequencing; split when scope
+  review identifies independent outcomes, unjustified concepts, or an
+  impractical review surface.
 - Each task receives a frozen APGAR adversarial review, including an explicit
   complexity-and-delivery verdict, and the repository gates required by
   `AGENTS.md` before commit.
@@ -85,7 +94,7 @@ Each epic records:
 
 1. metadata: status, outcome, owner, dates, baseline, and authority links;
 2. one measurable goal and its definition of done;
-3. scope, non-goals, inherited invariants, and complexity budget;
+3. scope, non-goals, inherited invariants, and complexity guidance;
 4. a short current-state summary;
 5. an ordered task table with dependency and acceptance evidence;
 6. decision and stop gates;

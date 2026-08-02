@@ -6,7 +6,7 @@
 | Outcome | `pending` |
 | Owner | APGAR maintainers |
 | Started | August 1, 2026 |
-| Last reviewed | August 2, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5)) |
+| Last reviewed | August 2, 2026 ([PR #13](https://github.com/winstanley-industries/apgar/pull/13)) |
 | Active baseline | `1a0d6600111c44e7f915b039190f9125d37d4a06` |
 | Archived donor | `1f68ded7ff36547c3ffb8a0629482ad425786106` on `archive/phase4-pre-reset-2026-08-01` |
 | Governing architecture | [Global Allocator](../APGAR_Architecture_Specification_v0.1.md#14-global-allocator), [Benchmark Plan](../APGAR_Architecture_Specification_v0.1.md#26-benchmark-and-evaluation-plan), [Roadmap](../APGAR_Architecture_Specification_v0.1.md#29-implementation-roadmap) |
@@ -74,11 +74,13 @@ and cannot complete the epic.
 
 These are summaries only; the architecture and accepted ADRs remain normative.
 
-## Complexity budget
+## Complexity guidance
 
 - One task is active at a time; campaign tasks remain conditional on readiness.
-- A task targets at most 12 hand-edited files and 1,500 hand-authored changed
-  lines. A projection above 2,500 lines triggers re-sequencing.
+- Use 12 hand-edited files and 1,500 hand-authored changed lines per task as
+  planning guidance, not approval gates. Changes above 2,500 lines receive
+  extra scrutiny and a concise cohesion and reviewability rationale; numeric
+  thresholds alone do not trigger re-sequencing.
 - Every implementation task produces runnable behavior, validated evidence, or
   a mechanical decision.
 - One focused ADR or one serialized schema change may accompany a task, not an
@@ -95,10 +97,15 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 - ADR-068 establishes the clean restart and behavior-by-behavior salvage rule.
 - P4R-01 is approved and durably identified by PR #3.
 - The [P4R-02 split approved before implementation and recorded in PR #5](https://github.com/winstanley-industries/apgar/pull/5#issuecomment-5155778005)
-  separates the prerequisite per-net routing contract (P4R-02A1, P4R-02A2)
-  from the authentic workload and accounting slice (P4R-02B).
-- P4R-02A1 is complete in PR #5, and P4R-02A2 is ready. Selection and resource
-  accounting remain closed.
+  separates the prerequisite per-net routing contract (P4R-02A1 and the former
+  aggregate P4R-02A2, now split into P4R-02A2a through P4R-02A2e) from the
+  authentic workload and accounting slice (P4R-02B).
+- P4R-02A1 is complete in PR #5. P4R-02A2 is split into five ordered
+  trust-boundary layers: A2a CPU evidence, A2b exact candidate
+  production/admission, A2c GPU evidence, A2d invariant replay, and A2e native
+  evidence/numeric-rule cleanup ([PR #13](https://github.com/winstanley-industries/apgar/pull/13)).
+  A2a is the only ready layer. P4R-02B resource accounting and all later
+  allocator work remain closed.
 
 ## Salvage ledger
 
@@ -117,9 +124,13 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | Task | PR-sized outcome | Depends on | Acceptance evidence | Status | PR / commit / evidence |
 | --- | --- | --- | --- | --- | --- |
 | P4R-01 | Establish the clean branch, archived donor, ADR-068, epic governance, and APGAR complexity gate. | Phase 3 baseline | Exact archive/base identities; docs links; APGAR review; repository gates. | `done` | [PR #3](https://github.com/winstanley-industries/apgar/pull/3) |
-| P4R-02A1 | Add prepared per-net routing profiles retained by exact CompiledBoard contexts. | P4R-01 | Two distinct nets compile from one immutable snapshot with selective net-specific exact obstacle ownership while width, clearance, layers, and headings remain Board-IR-authored; the architecture records routed-net identity as the M1 obstacle-interaction axis; invalid profiles fail closed; CPU route and exact-candidate consumers reject non-default contexts pending P4R-02A2. | `done` | [PR #5](https://github.com/winstanley-industries/apgar/pull/5) |
-| P4R-02A2 | Bind prepared-context identity through CPU/GPU producer evidence, route admission, and exact immutable-candidate admission. | P4R-02A1 | Distinct-net requests produce and exactly admit correctly attributed immutable candidates; association validation cross-authenticates the retained capability's source hash and derived full rule bucket before any exact use; candidate producers source the existing net-sensitive `APGAR-ROUTING-PROFILE-V1` fingerprint from the retained profile; durable CPU, GPU, device, and replay tokens lacking a retained-profile field add a separately versioned identity, with compiled-board/replay schema bumps only where a persistent structure changes, and never reinterpret the V1 numeric-rule scalar; durable readers migrate from the ambiguous `RuleBucketV1::identity` name to explicit numeric-rule identity naming; exact candidate self-clearance and terminal validation consume the CompiledBoard's retained routing profile rather than the Board IR default; relabeled or mismatched context evidence fails closed with context-neutral detail; A1's temporary downstream-guard evidence moves from the device-board test into native CPU A* and candidate-admission test targets with explicit headers and direct Bazel dependencies, while prepared exact-oracle trust-boundary cases move into the native exact-geometry target. | `ready` | — |
-| P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2 | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `planned` | — |
+| P4R-02A1 | Add prepared per-net routing profiles retained by exact CompiledBoard contexts. | P4R-01 | Two distinct nets compile from one immutable snapshot with selective net-specific exact obstacle ownership while width, clearance, layers, and headings remain Board-IR-authored; the architecture records routed-net identity as the M1 obstacle-interaction axis; invalid profiles fail closed; CPU route and exact-candidate consumers reject non-default contexts pending P4R-02A2a through P4R-02A2e. | `done` | [PR #5](https://github.com/winstanley-industries/apgar/pull/5) |
+| P4R-02A2a | Authenticate retained prepared contexts through CPU route evidence while keeping candidate and GPU consumers fail-closed. | P4R-02A1 | Distinct-net CPU requests route under the retained exact profile; private CPU producer evidence seals the existing net-sensitive `APGAR-ROUTING-PROFILE-V1` fingerprint; A1's CPU guard moves to the native CPU target; candidate admission, prepared GPU construction, GPU reconstruction, and prepared-view reuse remain fail-closed. | `ready` | — |
+| P4R-02A2b | Authenticate retained prepared contexts through exact candidate production and admission. | P4R-02A2a | Association validation compares the retained capability's source Board IR content hash and complete `DeriveM1RuleBucket(retained profile)` struct, not the net-blind `APGAR-M1-RULE-BUCKET-V1` scalar; candidate associations source the existing net-sensitive `APGAR-ROUTING-PROFILE-V1` fingerprint from the retained profile; exact candidate self-clearance and terminal validation consume the CompiledBoard-retained routing profile; context mismatch diagnostics remain neutral; A1's candidate guard moves to the native target. | `planned` | — |
+| P4R-02A2c | Authenticate retained prepared contexts through GPU route evidence without versioning already-context-bearing batch tokens. | P4R-02A2b | Non-default prepared views route on CPU/GPU differential paths; the unreleased single-route device-result V1 contract acquires the retained routing-profile fingerprint in place; existing batch routing-profile fields are sourced from the retained compiled profile without a version bump; relabeled evidence fails closed; GPU candidates retain the authenticated identity; no released compatibility boundary or migration path is claimed. | `planned` | — |
+| P4R-02A2d | Bind the retained prepared context into the existing GPU invariant replay V1 artifact. | P4R-02A2c | Replay parsing and pre-launch association checks authenticate the retained routing-profile fingerprint; under ADR-009's unreleased-development rule, the checked-in V1 schema, producer, consumer, and artifact evolve atomically in place and older development layouts fail structural validation. | `planned` | — |
+| P4R-02A2e | Move remaining temporary A1 evidence to native targets and make legacy numeric-rule readers explicit. | P4R-02A2d | Prepared exact-oracle trust-boundary cases live in the exact-geometry target; explicit headers and direct Bazel dependencies are present; durable producers/readers call `numeric_rule_identity()` and do not reinterpret the V1 scalar. | `planned` | — |
+| P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2e | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `planned` | — |
 | P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `planned` | — |
 | P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `planned` | — |
 | P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `planned` | — |
@@ -138,10 +149,13 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 
 ## Decision and stop gates
 
-- Do not begin selection until P4R-02B independently validates resource usage
-  and overuse semantics. P4R-02A1 contexts are intentionally fail-closed to
-  downstream routing and candidate admission until P4R-02A2 authenticates the
-  retained per-net profile identity end to end.
+- P4R-02A1 prepared contexts remain fail-closed to exact candidate production
+  and admission until A2b, GPU route and candidate evidence until A2c, and GPU
+  invariant replay until A2d authenticates retained per-net profile identity at
+  each consumer.
+- Do not begin P4R-02B resource accounting until A2e closes the prepared-context
+  identity slice. Do not begin selection until P4R-02B independently validates
+  resource usage and overuse semantics.
 - Do not acquire readiness until P4R-12 freezes its workload identities,
   configurations, budgets, and rule. Do not begin campaign tooling or inspect
   heldout outcomes until readiness passes and P4R-14 freezes the campaign and
@@ -153,9 +167,10 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   terminates the epic negatively.
 - A complete negative campaign terminates the epic. Post-heldout tuning requires
   a new epic and fresh heldout authority.
-- Any proposed task exceeding the complexity budget is split before review; it
-  does not receive a scope exception merely because archived code already
-  exists.
+- Any proposed task exceeding the complexity guidance records a cohesion and
+  reviewability rationale. Split it when scope review identifies independent
+  outcomes, unjustified concepts, or an impractical review surface; archived or
+  sunk work is not itself a reason to keep a slice coupled.
 
 ## Durable decisions and evidence
 

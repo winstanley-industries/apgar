@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** July 17, 2026
-**Amended:** August 2, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5))
+**Amended:** August 2, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5), [PR #13](https://github.com/winstanley-industries/apgar/pull/13))
 **Applies to:** Geometry compiler and deterministic CPU reference router
 
 ## Context
@@ -38,15 +38,21 @@ rather than explicitly requested active work.
   obstacle interaction depends on ownership. `PreparedRoutingProfile` is the
   Board-IR-issued, source-snapshot-bound capability for selecting that context,
   and `CompiledBoard` retains it.
-- V1 device, replay, and CPU-route evidence do not yet carry retained-profile
+- Device, replay, and CPU-route evidence do not yet carry retained-profile
   identity. They therefore reject non-default compiled contexts through the
-  full in-memory association check. A later enabling slice must add a separately
-  versioned identity, or a V2 domain and schema bump where a persistent field is
-  absent; it must not reinterpret the existing `APGAR-M1-RULE-BUCKET-V1`
-  scalar. Candidate associations already carry an
-  `APGAR-ROUTING-PROFILE-V1` fingerprint that includes routed net, so their
-  producer must source that existing field from the retained profile rather
-  than introduce another version.
+  full in-memory association check. A later enabling slice adds the existing
+  net-sensitive `APGAR-ROUTING-PROFILE-V1` fingerprint; it must not reinterpret
+  the existing `APGAR-M1-RULE-BUCKET-V1` scalar. Candidate associations already
+  carry that routing-profile fingerprint, so their producer must source the
+  existing field from the retained profile rather than introduce another
+  version.
+- APGAR has no released serialization compatibility boundary. Before the first
+  release, a checked-in V1 durable schema may acquire a missing retained-profile
+  field in place only when its schema document, every checked-in producer and
+  consumer, and every checked-in artifact change atomically. The explicit
+  schema version remains `1`, and old development layouts must fail structural
+  validation rather than be guessed or migrated. After the first release, an
+  incompatible persistent layout change requires a new major schema version.
 - CPU A* is planar. Requests keep distinct endpoint-layer fields so exact
   through-via transitions can be added later, but differing layers return a
   structured unsupported result now.
