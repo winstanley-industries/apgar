@@ -6,7 +6,7 @@
 | Outcome | `pending` |
 | Owner | APGAR maintainers |
 | Started | August 1, 2026 |
-| Last reviewed | August 1, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5)) |
+| Last reviewed | August 2, 2026 ([PR #5](https://github.com/winstanley-industries/apgar/pull/5)) |
 | Active baseline | `1a0d6600111c44e7f915b039190f9125d37d4a06` |
 | Archived donor | `1f68ded7ff36547c3ffb8a0629482ad425786106` on `archive/phase4-pre-reset-2026-08-01` |
 | Governing architecture | [Global Allocator](../APGAR_Architecture_Specification_v0.1.md#14-global-allocator), [Benchmark Plan](../APGAR_Architecture_Specification_v0.1.md#26-benchmark-and-evaluation-plan), [Roadmap](../APGAR_Architecture_Specification_v0.1.md#29-implementation-roadmap) |
@@ -100,7 +100,8 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   is split again without changing its outcome: P4R-02A1 establishes prepared,
   retained, fail-closed compilation contexts; P4R-02A2 authenticates those
   contexts through route production and exact candidate admission.
-- P4R-02A1 is active. Selection and resource accounting remain closed.
+- P4R-02A1 is complete in PR #5, and P4R-02A2 is ready. Selection and resource
+  accounting remain closed.
 
 ## Salvage ledger
 
@@ -119,8 +120,8 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | Task | PR-sized outcome | Depends on | Acceptance evidence | Status | PR / commit / evidence |
 | --- | --- | --- | --- | --- | --- |
 | P4R-01 | Establish the clean branch, archived donor, ADR-068, epic governance, and APGAR complexity gate. | Phase 3 baseline | Exact archive/base identities; docs links; APGAR review; repository gates. | `done` | [PR #3](https://github.com/winstanley-industries/apgar/pull/3) |
-| P4R-02A1 | Add prepared per-net routing profiles retained by exact CompiledBoard contexts. | P4R-01 | Two distinct nets compile from one immutable snapshot with net-specific exact obstacle ownership; invalid profiles fail closed; downstream route/candidate consumers reject non-default contexts pending P4R-02A2. | `active` | [PR #5](https://github.com/winstanley-industries/apgar/pull/5) |
-| P4R-02A2 | Bind prepared-context identity through CPU/GPU producer evidence, route admission, and exact immutable-candidate admission. | P4R-02A1 | Distinct-net requests produce and exactly admit correctly attributed immutable candidates; relabeled or mismatched context evidence fails closed with a typed routing-profile mismatch rather than the temporary rule-bucket diagnostic; the Board IR schema owns the prepared-profile contract. | `planned` | — |
+| P4R-02A1 | Add prepared per-net routing profiles retained by exact CompiledBoard contexts. | P4R-01 | Two distinct nets compile from one immutable snapshot with net-specific exact obstacle ownership; invalid profiles fail closed; downstream route/candidate consumers reject non-default contexts pending P4R-02A2. | `done` | [PR #5](https://github.com/winstanley-industries/apgar/pull/5) |
+| P4R-02A2 | Bind prepared-context identity through CPU/GPU producer evidence, route admission, and exact immutable-candidate admission. | P4R-02A1 | Distinct-net requests produce and exactly admit correctly attributed immutable candidates; relabeled or mismatched context evidence fails closed with a typed routing-profile mismatch rather than the temporary rule-bucket diagnostic; the Board IR schema owns the prepared-profile contract. | `ready` | — |
 | P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2 | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `planned` | — |
 | P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `planned` | — |
 | P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `planned` | — |

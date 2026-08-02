@@ -118,6 +118,62 @@ void ExpectEveryCompiledLegalEdgeIsExactLegal(const BoardSnapshot& board,
   EXPECT_EQ(observed_legal_edges, compiled.telemetry().legal_directional_edges);
 }
 
+[[nodiscard]] std::optional<bool> ExactEdgeIsLegalForProfile(
+    const BoardSnapshot& board, const board_ir::RoutingProfile& routing_profile,
+    board_ir::LayerId layer, board_ir::Segment64 centerline) {
+  for (const board_ir::Obstacle& obstacle : board.ObstaclesOnLayer(layer)) {
+    if (obstacle.owner_net.has_value() && *obstacle.owner_net == routing_profile.net) {
+      continue;
+    }
+    const geometry::SegmentClearanceResult clearance = geometry::SweptTraceClearanceAtLeast(
+        centerline, obstacle.bounds, routing_profile.nominal_width, routing_profile.clearance);
+    if (!clearance.ok()) {
+      ADD_FAILURE() << clearance.detail;
+      return std::nullopt;
+    }
+    if (!clearance.clearance_satisfied) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void ExpectCompiledEdgesMatchPreparedProfile(const BoardSnapshot& board,
+                                             const CompiledBoard& compiled) {
+  std::uint64_t observed_edges = 0;
+  std::uint64_t observed_legal_edges = 0;
+  for (const SparseTile& tile : compiled.tiles()) {
+    for (const CompiledNode& node : tile.nodes) {
+      const LatticeIndex index = GlobalLatticeIndex(compiled.profile(), tile.key, node.local_index);
+      for (Direction direction : kStableDirectionOrder) {
+        if ((compiled.profile().heading_mask & HeadingFor(direction)) == 0) {
+          continue;
+        }
+        const DirectionDelta delta = DeltaFor(direction);
+        const LatticeIndex neighbor{.x = index.x + delta.x, .y = index.y + delta.y};
+        if (compiled.FindNode(tile.key.layer, neighbor.x, neighbor.y) == nullptr) {
+          continue;
+        }
+        ++observed_edges;
+        const std::optional<bool> exact =
+            ExactEdgeIsLegalForProfile(board, compiled.routing_profile(), tile.key.layer,
+                                       board_ir::Segment64{
+                                           .start = ExactPoint(compiled.profile(), index),
+                                           .end = ExactPoint(compiled.profile(), neighbor),
+                                       });
+        ASSERT_TRUE(exact.has_value());
+        const bool compiled_legal = (node.legal_edges & MaskFor(direction)) != 0;
+        EXPECT_EQ(compiled_legal, *exact)
+            << "layer=" << tile.key.layer << " x=" << index.x << " y=" << index.y
+            << " direction=" << static_cast<unsigned int>(direction);
+        observed_legal_edges += compiled_legal ? 1U : 0U;
+      }
+    }
+  }
+  EXPECT_EQ(observed_edges, compiled.telemetry().represented_directional_edges);
+  EXPECT_EQ(observed_legal_edges, compiled.telemetry().legal_directional_edges);
+}
+
 TEST(CompiledBoardTest, GeneratedMicrocasesNeverPublishFalseFreeEdges) {
   std::uint64_t generated_legal_edges = 0;
   for (std::int64_t obstacle_x = 20; obstacle_x <= 80; obstacle_x += 15) {
@@ -296,8 +352,23 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
   EXPECT_EQ(net_only_board.rule_bucket().identity,
             DeriveM1RuleBucket(board.data().routing_profile).identity);
   EXPECT_TRUE(net_only_board.EdgeIsLegal(0, 3, 0, Direction::kEast));
+  EXPECT_NE(candidates::AssociationsFor(board, net_only_board).routing_profile_fingerprint,
+            candidates::AssociationsFor(board, first).routing_profile_fingerprint);
+  EXPECT_EQ(candidates::AssociationsFor(board, net_only_board).rule_bucket_identity,
+            candidates::AssociationsFor(board, first).rule_bucket_identity);
   EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, net_only_board),
             routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
+
+  board_ir::RoutingProfile tightened_profile = board.data().routing_profile;
+  tightened_profile.clearance = 20;
+  CompileResult tightened_result =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), tightened_profile);
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(tightened_result));
+  const CompiledBoard tightened = std::get<CompiledBoard>(std::move(tightened_result));
+  EXPECT_TRUE(first.EdgeIsLegal(0, 2, 0, Direction::kEast));
+  EXPECT_FALSE(tightened.EdgeIsLegal(0, 2, 0, Direction::kEast));
+  ExpectCompiledEdgesMatchPreparedProfile(board, net_only_board);
+  ExpectCompiledEdgesMatchPreparedProfile(board, tightened);
 
   const routing::TwoTerminalRequestResult request_result =
       routing::BuildTwoTerminalRouteRequest(board, 0, 0);
