@@ -724,6 +724,7 @@ cc_test(
     srcs = [
         "tests/geometry_compiler/compiled_board_test.cc",
         "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
         "tests/support/compiler_builder.h",
         "tests/support/google_test.h",
     ],
@@ -731,6 +732,8 @@ cc_test(
     deps = [
         ":board_ir",
         ":candidate_contract",
+        ":cpu_astar",
+        ":cpu_route_evidence_test_support",
         ":exact_geometry",
         ":geometry_compiler",
         ":planar_route",

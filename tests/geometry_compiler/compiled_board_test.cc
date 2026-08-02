@@ -12,8 +12,10 @@
 #include "apgar/board_ir/board.h"
 #include "apgar/candidates/route_candidate.h"
 #include "apgar/geometry/exact.h"
+#include "apgar/routing/cpu_astar.h"
 #include "apgar/routing/planar_route.h"
 #include "tests/support/board_builder.h"
+#include "tests/support/candidate_builder.h"
 #include "tests/support/compiler_builder.h"
 #include "tests/support/google_test.h"
 
@@ -285,6 +287,40 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
   EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, second),
             routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
 
+  board_ir::RoutingProfile net_only_profile = board.data().routing_profile;
+  net_only_profile.net = kSecondNet;
+  CompileResult net_only_result =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), net_only_profile);
+  ASSERT_TRUE(std::holds_alternative<CompiledBoard>(net_only_result));
+  const CompiledBoard net_only_board = std::get<CompiledBoard>(std::move(net_only_result));
+  EXPECT_EQ(net_only_board.rule_bucket().identity,
+            DeriveM1RuleBucket(board.data().routing_profile).identity);
+  EXPECT_TRUE(net_only_board.EdgeIsLegal(0, 3, 0, Direction::kEast));
+  EXPECT_EQ(routing::ValidateCompiledBoardAssociation(board, net_only_board),
+            routing::CompiledBoardAssociationIssue::kRuleBucketMismatch);
+
+  const routing::TwoTerminalRequestResult request_result =
+      routing::BuildTwoTerminalRouteRequest(board, 0, 0);
+  ASSERT_TRUE(std::holds_alternative<routing::CpuRouteRequest>(request_result));
+  const routing::CpuRouteRequest request = std::get<routing::CpuRouteRequest>(request_result);
+  const routing::CpuRouteResult route_result =
+      routing::RouteWithCpuAStar(board, net_only_board, request);
+  ASSERT_TRUE(std::holds_alternative<routing::RouteFailure>(route_result));
+  EXPECT_EQ(std::get<routing::RouteFailure>(route_result).code,
+            routing::RouteFailureCode::kValidationFailed);
+
+  candidates::GeneratedRouteCandidate generated =
+      test_support::CandidateDraft(board, first, request);
+  const candidates::CandidateAdmissionResult admission = candidates::AdmitRouteCandidate(
+      candidates::CandidateAdmissionContext{
+          .board = board, .compiled_board = net_only_board, .request = request},
+      std::move(generated));
+  ASSERT_TRUE(std::holds_alternative<candidates::CandidateRejection>(admission));
+  const candidates::CandidateRejection& rejection =
+      std::get<candidates::CandidateRejection>(admission);
+  EXPECT_EQ(rejection.code, candidates::CandidateRejectionCode::kAssociationMismatch);
+  EXPECT_EQ(rejection.invariant_id, "candidate.associations.compiled_board.v1");
+
   board_ir::RoutingProfile restricted_headings = second_profile;
   restricted_headings.allowed_headings =
       static_cast<board_ir::HeadingMask>(board_ir::Heading::kHorizontal) |
@@ -295,6 +331,16 @@ TEST(CompiledBoardTest, PreparesAndCompilesDistinctNetExactContextsButDownstream
   EXPECT_EQ(std::get<CompileError>(restricted_result).code, CompileErrorCode::kInvalidProfile);
   EXPECT_EQ(std::get<CompileError>(restricted_result).detail,
             "Compiler headings are not allowed by the Board IR routing profile");
+
+  board_ir::RoutingProfile restricted_layers = board.data().routing_profile;
+  restricted_layers.allowed_layers = {31};
+  const CompileResult restricted_layer_result =
+      CompileBoard(board, test_support::DefaultCompilerProfile({0}), restricted_layers);
+  ASSERT_TRUE(std::holds_alternative<CompileError>(restricted_layer_result));
+  EXPECT_EQ(std::get<CompileError>(restricted_layer_result).code,
+            CompileErrorCode::kInvalidProfile);
+  EXPECT_EQ(std::get<CompileError>(restricted_layer_result).detail,
+            "Active-region layers must belong to the routing rule bucket");
 
   board_ir::RoutingProfile stale = second_profile;
   ++stale.net.generation;

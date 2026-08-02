@@ -39,7 +39,7 @@ std::optional<CompiledBoardAssociationIssue> ValidateCompiledBoardAssociation(
     return CompiledBoardAssociationIssue::kRuleBucketMismatch;
   }
   if (compiled_board.rule_bucket() !=
-      geometry_compiler::DeriveM1RuleBucket(compiled_board.routing_profile())) {
+      geometry_compiler::DeriveM1RuleBucket(board.data().routing_profile)) {
     return CompiledBoardAssociationIssue::kRuleBucketMismatch;
   }
   return std::nullopt;
