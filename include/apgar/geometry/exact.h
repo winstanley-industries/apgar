@@ -69,15 +69,12 @@ struct MovementValidationResult {
                                                         board_ir::LayerId layer,
                                                         board_ir::Segment64 centerline);
 
-namespace internal {
-
-// Exact oracle for a routing profile whose type proves Board IR preparation.
-// The source-snapshot binding is checked before any geometry is evaluated.
-[[nodiscard]] MovementValidationResult ValidateMovementForPreparedProfile(
+// Exact-oracle overload for a profile whose type proves Board IR preparation.
+// The source-snapshot binding is checked before any geometry is evaluated; the
+// three-argument overload above supplies the snapshot's default profile.
+[[nodiscard]] MovementValidationResult ValidateMovement(
     const board_ir::BoardSnapshot& board, const board_ir::PreparedRoutingProfile& routing_profile,
     board_ir::LayerId layer, board_ir::Segment64 centerline);
-
-}  // namespace internal
 
 }  // namespace apgar::geometry
 

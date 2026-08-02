@@ -284,7 +284,7 @@ the obstacle-interaction signature.
 
 ### 9.1 Compiler contract
 
-The compiler transforms an immutable Board IR snapshot into one or more immutable Compiled Board views. A view is parameterized by grid profile, heading set, rule-bucket set, obstacle-interaction signature (including routed-net identity when ownership changes legality), tile dimensions, and compiler version.
+The compiler transforms an immutable Board IR snapshot into one or more immutable Compiled Board views. A view is parameterized by grid profile, heading set, rule-bucket set, obstacle-interaction signature (routed-net identity in M1), tile dimensions, and compiler version.
 
 - **GC-001** A compiled legal edge MUST imply that its swept exact trace envelope is legal against all represented static obstacles.
 - **GC-002** Compiler conservatism MUST be measurable by comparing compiled reachability with exact local search on generated microcases.

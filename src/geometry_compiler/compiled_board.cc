@@ -308,6 +308,9 @@ RuleBucketV1 DeriveM1RuleBucket(const board_ir::RoutingProfile& profile) {
                               bucket.allowed_layers.end());
 
   board_ir::StableHashBuilder hash;
+  // V1 is the established numeric-rule identity, not the complete in-memory
+  // bucket key. Do not add routed_net under this domain: durable propagation
+  // requires a separately versioned identity or a V2 tag and schema bump.
   hash.AddString("APGAR-M1-RULE-BUCKET-V1");
   hash.AddI64(bucket.nominal_width);
   hash.AddI64(bucket.clearance);
@@ -457,9 +460,8 @@ CompileResult CompileBoard(const board_ir::BoardSnapshot& board, CompilerProfile
                        "Represented edge endpoint escaped the validated coordinate envelope");
         }
         const geometry::MovementValidationResult exact =
-            geometry::internal::ValidateMovementForPreparedProfile(
-                board, prepared_routing_profile, key.layer,
-                board_ir::Segment64{.start = *start, .end = *end});
+            geometry::ValidateMovement(board, prepared_routing_profile, key.layer,
+                                       board_ir::Segment64{.start = *start, .end = *end});
         if (exact.legal()) {
           source_mask |= MaskFor(direction);
           *neighbor_mask |= MaskFor(Opposite(direction));

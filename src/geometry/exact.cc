@@ -415,9 +415,9 @@ MovementValidationResult ValidateMovement(const board_ir::BoardSnapshot& board,
   return ValidateMovementForProfile(board, board.data().routing_profile, layer, centerline);
 }
 
-MovementValidationResult internal::ValidateMovementForPreparedProfile(
-    const board_ir::BoardSnapshot& board, const board_ir::PreparedRoutingProfile& prepared_profile,
-    board_ir::LayerId layer, board_ir::Segment64 centerline) {
+MovementValidationResult ValidateMovement(const board_ir::BoardSnapshot& board,
+                                          const board_ir::PreparedRoutingProfile& prepared_profile,
+                                          board_ir::LayerId layer, board_ir::Segment64 centerline) {
   if (prepared_profile.source_board_content_hash() != board.content_hash()) {
     return Failure(MovementViolationCode::kPreparedProfileSnapshotMismatch,
                    "Prepared routing profile belongs to a different Board IR snapshot");

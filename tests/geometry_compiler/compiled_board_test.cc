@@ -371,9 +371,6 @@ TEST(CompiledBoardTest, CanonicalizesPreparedProfileLayers) {
   const CompiledBoard repeat = std::get<CompiledBoard>(std::move(repeat_result));
   EXPECT_EQ(unsorted, sorted);
   EXPECT_EQ(unsorted, repeat);
-  EXPECT_EQ(unsorted.rule_bucket().identity, sorted.rule_bucket().identity);
-  EXPECT_EQ(routing::FingerprintRoutingProfile(unsorted.routing_profile()),
-            routing::FingerprintRoutingProfile(sorted.routing_profile()));
 }
 
 TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
@@ -391,8 +388,9 @@ TEST(CompiledBoardTest, CompilesNetSpecificObstacleOwnership) {
   EXPECT_EQ(second.rule_bucket(), DeriveM1RuleBucket(second_profile));
   EXPECT_EQ(first.rule_bucket().routed_net, board.data().routing_profile.net);
   EXPECT_EQ(second.rule_bucket().routed_net, kSecondNet);
-  EXPECT_EQ(second.rule_bucket().identity,
-            DeriveM1RuleBucket(board.data().routing_profile).identity);
+  EXPECT_EQ(second.rule_bucket().identity, first.rule_bucket().identity);
+  EXPECT_NE(routing::FingerprintRoutingProfile(second.routing_profile()),
+            routing::FingerprintRoutingProfile(board.data().routing_profile));
   EXPECT_FALSE(first.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(second.EdgeIsLegal(0, 3, 0, Direction::kEast));
   EXPECT_TRUE(first.EdgeIsLegal(0, 7, 0, Direction::kEast));
@@ -470,6 +468,14 @@ TEST(CompiledBoardTest, SeparatesRoutingProfileAndCompilerProfileErrors) {
             CompileErrorCode::kInvalidRoutingProfile);
   EXPECT_EQ(std::get<CompileError>(mismatched_snapshot).detail,
             "Prepared routing profile belongs to a different Board IR snapshot");
+
+  const CompileResult binding_precedes_profile_validation =
+      CompileBoard(revised_board, test_support::DefaultCompilerProfile({99}), second_prepared);
+  ASSERT_TRUE(std::holds_alternative<CompileError>(binding_precedes_profile_validation));
+  EXPECT_EQ(std::get<CompileError>(binding_precedes_profile_validation).code,
+            CompileErrorCode::kInvalidRoutingProfile);
+  EXPECT_EQ(std::get<CompileError>(binding_precedes_profile_validation).detail,
+            "Prepared routing profile belongs to a different Board IR snapshot");
 }
 
 TEST(CompiledBoardTest, PreparedExactOracleChecksSnapshotBindingDirectly) {
@@ -483,18 +489,23 @@ TEST(CompiledBoardTest, PreparedExactOracleChecksSnapshotBindingDirectly) {
   };
 
   const geometry::MovementValidationResult accepted =
-      geometry::internal::ValidateMovementForPreparedProfile(board, prepared, 0, kClearMovement);
+      geometry::ValidateMovement(board, prepared, 0, kClearMovement);
   EXPECT_TRUE(accepted.legal()) << accepted.detail;
 
   BoardData revised_data = MultiNetBoardData();
   ++revised_data.revision;
   const BoardSnapshot revised_board = Snapshot(std::move(revised_data));
   const geometry::MovementValidationResult rejected =
-      geometry::internal::ValidateMovementForPreparedProfile(revised_board, prepared, 0,
-                                                             kClearMovement);
+      geometry::ValidateMovement(revised_board, prepared, 0, kClearMovement);
   EXPECT_FALSE(rejected.legal());
   EXPECT_EQ(rejected.code, geometry::MovementViolationCode::kPreparedProfileSnapshotMismatch);
   EXPECT_EQ(rejected.detail, "Prepared routing profile belongs to a different Board IR snapshot");
+
+  const geometry::MovementValidationResult binding_precedes_geometry =
+      geometry::ValidateMovement(revised_board, prepared, 99, kClearMovement);
+  EXPECT_EQ(binding_precedes_geometry.code,
+            geometry::MovementViolationCode::kPreparedProfileSnapshotMismatch);
+  EXPECT_FALSE(binding_precedes_geometry.obstacle.has_value());
 }
 
 TEST(CompiledBoardTest, RejectsInvalidPreparedPerNetProfiles) {
