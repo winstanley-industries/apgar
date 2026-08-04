@@ -6,7 +6,7 @@
 | Outcome | `pending` |
 | Owner | APGAR maintainers |
 | Started | August 1, 2026 |
-| Last reviewed | August 3, 2026 ([PR #16](https://github.com/winstanley-industries/apgar/pull/16)) |
+| Last reviewed | August 3, 2026 ([PR #17](https://github.com/winstanley-industries/apgar/pull/17)) |
 | Active baseline | `1a0d6600111c44e7f915b039190f9125d37d4a06` |
 | Archived donor | `1f68ded7ff36547c3ffb8a0629482ad425786106` on `archive/phase4-pre-reset-2026-08-01` |
 | Governing architecture | [Global Allocator](../APGAR_Architecture_Specification_v0.1.md#14-global-allocator), [Benchmark Plan](../APGAR_Architecture_Specification_v0.1.md#26-benchmark-and-evaluation-plan), [Roadmap](../APGAR_Architecture_Specification_v0.1.md#29-implementation-roadmap) |
@@ -137,7 +137,7 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | P4R-02A2d | Bind the retained prepared context into the existing GPU invariant replay V1 artifact. | P4R-02A2c | Replay parsing and pre-launch association checks authenticate the retained routing-profile fingerprint; under ADR-009's unreleased-development rule, the checked-in V1 schema, producer, consumer, and artifact evolve atomically in place and older development layouts fail structural validation. | `done` | [PR #11](https://github.com/winstanley-industries/apgar/pull/11) |
 | P4R-02A2e | Move remaining temporary A1 evidence to native targets and make legacy numeric-rule readers explicit. | P4R-02A2d | Prepared exact-oracle trust-boundary cases live in the exact-geometry target; explicit headers and direct Bazel dependencies are present; durable producers/readers call `numeric_rule_identity()` and do not reinterpret the V1 scalar. | `done` | [PR #8](https://github.com/winstanley-industries/apgar/pull/8) |
 | P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2e | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `done` | [PR #16](https://github.com/winstanley-industries/apgar/pull/16) |
-| P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `active` | — |
+| P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `active` | [PR #17](https://github.com/winstanley-industries/apgar/pull/17) |
 | P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `planned` | — |
 | P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `planned` | — |
 | P4R-06 | Add bounded negotiated prices and a deterministic targeted-regeneration plan. | P4R-05 | Replayable price updates, stable hotset/targets, declared caps, and no generator-side global mutation. | `planned` | — |
