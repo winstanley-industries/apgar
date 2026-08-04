@@ -111,10 +111,11 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   `852c2c32416326c7c31445f2654a5146e9ec25c4`.
 - P4R-02B is complete in PR #16, P4R-03 is complete in PR #17, and P4R-04 is
   complete in [PR #18](https://github.com/winstanley-industries/apgar/pull/18)
-  at merge commit `e2add579b7b9c372ef012532185a69dc53dfe4e6`. P4R-05 is active on
-  the bounded CS-RR-v1 deterministic CPU sequential negotiated-routing
-  baseline. P4R-06 pricing, targeted regeneration, and later allocator work
-  remain closed.
+  at merge commit `e2add579b7b9c372ef012532185a69dc53dfe4e6`. P4R-05 is active in
+  [PR #19](https://github.com/winstanley-industries/apgar/pull/19) on the
+  bounded CS-RR-v1 deterministic CPU sequential negotiated-routing baseline.
+  P4R-06 pricing, targeted regeneration, and later allocator work remain
+  closed.
 
 ## Salvage ledger
 
@@ -142,7 +143,7 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2e | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `done` | [PR #16](https://github.com/winstanley-industries/apgar/pull/16) |
 | P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `done` | [PR #17](https://github.com/winstanley-industries/apgar/pull/17) |
 | P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `done` | [PR #18](https://github.com/winstanley-industries/apgar/pull/18) / `e2add579b7b9c372ef012532185a69dc53dfe4e6` |
-| P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `active` | — |
+| P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `active` | [PR #19](https://github.com/winstanley-industries/apgar/pull/19) |
 | P4R-06 | Add bounded negotiated prices and a deterministic targeted-regeneration plan. | P4R-05 | Replayable price updates, stable hotset/targets, declared caps, and no generator-side global mutation. | `planned` | — |
 | P4R-07 | Execute one targeted-regeneration epoch through exact admission and refreshed One-World selection. | P4R-06 | Authentic generated columns, atomic publication, rejection diagnostics, and independently reproduced outcome. | `planned` | — |
 | P4R-08 | Compose bounded epochs into the minimal reusable CPU allocation contender. | P4R-07 | Declared whole-session bounds, deterministic fixed point or typed stop, stable replay, and retained authoritative pools. | `planned` | — |
