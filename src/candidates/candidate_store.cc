@@ -38,6 +38,23 @@ using UWide = __uint128_t;
   return left.net() == right.net() && left.data().associations == right.data().associations;
 }
 
+[[nodiscard]] bool SameStoreSession(const CandidateAssociations& left,
+                                    const CandidateAssociations& right) noexcept {
+  return left.board_content_hash == right.board_content_hash &&
+         left.compiler_profile_fingerprint == right.compiler_profile_fingerprint &&
+         left.geometry_compiler_version == right.geometry_compiler_version;
+}
+
+[[nodiscard]] bool AssociationsBefore(const CandidateAssociations& left,
+                                      const CandidateAssociations& right) noexcept {
+  return std::tie(left.board_content_hash, left.compiler_profile_fingerprint,
+                  left.geometry_compiler_version, left.routing_profile_fingerprint,
+                  left.rule_bucket_identity) <
+         std::tie(right.board_content_hash, right.compiler_profile_fingerprint,
+                  right.geometry_compiler_version, right.routing_profile_fingerprint,
+                  right.rule_bucket_identity);
+}
+
 [[nodiscard]] bool RejectionBefore(const CandidateRejection& left,
                                    const CandidateRejection& right) noexcept {
   const auto key = [](const CandidateRejection& rejection) {
@@ -817,16 +834,26 @@ void AccumulateCandidateShape(const GeneratedRouteCandidate& candidate,
   return std::nullopt;
 }
 
-template <typename RequestAt, typename CandidateAt>
+template <typename CompiledAt, typename RequestAt, typename CandidateAt>
 [[nodiscard]] std::optional<CandidateRejection> PreflightAdmissionTransaction(
     const CandidateStoreConfig& config, const board_ir::BoardSnapshot& board,
-    const geometry_compiler::CompiledBoard& compiled_board, std::size_t item_count,
-    RequestAt&& request_at, CandidateAt&& candidate_at) {
-  const CandidateAssociations associations = AssociationsFor(board, compiled_board);
+    std::size_t item_count, CompiledAt&& compiled_at, RequestAt&& request_at,
+    CandidateAt&& candidate_at) {
+  CandidateAssociations associations;
+  associations.board_content_hash = board.content_hash();
   if (std::optional<CandidateRejection> rejection =
           PreflightAdmissionItemCount(config, associations, item_count);
       rejection.has_value()) {
     return rejection;
+  }
+  if (item_count > 0) {
+    associations = AssociationsFor(board, compiled_at(0));
+    for (std::size_t index = 1; index < item_count; ++index) {
+      const CandidateAssociations item_associations = AssociationsFor(board, compiled_at(index));
+      if (AssociationsBefore(item_associations, associations)) {
+        associations = item_associations;
+      }
+    }
   }
 
   CandidateTransactionShapeSummary shape_summary;
@@ -930,6 +957,7 @@ template <typename RequestAt, typename CandidateAt>
   for (std::size_t index = 0; index < item_count; ++index) {
     const GeneratedRouteCandidate& candidate = candidate_at(index);
     const routing::PlanarRouteRequest& request = request_at(index);
+    const geometry_compiler::CompiledBoard& compiled_board = compiled_at(index);
     const std::optional<std::uint64_t> candidate_bytes = ComputeCandidateLogicalBytes(candidate);
     if (!candidate_bytes.has_value() || !CheckedAddWork(*candidate_bytes, input_bytes)) {
       return TransactionRejection(associations, CandidateRejectionCode::kMemoryAccountingOverflow,
@@ -1115,7 +1143,10 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
     return {std::move(*rejection)};
   }
   if (std::optional<CandidateRejection> rejection = PreflightAdmissionTransaction(
-          config_, context.board, context.compiled_board, generated.size(),
+          config_, context.board, generated.size(),
+          [&context](std::size_t) -> const geometry_compiler::CompiledBoard& {
+            return context.compiled_board;
+          },
           [&context](std::size_t) -> const routing::PlanarRouteRequest& { return context.request; },
           [&generated](std::size_t index) -> const GeneratedRouteCandidate& {
             return generated[index];
@@ -1153,7 +1184,10 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     std::vector<CandidateAdmissionItem>&& items) {
   if (std::optional<CandidateRejection> rejection = PreflightAdmissionTransaction(
-          config_, board, compiled_board, items.size(),
+          config_, board, items.size(),
+          [&compiled_board](std::size_t) -> const geometry_compiler::CompiledBoard& {
+            return compiled_board;
+          },
           [&items](std::size_t index) -> const routing::PlanarRouteRequest& {
             return items[index].request;
           },
@@ -1173,6 +1207,86 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitBatch(
     admitted.push_back(AdmitRouteCandidate(context, std::move(item.generated)));
   }
 
+  return PublishAdmissionResults(std::move(admitted));
+}
+
+std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitDraftBatch(
+    const board_ir::BoardSnapshot& board, std::vector<CandidateStoreDraftItem>&& items) {
+  CandidateAssociations associations;
+  associations.board_content_hash = board.content_hash();
+  bool have_associations = false;
+  if (std::optional<CandidateRejection> rejection =
+          PreflightAdmissionItemCount(config_, associations, items.size());
+      rejection.has_value()) {
+    RetainRejection(*rejection);
+    return {std::move(*rejection)};
+  }
+  if (static_cast<UWide>(items.size()) > config_.maximum_rejection_items_per_transaction) {
+    CandidateRejection rejection = TransactionRejection(
+        associations, CandidateRejectionCode::kBudgetExhausted,
+        "candidate.store.draft_transaction.rejection_item_budget.v1",
+        "Mixed draft transaction could produce more diagnostics than its configured bound",
+        config_.maximum_rejection_items_per_transaction, static_cast<std::uint64_t>(items.size()));
+    RetainRejection(rejection);
+    return {std::move(rejection)};
+  }
+  for (const CandidateStoreDraftItem& item : items) {
+    if (item.compiled_board == nullptr) {
+      CandidateRejection rejection =
+          TransactionRejection(associations, CandidateRejectionCode::kInvalidInput,
+                               "candidate.store.draft_transaction.compiled_context.v1",
+                               "Mixed draft transaction contains a null prepared compiler context");
+      RetainRejection(rejection);
+      return {std::move(rejection)};
+    }
+  }
+  for (const CandidateStoreDraftItem& item : items) {
+    const CandidateAssociations item_associations = AssociationsFor(board, *item.compiled_board);
+    if (!have_associations || AssociationsBefore(item_associations, associations)) {
+      associations = item_associations;
+      have_associations = true;
+    }
+  }
+
+  std::vector<std::size_t> generated_indices;
+  generated_indices.reserve(items.size());
+  for (std::size_t index = 0; index < items.size(); ++index) {
+    if (std::holds_alternative<GeneratedRouteCandidate>(items[index].draft)) {
+      generated_indices.push_back(index);
+    }
+  }
+  if (std::optional<CandidateRejection> rejection = PreflightAdmissionTransaction(
+          config_, board, generated_indices.size(),
+          [&items,
+           &generated_indices](std::size_t index) -> const geometry_compiler::CompiledBoard& {
+            return *items[generated_indices[index]].compiled_board;
+          },
+          [&items, &generated_indices](std::size_t index) -> const routing::PlanarRouteRequest& {
+            return items[generated_indices[index]].request;
+          },
+          [&items, &generated_indices](std::size_t index) -> const GeneratedRouteCandidate& {
+            return std::get<GeneratedRouteCandidate>(items[generated_indices[index]].draft);
+          });
+      rejection.has_value()) {
+    RetainRejection(*rejection);
+    return {std::move(*rejection)};
+  }
+
+  std::vector<CandidateAdmissionResult> admitted;
+  admitted.reserve(items.size());
+  for (CandidateStoreDraftItem& item : items) {
+    if (auto* rejection = std::get_if<CandidateRejection>(&item.draft); rejection != nullptr) {
+      admitted.emplace_back(std::move(*rejection));
+      continue;
+    }
+    const CandidateAdmissionContext context{
+        .board = board,
+        .compiled_board = *item.compiled_board,
+        .request = item.request,
+    };
+    admitted.push_back(
+        AdmitRouteCandidate(context, std::get<GeneratedRouteCandidate>(std::move(item.draft))));
+  }
   return PublishAdmissionResults(std::move(admitted));
 }
 
@@ -1386,11 +1500,20 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
           "admission-transaction capacities");
       rejection->stage = CandidateLifecycleStage::kStored;
     } else if (bound_associations_.has_value() &&
-               *bound_associations_ != candidate.data().associations) {
+               !SameStoreSession(*bound_associations_, candidate.data().associations)) {
       rejection = StoreRejection(
           candidate, CandidateRejectionCode::kAssociationMismatch,
           "candidate.store.association_drift.v1",
-          "Candidate associations differ from this store's immutable session binding");
+          "Candidate resource-lattice associations differ from this store's immutable session "
+          "binding");
+      rejection->stage = CandidateLifecycleStage::kStored;
+    } else if (const auto net_binding = bound_net_associations_.find(candidate.net());
+               net_binding != bound_net_associations_.end() &&
+               net_binding->second != candidate.data().associations) {
+      rejection = StoreRejection(
+          candidate, CandidateRejectionCode::kAssociationMismatch,
+          "candidate.store.net_association_drift.v1",
+          "Candidate associations differ from this net's immutable exact-admission binding");
       rejection->stage = CandidateLifecycleStage::kStored;
     }
     if (rejection.has_value()) {
@@ -1401,11 +1524,46 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAcceptedBatchL
     eligible.push_back(std::make_shared<const RouteCandidate>(std::move(candidate)));
   }
 
-  // Exact admission establishes the immutable store session even when every
-  // eligible candidate is later rejected by duplicate, budget, or rollback
-  // policy. Retained-pool contents are not the association authority.
-  if (!bound_associations_.has_value() && !eligible.empty()) {
-    bound_associations_ = eligible.front()->data().associations;
+  // Exact admission establishes the immutable resource-lattice store session
+  // and one complete association per net even when every eligible candidate is
+  // later rejected by duplicate, budget, or rollback policy.
+  if (!eligible.empty()) {
+    if (!bound_associations_.has_value()) {
+      bound_associations_ = eligible.front()->data().associations;
+    }
+    const CandidateAssociations session = *bound_associations_;
+    auto first_mismatch =
+        std::ranges::stable_partition(eligible, [&session](const StoredCandidate& candidate) {
+          return SameStoreSession(session, candidate->data().associations);
+        });
+    for (auto mismatch = first_mismatch.begin(); mismatch != eligible.end(); ++mismatch) {
+      CandidateRejection rejection = StoreRejection(
+          **mismatch, CandidateRejectionCode::kAssociationMismatch,
+          "candidate.store.association_drift.v1",
+          "Candidate resource-lattice associations differ from this store's immutable session "
+          "binding");
+      canonical_rejections.push_back(rejection);
+      results.emplace_back(std::move(rejection));
+    }
+    eligible.erase(first_mismatch.begin(), eligible.end());
+
+    std::vector<StoredCandidate> net_eligible;
+    net_eligible.reserve(eligible.size());
+    for (StoredCandidate& candidate : eligible) {
+      const auto [binding, inserted] =
+          bound_net_associations_.try_emplace(candidate->net(), candidate->data().associations);
+      if (inserted || binding->second == candidate->data().associations) {
+        net_eligible.push_back(std::move(candidate));
+        continue;
+      }
+      CandidateRejection rejection = StoreRejection(
+          *candidate, CandidateRejectionCode::kAssociationMismatch,
+          "candidate.store.net_association_drift.v1",
+          "Candidate associations differ from this net's immutable exact-admission binding");
+      canonical_rejections.push_back(rejection);
+      results.emplace_back(std::move(rejection));
+    }
+    eligible = std::move(net_eligible);
   }
 
   // Candidate identity is global even though geometry/resource deduplication

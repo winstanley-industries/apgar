@@ -4,12 +4,16 @@ The Phase 3 candidate store owns immutable accepted RouteCandidate v1 objects
 and immutable CandidateRejection v1 records. It never mutates Board IR,
 CompiledBoard, congestion, prices, or allocator state.
 
-A store instance binds to the complete Board/compiler/routing/rule association
-set when its first exact-admitted RouteCandidate enters publication. The
-binding persists even if duplicate selection, retained-pool budgets, or a
-pinned-pool rollback subsequently reject every candidate in that publication.
-Later candidates with another association set are rejected; candidates from
-stale snapshots are never mixed into the same per-net pool or returned by
+A store instance binds to one Board/compiler physical resource lattice when its
+first exact-admitted RouteCandidate enters publication. It also binds each net
+to the complete Board/compiler/routing/rule association set of that net's first
+exact-admitted candidate. Distinct nets on the common lattice may therefore use
+distinct authenticated prepared routing profiles and numeric rule identities,
+while a single net pool may not drift between associations. Both bindings
+persist even if duplicate selection, retained-pool budgets, or a pinned-pool
+rollback subsequently reject every candidate in that publication. Candidates
+from another resource lattice or another association for an already-bound net
+are rejected; stale snapshots are never mixed into a pool returned by
 `Enumerate(net)`.
 
 ## Budgets and admission order
@@ -204,6 +208,18 @@ diagnostics produced while staging duplicate, retention, or rollback outcomes.
 Under the publication mutex, that complete canonical set is sorted once and
 merged/truncated against retained history once; it is not published through a
 sequence of shifting single-record insertions.
+
+The mixed-draft batch seam accepts one explicit prepared compiler context,
+request, and ownership-transferred builder result per item. A builder result is
+either an authenticated generated candidate or an ordinary structured
+rejection. The total item count is checked against both admission and possible
+diagnostic transaction caps before exact work. Generated items then receive the
+same aggregate byte/work preflight and exact admission as the existing batch
+seams. All successful admissions, builder diagnostics, exact-admission
+diagnostics, duplicate outcomes, and retention outcomes cross one
+`PublishAdmissionResults` boundary. The API never orders by compiler-context
+address or caller item order. A transaction-level preflight failure returns one
+candidate-less record and publishes no candidate from that call.
 
 ## CAN-002 retention seam
 

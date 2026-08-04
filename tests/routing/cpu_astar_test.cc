@@ -137,6 +137,31 @@ TEST(CpuAStarTest, RepeatedCompilationAndRoutingAreExternallyIdentical) {
             std::get<NormalizedCandidateGenerationPolicy>(normalized_default).identity);
 }
 
+TEST(CpuAStarTest, DeterministicWorkBoundAcceptsEqualityAndRejectsOneUnder) {
+  const BoardSnapshot board = Snapshot(test_support::ValidM1BoardData());
+  const CompiledBoard compiled = Compile(board, test_support::DefaultCompilerProfile());
+  const CpuRouteRequest request = TwoTerminalRequest(board, 0, 0);
+  const CpuRouteResult baseline = RouteWithCpuAStar(board, compiled, request);
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(baseline));
+  const std::uint64_t exact_work = std::get<CpuRoute>(baseline).telemetry.work_units;
+  ASSERT_GT(exact_work, 1U);
+
+  const CpuRouteResult equality = RouteWithCpuAStar(
+      board, compiled, request, CpuRouteWorkLimits{.maximum_work_units = exact_work});
+  ASSERT_TRUE(std::holds_alternative<CpuRoute>(equality));
+  EXPECT_EQ(std::get<CpuRoute>(equality), std::get<CpuRoute>(baseline));
+  EXPECT_FALSE(std::get<CpuRoute>(equality).telemetry.work_limit_exhausted);
+
+  const CpuRouteResult one_under = RouteWithCpuAStar(
+      board, compiled, request, CpuRouteWorkLimits{.maximum_work_units = exact_work - 1});
+  ASSERT_TRUE(std::holds_alternative<RouteFailure>(one_under));
+  const RouteFailure& failure = std::get<RouteFailure>(one_under);
+  EXPECT_EQ(failure.code, RouteFailureCode::kResourceExhausted);
+  ASSERT_TRUE(failure.telemetry.has_value());
+  EXPECT_TRUE(failure.telemetry->work_limit_exhausted);
+  EXPECT_LE(failure.telemetry->work_units, exact_work - 1);
+}
+
 TEST(CpuAStarTest, RoutesAndAuthenticatesTheRetainedPreparedNetContext) {
   const BoardSnapshot board = Snapshot(test_support::MultiNetM1BoardData());
   const CompiledBoard compiled = CompilePreparedNet(board, board.data().nets[1].ref,

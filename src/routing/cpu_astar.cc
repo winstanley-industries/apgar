@@ -80,6 +80,12 @@ struct QueueGreater {
       .code = code, .detail = std::move(detail), .obstacle = obstacle, .telemetry = telemetry};
 }
 
+[[nodiscard]] RouteFailure WorkLimitFailure(CpuRouteTelemetry telemetry) {
+  telemetry.work_limit_exhausted = true;
+  return Failure(RouteFailureCode::kResourceExhausted,
+                 "CPU A* exceeded its deterministic per-query work limit", std::nullopt, telemetry);
+}
+
 [[nodiscard]] RouteFailure AssociationFailure(CompiledBoardAssociationIssue issue) {
   switch (issue) {
     case CompiledBoardAssociationIssue::kSourceBoardMismatch:
@@ -316,7 +322,10 @@ std::optional<RouteFailure> ValidateReconstructedRouteWithNormalizedPolicy(
 
 CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
                                  const CompiledBoard& compiled_board,
-                                 const CpuRouteRequest& request) {
+                                 const CpuRouteRequest& request, CpuRouteWorkLimits limits) {
+  if (limits.maximum_work_units == 0) {
+    return Failure(RouteFailureCode::kInvalidRequest, "CPU route work limit must be positive");
+  }
   if (std::optional<CompiledBoardAssociationIssue> association =
           ValidatePreparedCompiledBoardAssociation(board, compiled_board);
       association.has_value()) {
@@ -376,9 +385,19 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       .peak_record_count = records.size(),
       .peak_queue_size = queue.size(),
   };
+  const auto consume_work = [&telemetry, limits](std::uint64_t units) noexcept {
+    if (units > limits.maximum_work_units - telemetry.work_units) {
+      return false;
+    }
+    telemetry.work_units += units;
+    return true;
+  };
 
   std::optional<SearchState> goal_state;
   while (!queue.empty()) {
+    if (!consume_work(1)) {
+      return WorkLimitFailure(telemetry);
+    }
     const QueueItem current = queue.top();
     queue.pop();
     ++telemetry.queue_pops;
@@ -389,6 +408,9 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
     if (current.state.x == goal.x && current.state.y == goal.y) {
       goal_state = current.state;
       break;
+    }
+    if (!consume_work(1)) {
+      return WorkLimitFailure(telemetry);
     }
     ++telemetry.expanded_states;
 
@@ -413,6 +435,9 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
       }
       if (!mask_is_legal) {
         continue;
+      }
+      if (!consume_work(1)) {
+        return WorkLimitFailure(telemetry);
       }
       ++telemetry.attempted_relaxations;
       const std::optional<EdgeResourceKey> resource = CanonicalPhysicalEdgeResource(
@@ -493,6 +518,9 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
   const std::uint64_t maximum_reconstruction_states =
       compiled_board.telemetry().represented_nodes * kStableDirectionOrder.size() + 1;
   while (true) {
+    if (!consume_work(1)) {
+      return WorkLimitFailure(telemetry);
+    }
     reversed_states.push_back(cursor);
     if (cursor == start_state) {
       break;
@@ -571,6 +599,10 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
   }
 
   std::vector<LayerSegment> segments = CoalesceSegments(request.start_layer, points);
+  if (segments.size() > limits.maximum_work_units - telemetry.work_units ||
+      !consume_work(static_cast<std::uint64_t>(segments.size()))) {
+    return WorkLimitFailure(telemetry);
+  }
   if (std::optional<RouteFailure> invalid =
           ValidateExactSegments(board, compiled_board, request, segments);
       invalid.has_value()) {
@@ -603,6 +635,12 @@ CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
           .segments = route.segments,
       });
   return route;
+}
+
+CpuRouteResult RouteWithCpuAStar(const board_ir::BoardSnapshot& board,
+                                 const CompiledBoard& compiled_board,
+                                 const CpuRouteRequest& request) {
+  return RouteWithCpuAStar(board, compiled_board, request, CpuRouteWorkLimits{});
 }
 
 }  // namespace apgar::routing
