@@ -6,7 +6,7 @@
 | Outcome | `pending` |
 | Owner | APGAR maintainers |
 | Started | August 1, 2026 |
-| Last reviewed | August 4, 2026 ([PR #18](https://github.com/winstanley-industries/apgar/pull/18)) |
+| Last reviewed | August 4, 2026 ([PR #19](https://github.com/winstanley-industries/apgar/pull/19)) |
 | Active baseline | `1a0d6600111c44e7f915b039190f9125d37d4a06` |
 | Archived donor | `1f68ded7ff36547c3ffb8a0629482ad425786106` on `archive/phase4-pre-reset-2026-08-01` |
 | Governing architecture | [Global Allocator](../APGAR_Architecture_Specification_v0.1.md#14-global-allocator), [Benchmark Plan](../APGAR_Architecture_Specification_v0.1.md#26-benchmark-and-evaluation-plan), [Roadmap](../APGAR_Architecture_Specification_v0.1.md#29-implementation-roadmap) |
@@ -109,12 +109,13 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   [#11](https://github.com/winstanley-industries/apgar/pull/11), and
   [#8](https://github.com/winstanley-industries/apgar/pull/8) at
   `852c2c32416326c7c31445f2654a5146e9ec25c4`.
-- P4R-02B is complete in PR #16, and P4R-03 is complete in PR #17 with
-  deterministic CPU One-World selection over explicit immutable prebuilt
-  pools. P4R-04 is active in
-  [PR #18](https://github.com/winstanley-industries/apgar/pull/18) on bounded
-  deterministic CPU candidate-pool preparation. P4R-05's sequential baseline,
-  pricing, and later allocator work remain closed.
+- P4R-02B is complete in PR #16, P4R-03 is complete in PR #17, and P4R-04 is
+  complete in [PR #18](https://github.com/winstanley-industries/apgar/pull/18)
+  at merge commit `e2add579b7b9c372ef012532185a69dc53dfe4e6`. P4R-05 is active in
+  [PR #19](https://github.com/winstanley-industries/apgar/pull/19) on the
+  bounded CS-RR-v1 deterministic CPU sequential negotiated-routing baseline.
+  P4R-06 pricing, targeted regeneration, and later allocator work remain
+  closed.
 
 ## Salvage ledger
 
@@ -141,8 +142,8 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | P4R-02A2e | Move remaining temporary A1 evidence to native targets and make legacy numeric-rule readers explicit. | P4R-02A2d | Prepared exact-oracle trust-boundary cases live in the exact-geometry target; explicit headers and direct Bazel dependencies are present; durable producers/readers call `numeric_rule_identity()` and do not reinterpret the V1 scalar. | `done` | [PR #8](https://github.com/winstanley-industries/apgar/pull/8) |
 | P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2e | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `done` | [PR #16](https://github.com/winstanley-industries/apgar/pull/16) |
 | P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `done` | [PR #17](https://github.com/winstanley-industries/apgar/pull/17) |
-| P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `active` | [PR #18](https://github.com/winstanley-industries/apgar/pull/18) |
-| P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `planned` | — |
+| P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `done` | [PR #18](https://github.com/winstanley-industries/apgar/pull/18) / `e2add579b7b9c372ef012532185a69dc53dfe4e6` |
+| P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `active` | [PR #19](https://github.com/winstanley-industries/apgar/pull/19) |
 | P4R-06 | Add bounded negotiated prices and a deterministic targeted-regeneration plan. | P4R-05 | Replayable price updates, stable hotset/targets, declared caps, and no generator-side global mutation. | `planned` | — |
 | P4R-07 | Execute one targeted-regeneration epoch through exact admission and refreshed One-World selection. | P4R-06 | Authentic generated columns, atomic publication, rejection diagnostics, and independently reproduced outcome. | `planned` | — |
 | P4R-08 | Compose bounded epochs into the minimal reusable CPU allocation contender. | P4R-07 | Declared whole-session bounds, deterministic fixed point or typed stop, stable replay, and retained authoritative pools. | `planned` | — |
@@ -164,10 +165,11 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   ownership authenticate the retained profile at their trust boundaries.
 - P4R-02B closed in PR #16 with independently checked resource usage and
   overuse semantics. P4R-03 closed in PR #17 with deterministic One-World
-  selection over explicit immutable prebuilt pools. P4R-04 may prepare those
-  pools through the bounded production CPU route/build/admit composition;
-  P4R-05's sequential baseline, pricing, and later work remain closed to their
-  sequenced tasks.
+  selection over explicit immutable prebuilt pools. P4R-04 closed in PR #18
+  with bounded production CPU route/build/admit pool preparation. P4R-05 may
+  implement only the named CS-RR-v1 sequential baseline; P4R-06 prices,
+  targeted regeneration, and later work remain closed to their sequenced
+  tasks.
 - Do not acquire readiness until P4R-12 freezes its workload identities,
   configurations, budgets, and rule. Do not begin campaign tooling or inspect
   heldout outcomes until readiness passes and P4R-14 freezes the campaign and
@@ -188,6 +190,7 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 
 - [ADR-068: Phase 4 Clean Reboot](../adr/ADR-068-phase4-clean-reboot.md)
 - [ADR-069: Deterministic CPU Candidate-Pool Preparation](../adr/ADR-069-deterministic-cpu-candidate-pool-preparation.md)
+- [ADR-070: Canonical Sequential Negotiated-Routing Baseline](../adr/ADR-070-canonical-sequential-negotiated-routing-baseline.md)
 - Archived donor: `archive/phase4-pre-reset-2026-08-01` at
   `1f68ded7ff36547c3ffb8a0629482ad425786106`
 - Active baseline: `1a0d6600111c44e7f915b039190f9125d37d4a06`

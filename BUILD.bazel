@@ -226,6 +226,27 @@ cc_library(
 )
 
 cc_library(
+    name = "cpu_sequential_negotiated_routing",
+    srcs = [
+        "src/allocator/cpu_sequential_negotiated_routing.cc",
+        "src/allocator/cpu_sequential_negotiated_routing_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/cpu_sequential_negotiated_routing.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":planar_route",
+        ":resource_accounting",
+    ],
+)
+
+cc_library(
     name = "gpu_planar_router",
     srcs = [
         "src/gpu/device_board.cc",
@@ -1118,6 +1139,31 @@ cc_test(
         ":cpu_candidate_pool_preparation",
         ":geometry_compiler",
         ":one_world_selection",
+        ":planar_route",
+        ":resource_accounting",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cpu_sequential_negotiated_routing_test",
+    size = "small",
+    srcs = [
+        "src/allocator/cpu_sequential_negotiated_routing_internal.h",
+        "tests/allocator/cpu_sequential_negotiated_routing_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":cpu_sequential_negotiated_routing",
+        ":geometry_compiler",
         ":planar_route",
         ":resource_accounting",
         ":tool_runfiles",
