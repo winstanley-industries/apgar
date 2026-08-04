@@ -365,6 +365,9 @@ struct OracleResult {
   std::uint32_t completed_passes = 0;
   std::uint64_t attempts = 0;
   std::uint64_t work = 0;
+  std::uint64_t snapshot_work = 0;
+  std::uint64_t astar_work = 0;
+  std::uint64_t maximum_query_work = 0;
 };
 
 // Exact-small independent reference. This directly composes Phase 3
@@ -406,6 +409,7 @@ struct OracleResult {
   OracleResult result;
   for (std::uint32_t pass = 0; pass < config.policy.maximum_passes; ++pass) {
     for (OracleState& state : states) {
+      std::uint64_t query_work = 0;
       if (state.candidate.has_value()) {
         for (const auto& [resource, units] : OracleExpand(*state.candidate)) {
           occupancy[resource] -= units;
@@ -420,21 +424,56 @@ struct OracleResult {
           config.policy.initial_present_cost + pass * config.policy.present_cost_increment;
       std::set<EdgeResourceKey> resources;
       for (const auto& [resource, units] : occupancy) {
+        ++query_work;
         static_cast<void>(units);
-        resources.insert(resource);
+        if (!std::ranges::binary_search(policy.banned_resources, resource)) {
+          resources.insert(resource);
+        }
       }
       for (const auto& [resource, cost] : history) {
+        ++query_work;
         static_cast<void>(cost);
-        resources.insert(resource);
+        if (!std::ranges::binary_search(policy.banned_resources, resource)) {
+          resources.insert(resource);
+        }
+      }
+      if (capacities.capacity_units() == 0 && present != 0) {
+        constexpr std::array<Direction, 4> kCanonicalDirections = {
+            Direction::kEast,
+            Direction::kNorthEast,
+            Direction::kNorth,
+            Direction::kNorthWest,
+        };
+        const CompiledBoard& compiled = *state.submitted->compiled_board;
+        for (const geometry_compiler::SparseTile& tile : compiled.tiles()) {
+          for (const geometry_compiler::CompiledNode& node : tile.nodes) {
+            const geometry_compiler::LatticeIndex source = geometry_compiler::GlobalLatticeIndex(
+                compiled.profile(), tile.key, node.local_index);
+            for (Direction direction : kCanonicalDirections) {
+              ++query_work;
+              const std::optional<EdgeResourceKey> resource =
+                  routing::CanonicalPhysicalEdgeResource(tile.key.layer, source, direction);
+              if (resource.has_value() && routing::ResourceExists(compiled, *resource) &&
+                  !std::ranges::binary_search(policy.banned_resources, *resource)) {
+                resources.insert(*resource);
+              }
+            }
+          }
+        }
       }
       for (const EdgeResourceKey& resource : resources) {
+        ++query_work;
         if (std::ranges::binary_search(policy.banned_resources, resource)) {
           continue;
         }
-        const std::uint64_t predicted = occupancy[resource] + 1;
+        const auto occupancy_found = occupancy.find(resource);
+        const std::uint64_t predicted =
+            (occupancy_found == occupancy.end() ? 0 : occupancy_found->second) + 1;
         const std::uint64_t overuse =
             predicted > capacities.capacity_units() ? predicted - capacities.capacity_units() : 0;
-        const std::uint64_t cost = history[resource] + present * overuse;
+        const auto history_found = history.find(resource);
+        const std::uint64_t cost =
+            (history_found == history.end() ? 0 : history_found->second) + present * overuse;
         if (cost != 0) {
           policy.resource_penalties.push_back(
               routing::ResourcePenalty{.resource = resource, .additional_cost = cost});
@@ -455,7 +494,12 @@ struct OracleResult {
       if (!std::holds_alternative<routing::CpuRoute>(route)) {
         std::abort();
       }
-      result.work += std::get<routing::CpuRoute>(route).telemetry.work_units;
+      const std::uint64_t astar_work = std::get<routing::CpuRoute>(route).telemetry.work_units;
+      result.snapshot_work += query_work;
+      result.astar_work += astar_work;
+      query_work += astar_work;
+      result.work += query_work;
+      result.maximum_query_work = std::max(result.maximum_query_work, query_work);
       ++result.attempts;
       candidates::CandidateDraftBuildResult draft = candidates::BuildGeneratedCandidateFromCpuRoute(
           context.board, *state.submitted->compiled_board, query, query_policy,
@@ -511,6 +555,9 @@ struct OracleResult {
     }
     prior_key = key;
     for (const ResourceUsage& use : result.accounting.resources) {
+      if (use.overuse_units == 0) {
+        continue;
+      }
       history[use.resource] += use.overuse_units * config.policy.historical_cost_increment;
     }
   }
@@ -553,6 +600,8 @@ TEST(CpuSequentialNegotiatedRoutingTest,
   EXPECT_EQ(production.completed_passes, oracle.completed_passes);
   EXPECT_EQ(production.route_attempts, oracle.attempts);
   EXPECT_EQ(production.cpu_work_units, oracle.work);
+  EXPECT_GT(oracle.snapshot_work, 0U);
+  EXPECT_EQ(oracle.work, oracle.snapshot_work + oracle.astar_work);
   const CpuSequentialRetainedRoute& flex =
       std::get<CpuSequentialRetainedRoute>(production.nets.front());
   EXPECT_TRUE(OracleExpand(flex.candidate)
@@ -568,6 +617,18 @@ TEST(CpuSequentialNegotiatedRoutingTest,
     final_candidates.push_back(&std::get<CpuSequentialRetainedRoute>(outcome).candidate);
   }
   EXPECT_EQ(production.accounting, OracleAccounting(capacities, final_candidates));
+
+  CpuSequentialNegotiatedRoutingConfig exact_query_work = config;
+  exact_query_work.limits.maximum_cpu_work_units_per_query = oracle.maximum_query_work;
+  EXPECT_EQ(
+      Success(RouteCpuSequentialNegotiated(context.board, capacities, requests, exact_query_work))
+          .accounting,
+      production.accounting);
+  --exact_query_work.limits.maximum_cpu_work_units_per_query;
+  EXPECT_EQ(
+      Failure(RouteCpuSequentialNegotiated(context.board, capacities, requests, exact_query_work))
+          .code,
+      CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted);
 }
 
 TEST(CpuSequentialNegotiatedRoutingTest,
@@ -747,6 +808,19 @@ TEST(CpuSequentialNegotiatedRoutingTest,
   ASSERT_NE(penalty, retained.candidate.data().policy.resource_penalties.end());
   EXPECT_EQ(penalty->additional_cost, 12U);
 
+  config.limits.maximum_cpu_work_units_per_query = result.cpu_work_units;
+  config.limits.maximum_aggregate_cpu_work_units = result.cpu_work_units;
+  EXPECT_EQ(
+      Success(RouteCpuSequentialNegotiated(context.board, Capacity(context, 0), requests, config))
+          .cpu_work_units,
+      result.cpu_work_units);
+  --config.limits.maximum_cpu_work_units_per_query;
+  EXPECT_EQ(
+      Failure(RouteCpuSequentialNegotiated(context.board, Capacity(context, 0), requests, config))
+          .code,
+      CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted);
+
+  config.limits.maximum_cpu_work_units_per_query = result.cpu_work_units;
   config.limits.maximum_congestion_cost_value = 11;
   EXPECT_EQ(
       Failure(RouteCpuSequentialNegotiated(context.board, Capacity(context, 0), requests, config))

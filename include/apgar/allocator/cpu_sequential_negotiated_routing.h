@@ -58,6 +58,9 @@ struct CanonicalSequentialRipUpAndReroutePolicyV1 {
 struct CpuSequentialNegotiatedRoutingLimits {
   std::uint64_t maximum_nets = 64;
   std::uint64_t maximum_total_attempts = 1'024;
+  // Total deterministic per-query CPU work: congestion-snapshot map entries,
+  // zero-capacity lattice-direction probes, cost evaluations, and production
+  // CPU A* telemetry. CPU A* receives exactly the remaining query budget.
   std::uint64_t maximum_cpu_work_units_per_query = 10'000'000;
   std::uint64_t maximum_aggregate_cpu_work_units = 10'240'000'000;
   std::uint64_t maximum_candidate_bytes_per_attempt = 1U * 1024U * 1024U;
@@ -146,6 +149,7 @@ struct CpuSequentialNegotiatedRouting {
   std::uint64_t run_identity = 0;
   std::uint32_t completed_passes = 0;
   std::uint64_t route_attempts = 0;
+  // Sum of deterministic congestion-snapshot work and production CPU A* work.
   std::uint64_t cpu_work_units = 0;
   std::uint64_t generated_candidate_bytes = 0;
   std::uint64_t retained_candidate_bytes = 0;

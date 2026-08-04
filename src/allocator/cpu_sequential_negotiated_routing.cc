@@ -292,6 +292,7 @@ using ExpansionResult =
 struct QueryCostSnapshot {
   std::uint64_t present_factor = 0;
   std::vector<routing::ResourcePenalty> congestion_costs;
+  std::uint64_t work_units = 0;
 };
 
 using SnapshotResult = std::variant<QueryCostSnapshot, CpuSequentialNegotiatedRoutingError>;
@@ -300,7 +301,8 @@ using SnapshotResult = std::variant<QueryCostSnapshot, CpuSequentialNegotiatedRo
     const NetState& state, std::uint32_t pass_index, std::uint64_t query_identity,
     const ResourceCapacityModel& capacities, const CpuSequentialNegotiatedRoutingConfig& config,
     const std::map<routing::EdgeResourceKey, std::uint64_t>& occupancy,
-    const std::map<routing::EdgeResourceKey, std::uint64_t>& historical_costs) {
+    const std::map<routing::EdgeResourceKey, std::uint64_t>& historical_costs,
+    std::uint64_t maximum_work_units) {
   const std::optional<std::uint64_t> present_increment =
       CheckedMultiply(pass_index, config.policy.present_cost_increment);
   if (!present_increment.has_value()) {
@@ -336,6 +338,28 @@ using SnapshotResult = std::variant<QueryCostSnapshot, CpuSequentialNegotiatedRo
       routing::kMaximumPolicyResourceEntries - base_resource_entries;
   std::set<routing::EdgeResourceKey> resources;
   std::size_t added_snapshot_entries = 0;
+  std::uint64_t snapshot_work_units = 0;
+  const auto consume_snapshot_work = [&]() {
+    if (snapshot_work_units == maximum_work_units) {
+      return false;
+    }
+    ++snapshot_work_units;
+    return true;
+  };
+  const auto snapshot_work_error = [&]() {
+    CpuSequentialNegotiatedRoutingError error =
+        Error(CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted,
+              "allocator.cpu_sequential.snapshot_work_bound.v1",
+              "Congestion-snapshot construction exhausted the per-query CPU work bound",
+              state.plan.submitted->request.net);
+    error.pass_index = pass_index;
+    error.query_identity = query_identity;
+    error.expected_value = maximum_work_units;
+    if (maximum_work_units != std::numeric_limits<std::uint64_t>::max()) {
+      error.actual_value = maximum_work_units + 1U;
+    }
+    return error;
+  };
   const auto add_snapshot_resource = [&](const routing::EdgeResourceKey& resource) {
     if (std::ranges::binary_search(state.plan.base_policy.policy.banned_resources, resource) ||
         resources.contains(resource)) {
@@ -354,6 +378,9 @@ using SnapshotResult = std::variant<QueryCostSnapshot, CpuSequentialNegotiatedRo
     return true;
   };
   for (const auto& [resource, usage] : occupancy) {
+    if (!consume_snapshot_work()) {
+      return snapshot_work_error();
+    }
     static_cast<void>(usage);
     if (!add_snapshot_resource(resource)) {
       CpuSequentialNegotiatedRoutingError error =
@@ -367,6 +394,9 @@ using SnapshotResult = std::variant<QueryCostSnapshot, CpuSequentialNegotiatedRo
     }
   }
   for (const auto& [resource, cost] : historical_costs) {
+    if (!consume_snapshot_work()) {
+      return snapshot_work_error();
+    }
     static_cast<void>(cost);
     if (!add_snapshot_resource(resource)) {
       CpuSequentialNegotiatedRoutingError error =
@@ -392,6 +422,9 @@ using SnapshotResult = std::variant<QueryCostSnapshot, CpuSequentialNegotiatedRo
         const geometry_compiler::LatticeIndex source =
             geometry_compiler::GlobalLatticeIndex(compiled.profile(), tile.key, node.local_index);
         for (geometry_compiler::Direction direction : kCanonicalDirections) {
+          if (!consume_snapshot_work()) {
+            return snapshot_work_error();
+          }
           const std::optional<routing::EdgeResourceKey> resource =
               routing::CanonicalPhysicalEdgeResource(tile.key.layer, source, direction);
           if (!resource.has_value() || !routing::ResourceExists(compiled, *resource)) {
@@ -412,9 +445,16 @@ using SnapshotResult = std::variant<QueryCostSnapshot, CpuSequentialNegotiatedRo
     }
   }
 
-  QueryCostSnapshot snapshot{.present_factor = present_factor, .congestion_costs = {}};
+  QueryCostSnapshot snapshot{
+      .present_factor = present_factor,
+      .congestion_costs = {},
+      .work_units = 0,
+  };
   snapshot.congestion_costs.reserve(resources.size());
   for (const routing::EdgeResourceKey& resource : resources) {
+    if (!consume_snapshot_work()) {
+      return snapshot_work_error();
+    }
     const auto usage_found = occupancy.find(resource);
     const std::uint64_t usage = usage_found == occupancy.end() ? 0 : usage_found->second;
     if (usage == std::numeric_limits<std::uint64_t>::max()) {
@@ -460,6 +500,7 @@ using SnapshotResult = std::variant<QueryCostSnapshot, CpuSequentialNegotiatedRo
           routing::ResourcePenalty{.resource = resource, .additional_cost = cost});
     }
   }
+  snapshot.work_units = snapshot_work_units;
   return snapshot;
 }
 
@@ -978,11 +1019,32 @@ struct CanonicalStateKey {
         };
 
         SnapshotResult snapshot_result = BuildQueryCostSnapshot(
-            state, pass_index, query_identity, capacities, config, occupancy, historical_costs);
+            state, pass_index, query_identity, capacities, config, occupancy, historical_costs,
+            config.limits.maximum_cpu_work_units_per_query);
         if (std::holds_alternative<CpuSequentialNegotiatedRoutingError>(snapshot_result)) {
           return std::get<CpuSequentialNegotiatedRoutingError>(std::move(snapshot_result));
         }
         const QueryCostSnapshot snapshot = std::get<QueryCostSnapshot>(std::move(snapshot_result));
+        if (!CheckedAdd(snapshot.work_units, &cpu_work_units)) {
+          return Error(CpuSequentialNegotiatedRoutingErrorCode::kArithmeticOverflow,
+                       "allocator.cpu_sequential.actual_work_overflow.v1",
+                       "Actual aggregate CPU work overflowed uint64", net);
+        }
+        if (cpu_work_units > config.limits.maximum_aggregate_cpu_work_units) {
+          return Error(CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted,
+                       "allocator.cpu_sequential.actual_work_bound.v1",
+                       "Actual aggregate CPU work exceeded its configured bound", net);
+        }
+        if (snapshot.work_units == config.limits.maximum_cpu_work_units_per_query) {
+          CpuSequentialNegotiatedRoutingError error =
+              Error(CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted,
+                    "allocator.cpu_sequential.query_work_bound.v1",
+                    "Congestion-snapshot work left no CPU A* work budget", net);
+          error.pass_index = pass_index;
+          error.query_identity = query_identity;
+          error.expected_value = config.limits.maximum_cpu_work_units_per_query;
+          return error;
+        }
         QueryPolicyResult policy_result =
             BuildQueryPolicy(state, pass_index, query_identity, snapshot,
                              config.limits.maximum_congestion_cost_value);
@@ -997,7 +1059,8 @@ struct CanonicalStateKey {
         routing::CpuRouteResult route_result = routing::RouteWithCpuAStar(
             board, *state.plan.submitted->compiled_board, query_request,
             routing::CpuRouteWorkLimits{
-                .maximum_work_units = config.limits.maximum_cpu_work_units_per_query,
+                .maximum_work_units =
+                    config.limits.maximum_cpu_work_units_per_query - snapshot.work_units,
             });
         if (auto* route = std::get_if<routing::CpuRoute>(&route_result); route != nullptr) {
           if (hooks.after_cpu_route != nullptr) {

@@ -59,6 +59,11 @@ CPU sequential negotiated-routing baseline.
   factor at zero capacity snapshots every legal, non-banned canonical edge in
   that net's retained compiler view; unoccupied edges are not silently free.
   The existing candidate-policy resource-entry ceiling bounds that expansion.
+- Query CPU work charges one deterministic unit for every occupancy/history
+  entry scanned, zero-capacity lattice direction probed, and snapshot resource
+  cost evaluated. Those units consume the per-query and aggregate CPU-work
+  budgets before production CPU A* receives the exact remainder, and the final
+  CPU-work total includes both components.
 - After a nonterminal completed pass, each resource overused in that pass's
   production P4R-02B accounting receives the checked update
   `historical_cost_increment * overuse_units`. History never changes during a
