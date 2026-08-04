@@ -367,6 +367,7 @@ struct OracleResult {
   std::uint64_t work = 0;
   std::uint64_t snapshot_work = 0;
   std::uint64_t astar_work = 0;
+  std::uint64_t maximum_snapshot_work = 0;
   std::uint64_t maximum_query_work = 0;
 };
 
@@ -494,6 +495,7 @@ struct OracleResult {
       if (!std::holds_alternative<routing::CpuRoute>(route)) {
         std::abort();
       }
+      result.maximum_snapshot_work = std::max(result.maximum_snapshot_work, query_work);
       const std::uint64_t astar_work = std::get<routing::CpuRoute>(route).telemetry.work_units;
       result.snapshot_work += query_work;
       result.astar_work += astar_work;
@@ -829,6 +831,38 @@ TEST(CpuSequentialNegotiatedRoutingTest,
 }
 
 TEST(CpuSequentialNegotiatedRoutingTest,
+     SnapshotOnlyExactQueryWorkExhaustionHasCompleteDeterministicDiagnostics) {
+  const SequentialContext context = MakeContext();
+  constexpr std::array<std::size_t, 1> kRequested = {0};
+  const std::vector<CpuSequentialNetRequest> requests = Requests(context, kRequested);
+  const ResourceCapacityModel capacities = Capacity(context, 0);
+  CpuSequentialNegotiatedRoutingConfig config = SmallConfig(1);
+  config.policy.initial_present_cost = 7;
+  const OracleResult oracle = ExactSmallOracle(context, capacities, requests, config);
+  ASSERT_GT(oracle.maximum_snapshot_work, 0U);
+
+  config.limits.maximum_cpu_work_units_per_query = oracle.maximum_snapshot_work;
+  const CpuSequentialNegotiatedRoutingError exact =
+      Failure(RouteCpuSequentialNegotiated(context.board, capacities, requests, config));
+  EXPECT_EQ(exact.code, CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted);
+  EXPECT_EQ(exact.invariant_id, "allocator.cpu_sequential.query_work_bound.v1");
+  EXPECT_EQ(exact.pass_index, 0U);
+  EXPECT_TRUE(exact.query_identity.has_value());
+  EXPECT_EQ(exact.expected_value, oracle.maximum_snapshot_work);
+  EXPECT_EQ(exact.actual_value, oracle.maximum_snapshot_work);
+
+  --config.limits.maximum_cpu_work_units_per_query;
+  const CpuSequentialNegotiatedRoutingError one_under =
+      Failure(RouteCpuSequentialNegotiated(context.board, capacities, requests, config));
+  EXPECT_EQ(one_under.code, CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted);
+  EXPECT_EQ(one_under.invariant_id, "allocator.cpu_sequential.snapshot_work_bound.v1");
+  EXPECT_EQ(one_under.pass_index, 0U);
+  EXPECT_TRUE(one_under.query_identity.has_value());
+  EXPECT_EQ(one_under.expected_value, oracle.maximum_snapshot_work - 1U);
+  EXPECT_EQ(one_under.actual_value, oracle.maximum_snapshot_work);
+}
+
+TEST(CpuSequentialNegotiatedRoutingTest,
      NetInputOrderPointerIdentityAndRepeatedExecutionAreNotSemantic) {
   const SequentialContext context = MakeContext();
   constexpr std::array<std::size_t, 3> kRequested = {0, 1, 2};
@@ -979,6 +1013,29 @@ TEST(CpuSequentialNegotiatedRoutingTest,
   --one_under.limits.maximum_aggregate_expanded_resource_uses;
   EXPECT_EQ(Failure(RouteCpuSequentialNegotiated(context.board, capacities, one, one_under)).code,
             CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted);
+}
+
+TEST(CpuSequentialNegotiatedRoutingTest,
+     MultiQueryAggregateWorkEnvelopeAcceptsExactEqualityAndRejectsOneUnder) {
+  const SequentialContext context = MakeContext();
+  constexpr std::array<std::size_t, 2> kTwo = {0, 2};
+  const std::vector<CpuSequentialNetRequest> two = Requests(context, kTwo);
+  const ResourceCapacityModel capacities = Capacity(context);
+  CpuSequentialNegotiatedRoutingConfig config = SmallConfig(1);
+  config.limits.maximum_total_attempts = 2;
+  const std::uint64_t exact_aggregate = 2U * config.limits.maximum_cpu_work_units_per_query;
+  config.limits.maximum_aggregate_cpu_work_units = exact_aggregate;
+  EXPECT_EQ(
+      Success(RouteCpuSequentialNegotiated(context.board, capacities, two, config)).route_attempts,
+      2U);
+
+  --config.limits.maximum_aggregate_cpu_work_units;
+  const CpuSequentialNegotiatedRoutingError one_under =
+      Failure(RouteCpuSequentialNegotiated(context.board, capacities, two, config));
+  EXPECT_EQ(one_under.code, CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted);
+  EXPECT_EQ(one_under.invariant_id, "allocator.cpu_sequential.aggregate_work_bound.v1");
+  EXPECT_EQ(one_under.expected_value, exact_aggregate - 1U);
+  EXPECT_EQ(one_under.actual_value, exact_aggregate);
 }
 
 TEST(CpuSequentialNegotiatedRoutingTest,

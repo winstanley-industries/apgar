@@ -1043,6 +1043,7 @@ struct CanonicalStateKey {
           error.pass_index = pass_index;
           error.query_identity = query_identity;
           error.expected_value = config.limits.maximum_cpu_work_units_per_query;
+          error.actual_value = snapshot.work_units;
           return error;
         }
         QueryPolicyResult policy_result =
