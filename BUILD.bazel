@@ -188,6 +188,20 @@ cc_library(
 )
 
 cc_library(
+    name = "one_world_selection",
+    srcs = ["src/allocator/one_world_selection.cc"],
+    hdrs = ["include/apgar/allocator/one_world_selection.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":resource_accounting",
+    ],
+)
+
+cc_library(
     name = "gpu_planar_router",
     srcs = [
         "src/gpu/device_board.cc",
@@ -1025,6 +1039,33 @@ cc_test(
         ":cpu_astar",
         ":cpu_route_evidence_test_support",
         ":geometry_compiler",
+        ":planar_route",
+        ":resource_accounting",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "one_world_selection_test",
+    size = "small",
+    srcs = [
+        "tests/allocator/one_world_selection_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":cpu_route_evidence_test_support",
+        ":geometry_compiler",
+        ":one_world_selection",
         ":planar_route",
         ":resource_accounting",
         ":tool_runfiles",
