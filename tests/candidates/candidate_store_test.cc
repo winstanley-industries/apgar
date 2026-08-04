@@ -80,6 +80,13 @@ class CandidateStoreTestPeer {
     return RouteCandidate(std::move(data));
   }
 
+  [[nodiscard]] static RouteCandidate ForceAssociations(const RouteCandidate& candidate,
+                                                        CandidateAssociations associations) {
+    GeneratedRouteCandidate data = candidate.data_;
+    data.associations = associations;
+    return RouteCandidate(std::move(data));
+  }
+
   static void ForcePool(CandidateStore& store, std::vector<RouteCandidate> candidates) {
     std::scoped_lock lock(store.mutex_);
     store.pools_.clear();
@@ -1689,6 +1696,69 @@ TEST(CandidateStoreTest, StoreRejectsAssociationDriftAcrossBoardSnapshots) {
   ASSERT_EQ(store.Enumerate(first.request.net).size(), 1U);
   EXPECT_EQ(store.Enumerate(first.request.net).front()->data().associations,
             AssociationsFor(first_board, first_compiled));
+}
+
+TEST(CandidateStoreTest, StoreRejectsAssociationDriftWithinOneNetPool) {
+  BoardData data = test_support::MultiNetM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const board_ir::EntityRef first_net = board.data().nets[0].ref;
+  const board_ir::EntityRef second_net = board.data().nets[1].ref;
+  const CompiledBoard first_compiled =
+      CompilePreparedNet(board, first_net, test_support::DefaultCompilerProfile({0}));
+  const CompiledBoard second_compiled =
+      CompilePreparedNet(board, second_net, test_support::DefaultCompilerProfile({0}));
+
+  const auto make_candidate = [&board](const CompiledBoard& compiled, board_ir::EntityRef net,
+                                       std::uint64_t query_identity) {
+    CpuRouteRequest request = RequestForNet(board, net);
+    request.candidate_policy.deterministic_seed = 0xCAFE;
+    const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
+    const routing::CpuRouteResult route = routing::RouteWithCpuAStar(board, compiled, request);
+    EXPECT_TRUE(std::holds_alternative<routing::CpuRoute>(route));
+    if (!std::holds_alternative<routing::CpuRoute>(route)) {
+      std::abort();
+    }
+    CandidateDraftBuildResult draft = BuildGeneratedCandidateFromCpuRoute(
+        board, compiled, request, policy, std::get<routing::CpuRoute>(route),
+        CandidateSchedulingIdentity{.batch_identity = 809, .query_identity = query_identity});
+    EXPECT_TRUE(std::holds_alternative<GeneratedRouteCandidate>(draft));
+    if (!std::holds_alternative<GeneratedRouteCandidate>(draft)) {
+      std::abort();
+    }
+    const CandidateAdmissionContext context{
+        .board = board, .compiled_board = compiled, .request = request};
+    return test_support::AcceptedCandidate(context,
+                                           std::get<GeneratedRouteCandidate>(std::move(draft)));
+  };
+
+  const RouteCandidate first = make_candidate(first_compiled, first_net, 1);
+  const RouteCandidate second = make_candidate(second_compiled, second_net, 2);
+  const CandidateAssociations& first_associations = first.data().associations;
+  const CandidateAssociations& second_associations = second.data().associations;
+  ASSERT_EQ(first_associations.board_content_hash, second_associations.board_content_hash);
+  ASSERT_EQ(first_associations.compiler_profile_fingerprint,
+            second_associations.compiler_profile_fingerprint);
+  ASSERT_EQ(first_associations.geometry_compiler_version,
+            second_associations.geometry_compiler_version);
+  ASSERT_NE(first_associations, second_associations);
+
+  CandidateStore store(StoreConfig(2));
+  ASSERT_TRUE(
+      std::holds_alternative<StoredCandidate>(CandidateStoreTestPeer::Publish(store, first)));
+  const RouteCandidate drifted =
+      CandidateStoreTestPeer::ForceAssociations(first, second_associations);
+  const CandidateStoreAdmissionResult drift = CandidateStoreTestPeer::Publish(store, drifted);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(drift));
+  EXPECT_EQ(std::get<CandidateRejection>(drift).code, CandidateRejectionCode::kAssociationMismatch);
+  EXPECT_EQ(std::get<CandidateRejection>(drift).invariant_id,
+            "candidate.store.net_association_drift.v1");
+  ASSERT_EQ(store.Enumerate(first_net).size(), 1U);
+
+  const CandidateStoreAdmissionResult distinct_net = CandidateStoreTestPeer::Publish(store, second);
+  ASSERT_TRUE(std::holds_alternative<StoredCandidate>(distinct_net));
+  ASSERT_EQ(store.Enumerate(second_net).size(), 1U);
+  EXPECT_EQ(store.Enumerate(second_net).front()->data().associations, second_associations);
 }
 
 TEST(CandidateStoreTest, MixedDraftBatchPublishesPreparedNetContextsOnOneResourceLattice) {
