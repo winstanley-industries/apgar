@@ -835,14 +835,13 @@ struct CanonicalStateKey {
     std::string_view bound_id;
     std::string_view detail;
   };
-  const std::array<ProductBound, 3> product_bounds = {
-      ProductBound{
-          .per_item = config.limits.maximum_cpu_work_units_per_query,
-          .aggregate = config.limits.maximum_aggregate_cpu_work_units,
-          .overflow_id = "allocator.cpu_sequential.aggregate_work_overflow.v1",
-          .bound_id = "allocator.cpu_sequential.aggregate_work_bound.v1",
-          .detail = "Configured attempts exceed the aggregate CPU work bound",
-      },
+  if (!CheckedMultiply(*maximum_attempts, config.limits.maximum_cpu_work_units_per_query)
+           .has_value()) {
+    return Error(CpuSequentialNegotiatedRoutingErrorCode::kArithmeticOverflow,
+                 "allocator.cpu_sequential.aggregate_work_overflow.v1",
+                 "Configured aggregate CPU-work multiplication overflowed uint64");
+  }
+  const std::array<ProductBound, 2> product_bounds = {
       ProductBound{
           .per_item = config.limits.maximum_candidate_bytes_per_attempt,
           .aggregate = config.limits.maximum_aggregate_generated_candidate_bytes,
@@ -978,6 +977,18 @@ struct CanonicalStateKey {
     std::uint64_t retained_candidate_bytes = 0;
     std::uint64_t expanded_resource_uses = 0;
     std::uint32_t completed_passes = 0;
+    const auto actual_work_bound_error = [&](board_ir::EntityRef net, std::uint32_t pass_index,
+                                             std::uint64_t query_identity) {
+      CpuSequentialNegotiatedRoutingError error =
+          Error(CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted,
+                "allocator.cpu_sequential.actual_work_bound.v1",
+                "Actual aggregate CPU work exceeded its configured bound", net);
+      error.pass_index = pass_index;
+      error.query_identity = query_identity;
+      error.expected_value = config.limits.maximum_aggregate_cpu_work_units;
+      error.actual_value = cpu_work_units;
+      return error;
+    };
 
     for (std::uint32_t pass_index = 0; pass_index < config.policy.maximum_passes; ++pass_index) {
       for (NetState& state : states) {
@@ -1031,9 +1042,7 @@ struct CanonicalStateKey {
                        "Actual aggregate CPU work overflowed uint64", net);
         }
         if (cpu_work_units > config.limits.maximum_aggregate_cpu_work_units) {
-          return Error(CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted,
-                       "allocator.cpu_sequential.actual_work_bound.v1",
-                       "Actual aggregate CPU work exceeded its configured bound", net);
+          return actual_work_bound_error(net, pass_index, query_identity);
         }
         if (snapshot.work_units == config.limits.maximum_cpu_work_units_per_query) {
           CpuSequentialNegotiatedRoutingError error =
@@ -1074,9 +1083,7 @@ struct CanonicalStateKey {
                          "Actual aggregate CPU work overflowed uint64", net);
           }
           if (cpu_work_units > config.limits.maximum_aggregate_cpu_work_units) {
-            return Error(CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted,
-                         "allocator.cpu_sequential.actual_work_bound.v1",
-                         "Actual aggregate CPU work exceeded its configured bound", net);
+            return actual_work_bound_error(net, pass_index, query_identity);
           }
 
           candidates::CandidateDraftBuildResult draft =
@@ -1206,9 +1213,7 @@ struct CanonicalStateKey {
           }
         }
         if (cpu_work_units > config.limits.maximum_aggregate_cpu_work_units) {
-          return Error(CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted,
-                       "allocator.cpu_sequential.actual_work_bound.v1",
-                       "Actual aggregate CPU work exceeded its configured bound", net);
+          return actual_work_bound_error(net, pass_index, query_identity);
         }
         if (failure.code == routing::RouteFailureCode::kResourceExhausted) {
           CpuSequentialNegotiatedRoutingError error =

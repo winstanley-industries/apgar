@@ -64,6 +64,11 @@ CPU sequential negotiated-routing baseline.
   cost evaluated. Those units consume the per-query and aggregate CPU-work
   budgets before production CPU A* receives the exact remainder, and the final
   CPU-work total includes both components.
+- The per-query and aggregate CPU-work ceilings are independent: preflight
+  checks the attempt/query product for arithmetic overflow, while the aggregate
+  ceiling is enforced against actual cumulative snapshot and A* work after
+  every charge. It may therefore be smaller than the worst-case attempt/query
+  product without making the configuration invalid.
 - After a nonterminal completed pass, each resource overused in that pass's
   production P4R-02B accounting receives the checked update
   `historical_cost_increment * overuse_units`. History never changes during a

@@ -62,6 +62,7 @@ struct CpuSequentialNegotiatedRoutingLimits {
   // zero-capacity lattice-direction probes, cost evaluations, and production
   // CPU A* telemetry. CPU A* receives exactly the remaining query budget.
   std::uint64_t maximum_cpu_work_units_per_query = 10'000'000;
+  // Independent total bound enforced against actual cumulative query work.
   std::uint64_t maximum_aggregate_cpu_work_units = 10'240'000'000;
   std::uint64_t maximum_candidate_bytes_per_attempt = 1U * 1024U * 1024U;
   std::uint64_t maximum_aggregate_generated_candidate_bytes = 1U * 1024U * 1024U * 1024U;

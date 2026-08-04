@@ -1016,26 +1016,35 @@ TEST(CpuSequentialNegotiatedRoutingTest,
 }
 
 TEST(CpuSequentialNegotiatedRoutingTest,
-     MultiQueryAggregateWorkEnvelopeAcceptsExactEqualityAndRejectsOneUnder) {
+     MultiQueryActualAggregateWorkAcceptsExactEqualityAndRejectsOneUnder) {
   const SequentialContext context = MakeContext();
   constexpr std::array<std::size_t, 2> kTwo = {0, 2};
   const std::vector<CpuSequentialNetRequest> two = Requests(context, kTwo);
   const ResourceCapacityModel capacities = Capacity(context);
   CpuSequentialNegotiatedRoutingConfig config = SmallConfig(1);
   config.limits.maximum_total_attempts = 2;
-  const std::uint64_t exact_aggregate = 2U * config.limits.maximum_cpu_work_units_per_query;
-  config.limits.maximum_aggregate_cpu_work_units = exact_aggregate;
+  const OracleResult oracle = ExactSmallOracle(context, capacities, two, config);
+  const CpuSequentialNegotiatedRouting observed =
+      Success(RouteCpuSequentialNegotiated(context.board, capacities, two, config));
+  ASSERT_EQ(observed.route_attempts, 2U);
+  ASSERT_EQ(observed.cpu_work_units, oracle.work);
+  ASSERT_GT(oracle.work, 1U);
+  ASSERT_LT(oracle.maximum_query_work, oracle.work - 1U);
+
+  config.limits.maximum_aggregate_cpu_work_units = oracle.work;
   EXPECT_EQ(
-      Success(RouteCpuSequentialNegotiated(context.board, capacities, two, config)).route_attempts,
-      2U);
+      Success(RouteCpuSequentialNegotiated(context.board, capacities, two, config)).cpu_work_units,
+      oracle.work);
 
   --config.limits.maximum_aggregate_cpu_work_units;
   const CpuSequentialNegotiatedRoutingError one_under =
       Failure(RouteCpuSequentialNegotiated(context.board, capacities, two, config));
   EXPECT_EQ(one_under.code, CpuSequentialNegotiatedRoutingErrorCode::kBoundExhausted);
-  EXPECT_EQ(one_under.invariant_id, "allocator.cpu_sequential.aggregate_work_bound.v1");
-  EXPECT_EQ(one_under.expected_value, exact_aggregate - 1U);
-  EXPECT_EQ(one_under.actual_value, exact_aggregate);
+  EXPECT_EQ(one_under.invariant_id, "allocator.cpu_sequential.actual_work_bound.v1");
+  EXPECT_EQ(one_under.pass_index, 0U);
+  EXPECT_TRUE(one_under.query_identity.has_value());
+  EXPECT_EQ(one_under.expected_value, oracle.work - 1U);
+  EXPECT_EQ(one_under.actual_value, oracle.work);
 }
 
 TEST(CpuSequentialNegotiatedRoutingTest,
