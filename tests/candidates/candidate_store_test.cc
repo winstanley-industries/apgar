@@ -147,7 +147,9 @@ using geometry_compiler::CompiledBoard;
 using routing::CpuRouteRequest;
 using routing::LayerSegment;
 using test_support::Compile;
+using test_support::CompilePreparedNet;
 using test_support::NormalizePolicy;
+using test_support::RequestForNet;
 using test_support::Snapshot;
 using test_support::TwoTerminalRequest;
 
@@ -1687,6 +1689,95 @@ TEST(CandidateStoreTest, StoreRejectsAssociationDriftAcrossBoardSnapshots) {
   ASSERT_EQ(store.Enumerate(first.request.net).size(), 1U);
   EXPECT_EQ(store.Enumerate(first.request.net).front()->data().associations,
             AssociationsFor(first_board, first_compiled));
+}
+
+TEST(CandidateStoreTest, MixedDraftBatchPublishesPreparedNetContextsOnOneResourceLattice) {
+  BoardData data = test_support::MultiNetM1BoardData();
+  data.obstacles.clear();
+  const BoardSnapshot board = Snapshot(std::move(data));
+  const board_ir::EntityRef first_net = board.data().nets[0].ref;
+  const board_ir::EntityRef second_net = board.data().nets[1].ref;
+  const CompiledBoard first_compiled =
+      CompilePreparedNet(board, first_net, test_support::DefaultCompilerProfile({0}));
+  const CompiledBoard second_compiled =
+      CompilePreparedNet(board, second_net, test_support::DefaultCompilerProfile({0}));
+  ASSERT_EQ(first_compiled.compiler_profile_fingerprint(),
+            second_compiled.compiler_profile_fingerprint());
+  ASSERT_NE(
+      routing::FingerprintRoutingProfile(first_compiled.prepared_routing_profile().profile()),
+      routing::FingerprintRoutingProfile(second_compiled.prepared_routing_profile().profile()));
+
+  const auto make_item = [&board](const CompiledBoard& compiled, board_ir::EntityRef net,
+                                  std::uint64_t query_identity) {
+    CpuRouteRequest request = RequestForNet(board, net);
+    request.candidate_policy.deterministic_seed = 0xCAFE;
+    const routing::NormalizedCandidateGenerationPolicy policy = NormalizePolicy(compiled, request);
+    const routing::CpuRouteResult route = routing::RouteWithCpuAStar(board, compiled, request);
+    EXPECT_TRUE(std::holds_alternative<routing::CpuRoute>(route));
+    if (!std::holds_alternative<routing::CpuRoute>(route)) {
+      std::abort();
+    }
+    CandidateDraftBuildResult draft = BuildGeneratedCandidateFromCpuRoute(
+        board, compiled, request, policy, std::get<routing::CpuRoute>(route),
+        CandidateSchedulingIdentity{.batch_identity = 808, .query_identity = query_identity});
+    EXPECT_TRUE(std::holds_alternative<GeneratedRouteCandidate>(draft));
+    return CandidateStoreDraftItem{
+        .compiled_board = &compiled,
+        .request = std::move(request),
+        .draft = std::move(draft),
+    };
+  };
+
+  CandidateStore store(StoreConfig());
+  std::vector<CandidateStoreDraftItem> items;
+  items.push_back(make_item(second_compiled, second_net, 2));
+  items.push_back(make_item(first_compiled, first_net, 1));
+  const std::vector<CandidateStoreAdmissionResult> results =
+      store.AdmitDraftBatch(board, std::move(items));
+
+  ASSERT_EQ(results.size(), 2U);
+  EXPECT_TRUE(std::ranges::all_of(results, [](const CandidateStoreAdmissionResult& result) {
+    return std::holds_alternative<StoredCandidate>(result);
+  }));
+  ASSERT_EQ(store.Enumerate(first_net).size(), 1U);
+  ASSERT_EQ(store.Enumerate(second_net).size(), 1U);
+  EXPECT_NE(store.Enumerate(first_net).front()->data().associations.routing_profile_fingerprint,
+            store.Enumerate(second_net).front()->data().associations.routing_profile_fingerprint);
+
+  CandidateStore permuted_store(StoreConfig());
+  std::vector<CandidateStoreDraftItem> permuted_items;
+  permuted_items.push_back(make_item(first_compiled, first_net, 1));
+  permuted_items.push_back(make_item(second_compiled, second_net, 2));
+  const std::vector<CandidateStoreAdmissionResult> permuted_results =
+      permuted_store.AdmitDraftBatch(board, std::move(permuted_items));
+  ASSERT_EQ(permuted_results.size(), results.size());
+  EXPECT_TRUE(
+      std::ranges::all_of(permuted_results, [](const CandidateStoreAdmissionResult& result) {
+        return std::holds_alternative<StoredCandidate>(result);
+      }));
+  EXPECT_EQ(Ids(permuted_store.Enumerate(first_net)), Ids(store.Enumerate(first_net)));
+  EXPECT_EQ(Ids(permuted_store.Enumerate(second_net)), Ids(store.Enumerate(second_net)));
+
+  const auto rejected_transaction = [&](bool reverse) {
+    CandidateStoreConfig config = StoreConfig();
+    config.maximum_admission_input_bytes_per_transaction = 1;
+    CandidateStore bounded_store(config);
+    std::vector<CandidateStoreDraftItem> bounded_items;
+    bounded_items.push_back(make_item(first_compiled, first_net, 1));
+    bounded_items.push_back(make_item(second_compiled, second_net, 2));
+    if (reverse) {
+      std::ranges::reverse(bounded_items);
+    }
+    std::vector<CandidateStoreAdmissionResult> bounded_results =
+        bounded_store.AdmitDraftBatch(board, std::move(bounded_items));
+    EXPECT_EQ(bounded_results.size(), 1U);
+    EXPECT_TRUE(std::holds_alternative<CandidateRejection>(bounded_results.front()));
+    if (!std::holds_alternative<CandidateRejection>(bounded_results.front())) {
+      std::abort();
+    }
+    return std::get<CandidateRejection>(std::move(bounded_results.front()));
+  };
+  EXPECT_EQ(rejected_transaction(false), rejected_transaction(true));
 }
 
 }  // namespace

@@ -31,6 +31,9 @@ architecture explicitly.
   PR sequence, and stop gates.
 - `adr/ADR-068-phase4-clean-reboot.md`: accepted clean-restart decision and
   archived-lineage boundary.
+- `adr/ADR-069-deterministic-cpu-candidate-pool-preparation.md`: bounded,
+  worker-invariant production CPU candidate-pool preparation and mixed-draft
+  publication boundary.
 - `adr/ADR-008-exact-coordinate-arithmetic.md`: accepted arithmetic envelope,
   KiCad fixture unit scale, and exact boundary semantics for Board IR v1.
 - `adr/ADR-009-m1-sparse-field-and-planar-reference-semantics.md`: accepted

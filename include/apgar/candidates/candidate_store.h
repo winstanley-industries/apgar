@@ -66,6 +66,16 @@ struct CandidateAdmissionItem {
   GeneratedRouteCandidate generated;
 };
 
+// One canonical invocation item whose prepared compiler context is explicit.
+// A producer-side rejection and a successful draft use the same stable batch
+// publication boundary; the pointer is borrowed only for the duration of the
+// call and its address is never part of ordering or identity.
+struct CandidateStoreDraftItem {
+  const geometry_compiler::CompiledBoard* compiled_board = nullptr;
+  routing::PlanarRouteRequest request;
+  CandidateDraftBuildResult draft;
+};
+
 // A total, versioned rank. Lower values are preferred. No comparison depends
 // on insertion order, pointer identity, or hash-table iteration.
 [[nodiscard]] bool CandidateRanksBefore(const RouteCandidate& left,
@@ -98,6 +108,8 @@ class CandidateStore {
   [[nodiscard]] std::vector<CandidateStoreAdmissionResult> AdmitBatch(
       const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
       std::vector<CandidateAdmissionItem>&& items);
+  [[nodiscard]] std::vector<CandidateStoreAdmissionResult> AdmitDraftBatch(
+      const board_ir::BoardSnapshot& board, std::vector<CandidateStoreDraftItem>&& items);
 
   [[nodiscard]] std::vector<StoredCandidate> Enumerate(board_ir::EntityRef net) const;
   [[nodiscard]] std::vector<CandidateRejection> Rejections() const;
@@ -158,7 +170,12 @@ class CandidateStore {
   std::vector<CandidateRejection> rejections_;
   std::set<PinKey> pins_;
   std::map<CandidateId, std::uint64_t> pin_counts_;
+  // The store session binds one common physical resource lattice and one
+  // complete exact-admission association per net. Distinct nets may therefore
+  // use their own authenticated prepared routing profiles without permitting
+  // association drift inside a published net pool.
   std::optional<CandidateAssociations> bound_associations_;
+  std::map<board_ir::EntityRef, CandidateAssociations, NetLess> bound_net_associations_;
   // Deterministic test instrumentation: candidate-level publication work for
   // the most recent transaction. Unrelated pools must not affect this value.
   std::uint64_t last_publication_candidate_inspections_ = 0;

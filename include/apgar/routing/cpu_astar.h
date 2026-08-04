@@ -2,6 +2,7 @@
 #define APGAR_ROUTING_CPU_ASTAR_H_
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -26,6 +27,11 @@ enum class RouteFailureCode : std::uint8_t {
 };
 
 struct CpuRouteTelemetry {
+  // Deterministic bounded-work vocabulary for production CPU A*: one unit
+  // per queue pop, expanded state, attempted relaxation, reconstructed state,
+  // and exact segment validation.
+  std::uint64_t work_units = 0;
+  bool work_limit_exhausted = false;
   std::uint64_t queue_pops = 0;
   std::uint64_t expanded_states = 0;
   std::uint64_t attempted_relaxations = 0;
@@ -34,6 +40,12 @@ struct CpuRouteTelemetry {
   std::uint64_t peak_queue_size = 0;
 
   friend bool operator==(const CpuRouteTelemetry&, const CpuRouteTelemetry&) = default;
+};
+
+struct CpuRouteWorkLimits {
+  std::uint64_t maximum_work_units = std::numeric_limits<std::uint64_t>::max();
+
+  friend bool operator==(const CpuRouteWorkLimits&, const CpuRouteWorkLimits&) = default;
 };
 
 struct RouteFailure {
@@ -92,6 +104,13 @@ using CpuRouteResult = std::variant<CpuRoute, RouteFailure>;
 [[nodiscard]] CpuRouteResult RouteWithCpuAStar(
     const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
     const CpuRouteRequest& request);
+
+// The bounded overload executes the same production CPU A* path and exact
+// reconstruction validator. Equality with the work limit is accepted; the
+// next unit returns kResourceExhausted with deterministic telemetry.
+[[nodiscard]] CpuRouteResult RouteWithCpuAStar(
+    const board_ir::BoardSnapshot& board, const geometry_compiler::CompiledBoard& compiled_board,
+    const CpuRouteRequest& request, CpuRouteWorkLimits limits);
 
 // True only when the exact associations, policy identity, scalar cost, and
 // candidate-authoritative segment sequence still match evidence sealed by

@@ -202,6 +202,30 @@ cc_library(
 )
 
 cc_library(
+    name = "cpu_candidate_pool_preparation",
+    srcs = [
+        "src/allocator/cpu_candidate_pool_preparation.cc",
+        "src/allocator/cpu_candidate_pool_preparation_internal.h",
+        "src/candidates/route_candidate_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/cpu_candidate_pool_preparation.h"],
+    copts = APGAR_COPTS,
+    linkopts = ["-pthread"],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":one_world_selection",
+        ":planar_route",
+    ],
+)
+
+cc_library(
     name = "gpu_planar_router",
     srcs = [
         "src/gpu/device_board.cc",
@@ -1064,6 +1088,34 @@ cc_test(
         ":candidate_policy",
         ":cpu_astar",
         ":cpu_route_evidence_test_support",
+        ":geometry_compiler",
+        ":one_world_selection",
+        ":planar_route",
+        ":resource_accounting",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cpu_candidate_pool_preparation_test",
+    size = "small",
+    srcs = [
+        "src/allocator/cpu_candidate_pool_preparation_internal.h",
+        "tests/allocator/cpu_candidate_pool_preparation_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    linkopts = ["-pthread"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":cpu_candidate_pool_preparation",
         ":geometry_compiler",
         ":one_world_selection",
         ":planar_route",
