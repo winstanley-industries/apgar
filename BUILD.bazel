@@ -172,6 +172,22 @@ cc_library(
 )
 
 cc_library(
+    name = "resource_accounting",
+    srcs = ["src/allocator/resource_accounting.cc"],
+    hdrs = ["include/apgar/allocator/resource_accounting.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":geometry_compiler",
+        ":planar_route",
+    ],
+)
+
+cc_library(
     name = "gpu_planar_router",
     srcs = [
         "src/gpu/device_board.cc",
@@ -985,6 +1001,32 @@ cc_test(
         ":cpu_route_evidence_test_support",
         ":geometry_compiler",
         ":planar_route",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "resource_accounting_test",
+    size = "small",
+    srcs = [
+        "tests/allocator/resource_accounting_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":cpu_route_evidence_test_support",
+        ":geometry_compiler",
+        ":planar_route",
+        ":resource_accounting",
         ":tool_runfiles",
         "@googletest//:gtest_main",
     ],

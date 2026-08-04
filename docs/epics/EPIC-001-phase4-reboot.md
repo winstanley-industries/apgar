@@ -108,9 +108,10 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   [#7](https://github.com/winstanley-industries/apgar/pull/7),
   [#11](https://github.com/winstanley-industries/apgar/pull/11), and
   [#8](https://github.com/winstanley-industries/apgar/pull/8) at
-  `852c2c32416326c7c31445f2654a5146e9ec25c4`. P4R-02B is the sole next-ready
-  implementation slice; resource accounting, selection, pricing, and later
-  work have not begun.
+  `852c2c32416326c7c31445f2654a5146e9ec25c4`.
+- P4R-02B is active on the authentic generated multi-net resource-capacity and
+  CPU reference-accounting slice. Selection, pricing, and later allocator work
+  remain closed.
 
 ## Salvage ledger
 
@@ -135,7 +136,7 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | P4R-02A2c | Authenticate retained prepared contexts through GPU route evidence without versioning already-context-bearing batch tokens. | P4R-02A2b | Non-default prepared views route on CPU/GPU differential paths; the unreleased single-route device-result V1 contract acquires the retained routing-profile fingerprint in place; existing batch routing-profile fields are sourced from the retained compiled profile without a version bump; relabeled evidence fails closed; GPU candidates retain the authenticated identity; no released compatibility boundary or migration path is claimed. | `done` | [PR #7](https://github.com/winstanley-industries/apgar/pull/7) |
 | P4R-02A2d | Bind the retained prepared context into the existing GPU invariant replay V1 artifact. | P4R-02A2c | Replay parsing and pre-launch association checks authenticate the retained routing-profile fingerprint; under ADR-009's unreleased-development rule, the checked-in V1 schema, producer, consumer, and artifact evolve atomically in place and older development layouts fail structural validation. | `done` | [PR #11](https://github.com/winstanley-industries/apgar/pull/11) |
 | P4R-02A2e | Move remaining temporary A1 evidence to native targets and make legacy numeric-rule readers explicit. | P4R-02A2d | Prepared exact-oracle trust-boundary cases live in the exact-geometry target; explicit headers and direct Bazel dependencies are present; durable producers/readers call `numeric_rule_identity()` and do not reinterpret the V1 scalar. | `done` | [PR #8](https://github.com/winstanley-industries/apgar/pull/8) |
-| P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2e | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `ready` | — |
+| P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2e | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `active` | — |
 | P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `planned` | — |
 | P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `planned` | — |
 | P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `planned` | — |
@@ -158,10 +159,10 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   `852c2c32416326c7c31445f2654a5146e9ec25c4`; CPU and GPU route evidence,
   candidate production and exact admission, invariant replay, and native test
   ownership authenticate the retained profile at their trust boundaries.
-- P4R-02B may begin the authentic workload and resource-accounting slice. Do
-  not begin selection until P4R-02B independently validates resource usage and
-  overuse semantics; pricing and later work remain closed to their sequenced
-  tasks.
+- P4R-02B is active on the authentic workload and resource-accounting slice.
+  Do not begin selection until P4R-02B independently validates resource usage
+  and overuse semantics; pricing and later work remain closed to their
+  sequenced tasks.
 - Do not acquire readiness until P4R-12 freezes its workload identities,
   configurations, budgets, and rule. Do not begin campaign tooling or inspect
   heldout outcomes until readiness passes and P4R-14 freezes the campaign and
