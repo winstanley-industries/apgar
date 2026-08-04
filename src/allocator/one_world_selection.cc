@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <new>
-#include <set>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -137,7 +136,8 @@ OneWorldSelectionResult SelectOneWorldZeroPrice(
     selection.nets.reserve(ordered_pools.size());
     std::vector<const candidates::RouteCandidate*> selected_candidates;
     selected_candidates.reserve(ordered_pools.size());
-    std::set<candidates::CandidateId> candidate_ids;
+    std::vector<candidates::CandidateId> candidate_ids;
+    candidate_ids.reserve(static_cast<std::size_t>(total_candidates));
 
     for (const OneWorldCandidatePool* pool : ordered_pools) {
       if (pool->candidates.empty()) {
@@ -174,11 +174,7 @@ OneWorldSelectionResult SelectOneWorldZeroPrice(
                        "allocator.one_world.candidate_identity.v1",
                        "Candidate ID does not match its immutable identity fields");
         }
-        if (!candidate_ids.insert(candidate->id()).second) {
-          return Error(OneWorldSelectionErrorCode::kDuplicateCandidateIdentity,
-                       "allocator.one_world.duplicate_candidate_identity.v1",
-                       "Candidate identity appears more than once across explicit pools");
-        }
+        candidate_ids.push_back(candidate->id());
         if (!CandidateMatchesCapacityModel(*candidate, capacities)) {
           return Error(OneWorldSelectionErrorCode::kCandidateAssociationMismatch,
                        "allocator.one_world.candidate_association.v1",
@@ -193,6 +189,13 @@ OneWorldSelectionResult SelectOneWorldZeroPrice(
           .net = pool->net,
           .candidate_id = selected->id(),
       });
+    }
+
+    std::ranges::sort(candidate_ids);
+    if (std::ranges::adjacent_find(candidate_ids) != candidate_ids.end()) {
+      return Error(OneWorldSelectionErrorCode::kDuplicateCandidateIdentity,
+                   "allocator.one_world.duplicate_candidate_identity.v1",
+                   "Candidate identity appears more than once across explicit pools");
     }
 
     ResourceAccountingResult accounting =

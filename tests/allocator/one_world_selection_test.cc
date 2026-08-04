@@ -189,6 +189,26 @@ inline constexpr std::array<EntityRef, 4> kNets = {
   };
 }
 
+[[nodiscard]] CompilerProfile IntermediateTieBreakProfile() {
+  CompilerProfile profile = GeneratedSelectionProfile();
+  profile.active_regions = {
+      ActiveRegion{
+          .layer = kLayer,
+          .bounds =
+              AxisAlignedBox64{
+                  .min = Point64{.x = 0, .y = 0},
+                  .max = Point64{.x = 100, .y = 50},
+              },
+      },
+  };
+  profile.costs = DeterministicCosts{
+      .orthogonal_step = 10,
+      .diagonal_step = 10,
+      .bend = 0,
+  };
+  return profile;
+}
+
 struct GeneratedMicrocase {
   board_ir::BoardSnapshot board;
   std::vector<CompiledBoard> compiled_boards;
@@ -210,10 +230,11 @@ struct GeneratedMicrocase {
       std::move(generated));
 }
 
-[[nodiscard]] RouteCandidate AdmitSharedExactRoute(const board_ir::BoardSnapshot& board,
-                                                   const CompiledBoard& compiled,
-                                                   const routing::CpuRouteRequest& request,
-                                                   std::uint64_t query_identity) {
+[[nodiscard]] RouteCandidate AdmitExactRoute(const board_ir::BoardSnapshot& board,
+                                             const CompiledBoard& compiled,
+                                             const routing::CpuRouteRequest& request,
+                                             std::uint64_t query_identity, std::uint64_t total_cost,
+                                             std::vector<routing::LayerSegment> segments) {
   const routing::NormalizedCandidateGenerationPolicy policy =
       test_support::NormalizePolicy(compiled, request);
   const candidates::CandidateAssociations associations =
@@ -224,35 +245,9 @@ struct GeneratedMicrocase {
       .compiler_version = associations.geometry_compiler_version,
       .rule_bucket_identity = associations.rule_bucket_identity,
       .candidate_policy_identity = policy.identity,
-      .total_cost = 106,
+      .total_cost = total_cost,
       .lattice_path = {},
-      .segments =
-          {
-              routing::LayerSegment{
-                  .layer = kLayer,
-                  .centerline =
-                      board_ir::Segment64{
-                          .start = Point64{.x = 30, .y = -30},
-                          .end = Point64{.x = 30, .y = 0},
-                      },
-              },
-              routing::LayerSegment{
-                  .layer = kLayer,
-                  .centerline =
-                      board_ir::Segment64{
-                          .start = Point64{.x = 30, .y = 0},
-                          .end = Point64{.x = 70, .y = 0},
-                      },
-              },
-              routing::LayerSegment{
-                  .layer = kLayer,
-                  .centerline =
-                      board_ir::Segment64{
-                          .start = Point64{.x = 70, .y = 0},
-                          .end = Point64{.x = 70, .y = 30},
-                      },
-              },
-          },
+      .segments = std::move(segments),
       .telemetry = {},
       .producer_evidence = {},
   };
@@ -265,6 +260,9 @@ struct GeneratedMicrocase {
                                                       });
   EXPECT_TRUE(std::holds_alternative<candidates::GeneratedRouteCandidate>(draft));
   if (!std::holds_alternative<candidates::GeneratedRouteCandidate>(draft)) {
+    const candidates::CandidateRejection& rejection =
+        std::get<candidates::CandidateRejection>(draft);
+    ADD_FAILURE() << rejection.invariant_id << ": " << rejection.detail;
     std::abort();
   }
   return test_support::AcceptedCandidate(
@@ -274,6 +272,39 @@ struct GeneratedMicrocase {
           .request = request,
       },
       std::get<candidates::GeneratedRouteCandidate>(std::move(draft)));
+}
+
+[[nodiscard]] RouteCandidate AdmitSharedExactRoute(const board_ir::BoardSnapshot& board,
+                                                   const CompiledBoard& compiled,
+                                                   const routing::CpuRouteRequest& request,
+                                                   std::uint64_t query_identity) {
+  return AdmitExactRoute(board, compiled, request, query_identity, 106,
+                         {
+                             routing::LayerSegment{
+                                 .layer = kLayer,
+                                 .centerline =
+                                     board_ir::Segment64{
+                                         .start = Point64{.x = 30, .y = -30},
+                                         .end = Point64{.x = 30, .y = 0},
+                                     },
+                             },
+                             routing::LayerSegment{
+                                 .layer = kLayer,
+                                 .centerline =
+                                     board_ir::Segment64{
+                                         .start = Point64{.x = 30, .y = 0},
+                                         .end = Point64{.x = 70, .y = 0},
+                                     },
+                             },
+                             routing::LayerSegment{
+                                 .layer = kLayer,
+                                 .centerline =
+                                     board_ir::Segment64{
+                                         .start = Point64{.x = 70, .y = 0},
+                                         .end = Point64{.x = 70, .y = 30},
+                                     },
+                             },
+                         });
 }
 
 [[nodiscard]] GeneratedMicrocase GenerateMicrocase(std::uint64_t revision = 1) {
@@ -563,6 +594,78 @@ TEST(OneWorldSelectionTest, CanonicalCandidateIdBreaksCompleteMetricTies) {
             std::min(microcase.candidates[0].id(), microcase.candidates[1].id()));
 }
 
+TEST(OneWorldSelectionTest, IntermediateBendCountPrecedesLaterMetricsAndCandidateId) {
+  BoardData ranking_board = GeneratedSelectionBoard();
+  ranking_board.nets.resize(1);
+  ranking_board.terminals.resize(2);
+  const board_ir::BoardSnapshot board = test_support::Snapshot(std::move(ranking_board));
+  const CompiledBoard compiled =
+      test_support::CompilePreparedNet(board, kNets[0], IntermediateTieBreakProfile());
+  ResourceCapacityModelResult capacity_result = BuildResourceCapacityModel(board, compiled, 1);
+  ASSERT_TRUE(std::holds_alternative<ResourceCapacityModel>(capacity_result));
+  const ResourceCapacityModel capacities =
+      std::get<ResourceCapacityModel>(std::move(capacity_result));
+  const routing::CpuRouteRequest request =
+      test_support::RequestForNet(board, kNets[0], kLayer, kLayer);
+
+  const auto straight = [&](std::uint64_t query_identity) {
+    return AdmitExactRoute(board, compiled, request, query_identity, 100,
+                           {routing::LayerSegment{
+                               .layer = kLayer,
+                               .centerline =
+                                   board_ir::Segment64{
+                                       .start = Point64{.x = 0, .y = 0},
+                                       .end = Point64{.x = 100, .y = 0},
+                                   },
+                           }});
+  };
+  const auto bent = [&](std::uint64_t query_identity) {
+    return AdmitExactRoute(board, compiled, request, query_identity, 100,
+                           {
+                               routing::LayerSegment{
+                                   .layer = kLayer,
+                                   .centerline =
+                                       board_ir::Segment64{
+                                           .start = Point64{.x = 0, .y = 0},
+                                           .end = Point64{.x = 50, .y = 50},
+                                       },
+                               },
+                               routing::LayerSegment{
+                                   .layer = kLayer,
+                                   .centerline =
+                                       board_ir::Segment64{
+                                           .start = Point64{.x = 50, .y = 50},
+                                           .end = Point64{.x = 100, .y = 0},
+                                       },
+                               },
+                           });
+  };
+
+  std::pair<RouteCandidate, RouteCandidate> candidates = {straight(1), bent(2)};
+  if (!(candidates.second.id() < candidates.first.id())) {
+    candidates = {straight(2), bent(1)};
+  }
+  const CandidateMetrics& straight_metrics = candidates.first.data().metrics;
+  const CandidateMetrics& bent_metrics = candidates.second.data().metrics;
+  EXPECT_EQ(straight_metrics.intrinsic_base_cost, bent_metrics.intrinsic_base_cost);
+  EXPECT_EQ(straight_metrics.via_count, bent_metrics.via_count);
+  EXPECT_LT(straight_metrics.bend_count, bent_metrics.bend_count);
+  EXPECT_EQ(straight_metrics.orthogonal_step_count + straight_metrics.diagonal_step_count,
+            bent_metrics.orthogonal_step_count + bent_metrics.diagonal_step_count);
+  EXPECT_GT(straight_metrics.axis_aligned_length_dbu, bent_metrics.axis_aligned_length_dbu);
+  ASSERT_LT(candidates.second.id(), candidates.first.id());
+
+  const std::array<const RouteCandidate*, 2> ranked = {&candidates.second, &candidates.first};
+  const std::array pools = {
+      OneWorldCandidatePool{.net = kNets[0], .candidates = ranked},
+  };
+  const OneWorldSelection selection =
+      RequireSelection(SelectOneWorldZeroPrice(board, capacities, pools));
+  ASSERT_TRUE(std::holds_alternative<OneWorldSelectedCandidate>(selection.nets.front()));
+  EXPECT_EQ(std::get<OneWorldSelectedCandidate>(selection.nets.front()).candidate_id,
+            candidates.first.id());
+}
+
 TEST(OneWorldSelectionTest, EmptyPoolProducesCanonicalStructuredAbsence) {
   const GeneratedMicrocase microcase = GenerateMicrocase();
   const ResourceCapacityModel capacities = CapacityModel(microcase);
@@ -707,6 +810,22 @@ TEST(OneWorldSelectionTest, SelectionAndAccountingArithmeticStayWithinDeclaredBo
                               OneWorldSelectionLimits{
                                   .maximum_net_pools = 0,
                                   .maximum_total_candidates = kMaximumOneWorldPoolCandidates,
+                                  .accounting = {},
+                              }),
+      OneWorldSelectionErrorCode::kInvalidLimits);
+  RequireError(
+      SelectOneWorldZeroPrice(microcase.board, capacities, pools,
+                              OneWorldSelectionLimits{
+                                  .maximum_net_pools = kMaximumOneWorldNetPools + 1,
+                                  .maximum_total_candidates = kMaximumOneWorldPoolCandidates,
+                                  .accounting = {},
+                              }),
+      OneWorldSelectionErrorCode::kInvalidLimits);
+  RequireError(
+      SelectOneWorldZeroPrice(microcase.board, capacities, pools,
+                              OneWorldSelectionLimits{
+                                  .maximum_net_pools = kMaximumOneWorldNetPools,
+                                  .maximum_total_candidates = kMaximumOneWorldPoolCandidates + 1,
                                   .accounting = {},
                               }),
       OneWorldSelectionErrorCode::kInvalidLimits);
