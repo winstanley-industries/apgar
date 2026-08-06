@@ -76,6 +76,16 @@ struct CandidateStoreDraftItem {
   CandidateDraftBuildResult draft;
 };
 
+// One already exact-admitted, owning incumbent staged into the same atomic
+// publication transaction as new drafts. The handle preserves the original
+// authenticated RouteCandidate object; it is never reconstructed from its
+// public payload.
+struct CandidateStoreIncumbentItem {
+  const geometry_compiler::CompiledBoard* compiled_board = nullptr;
+  routing::PlanarRouteRequest request;
+  StoredCandidate candidate;
+};
+
 // A total, versioned rank. Lower values are preferred. No comparison depends
 // on insertion order, pointer identity, or hash-table iteration.
 [[nodiscard]] bool CandidateRanksBefore(const RouteCandidate& left,
@@ -110,6 +120,9 @@ class CandidateStore {
       std::vector<CandidateAdmissionItem>&& items);
   [[nodiscard]] std::vector<CandidateStoreAdmissionResult> AdmitDraftBatch(
       const board_ir::BoardSnapshot& board, std::vector<CandidateStoreDraftItem>&& items);
+  [[nodiscard]] std::vector<CandidateStoreAdmissionResult> AdmitDraftBatchWithIncumbents(
+      const board_ir::BoardSnapshot& board, std::vector<CandidateStoreIncumbentItem>&& incumbents,
+      std::vector<CandidateStoreDraftItem>&& items);
 
   [[nodiscard]] std::vector<StoredCandidate> Enumerate(board_ir::EntityRef net) const;
   [[nodiscard]] std::vector<CandidateRejection> Rejections() const;

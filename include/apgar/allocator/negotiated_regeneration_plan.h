@@ -191,6 +191,16 @@ using NegotiatedRegenerationPlanResult =
     const NegotiatedPriceSnapshot* prior_prices = nullptr,
     NegotiatedRegenerationPlanConfig config = {});
 
+// Verifies the stable replay bindings and canonical shape of an immutable
+// P4R-06 plan against its exact source pools and optional prior snapshot. This
+// does not rerun P4R-03 selection or perform any P4R-07 execution work.
+[[nodiscard]] std::optional<NegotiatedRegenerationPlanError>
+ValidateNegotiatedRegenerationPlanReplay(const ResourceCapacityModel& capacities,
+                                         std::span<const OneWorldCandidatePool> pools,
+                                         const NegotiatedRegenerationPlan& plan,
+                                         const NegotiatedPriceSnapshot* prior_prices = nullptr,
+                                         NegotiatedRegenerationPlanConfig config = {});
+
 }  // namespace apgar::allocator
 
 #endif  // APGAR_ALLOCATOR_NEGOTIATED_REGENERATION_PLAN_H_

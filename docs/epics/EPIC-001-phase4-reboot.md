@@ -6,7 +6,7 @@
 | Outcome | `pending` |
 | Owner | APGAR maintainers |
 | Started | August 1, 2026 |
-| Last reviewed | August 4, 2026 ([PR #19](https://github.com/winstanley-industries/apgar/pull/19)) |
+| Last reviewed | August 6, 2026 ([PR #20](https://github.com/winstanley-industries/apgar/pull/20)) |
 | Active baseline | `1a0d6600111c44e7f915b039190f9125d37d4a06` |
 | Archived donor | `1f68ded7ff36547c3ffb8a0629482ad425786106` on `archive/phase4-pre-reset-2026-08-01` |
 | Governing architecture | [Global Allocator](../APGAR_Architecture_Specification_v0.1.md#14-global-allocator), [Benchmark Plan](../APGAR_Architecture_Specification_v0.1.md#26-benchmark-and-evaluation-plan), [Roadmap](../APGAR_Architecture_Specification_v0.1.md#29-implementation-roadmap) |
@@ -115,16 +115,22 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 - P4R-05's bounded CS-RR-v1 baseline is complete in
   [PR #19](https://github.com/winstanley-industries/apgar/pull/19) at merge
   commit `d914268ce28da2d7708891ef34e795075bba8eb5`.
-- P4R-06 is active on bounded candidate-allocator prices and one deterministic
-  targeted-regeneration plan. P4R-07 execution and all later allocator,
-  evidence, readiness, and campaign work remain closed.
-- P4R-06 exceeds the 2,500-line extra-scrutiny threshold because its single
-  pure planning boundary, checked schedule/bounds, focused ADR, and
-  production-independent exact-small oracle must remain one reviewable
-  acceptance slice. Splitting the oracle or contract from the behavior would
-  leave the task mechanically unverified. Independent contract, arithmetic,
-  test, and complexity reviews cover the cohesive slice; it adds no execution,
-  store, session, schema, or runner.
+- P4R-06's bounded candidate-allocator prices and deterministic
+  targeted-regeneration plan are complete in
+  [PR #20](https://github.com/winstanley-industries/apgar/pull/20) at merge
+  commit `5f9d3107c18385319f0b998c50eac52e32304373`.
+- P4R-07 is active on exactly one failure-atomic CPU targeted-regeneration
+  epoch, atomic authentic-column publication, and one refreshed P4R-03
+  selection/accounting. P4R-08 composition and all later allocator, evidence,
+  readiness, and campaign work remain closed.
+- P4R-07 exceeds the 12-file / 2,500-line planning guidance because the
+  runnable vertical slice includes its plan-replay guard, authentic
+  incumbent-plus-draft publication seam and seam regression, exact-small
+  independent oracle, and fatal-atomicity matrix. Splitting those contracts
+  from execution would leave the one-transaction or one-refresh claims
+  self-confirming. Contract, correctness, failure, determinism, complexity,
+  and test-independence review passes cover the cohesive slice; it adds no
+  epoch composition, session, schema, runner, or evidence machinery.
 
 ## Salvage ledger
 
@@ -153,8 +159,8 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `done` | [PR #17](https://github.com/winstanley-industries/apgar/pull/17) |
 | P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `done` | [PR #18](https://github.com/winstanley-industries/apgar/pull/18) / `e2add579b7b9c372ef012532185a69dc53dfe4e6` |
 | P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `done` | [PR #19](https://github.com/winstanley-industries/apgar/pull/19) / `d914268ce28da2d7708891ef34e795075bba8eb5` |
-| P4R-06 | Add bounded negotiated prices and a deterministic targeted-regeneration plan. | P4R-05 | Replayable price updates, stable hotset/targets, declared caps, and no generator-side global mutation. | `active` | [PR #20](https://github.com/winstanley-industries/apgar/pull/20) |
-| P4R-07 | Execute one targeted-regeneration epoch through exact admission and refreshed One-World selection. | P4R-06 | Authentic generated columns, atomic publication, rejection diagnostics, and independently reproduced outcome. | `planned` | — |
+| P4R-06 | Add bounded negotiated prices and a deterministic targeted-regeneration plan. | P4R-05 | Replayable price updates, stable hotset/targets, declared caps, and no generator-side global mutation. | `done` | [PR #20](https://github.com/winstanley-industries/apgar/pull/20) / `5f9d3107c18385319f0b998c50eac52e32304373` |
+| P4R-07 | Execute one targeted-regeneration epoch through exact admission and refreshed One-World selection. | P4R-06 | Authentic generated columns, atomic publication, rejection diagnostics, and independently reproduced outcome. | `active` | — |
 | P4R-08 | Compose bounded epochs into the minimal reusable CPU allocation contender. | P4R-07 | Declared whole-session bounds, deterministic fixed point or typed stop, stable replay, and retained authoritative pools. | `planned` | — |
 | P4R-09 | Add fixed-pool Multi-World as a reference extension, without interleaved world-dependent publication. | P4R-08 | Common starting pool/state, deterministic worlds, bounded retention, and stable preferred outcome. | `planned` | — |
 | P4R-10 | Add one compact evidence bundle and validator for paired development observations. | P4R-09 | Minimal versioned fields, atomic serialization, provenance binding, round-trip tests, and pass/fail/incomplete golden cases. | `planned` | — |
@@ -177,9 +183,11 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   selection over explicit immutable prebuilt pools. P4R-04 closed in PR #18
   with bounded production CPU route/build/admit pool preparation. P4R-05 closed
   in PR #19 at `d914268ce28da2d7708891ef34e795075bba8eb5` with the named CS-RR-v1
-  sequential baseline. P4R-06 may implement only bounded candidate-allocator
-  prices and deterministic targeted-regeneration planning; P4R-07 execution
-  and later work remain closed to their sequenced tasks.
+  sequential baseline. P4R-06 closed in PR #20 at
+  `5f9d3107c18385319f0b998c50eac52e32304373` with bounded candidate-allocator
+  prices and deterministic targeted-regeneration planning. P4R-07 may execute
+  exactly one targeted-regeneration epoch; P4R-08 composition and later work
+  remain closed to their sequenced tasks.
 - Do not acquire readiness until P4R-12 freezes its workload identities,
   configurations, budgets, and rule. Do not begin campaign tooling or inspect
   heldout outcomes until readiness passes and P4R-14 freezes the campaign and
@@ -202,6 +210,7 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 - [ADR-069: Deterministic CPU Candidate-Pool Preparation](../adr/ADR-069-deterministic-cpu-candidate-pool-preparation.md)
 - [ADR-070: Canonical Sequential Negotiated-Routing Baseline](../adr/ADR-070-canonical-sequential-negotiated-routing-baseline.md)
 - [ADR-071: Bounded Negotiated-Price and Regeneration Planning](../adr/ADR-071-bounded-negotiated-regeneration-plan.md)
+- [ADR-072: Single Bounded Targeted-Regeneration Epoch](../adr/ADR-072-single-targeted-regeneration-epoch.md)
 - Archived donor: `archive/phase4-pre-reset-2026-08-01` at
   `1f68ded7ff36547c3ffb8a0629482ad425786106`
 - Active baseline: `1a0d6600111c44e7f915b039190f9125d37d4a06`

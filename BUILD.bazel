@@ -263,6 +263,31 @@ cc_library(
 )
 
 cc_library(
+    name = "cpu_targeted_regeneration_epoch",
+    srcs = [
+        "src/allocator/cpu_targeted_regeneration_epoch.cc",
+        "src/allocator/cpu_targeted_regeneration_epoch_internal.h",
+        "src/candidates/route_candidate_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/cpu_targeted_regeneration_epoch.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":geometry_compiler",
+        ":negotiated_regeneration_plan",
+        ":one_world_selection",
+        ":planar_route",
+        ":resource_accounting",
+    ],
+)
+
+cc_library(
     name = "gpu_planar_router",
     srcs = [
         "src/gpu/device_board.cc",
@@ -1205,6 +1230,37 @@ cc_test(
         ":candidate_policy",
         ":cpu_astar",
         ":cpu_route_evidence_test_support",
+        ":geometry_compiler",
+        ":negotiated_regeneration_plan",
+        ":one_world_selection",
+        ":planar_route",
+        ":resource_accounting",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cpu_targeted_regeneration_epoch_test",
+    size = "small",
+    srcs = [
+        "src/allocator/cpu_targeted_regeneration_epoch_internal.h",
+        "tests/allocator/cpu_targeted_regeneration_epoch_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":candidate_store",
+        ":cpu_astar",
+        ":cpu_route_evidence_test_support",
+        ":cpu_targeted_regeneration_epoch",
         ":geometry_compiler",
         ":negotiated_regeneration_plan",
         ":one_world_selection",

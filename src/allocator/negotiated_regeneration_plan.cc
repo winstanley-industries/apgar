@@ -1068,4 +1068,262 @@ NegotiatedRegenerationPlanResult PlanNegotiatedRegeneration(
   }
 }
 
+std::optional<NegotiatedRegenerationPlanError> ValidateNegotiatedRegenerationPlanReplay(
+    const ResourceCapacityModel& capacities, std::span<const OneWorldCandidatePool> submitted_pools,
+    const NegotiatedRegenerationPlan& plan, const NegotiatedPriceSnapshot* prior_prices,
+    NegotiatedRegenerationPlanConfig config) {
+  if (!ConfigurationIsValid(config)) {
+    return Error(NegotiatedRegenerationPlanErrorCode::kInvalidConfiguration,
+                 "allocator.negotiated_plan.replay_configuration.v1",
+                 "Negotiated-plan replay configuration is outside its hard bounds");
+  }
+
+  try {
+    const std::uint64_t policy_identity = PricePolicyIdentity(config.price_policy);
+    if (prior_prices != nullptr) {
+      if (std::optional<NegotiatedRegenerationPlanError> error =
+              ValidatePriorSnapshot(*prior_prices, capacities, config, policy_identity);
+          error.has_value()) {
+        return error;
+      }
+    }
+    if (plan.associations != capacities.associations() ||
+        plan.selection.associations != capacities.associations() ||
+        plan.selection.accounting.associations != capacities.associations() ||
+        plan.price_snapshot.associations != capacities.associations() ||
+        plan.price_snapshot.capacity_units != capacities.capacity_units()) {
+      return Error(NegotiatedRegenerationPlanErrorCode::kAssociationMismatch,
+                   "allocator.negotiated_plan.replay_association.v1",
+                   "Negotiated plan or selection does not match the resource-capacity model");
+    }
+    if (plan.price_snapshot.policy_identity != policy_identity) {
+      return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.replay_policy.v1",
+                   "Negotiated plan was produced by a different price policy");
+    }
+
+    const std::uint64_t expected_epoch =
+        prior_prices == nullptr ? 0 : prior_prices->epoch_index + 1U;
+    const std::uint64_t expected_prior_identity =
+        prior_prices == nullptr ? 0 : prior_prices->snapshot_identity;
+    if (plan.price_snapshot.epoch_index != expected_epoch ||
+        plan.price_snapshot.prior_snapshot_identity != expected_prior_identity) {
+      NegotiatedRegenerationPlanError error =
+          Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                "allocator.negotiated_plan.replay_chain.v1",
+                "Negotiated plan does not advance exactly from its supplied prior snapshot");
+      error.expected_value = expected_epoch;
+      error.actual_value = plan.price_snapshot.epoch_index;
+      return error;
+    }
+    const std::optional<std::uint64_t> expected_factor =
+        NextPresentFactor(expected_epoch, config.price_policy);
+    if (!expected_factor.has_value()) {
+      return Error(NegotiatedRegenerationPlanErrorCode::kArithmeticOverflow,
+                   "allocator.negotiated_plan.replay_present_factor_overflow.v1",
+                   "Negotiated-plan replay present factor overflowed uint64");
+    }
+    if (plan.price_snapshot.present_factor != *expected_factor) {
+      return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.replay_present_factor.v1",
+                   "Negotiated plan present factor does not match its epoch");
+    }
+    if (plan.price_snapshot.prices.size() > config.limits.maximum_price_entries) {
+      NegotiatedRegenerationPlanError error =
+          Error(NegotiatedRegenerationPlanErrorCode::kBoundExhausted,
+                "allocator.negotiated_plan.replay_price_count.v1",
+                "Negotiated plan price entries exceed the configured bound");
+      error.expected_value = config.limits.maximum_price_entries;
+      error.actual_value = plan.price_snapshot.prices.size();
+      return error;
+    }
+    std::uint64_t aggregate_price = 0;
+    const routing::EdgeResourceKey* previous_price_resource = nullptr;
+    for (const NegotiatedResourcePrice& price : plan.price_snapshot.prices) {
+      if (!IsCanonicalDirection(price.resource.direction) ||
+          (previous_price_resource != nullptr && !(*previous_price_resource < price.resource)) ||
+          (price.present_price == 0 && price.historical_price == 0)) {
+        return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                     "allocator.negotiated_plan.replay_price_order.v1",
+                     "Negotiated plan prices are not one strict canonical nonzero map");
+      }
+      previous_price_resource = &price.resource;
+      std::uint64_t total_price = price.present_price;
+      if (!CheckedAdd(price.historical_price, &total_price)) {
+        return Error(NegotiatedRegenerationPlanErrorCode::kArithmeticOverflow,
+                     "allocator.negotiated_plan.replay_price_sum_overflow.v1",
+                     "Negotiated plan price components overflow uint64");
+      }
+      if (total_price != price.total_price) {
+        return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                     "allocator.negotiated_plan.replay_price_total.v1",
+                     "Negotiated plan total price does not equal its components");
+      }
+      if (price.present_price > config.limits.maximum_price_value ||
+          price.historical_price > config.limits.maximum_price_value ||
+          price.total_price > config.limits.maximum_price_value) {
+        NegotiatedRegenerationPlanError error =
+            Error(NegotiatedRegenerationPlanErrorCode::kBoundExhausted,
+                  "allocator.negotiated_plan.replay_price_bound.v1",
+                  "Negotiated plan price exceeds the configured value bound");
+        error.resource = price.resource;
+        error.expected_value = config.limits.maximum_price_value;
+        error.actual_value =
+            std::max({price.present_price, price.historical_price, price.total_price});
+        return error;
+      }
+      if (!CheckedAdd(price.total_price, &aggregate_price)) {
+        return Error(NegotiatedRegenerationPlanErrorCode::kArithmeticOverflow,
+                     "allocator.negotiated_plan.replay_aggregate_price_overflow.v1",
+                     "Negotiated plan aggregate price overflowed uint64");
+      }
+      if (aggregate_price > config.limits.maximum_aggregate_price) {
+        NegotiatedRegenerationPlanError error =
+            Error(NegotiatedRegenerationPlanErrorCode::kBoundExhausted,
+                  "allocator.negotiated_plan.replay_aggregate_price_bound.v1",
+                  "Negotiated plan aggregate price exceeds the configured bound");
+        error.resource = price.resource;
+        error.expected_value = config.limits.maximum_aggregate_price;
+        error.actual_value = aggregate_price;
+        return error;
+      }
+    }
+    if (plan.price_snapshot.snapshot_identity == 0 ||
+        plan.price_snapshot.snapshot_identity != SnapshotIdentity(plan.price_snapshot)) {
+      return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.replay_snapshot_identity.v1",
+                   "Negotiated plan price-snapshot identity does not match its payload");
+    }
+
+    if (submitted_pools.size() > config.limits.selection.maximum_net_pools ||
+        plan.selection.nets.size() != submitted_pools.size()) {
+      return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.replay_pool_shape.v1",
+                   "Negotiated plan selection does not match its complete source-pool roster");
+    }
+    std::uint64_t candidate_count = 0;
+    for (const OneWorldCandidatePool& pool : submitted_pools) {
+      if (pool.candidates.size() > std::numeric_limits<std::uint64_t>::max() - candidate_count) {
+        return Error(NegotiatedRegenerationPlanErrorCode::kArithmeticOverflow,
+                     "allocator.negotiated_plan.replay_candidate_count_overflow.v1",
+                     "Negotiated plan source candidate count overflowed uint64");
+      }
+      candidate_count += pool.candidates.size();
+      for (const candidates::RouteCandidate* candidate : pool.candidates) {
+        if (candidate == nullptr) {
+          return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                       "allocator.negotiated_plan.replay_null_candidate.v1",
+                       "Negotiated plan source pool contains a null candidate");
+        }
+      }
+    }
+    if (candidate_count != plan.selection.input_candidate_count ||
+        candidate_count > config.limits.selection.maximum_total_candidates) {
+      NegotiatedRegenerationPlanError error =
+          Error(candidate_count > config.limits.selection.maximum_total_candidates
+                    ? NegotiatedRegenerationPlanErrorCode::kBoundExhausted
+                    : NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                "allocator.negotiated_plan.replay_candidate_count.v1",
+                "Negotiated plan source candidate count does not match its bound roster");
+      error.expected_value = plan.selection.input_candidate_count;
+      error.actual_value = candidate_count;
+      return error;
+    }
+
+    std::vector<CanonicalPool> pools = CanonicalPools(submitted_pools);
+    for (std::size_t index = 0; index < pools.size(); ++index) {
+      const CanonicalPool& pool = pools[index];
+      const OneWorldNetOutcome& outcome = plan.selection.nets[index];
+      if (auto* selected = std::get_if<OneWorldSelectedCandidate>(&outcome); selected != nullptr) {
+        if (selected->net != pool.net ||
+            std::ranges::none_of(pool.candidates,
+                                 [selected](const candidates::RouteCandidate* candidate) {
+                                   return candidate->id() == selected->candidate_id;
+                                 })) {
+          return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                       "allocator.negotiated_plan.replay_selected_candidate.v1",
+                       "Negotiated plan selected candidate is absent from its canonical pool");
+        }
+      } else {
+        const OneWorldCandidateAbsence& absence = std::get<OneWorldCandidateAbsence>(outcome);
+        if (absence.net != pool.net || !pool.candidates.empty()) {
+          return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                       "allocator.negotiated_plan.replay_absence.v1",
+                       "Negotiated plan absence does not match its canonical empty pool");
+        }
+      }
+    }
+
+    if (plan.hot_resources.size() > config.limits.maximum_hot_resources ||
+        !std::ranges::is_sorted(plan.hot_resources, [](const NegotiatedHotResource& left,
+                                                       const NegotiatedHotResource& right) {
+          if (left.total_price != right.total_price) {
+            return left.total_price > right.total_price;
+          }
+          if (left.overuse_units != right.overuse_units) {
+            return left.overuse_units > right.overuse_units;
+          }
+          return left.resource < right.resource;
+        })) {
+      return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.replay_hot_order.v1",
+                   "Negotiated plan hot resources are not in canonical priority order");
+    }
+    if (plan.targets.size() > config.limits.maximum_targets ||
+        plan.disposition != (plan.targets.empty()
+                                 ? NegotiatedRegenerationDisposition::kNoRegenerationRequired
+                                 : NegotiatedRegenerationDisposition::kRegenerationRequired)) {
+      return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.replay_target_shape.v1",
+                   "Negotiated plan target count or disposition is inconsistent");
+    }
+    for (const NegotiatedRegenerationTarget& target : plan.targets) {
+      if (target.target_identity == 0 ||
+          target.target_identity != TargetIdentity(target, plan.price_snapshot.snapshot_identity)) {
+        return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                     "allocator.negotiated_plan.replay_target_identity.v1",
+                     "Negotiated regeneration target identity does not match its payload");
+      }
+    }
+    if (!std::ranges::is_sorted(plan.targets, [](const NegotiatedRegenerationTarget& left,
+                                                 const NegotiatedRegenerationTarget& right) {
+          if (left.reason != right.reason) {
+            return left.reason == NegotiatedRegenerationTargetReason::kEmptyPool;
+          }
+          if (left.reason == NegotiatedRegenerationTargetReason::kHotResource) {
+            if (left.total_trigger_price != right.total_trigger_price) {
+              return left.total_trigger_price > right.total_trigger_price;
+            }
+            if (left.triggering_hot_resources.size() != right.triggering_hot_resources.size()) {
+              return left.triggering_hot_resources.size() > right.triggering_hot_resources.size();
+            }
+          }
+          return NetKey(left.net) < NetKey(right.net);
+        })) {
+      return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.replay_target_order.v1",
+                   "Negotiated regeneration targets are not in canonical priority order");
+    }
+    if (plan.plan_identity == 0 ||
+        plan.plan_identity != PlanIdentity(plan, config, pools, expected_prior_identity)) {
+      return Error(NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.replay_plan_identity.v1",
+                   "Negotiated plan identity does not match its source pools and payload");
+    }
+    return std::nullopt;
+  } catch (const std::bad_alloc&) {
+    return Error(NegotiatedRegenerationPlanErrorCode::kResourceExhausted,
+                 "allocator.negotiated_plan.replay_allocation.v1",
+                 "Negotiated-plan replay validation allocation failed");
+  } catch (const std::length_error&) {
+    return Error(NegotiatedRegenerationPlanErrorCode::kResourceExhausted,
+                 "allocator.negotiated_plan.replay_container_capacity.v1",
+                 "Negotiated-plan replay validation container capacity was exceeded");
+  } catch (...) {
+    return Error(NegotiatedRegenerationPlanErrorCode::kInternalInvariant,
+                 "allocator.negotiated_plan.replay_exception.v1",
+                 "Negotiated-plan replay validation raised an unexpected exception");
+  }
+}
+
 }  // namespace apgar::allocator
