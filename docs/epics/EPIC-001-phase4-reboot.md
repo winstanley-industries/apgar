@@ -111,11 +111,20 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   `852c2c32416326c7c31445f2654a5146e9ec25c4`.
 - P4R-02B is complete in PR #16, P4R-03 is complete in PR #17, and P4R-04 is
   complete in [PR #18](https://github.com/winstanley-industries/apgar/pull/18)
-  at merge commit `e2add579b7b9c372ef012532185a69dc53dfe4e6`. P4R-05 is active in
-  [PR #19](https://github.com/winstanley-industries/apgar/pull/19) on the
-  bounded CS-RR-v1 deterministic CPU sequential negotiated-routing baseline.
-  P4R-06 pricing, targeted regeneration, and later allocator work remain
-  closed.
+  at merge commit `e2add579b7b9c372ef012532185a69dc53dfe4e6`.
+- P4R-05's bounded CS-RR-v1 baseline is complete in
+  [PR #19](https://github.com/winstanley-industries/apgar/pull/19) at merge
+  commit `d914268ce28da2d7708891ef34e795075bba8eb5`.
+- P4R-06 is active on bounded candidate-allocator prices and one deterministic
+  targeted-regeneration plan. P4R-07 execution and all later allocator,
+  evidence, readiness, and campaign work remain closed.
+- P4R-06 exceeds the 2,500-line extra-scrutiny threshold because its single
+  pure planning boundary, checked schedule/bounds, focused ADR, and
+  production-independent exact-small oracle must remain one reviewable
+  acceptance slice. Splitting the oracle or contract from the behavior would
+  leave the task mechanically unverified. Independent contract, arithmetic,
+  test, and complexity reviews cover the cohesive slice; it adds no execution,
+  store, session, schema, or runner.
 
 ## Salvage ledger
 
@@ -143,8 +152,8 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | P4R-02B | Add an authentic small multi-net workload and explicit resource-capacity/accounting reference. | P4R-02A2e | Generated distinct-net microcase; canonical resources; independent usage and overuse checks. | `done` | [PR #16](https://github.com/winstanley-industries/apgar/pull/16) |
 | P4R-03 | Add deterministic One-World selection over immutable prebuilt candidate pools. | P4R-02B | One candidate or structured absence per net; lexicographic selection; deterministic repeats; independent accumulation. | `done` | [PR #17](https://github.com/winstanley-industries/apgar/pull/17) |
 | P4R-04 | Add bounded deterministic CPU candidate-pool preparation. | P4R-03 | Exact admission, stable publication order, bounded failure behavior, and worker-count invariance. | `done` | [PR #18](https://github.com/winstanley-industries/apgar/pull/18) / `e2add579b7b9c372ef012532185a69dc53dfe4e6` |
-| P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `active` | [PR #19](https://github.com/winstanley-industries/apgar/pull/19) |
-| P4R-06 | Add bounded negotiated prices and a deterministic targeted-regeneration plan. | P4R-05 | Replayable price updates, stable hotset/targets, declared caps, and no generator-side global mutation. | `planned` | — |
+| P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `done` | [PR #19](https://github.com/winstanley-industries/apgar/pull/19) / `d914268ce28da2d7708891ef34e795075bba8eb5` |
+| P4R-06 | Add bounded negotiated prices and a deterministic targeted-regeneration plan. | P4R-05 | Replayable price updates, stable hotset/targets, declared caps, and no generator-side global mutation. | `active` | — |
 | P4R-07 | Execute one targeted-regeneration epoch through exact admission and refreshed One-World selection. | P4R-06 | Authentic generated columns, atomic publication, rejection diagnostics, and independently reproduced outcome. | `planned` | — |
 | P4R-08 | Compose bounded epochs into the minimal reusable CPU allocation contender. | P4R-07 | Declared whole-session bounds, deterministic fixed point or typed stop, stable replay, and retained authoritative pools. | `planned` | — |
 | P4R-09 | Add fixed-pool Multi-World as a reference extension, without interleaved world-dependent publication. | P4R-08 | Common starting pool/state, deterministic worlds, bounded retention, and stable preferred outcome. | `planned` | — |
@@ -166,10 +175,11 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 - P4R-02B closed in PR #16 with independently checked resource usage and
   overuse semantics. P4R-03 closed in PR #17 with deterministic One-World
   selection over explicit immutable prebuilt pools. P4R-04 closed in PR #18
-  with bounded production CPU route/build/admit pool preparation. P4R-05 may
-  implement only the named CS-RR-v1 sequential baseline; P4R-06 prices,
-  targeted regeneration, and later work remain closed to their sequenced
-  tasks.
+  with bounded production CPU route/build/admit pool preparation. P4R-05 closed
+  in PR #19 at `d914268ce28da2d7708891ef34e795075bba8eb5` with the named CS-RR-v1
+  sequential baseline. P4R-06 may implement only bounded candidate-allocator
+  prices and deterministic targeted-regeneration planning; P4R-07 execution
+  and later work remain closed to their sequenced tasks.
 - Do not acquire readiness until P4R-12 freezes its workload identities,
   configurations, budgets, and rule. Do not begin campaign tooling or inspect
   heldout outcomes until readiness passes and P4R-14 freezes the campaign and
@@ -191,6 +201,7 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 - [ADR-068: Phase 4 Clean Reboot](../adr/ADR-068-phase4-clean-reboot.md)
 - [ADR-069: Deterministic CPU Candidate-Pool Preparation](../adr/ADR-069-deterministic-cpu-candidate-pool-preparation.md)
 - [ADR-070: Canonical Sequential Negotiated-Routing Baseline](../adr/ADR-070-canonical-sequential-negotiated-routing-baseline.md)
+- [ADR-071: Bounded Negotiated-Price and Regeneration Planning](../adr/ADR-071-bounded-negotiated-regeneration-plan.md)
 - Archived donor: `archive/phase4-pre-reset-2026-08-01` at
   `1f68ded7ff36547c3ffb8a0629482ad425786106`
 - Active baseline: `1a0d6600111c44e7f915b039190f9125d37d4a06`
