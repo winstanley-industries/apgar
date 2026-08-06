@@ -982,6 +982,25 @@ TEST(NegotiatedRegenerationPlanTest, AssociationsAndPriorSnapshotIntegrityFailCl
   NegotiatedRegenerationPlan valid =
       RequirePlan(PlanNegotiatedRegeneration(microcase.board, capacities, pools));
   NegotiatedPriceSnapshot corrupted = valid.price_snapshot;
+  corrupted.policy_identity ^= 1U;
+  static_cast<void>(
+      RequireError(PlanNegotiatedRegeneration(microcase.board, capacities, pools, &corrupted),
+                   NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.prior_policy.v1"));
+  corrupted = valid.price_snapshot;
+  corrupted.prior_snapshot_identity = 1U;
+  static_cast<void>(
+      RequireError(PlanNegotiatedRegeneration(microcase.board, capacities, pools, &corrupted),
+                   NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.prior_chain.v1"));
+  corrupted = valid.price_snapshot;
+  ASSERT_GE(corrupted.prices.size(), 2U);
+  corrupted.prices[1].resource = corrupted.prices[0].resource;
+  static_cast<void>(
+      RequireError(PlanNegotiatedRegeneration(microcase.board, capacities, pools, &corrupted),
+                   NegotiatedRegenerationPlanErrorCode::kInvalidInput,
+                   "allocator.negotiated_plan.prior_price_order.v1"));
+  corrupted = valid.price_snapshot;
   corrupted.prices.front().historical_price += 1U;
   static_cast<void>(
       RequireError(PlanNegotiatedRegeneration(microcase.board, capacities, pools, &corrupted),
