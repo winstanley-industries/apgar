@@ -884,6 +884,23 @@ TEST(CpuTargetedRegenerationEpochTest,
   EXPECT_EQ(arithmetic_error.invariant_id, "allocator.targeted_epoch.aggregate_work_overflow.v1");
 }
 
+TEST(CpuTargetedRegenerationEpochTest, CallerAuthoredResourcePolicyIsRejectedBeforeExecution) {
+  Scenario scenario;
+  std::vector<OneWorldCandidatePool> pools = scenario.AllPools();
+  std::vector<CpuTargetedRegenerationSourcePool> source_pools = scenario.AllSourcePools();
+  NegotiatedRegenerationPlan plan = MakePlan(scenario, pools);
+  ASSERT_FALSE(plan.price_snapshot.prices.empty());
+
+  std::vector<CpuTargetedRegenerationNetContext> contexts(scenario.contexts().begin(),
+                                                          scenario.contexts().end());
+  contexts.front().request.candidate_policy.banned_resources.push_back(
+      plan.price_snapshot.prices.front().resource);
+  const CpuTargetedRegenerationEpochError& error = Failure(ExecuteCpuTargetedRegenerationEpoch(
+      scenario.board(), scenario.capacities(), source_pools, plan, nullptr, contexts));
+  EXPECT_EQ(error.code, CpuTargetedRegenerationEpochErrorCode::kInvalidInput);
+  EXPECT_EQ(error.invariant_id, "allocator.targeted_epoch.caller_resource_policy.v1");
+}
+
 void CorruptDraftAssociation(std::size_t index, candidates::CandidateDraftBuildResult& draft,
                              void*) {
   if (index == 1 && std::holds_alternative<candidates::GeneratedRouteCandidate>(draft)) {

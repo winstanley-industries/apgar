@@ -739,6 +739,80 @@ TEST(NegotiatedRegenerationPlanTest, ReplayIdentitiesBindPolicyConfigPoolsAndTar
   EXPECT_NE(policy_plan.plan_identity, baseline.plan_identity);
 }
 
+TEST(NegotiatedRegenerationPlanTest, ReplayGuardRejectsRepresentativeSingleFieldCorruptions) {
+  const Microcase microcase = MakeMicrocase();
+  const ResourceCapacityModel capacities = Capacities(microcase);
+  const PoolStorage storage = FullPoolStorage(microcase);
+  const std::array pools = PoolViews(storage);
+  const NegotiatedRegenerationPlan baseline =
+      RequirePlan(PlanNegotiatedRegeneration(microcase.board, capacities, pools));
+  ASSERT_GE(baseline.price_snapshot.prices.size(), 2U);
+  ASSERT_GE(baseline.hot_resources.size(), 2U);
+  ASSERT_GE(baseline.targets.size(), 3U);
+  EXPECT_FALSE(ValidateNegotiatedRegenerationPlanReplay(capacities, pools, baseline).has_value());
+
+  const auto expect_error = [&](const NegotiatedRegenerationPlan& replay,
+                                std::string_view invariant,
+                                NegotiatedRegenerationPlanConfig config = {}) {
+    const std::optional<NegotiatedRegenerationPlanError> error =
+        ValidateNegotiatedRegenerationPlanReplay(capacities, pools, replay, nullptr, config);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->invariant_id, invariant);
+  };
+
+  NegotiatedRegenerationPlan corrupted = baseline;
+  ++corrupted.price_snapshot.epoch_index;
+  expect_error(corrupted, "allocator.negotiated_plan.replay_chain.v1");
+
+  corrupted = baseline;
+  ++corrupted.price_snapshot.present_factor;
+  expect_error(corrupted, "allocator.negotiated_plan.replay_present_factor.v1");
+
+  corrupted = baseline;
+  std::ranges::swap(corrupted.price_snapshot.prices[0], corrupted.price_snapshot.prices[1]);
+  expect_error(corrupted, "allocator.negotiated_plan.replay_price_order.v1");
+
+  corrupted = baseline;
+  ++corrupted.price_snapshot.prices.front().total_price;
+  expect_error(corrupted, "allocator.negotiated_plan.replay_price_total.v1");
+
+  NegotiatedRegenerationPlanConfig price_bound;
+  price_bound.limits.maximum_price_value = baseline.price_snapshot.prices.front().total_price - 1U;
+  expect_error(baseline, "allocator.negotiated_plan.replay_price_bound.v1", price_bound);
+
+  NegotiatedRegenerationPlanConfig aggregate_bound;
+  aggregate_bound.limits.maximum_aggregate_price =
+      baseline.price_snapshot.prices.front().total_price - 1U;
+  expect_error(baseline, "allocator.negotiated_plan.replay_aggregate_price_bound.v1",
+               aggregate_bound);
+
+  corrupted = baseline;
+  const auto selected =
+      std::ranges::find_if(corrupted.selection.nets, [](const OneWorldNetOutcome& outcome) {
+        const auto* value = std::get_if<OneWorldSelectedCandidate>(&outcome);
+        return value != nullptr && value->net == kNets[0];
+      });
+  ASSERT_NE(selected, corrupted.selection.nets.end());
+  std::get<OneWorldSelectedCandidate>(*selected).candidate_id = microcase.candidates[3].id();
+  expect_error(corrupted, "allocator.negotiated_plan.replay_selected_candidate.v1");
+
+  corrupted = baseline;
+  std::ranges::swap(corrupted.hot_resources[0], corrupted.hot_resources[1]);
+  expect_error(corrupted, "allocator.negotiated_plan.replay_hot_order.v1");
+
+  corrupted = baseline;
+  corrupted.disposition = NegotiatedRegenerationDisposition::kNoRegenerationRequired;
+  expect_error(corrupted, "allocator.negotiated_plan.replay_target_shape.v1");
+
+  corrupted = baseline;
+  ++corrupted.targets.front().target_identity;
+  expect_error(corrupted, "allocator.negotiated_plan.replay_target_identity.v1");
+
+  corrupted = baseline;
+  std::ranges::swap(corrupted.targets[1], corrupted.targets[2]);
+  expect_error(corrupted, "allocator.negotiated_plan.replay_target_order.v1");
+}
+
 TEST(NegotiatedRegenerationPlanTest, PriorSnapshotAdvancesExactPresentAndHistoricalSchedule) {
   const Microcase microcase = MakeMicrocase();
   const ResourceCapacityModel capacities = Capacities(microcase);
