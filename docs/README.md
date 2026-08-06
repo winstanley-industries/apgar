@@ -37,6 +37,9 @@ architecture explicitly.
 - `adr/ADR-070-canonical-sequential-negotiated-routing-baseline.md`: bounded
   canonical sequential rip-up-and-reroute comparison policy, incumbent
   handling, congestion snapshots, and deterministic termination.
+- `adr/ADR-071-bounded-negotiated-regeneration-plan.md`: candidate-allocator
+  present/historical price schedule, canonical hot resources, and bounded
+  deterministic targeted-regeneration plans.
 - `adr/ADR-008-exact-coordinate-arithmetic.md`: accepted arithmetic envelope,
   KiCad fixture unit scale, and exact boundary semantics for Board IR v1.
 - `adr/ADR-009-m1-sparse-field-and-planar-reference-semantics.md`: accepted
