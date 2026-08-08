@@ -1290,6 +1290,134 @@ std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitDraftBatch(
   return PublishAdmissionResults(std::move(admitted));
 }
 
+std::vector<CandidateStoreAdmissionResult> CandidateStore::AdmitDraftBatchWithIncumbents(
+    const board_ir::BoardSnapshot& board, std::vector<CandidateStoreIncumbentItem>&& incumbents,
+    std::vector<CandidateStoreDraftItem>&& items) {
+  CandidateAssociations associations;
+  associations.board_content_hash = board.content_hash();
+  std::size_t item_count = incumbents.size();
+  if (items.size() > std::numeric_limits<std::size_t>::max() - item_count) {
+    CandidateRejection rejection =
+        TransactionRejection(associations, CandidateRejectionCode::kMemoryAccountingOverflow,
+                             "candidate.store.rebuild_transaction.item_overflow.v1",
+                             "Incumbent-plus-draft transaction item count overflowed size_t");
+    RetainRejection(rejection);
+    return {std::move(rejection)};
+  }
+  item_count += items.size();
+  if (std::optional<CandidateRejection> rejection =
+          PreflightAdmissionItemCount(config_, associations, item_count);
+      rejection.has_value()) {
+    RetainRejection(*rejection);
+    return {std::move(*rejection)};
+  }
+  if (static_cast<UWide>(item_count) > config_.maximum_rejection_items_per_transaction) {
+    CandidateRejection rejection = TransactionRejection(
+        associations, CandidateRejectionCode::kBudgetExhausted,
+        "candidate.store.rebuild_transaction.rejection_item_budget.v1",
+        "Incumbent-plus-draft transaction could produce more diagnostics than its configured "
+        "bound",
+        config_.maximum_rejection_items_per_transaction, static_cast<std::uint64_t>(item_count));
+    RetainRejection(rejection);
+    return {std::move(rejection)};
+  }
+  for (const CandidateStoreIncumbentItem& incumbent : incumbents) {
+    if (incumbent.compiled_board == nullptr || incumbent.candidate == nullptr) {
+      CandidateRejection rejection = TransactionRejection(
+          associations, CandidateRejectionCode::kInvalidInput,
+          "candidate.store.rebuild_transaction.incumbent_context.v1",
+          "Incumbent-plus-draft transaction contains a null prepared context or candidate");
+      RetainRejection(rejection);
+      return {std::move(rejection)};
+    }
+    if (incumbent.candidate->net() != incumbent.request.net ||
+        incumbent.candidate->data().policy != incumbent.request.candidate_policy) {
+      CandidateRejection rejection = StoreRejection(
+          *incumbent.candidate, CandidateRejectionCode::kInvalidInput,
+          "candidate.store.rebuild_transaction.incumbent_request.v1",
+          "Incumbent candidate does not match its submitted net or normalized request policy");
+      RetainRejection(rejection);
+      return {std::move(rejection)};
+    }
+    if (incumbent.candidate->data().associations !=
+        AssociationsFor(board, *incumbent.compiled_board)) {
+      CandidateRejection rejection = StoreRejection(
+          *incumbent.candidate, CandidateRejectionCode::kAssociationMismatch,
+          "candidate.store.rebuild_transaction.incumbent_association.v1",
+          "Incumbent candidate does not match its submitted Board IR and prepared context");
+      RetainRejection(rejection);
+      return {std::move(rejection)};
+    }
+  }
+  for (const CandidateStoreDraftItem& item : items) {
+    if (item.compiled_board == nullptr) {
+      CandidateRejection rejection = TransactionRejection(
+          associations, CandidateRejectionCode::kInvalidInput,
+          "candidate.store.rebuild_transaction.draft_context.v1",
+          "Incumbent-plus-draft transaction contains a null prepared compiler context");
+      RetainRejection(rejection);
+      return {std::move(rejection)};
+    }
+  }
+
+  std::vector<std::size_t> generated_indices;
+  generated_indices.reserve(items.size());
+  for (std::size_t index = 0; index < items.size(); ++index) {
+    if (std::holds_alternative<GeneratedRouteCandidate>(items[index].draft)) {
+      generated_indices.push_back(index);
+    }
+  }
+  const std::size_t admitted_count = incumbents.size() + generated_indices.size();
+  if (std::optional<CandidateRejection> rejection = PreflightAdmissionTransaction(
+          config_, board, admitted_count,
+          [&incumbents, &items,
+           &generated_indices](std::size_t index) -> const geometry_compiler::CompiledBoard& {
+            if (index < incumbents.size()) {
+              return *incumbents[index].compiled_board;
+            }
+            return *items[generated_indices[index - incumbents.size()]].compiled_board;
+          },
+          [&incumbents, &items,
+           &generated_indices](std::size_t index) -> const routing::PlanarRouteRequest& {
+            if (index < incumbents.size()) {
+              return incumbents[index].request;
+            }
+            return items[generated_indices[index - incumbents.size()]].request;
+          },
+          [&incumbents, &items,
+           &generated_indices](std::size_t index) -> const GeneratedRouteCandidate& {
+            if (index < incumbents.size()) {
+              return incumbents[index].candidate->data();
+            }
+            return std::get<GeneratedRouteCandidate>(
+                items[generated_indices[index - incumbents.size()]].draft);
+          });
+      rejection.has_value()) {
+    RetainRejection(*rejection);
+    return {std::move(*rejection)};
+  }
+
+  std::vector<CandidateAdmissionResult> admitted;
+  admitted.reserve(item_count);
+  for (const CandidateStoreIncumbentItem& incumbent : incumbents) {
+    admitted.emplace_back(*incumbent.candidate);
+  }
+  for (CandidateStoreDraftItem& item : items) {
+    if (auto* rejection = std::get_if<CandidateRejection>(&item.draft); rejection != nullptr) {
+      admitted.emplace_back(std::move(*rejection));
+      continue;
+    }
+    const CandidateAdmissionContext context{
+        .board = board,
+        .compiled_board = *item.compiled_board,
+        .request = item.request,
+    };
+    admitted.push_back(
+        AdmitRouteCandidate(context, std::get<GeneratedRouteCandidate>(std::move(item.draft))));
+  }
+  return PublishAdmissionResults(std::move(admitted));
+}
+
 std::vector<CandidateStoreAdmissionResult> CandidateStore::PublishAdmissionResults(
     std::vector<CandidateAdmissionResult> admitted) {
   std::vector<CandidateStoreAdmissionResult> results;

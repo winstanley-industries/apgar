@@ -1848,6 +1848,44 @@ TEST(CandidateStoreTest, MixedDraftBatchPublishesPreparedNetContextsOnOneResourc
     return std::get<CandidateRejection>(std::move(bounded_results.front()));
   };
   EXPECT_EQ(rejected_transaction(false), rejected_transaction(true));
+
+  const StoredCandidate incumbent = store.Enumerate(first_net).front();
+  CpuRouteRequest incumbent_request = RequestForNet(board, first_net);
+  incumbent_request.candidate_policy = incumbent->data().policy;
+  CandidateStore rebuilt(StoreConfig());
+  std::vector<CandidateStoreIncumbentItem> incumbents;
+  incumbents.push_back(CandidateStoreIncumbentItem{
+      .compiled_board = &first_compiled,
+      .request = incumbent_request,
+      .candidate = incumbent,
+  });
+  std::vector<CandidateStoreDraftItem> rebuilt_drafts;
+  rebuilt_drafts.push_back(make_item(second_compiled, second_net, 3));
+  const std::vector<CandidateStoreAdmissionResult> rebuilt_results =
+      rebuilt.AdmitDraftBatchWithIncumbents(board, std::move(incumbents),
+                                            std::move(rebuilt_drafts));
+  ASSERT_EQ(rebuilt_results.size(), 2U);
+  EXPECT_TRUE(std::ranges::all_of(rebuilt_results, [](const CandidateStoreAdmissionResult& result) {
+    return std::holds_alternative<StoredCandidate>(result);
+  }));
+  EXPECT_EQ(Ids(rebuilt.Enumerate(first_net)), Ids(store.Enumerate(first_net)));
+  ASSERT_EQ(rebuilt.Enumerate(second_net).size(), 1U);
+
+  ++incumbent_request.candidate_policy.candidate_ordinal;
+  CandidateStore rejected_rebuild(StoreConfig());
+  std::vector<CandidateStoreIncumbentItem> invalid_incumbents;
+  invalid_incumbents.push_back(CandidateStoreIncumbentItem{
+      .compiled_board = &first_compiled,
+      .request = std::move(incumbent_request),
+      .candidate = incumbent,
+  });
+  std::vector<CandidateStoreAdmissionResult> invalid_results =
+      rejected_rebuild.AdmitDraftBatchWithIncumbents(board, std::move(invalid_incumbents), {});
+  ASSERT_EQ(invalid_results.size(), 1U);
+  ASSERT_TRUE(std::holds_alternative<CandidateRejection>(invalid_results.front()));
+  EXPECT_EQ(std::get<CandidateRejection>(invalid_results.front()).code,
+            CandidateRejectionCode::kInvalidInput);
+  EXPECT_TRUE(rejected_rebuild.Enumerate(first_net).empty());
 }
 
 }  // namespace
