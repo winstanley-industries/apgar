@@ -1009,6 +1009,57 @@ TEST(CpuCandidateAllocationSessionTest, EpochAndSessionExhaustionHaveDistinctTyp
 }
 
 TEST(CpuCandidateAllocationSessionTest,
+     InitialPlannerBoundIsFatalUntilAnAuthoritativeEpochSelectionExists) {
+  Scenario scenario;
+  std::vector<CpuTargetedRegenerationSourcePool> source_pools = scenario.all_source_pools();
+  const NegotiatedRegenerationPlan first_plan = RequirePlan(
+      PlanNegotiatedRegeneration(scenario.board(), scenario.capacities(), scenario.all_pools()));
+  ASSERT_GT(first_plan.hot_resources.size(), 1U);
+
+  CpuCandidateAllocationSessionConfig config;
+  config.epoch.planning.limits.maximum_hot_resources = first_plan.hot_resources.size() - 1U;
+  CpuCandidateAllocationSessionResult result = RunCpuCandidateAllocationSession(
+      scenario.board(), scenario.capacities(), source_pools, scenario.contexts(), config);
+  const CpuCandidateAllocationSessionError& error = Failure(result);
+  EXPECT_EQ(error.code, CpuCandidateAllocationSessionErrorCode::kPlanningFailure);
+  EXPECT_EQ(error.invariant_id, "allocator.negotiated_plan.hot_resource_bound.v1");
+  ASSERT_TRUE(error.plan_error.has_value());
+  EXPECT_EQ(error.plan_error->code, NegotiatedRegenerationPlanErrorCode::kBoundExhausted);
+  EXPECT_EQ(error.expected_value, first_plan.hot_resources.size() - 1U);
+  EXPECT_EQ(error.actual_value, first_plan.hot_resources.size());
+}
+
+TEST(CpuCandidateAllocationSessionTest,
+     InvalidCallerResourcePolicyAndNonUniqueNetRosterFailBeforePlanning) {
+  Scenario scenario;
+  std::vector<CpuTargetedRegenerationSourcePool> source_pools = scenario.all_source_pools();
+  const NegotiatedRegenerationPlan first_plan = RequirePlan(
+      PlanNegotiatedRegeneration(scenario.board(), scenario.capacities(), scenario.all_pools()));
+  ASSERT_FALSE(first_plan.price_snapshot.prices.empty());
+
+  std::vector<CpuTargetedRegenerationNetContext> policy_contexts(scenario.contexts().begin(),
+                                                                 scenario.contexts().end());
+  policy_contexts.front().request.candidate_policy.banned_resources.push_back(
+      first_plan.price_snapshot.prices.front().resource);
+  CpuCandidateAllocationSessionResult policy_result = RunCpuCandidateAllocationSession(
+      scenario.board(), scenario.capacities(), source_pools, policy_contexts);
+  const CpuCandidateAllocationSessionError& policy_error = Failure(policy_result);
+  EXPECT_EQ(policy_error.code, CpuCandidateAllocationSessionErrorCode::kInvalidInput);
+  EXPECT_EQ(policy_error.invariant_id,
+            "allocator.cpu_allocation_session.caller_resource_policy.v1");
+
+  std::vector<CpuTargetedRegenerationNetContext> duplicate_contexts(scenario.contexts().begin(),
+                                                                    scenario.contexts().end());
+  duplicate_contexts.back().request.net = duplicate_contexts.front().request.net;
+  CpuCandidateAllocationSessionResult duplicate_result = RunCpuCandidateAllocationSession(
+      scenario.board(), scenario.capacities(), source_pools, duplicate_contexts);
+  const CpuCandidateAllocationSessionError& duplicate_error = Failure(duplicate_result);
+  EXPECT_EQ(duplicate_error.code, CpuCandidateAllocationSessionErrorCode::kInvalidInput);
+  EXPECT_EQ(duplicate_error.invariant_id,
+            "allocator.cpu_allocation_session.duplicate_or_missing_net.v1");
+}
+
+TEST(CpuCandidateAllocationSessionTest,
      EverySessionReservationBoundAcceptsEqualityAndStopsOneUnderBeforeRouting) {
   Scenario scenario;
   std::vector<CpuTargetedRegenerationSourcePool> source_pools = scenario.all_source_pools();
