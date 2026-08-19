@@ -957,6 +957,89 @@ TEST(CpuCandidateAllocationSessionTest,
   }
 }
 
+TEST(CpuCandidateAllocationSessionTest,
+     ReplayValidatorDirectlyRejectsEveryMalformedPrivateStateClass) {
+  Scenario scenario;
+  const std::vector<CpuTargetedRegenerationSourcePool> source_pools = scenario.all_source_pools();
+  CpuCandidateAllocationSessionConfig config;
+  config.limits.maximum_executed_epochs = 2;
+  const auto make_session = [&] {
+    return RunCpuCandidateAllocationSession(scenario.board(), scenario.capacities(), source_pools,
+                                            scenario.contexts(), config);
+  };
+
+  CpuCandidateAllocationSessionResult valid_result = make_session();
+  const CpuCandidateAllocationSession& valid = Success(valid_result);
+  EXPECT_FALSE(ValidateCpuCandidateAllocationSessionReplay(scenario.board(), scenario.capacities(),
+                                                           valid, config)
+                   .has_value());
+
+  CpuCandidateAllocationSessionConfig invalid_config = config;
+  invalid_config.limits.maximum_executed_epochs = 0;
+  const auto configuration_failure = ValidateCpuCandidateAllocationSessionReplay(
+      scenario.board(), scenario.capacities(), valid, invalid_config);
+  ASSERT_TRUE(configuration_failure.has_value());
+  EXPECT_EQ(configuration_failure->invariant_id,
+            "allocator.cpu_allocation_session.replay_configuration.v1");
+
+  const board_ir::BoardSnapshot other_board =
+      test_support::Snapshot(SessionBoardData(/*revision=*/2));
+  const auto association_failure = ValidateCpuCandidateAllocationSessionReplay(
+      other_board, scenario.capacities(), valid, config);
+  ASSERT_TRUE(association_failure.has_value());
+  EXPECT_EQ(association_failure->invariant_id,
+            "allocator.cpu_allocation_session.replay_capacity_board.v1");
+
+  struct FaultCase {
+    internal::CpuCandidateAllocationSessionReplayFault fault;
+    std::string_view invariant_id;
+  };
+  const std::array<FaultCase, 15> faults = {
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kShape,
+                "allocator.cpu_allocation_session.replay_shape.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kPoolOrder,
+                "allocator.cpu_allocation_session.replay_pool_order.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kCandidateOrder,
+                "allocator.cpu_allocation_session.replay_candidate_order.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kFinalPoolIdentity,
+                "allocator.cpu_allocation_session.replay_final_pool_identity.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kFinalSelection,
+                "allocator.cpu_allocation_session.replay_final_selection.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kStepLineage,
+                "allocator.cpu_allocation_session.replay_step_lineage.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kCounterShape,
+                "allocator.cpu_allocation_session.replay_counter_shape.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kCounterAgreement,
+                "allocator.cpu_allocation_session.replay_counter_agreement.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kTerminalStep,
+                "allocator.cpu_allocation_session.replay_terminal_step.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kFixedPointShape,
+                "allocator.cpu_allocation_session.replay_fixed_point.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kSessionBoundShape,
+                "allocator.cpu_allocation_session.replay_session_bound.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kEpochBoundShape,
+                "allocator.cpu_allocation_session.replay_epoch_bound.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kTerminalPlan,
+                "allocator.cpu_allocation_session.replay_terminal_plan.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kSessionIdentity,
+                "allocator.cpu_allocation_session.replay_identity.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kAggregateCounters,
+                "allocator.cpu_allocation_session.replay_counters.v1"},
+  };
+  for (const FaultCase& fault : faults) {
+    SCOPED_TRACE(fault.invariant_id);
+    CpuCandidateAllocationSessionResult corrupted_result = make_session();
+    auto* corrupted = std::get_if<CpuCandidateAllocationSession>(&corrupted_result);
+    ASSERT_NE(corrupted, nullptr);
+    ASSERT_TRUE(
+        internal::InjectCpuCandidateAllocationSessionReplayFaultForTesting(corrupted, fault.fault));
+    const auto failure = ValidateCpuCandidateAllocationSessionReplay(
+        scenario.board(), scenario.capacities(), *corrupted, config);
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(failure->invariant_id, fault.invariant_id);
+  }
+}
+
 TEST(CpuCandidateAllocationSessionTest, EpochAndSessionExhaustionHaveDistinctTypedStops) {
   Scenario scenario;
   std::vector<CpuTargetedRegenerationSourcePool> source_pools = scenario.all_source_pools();

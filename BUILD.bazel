@@ -312,6 +312,27 @@ cc_library(
 )
 
 cc_library(
+    name = "fixed_pool_cpu_multi_world",
+    srcs = [
+        "src/allocator/fixed_pool_cpu_multi_world.cc",
+        "src/allocator/fixed_pool_cpu_multi_world_internal.h",
+    ],
+    hdrs = ["include/apgar/allocator/fixed_pool_cpu_multi_world.h"],
+    copts = APGAR_COPTS,
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":cpu_candidate_allocation_session",
+        ":negotiated_regeneration_plan",
+        ":one_world_selection",
+        ":planar_route",
+        ":resource_accounting",
+    ],
+)
+
+cc_library(
     name = "gpu_planar_router",
     srcs = [
         "src/gpu/device_board.cc",
@@ -1317,6 +1338,37 @@ cc_test(
         ":cpu_candidate_allocation_session",
         ":cpu_route_evidence_test_support",
         ":cpu_targeted_regeneration_epoch",
+        ":geometry_compiler",
+        ":negotiated_regeneration_plan",
+        ":one_world_selection",
+        ":planar_route",
+        ":resource_accounting",
+        ":tool_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "fixed_pool_cpu_multi_world_test",
+    size = "small",
+    srcs = [
+        "src/allocator/fixed_pool_cpu_multi_world_internal.h",
+        "tests/allocator/fixed_pool_cpu_multi_world_test.cc",
+        "tests/support/board_builder.h",
+        "tests/support/candidate_builder.h",
+        "tests/support/compiler_builder.h",
+        "tests/support/google_test.h",
+        "tests/support/routing_builder.h",
+    ],
+    copts = APGAR_COPTS,
+    deps = [
+        ":board_ir",
+        ":candidate_contract",
+        ":candidate_policy",
+        ":cpu_astar",
+        ":cpu_candidate_allocation_session",
+        ":cpu_route_evidence_test_support",
+        ":fixed_pool_cpu_multi_world",
         ":geometry_compiler",
         ":negotiated_regeneration_plan",
         ":one_world_selection",
