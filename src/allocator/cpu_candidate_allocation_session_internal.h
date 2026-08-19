@@ -33,6 +33,7 @@ enum class CpuCandidateAllocationSessionReplayFault : std::uint8_t {
   kEpochBoundShape = 11,
   kTerminalPlan = 12,
   kSessionIdentity = 13,
+  kAggregateCounters = 14,
 };
 
 // Test-only private-state fault injection for direct replay-validator branch

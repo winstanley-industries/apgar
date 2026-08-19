@@ -776,6 +776,9 @@ struct CpuCandidateAllocationSessionFactory {
       case internal::CpuCandidateAllocationSessionReplayFault::kSessionIdentity:
         ++session->session_identity_;
         return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kAggregateCounters:
+        ++session->counters_.planning_steps;
+        return true;
     }
     return false;
   }

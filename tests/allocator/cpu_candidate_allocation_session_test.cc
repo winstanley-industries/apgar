@@ -994,7 +994,7 @@ TEST(CpuCandidateAllocationSessionTest,
     internal::CpuCandidateAllocationSessionReplayFault fault;
     std::string_view invariant_id;
   };
-  const std::array<FaultCase, 14> faults = {
+  const std::array<FaultCase, 15> faults = {
       FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kShape,
                 "allocator.cpu_allocation_session.replay_shape.v1"},
       FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kPoolOrder,
@@ -1023,6 +1023,8 @@ TEST(CpuCandidateAllocationSessionTest,
                 "allocator.cpu_allocation_session.replay_terminal_plan.v1"},
       FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kSessionIdentity,
                 "allocator.cpu_allocation_session.replay_identity.v1"},
+      FaultCase{internal::CpuCandidateAllocationSessionReplayFault::kAggregateCounters,
+                "allocator.cpu_allocation_session.replay_counters.v1"},
   };
   for (const FaultCase& fault : faults) {
     SCOPED_TRACE(fault.invariant_id);
