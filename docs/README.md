@@ -43,6 +43,9 @@ architecture explicitly.
 - `adr/ADR-072-single-targeted-regeneration-epoch.md`: one failure-atomic CPU
   targeted-regeneration epoch, authentic column publication, and one refreshed
   One-World selection/accounting boundary.
+- `adr/ADR-073-bounded-cpu-candidate-allocation-session.md`: replay-linked,
+  whole-session-bounded composition of authoritative P4R-06/P4R-07 CPU epochs
+  into the minimal reusable One-World allocation contender.
 - `adr/ADR-008-exact-coordinate-arithmetic.md`: accepted arithmetic envelope,
   KiCad fixture unit scale, and exact boundary semantics for Board IR v1.
 - `adr/ADR-009-m1-sparse-field-and-planar-reference-semantics.md`: accepted
