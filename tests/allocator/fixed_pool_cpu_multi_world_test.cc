@@ -1335,6 +1335,16 @@ TEST(FixedPoolCpuMultiWorldTest, RejectsInvalidSchedulesLineageAndAssociations) 
                                                    source_case.config, duplicate_keys))
           .code,
       FixedPoolCpuMultiWorldErrorCode::kDuplicateSchedule);
+
+  FixedPoolCpuMultiWorldConfig source_precedence;
+  source_precedence.limits.selection.maximum_net_pools = 1;
+  const FixedPoolCpuMultiWorldResult source_first_result =
+      ExecuteFixedPoolCpuMultiWorld(fixture.board(), fixture.capacities(), source,
+                                    source_case.config, duplicate_keys, source_precedence);
+  const FixedPoolCpuMultiWorldError& source_first = RequireFailure(source_first_result);
+  EXPECT_EQ(source_first.code, FixedPoolCpuMultiWorldErrorCode::kBoundExhausted);
+  EXPECT_EQ(source_first.invariant_id, "allocator.fixed_pool_multi_world.source_net_bound.v1");
+
   const std::array duplicate_exact = {
       FixedPoolCpuWorldSchedule{
           .schedule_key = 1, .price_policy = {}, .maximum_selection_rounds = 1},

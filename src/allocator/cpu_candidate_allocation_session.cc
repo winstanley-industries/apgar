@@ -685,6 +685,100 @@ struct CpuCandidateAllocationSessionFactory {
     session.session_identity_ = SessionIdentity(session, config);
     return session;
   }
+
+  [[nodiscard]] static bool InjectReplayFaultForTesting(
+      CpuCandidateAllocationSession* session,
+      internal::CpuCandidateAllocationSessionReplayFault fault) noexcept {
+    if (session == nullptr) {
+      return false;
+    }
+    switch (fault) {
+      case internal::CpuCandidateAllocationSessionReplayFault::kShape:
+        session->steps_.clear();
+        return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kPoolOrder:
+        if (session->pools_.size() < 2) {
+          return false;
+        }
+        std::swap(session->pools_[0], session->pools_[1]);
+        return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kCandidateOrder:
+        for (CpuCandidateAllocationPool& pool : session->pools_) {
+          if (pool.candidates_.size() > 1) {
+            std::swap(pool.candidates_[0], pool.candidates_[1]);
+            return true;
+          }
+        }
+        return false;
+      case internal::CpuCandidateAllocationSessionReplayFault::kFinalPoolIdentity:
+        ++session->final_pool_identity_;
+        return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kFinalSelection:
+        ++session->final_selection_.input_candidate_count;
+        return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kStepLineage:
+        if (session->steps_.empty()) {
+          return false;
+        }
+        ++session->steps_.front().input_pool_identity;
+        return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kCounterShape:
+        for (CpuCandidateAllocationStep& step : session->steps_) {
+          if (step.output_pool_identity.has_value()) {
+            step.target_count = 0;
+            return true;
+          }
+        }
+        return false;
+      case internal::CpuCandidateAllocationSessionReplayFault::kCounterAgreement:
+        for (CpuCandidateAllocationStep& step : session->steps_) {
+          if (step.output_pool_identity.has_value()) {
+            ++step.epoch_counters.target_count;
+            return true;
+          }
+        }
+        return false;
+      case internal::CpuCandidateAllocationSessionReplayFault::kTerminalStep:
+        if (session->steps_.empty() || session->steps_.back().output_pool_identity.has_value() ||
+            session->steps_.back().target_count == 0) {
+          return false;
+        }
+        session->steps_.back().disposition =
+            NegotiatedRegenerationDisposition::kNoRegenerationRequired;
+        return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kFixedPointShape:
+        session->stop_.reason = CpuCandidateAllocationStopReason::kFixedPoint;
+        return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kSessionBoundShape:
+        if (session->steps_.empty() || session->steps_.back().output_pool_identity.has_value()) {
+          return false;
+        }
+        session->steps_.back().disposition =
+            NegotiatedRegenerationDisposition::kNoRegenerationRequired;
+        session->steps_.back().target_count = 0;
+        session->stop_.reason = CpuCandidateAllocationStopReason::kSessionBoundExhausted;
+        return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kEpochBoundShape:
+        if (session->steps_.empty() || session->steps_.back().output_pool_identity.has_value()) {
+          return false;
+        }
+        session->steps_.back().disposition =
+            NegotiatedRegenerationDisposition::kNoRegenerationRequired;
+        session->steps_.back().target_count = 0;
+        session->stop_.reason = CpuCandidateAllocationStopReason::kEpochBoundExhausted;
+        return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kTerminalPlan:
+        if (!session->terminal_plan_.has_value()) {
+          return false;
+        }
+        ++session->terminal_plan_->plan_identity;
+        return true;
+      case internal::CpuCandidateAllocationSessionReplayFault::kSessionIdentity:
+        ++session->session_identity_;
+        return true;
+    }
+    return false;
+  }
 };
 
 namespace {
@@ -1316,6 +1410,12 @@ std::optional<CpuCandidateAllocationSessionError> ValidateCpuCandidateAllocation
     const board_ir::BoardSnapshot& board, const ResourceCapacityModel& capacities,
     const CpuCandidateAllocationSession& session, CpuCandidateAllocationSessionConfig config) {
   return ValidateSessionReplayImpl(board, capacities, session, config);
+}
+
+bool internal::InjectCpuCandidateAllocationSessionReplayFaultForTesting(
+    CpuCandidateAllocationSession* session,
+    CpuCandidateAllocationSessionReplayFault fault) noexcept {
+  return CpuCandidateAllocationSessionFactory::InjectReplayFaultForTesting(session, fault);
 }
 
 CpuCandidateAllocationSessionResult RunCpuCandidateAllocationSession(

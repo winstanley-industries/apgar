@@ -694,9 +694,7 @@ struct SourceShape {
 using SourceShapeResult = std::variant<SourceShape, FixedPoolCpuMultiWorldError>;
 
 [[nodiscard]] SourceShapeResult InspectSource(const CpuCandidateAllocationSession& source,
-                                              const FixedPoolCpuMultiWorldConfig& config,
-                                              std::uint64_t world_count, std::uint64_t total_rounds,
-                                              std::uint64_t total_updates) {
+                                              const FixedPoolCpuMultiWorldConfig& config) {
   if (source.pools().size() > config.limits.selection.maximum_net_pools) {
     return BoundError("allocator.fixed_pool_multi_world.source_net_bound.v1",
                       "The P4R-08 final pool roster exceeds the configured net bound",
@@ -757,9 +755,9 @@ using SourceShapeResult = std::variant<SourceShape, FixedPoolCpuMultiWorldError>
                       maximum_selected_uses);
   }
   return SourceShape{.work = internal::FixedPoolCpuMultiWorldKnownWork{
-                         .world_count = world_count,
-                         .total_selection_rounds = total_rounds,
-                         .total_price_updates = total_updates,
+                         .world_count = 0,
+                         .total_selection_rounds = 0,
+                         .total_price_updates = 0,
                          .source_net_count = source.pools().size(),
                          .source_candidate_count = candidate_count,
                          .source_candidate_resource_uses = candidate_resource_uses,
@@ -957,13 +955,19 @@ namespace {
     error.source_error = *source_error;
     return error;
   }
-  if (submitted_schedules.empty() || submitted_schedules.size() > config.limits.maximum_worlds) {
-    return Error(FixedPoolCpuMultiWorldErrorCode::kInvalidSchedule,
-                 "allocator.fixed_pool_multi_world.schedule_count.v1",
-                 "Fixed-pool Multi-World requires a bounded nonempty schedule roster");
-  }
-
   try {
+    SourceShapeResult shape_result = InspectSource(source, config);
+    if (auto* failure = std::get_if<FixedPoolCpuMultiWorldError>(&shape_result);
+        failure != nullptr) {
+      return *failure;
+    }
+    SourceShape shape = std::get<SourceShape>(shape_result);
+
+    if (submitted_schedules.empty() || submitted_schedules.size() > config.limits.maximum_worlds) {
+      return Error(FixedPoolCpuMultiWorldErrorCode::kInvalidSchedule,
+                   "allocator.fixed_pool_multi_world.schedule_count.v1",
+                   "Fixed-pool Multi-World requires a bounded nonempty schedule roster");
+    }
     std::uint64_t total_rounds = 0;
     std::uint64_t total_updates = 0;
     for (const FixedPoolCpuWorldSchedule& schedule : submitted_schedules) {
@@ -1007,13 +1011,9 @@ namespace {
       }
     }
 
-    SourceShapeResult shape_result =
-        InspectSource(source, config, schedules.size(), total_rounds, total_updates);
-    if (auto* failure = std::get_if<FixedPoolCpuMultiWorldError>(&shape_result);
-        failure != nullptr) {
-      return *failure;
-    }
-    const SourceShape& shape = std::get<SourceShape>(shape_result);
+    shape.work.world_count = schedules.size();
+    shape.work.total_selection_rounds = total_rounds;
+    shape.work.total_price_updates = total_updates;
     internal::FixedPoolCpuMultiWorldWorkProjection reservation;
     const internal::FixedPoolCpuMultiWorldProjectionResult projection =
         internal::ProjectFixedPoolCpuMultiWorldKnownWork(shape.work, config, &reservation);
