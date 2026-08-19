@@ -209,6 +209,16 @@ struct CpuCandidateAllocationSessionError {
 using CpuCandidateAllocationSessionResult =
     std::variant<CpuCandidateAllocationSession, CpuCandidateAllocationSessionError>;
 
+// Replays the immutable P4R-08 result's final-pool authority, zero-price final
+// selection, step/snapshot lineage, counters, terminal shape, and stable
+// identity against its exact Board IR, capacities, and originating
+// configuration. This performs no planning, routing, admission, or publication.
+[[nodiscard]] std::optional<CpuCandidateAllocationSessionError>
+ValidateCpuCandidateAllocationSessionReplay(const board_ir::BoardSnapshot& board,
+                                            const ResourceCapacityModel& capacities,
+                                            const CpuCandidateAllocationSession& session,
+                                            CpuCandidateAllocationSessionConfig config = {});
+
 // Composes replay-linked P4R-06/P4R-07 steps until a deterministic no-target
 // fixed point or a typed bounded stop. A non-bound failure exposes no session
 // or completed prefix.

@@ -311,6 +311,96 @@ void HashConfig(board_ir::StableHashBuilder* hash,
   return NonzeroHash(&hash);
 }
 
+[[nodiscard]] std::uint64_t SessionIdentity(
+    const CpuCandidateAllocationSession& session,
+    const CpuCandidateAllocationSessionConfig& config) noexcept {
+  board_ir::StableHashBuilder hash;
+  hash.AddString("APGAR-P4R08-CPU-CANDIDATE-ALLOCATION-SESSION-V1");
+  HashConfig(&hash, config);
+  hash.AddU64(session.final_selection().associations.board_content_hash);
+  hash.AddU64(session.final_selection().associations.compiler_profile_fingerprint);
+  hash.AddU32(session.final_selection().associations.geometry_compiler_version);
+  hash.AddU64(session.initial_pool_identity());
+  hash.AddU64(session.final_pool_identity());
+  hash.AddU64(static_cast<std::uint64_t>(session.steps().size()));
+  for (const CpuCandidateAllocationStep& step : session.steps()) {
+    hash.AddU64(step.input_pool_identity);
+    hash.AddU64(step.plan_identity);
+    hash.AddU64(step.prior_snapshot_identity);
+    hash.AddU64(step.price_snapshot_identity);
+    hash.AddU64(step.price_epoch_index);
+    hash.AddU32(static_cast<std::uint32_t>(step.disposition));
+    hash.AddU64(step.target_count);
+    hash.AddBool(step.batch_identity.has_value());
+    if (step.batch_identity.has_value()) {
+      hash.AddU64(*step.batch_identity);
+    }
+    hash.AddBool(step.epoch_identity.has_value());
+    if (step.epoch_identity.has_value()) {
+      hash.AddU64(*step.epoch_identity);
+    }
+    hash.AddBool(step.output_pool_identity.has_value());
+    if (step.output_pool_identity.has_value()) {
+      hash.AddU64(*step.output_pool_identity);
+    }
+    const CpuTargetedRegenerationEpochCounters& epoch = step.epoch_counters;
+    hash.AddU64(epoch.source_candidate_count);
+    hash.AddU64(epoch.source_candidate_bytes);
+    hash.AddU64(epoch.target_count);
+    hash.AddU64(epoch.route_query_count);
+    hash.AddU64(epoch.price_projection_visits);
+    hash.AddU64(epoch.projected_price_entries);
+    hash.AddU64(epoch.cpu_work_units);
+    hash.AddU64(epoch.generated_bytes);
+    hash.AddU64(epoch.admitted_columns);
+    hash.AddU64(epoch.duplicate_columns);
+    hash.AddU64(epoch.rejected_columns);
+    hash.AddU64(epoch.retained_candidate_count);
+    hash.AddU64(epoch.retained_candidate_bytes);
+  }
+  const CpuCandidateAllocationSessionCounters& total = session.counters();
+  hash.AddU64(total.planning_steps);
+  hash.AddU64(total.executed_epochs);
+  hash.AddU64(total.source_candidate_visits);
+  hash.AddU64(total.source_candidate_bytes);
+  hash.AddU64(total.target_count);
+  hash.AddU64(total.route_query_count);
+  hash.AddU64(total.price_projection_visits);
+  hash.AddU64(total.reserved_cpu_work_units);
+  hash.AddU64(total.actual_cpu_work_units);
+  hash.AddU64(total.reserved_generated_bytes);
+  hash.AddU64(total.actual_generated_bytes);
+  hash.AddU64(total.transaction_items);
+  hash.AddU64(total.admitted_columns);
+  hash.AddU64(total.duplicate_columns);
+  hash.AddU64(total.rejected_columns);
+  hash.AddU32(static_cast<std::uint32_t>(session.stop().reason));
+  hash.AddString(session.stop().invariant_id);
+  hash.AddString(session.stop().detail);
+  hash.AddBool(session.stop().expected_value.has_value());
+  if (session.stop().expected_value.has_value()) {
+    hash.AddU64(*session.stop().expected_value);
+  }
+  hash.AddBool(session.stop().actual_value.has_value());
+  if (session.stop().actual_value.has_value()) {
+    hash.AddU64(*session.stop().actual_value);
+  }
+  hash.AddBool(session.stop().plan_error_code.has_value());
+  if (session.stop().plan_error_code.has_value()) {
+    hash.AddU32(static_cast<std::uint32_t>(*session.stop().plan_error_code));
+  }
+  hash.AddBool(session.stop().epoch_error_code.has_value());
+  if (session.stop().epoch_error_code.has_value()) {
+    hash.AddU32(static_cast<std::uint32_t>(*session.stop().epoch_error_code));
+  }
+  hash.AddBool(session.terminal_plan().has_value());
+  if (session.terminal_plan().has_value()) {
+    hash.AddU64(session.terminal_plan()->plan_identity);
+  }
+  HashSelection(&hash, session.final_selection());
+  return NonzeroHash(&hash);
+}
+
 [[nodiscard]] CpuCandidateAllocationSessionError PlanningError(
     const NegotiatedRegenerationPlanError& plan_error) {
   CpuCandidateAllocationSessionError error =
@@ -592,96 +682,257 @@ struct CpuCandidateAllocationSessionFactory {
     session.initial_pool_identity_ = initial_pool_identity;
     session.final_pool_identity_ = PoolIdentity(session.pools_);
 
-    board_ir::StableHashBuilder hash;
-    hash.AddString("APGAR-P4R08-CPU-CANDIDATE-ALLOCATION-SESSION-V1");
-    HashConfig(&hash, config);
-    hash.AddU64(session.final_selection_.associations.board_content_hash);
-    hash.AddU64(session.final_selection_.associations.compiler_profile_fingerprint);
-    hash.AddU32(session.final_selection_.associations.geometry_compiler_version);
-    hash.AddU64(session.initial_pool_identity_);
-    hash.AddU64(session.final_pool_identity_);
-    hash.AddU64(static_cast<std::uint64_t>(session.steps_.size()));
-    for (const CpuCandidateAllocationStep& step : session.steps_) {
-      hash.AddU64(step.input_pool_identity);
-      hash.AddU64(step.plan_identity);
-      hash.AddU64(step.prior_snapshot_identity);
-      hash.AddU64(step.price_snapshot_identity);
-      hash.AddU64(step.price_epoch_index);
-      hash.AddU32(static_cast<std::uint32_t>(step.disposition));
-      hash.AddU64(step.target_count);
-      hash.AddBool(step.batch_identity.has_value());
-      if (step.batch_identity.has_value()) {
-        hash.AddU64(*step.batch_identity);
-      }
-      hash.AddBool(step.epoch_identity.has_value());
-      if (step.epoch_identity.has_value()) {
-        hash.AddU64(*step.epoch_identity);
-      }
-      hash.AddBool(step.output_pool_identity.has_value());
-      if (step.output_pool_identity.has_value()) {
-        hash.AddU64(*step.output_pool_identity);
-      }
-      const CpuTargetedRegenerationEpochCounters& epoch = step.epoch_counters;
-      hash.AddU64(epoch.source_candidate_count);
-      hash.AddU64(epoch.source_candidate_bytes);
-      hash.AddU64(epoch.target_count);
-      hash.AddU64(epoch.route_query_count);
-      hash.AddU64(epoch.price_projection_visits);
-      hash.AddU64(epoch.projected_price_entries);
-      hash.AddU64(epoch.cpu_work_units);
-      hash.AddU64(epoch.generated_bytes);
-      hash.AddU64(epoch.admitted_columns);
-      hash.AddU64(epoch.duplicate_columns);
-      hash.AddU64(epoch.rejected_columns);
-      hash.AddU64(epoch.retained_candidate_count);
-      hash.AddU64(epoch.retained_candidate_bytes);
-    }
-    const CpuCandidateAllocationSessionCounters& total = session.counters_;
-    hash.AddU64(total.planning_steps);
-    hash.AddU64(total.executed_epochs);
-    hash.AddU64(total.source_candidate_visits);
-    hash.AddU64(total.source_candidate_bytes);
-    hash.AddU64(total.target_count);
-    hash.AddU64(total.route_query_count);
-    hash.AddU64(total.price_projection_visits);
-    hash.AddU64(total.reserved_cpu_work_units);
-    hash.AddU64(total.actual_cpu_work_units);
-    hash.AddU64(total.reserved_generated_bytes);
-    hash.AddU64(total.actual_generated_bytes);
-    hash.AddU64(total.transaction_items);
-    hash.AddU64(total.admitted_columns);
-    hash.AddU64(total.duplicate_columns);
-    hash.AddU64(total.rejected_columns);
-    hash.AddU32(static_cast<std::uint32_t>(session.stop_.reason));
-    hash.AddString(session.stop_.invariant_id);
-    hash.AddString(session.stop_.detail);
-    hash.AddBool(session.stop_.expected_value.has_value());
-    if (session.stop_.expected_value.has_value()) {
-      hash.AddU64(*session.stop_.expected_value);
-    }
-    hash.AddBool(session.stop_.actual_value.has_value());
-    if (session.stop_.actual_value.has_value()) {
-      hash.AddU64(*session.stop_.actual_value);
-    }
-    hash.AddBool(session.stop_.plan_error_code.has_value());
-    if (session.stop_.plan_error_code.has_value()) {
-      hash.AddU32(static_cast<std::uint32_t>(*session.stop_.plan_error_code));
-    }
-    hash.AddBool(session.stop_.epoch_error_code.has_value());
-    if (session.stop_.epoch_error_code.has_value()) {
-      hash.AddU32(static_cast<std::uint32_t>(*session.stop_.epoch_error_code));
-    }
-    hash.AddBool(session.terminal_plan_.has_value());
-    if (session.terminal_plan_.has_value()) {
-      hash.AddU64(session.terminal_plan_->plan_identity);
-    }
-    HashSelection(&hash, session.final_selection_);
-    session.session_identity_ = NonzeroHash(&hash);
+    session.session_identity_ = SessionIdentity(session, config);
     return session;
   }
 };
 
 namespace {
+
+[[nodiscard]] std::optional<CpuCandidateAllocationSessionError> ValidateSessionReplayImpl(
+    const board_ir::BoardSnapshot& board, const ResourceCapacityModel& capacities,
+    const CpuCandidateAllocationSession& session,
+    const CpuCandidateAllocationSessionConfig& config) {
+  if (!SessionConfigIsValid(config)) {
+    return Error(CpuCandidateAllocationSessionErrorCode::kInvalidConfiguration,
+                 "allocator.cpu_allocation_session.replay_configuration.v1",
+                 "CPU allocation session replay configuration is outside its hard bounds");
+  }
+  if (board.content_hash() != capacities.associations().board_content_hash) {
+    return Error(CpuCandidateAllocationSessionErrorCode::kAssociationMismatch,
+                 "allocator.cpu_allocation_session.replay_capacity_board.v1",
+                 "CPU allocation session replay Board IR and capacities do not match");
+  }
+
+  try {
+    if (session.pools().empty() || session.steps().empty() ||
+        session.initial_pool_identity() == 0 || session.final_pool_identity() == 0 ||
+        session.session_identity() == 0) {
+      return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                   "allocator.cpu_allocation_session.replay_shape.v1",
+                   "CPU allocation session replay requires nonempty canonical result state");
+    }
+
+    std::vector<OneWorldCandidatePool> pools;
+    pools.reserve(session.pools().size());
+    std::optional<std::pair<std::uint64_t, std::uint32_t>> previous_net;
+    for (const CpuCandidateAllocationPool& pool : session.pools()) {
+      const auto net_key = NetKey(pool.net());
+      if (previous_net.has_value() && !(*previous_net < net_key)) {
+        return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                     "allocator.cpu_allocation_session.replay_pool_order.v1",
+                     "CPU allocation session final pools are not in strict canonical net order");
+      }
+      previous_net = net_key;
+      candidates::CandidateId previous_id;
+      bool has_previous_id = false;
+      for (const candidates::StoredCandidate& candidate : pool.candidates()) {
+        if (candidate == nullptr || candidate->net() != pool.net() ||
+            (has_previous_id && !(previous_id < candidate->id()))) {
+          return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                       "allocator.cpu_allocation_session.replay_candidate_order.v1",
+                       "CPU allocation session final candidates are null, wrong-net, or unordered",
+                       pool.net());
+        }
+        previous_id = candidate->id();
+        has_previous_id = true;
+      }
+      pools.push_back(pool.one_world_pool());
+    }
+
+    const std::uint64_t computed_final_pool_identity = PoolIdentity(session.pools());
+    if (computed_final_pool_identity != session.final_pool_identity()) {
+      return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                   "allocator.cpu_allocation_session.replay_final_pool_identity.v1",
+                   "CPU allocation session final-pool identity does not match its owning roster");
+    }
+    OneWorldSelectionResult planning_selection =
+        SelectOneWorldZeroPrice(board, capacities, pools, config.epoch.planning.limits.selection);
+    bool selection_matches =
+        std::holds_alternative<OneWorldSelection>(planning_selection) &&
+        std::get<OneWorldSelection>(planning_selection) == session.final_selection();
+    OneWorldSelectionResult refreshed_selection =
+        SelectOneWorldZeroPrice(board, capacities, pools, config.epoch.limits.refreshed_selection);
+    selection_matches =
+        selection_matches ||
+        (std::holds_alternative<OneWorldSelection>(refreshed_selection) &&
+         std::get<OneWorldSelection>(refreshed_selection) == session.final_selection());
+    if (!selection_matches) {
+      const OneWorldSelectionError* association_failure = nullptr;
+      for (const OneWorldSelectionResult* result : {&planning_selection, &refreshed_selection}) {
+        const auto* failure = std::get_if<OneWorldSelectionError>(result);
+        if (failure != nullptr &&
+            (failure->code == OneWorldSelectionErrorCode::kAssociationMismatch ||
+             failure->code == OneWorldSelectionErrorCode::kCandidateAssociationMismatch)) {
+          association_failure = failure;
+          break;
+        }
+      }
+      if (association_failure != nullptr) {
+        return Error(CpuCandidateAllocationSessionErrorCode::kAssociationMismatch,
+                     association_failure->invariant_id, association_failure->detail);
+      }
+      return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                   "allocator.cpu_allocation_session.replay_final_selection.v1",
+                   "CPU allocation session final selection is not an authorized P4R-03 result over "
+                   "its final pools");
+    }
+
+    CpuCandidateAllocationSessionCounters expected_counters;
+    expected_counters.planning_steps = session.steps().size();
+    std::uint64_t expected_input_pool_identity = session.initial_pool_identity();
+    std::uint64_t expected_prior_snapshot_identity = 0;
+    std::uint64_t expected_price_epoch = 0;
+    bool last_step_executed = false;
+    for (std::size_t index = 0; index < session.steps().size(); ++index) {
+      const CpuCandidateAllocationStep& step = session.steps()[index];
+      const bool is_last = index + 1U == session.steps().size();
+      const bool has_batch = step.batch_identity.has_value();
+      const bool has_epoch = step.epoch_identity.has_value();
+      const bool has_output = step.output_pool_identity.has_value();
+      if (step.input_pool_identity != expected_input_pool_identity || step.plan_identity == 0 ||
+          step.prior_snapshot_identity != expected_prior_snapshot_identity ||
+          step.price_snapshot_identity == 0 || step.price_epoch_index != expected_price_epoch ||
+          has_batch != has_epoch || has_batch != has_output) {
+        return Error(
+            CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+            "allocator.cpu_allocation_session.replay_step_lineage.v1",
+            "CPU allocation session step does not advance the canonical pool/snapshot lineage");
+      }
+      ++expected_price_epoch;
+      last_step_executed = has_output;
+      if (has_output) {
+        if (step.disposition != NegotiatedRegenerationDisposition::kRegenerationRequired ||
+            step.target_count == 0 || !CheckedAdd(1, &expected_counters.executed_epochs) ||
+            !CheckedAdd(step.epoch_counters.source_candidate_count,
+                        &expected_counters.source_candidate_visits) ||
+            !CheckedAdd(step.epoch_counters.source_candidate_bytes,
+                        &expected_counters.source_candidate_bytes) ||
+            !CheckedAdd(step.target_count, &expected_counters.target_count) ||
+            !CheckedAdd(step.epoch_counters.route_query_count,
+                        &expected_counters.route_query_count) ||
+            !CheckedAdd(step.epoch_counters.price_projection_visits,
+                        &expected_counters.price_projection_visits) ||
+            !CheckedAdd(step.epoch_counters.cpu_work_units,
+                        &expected_counters.actual_cpu_work_units) ||
+            !CheckedAdd(step.epoch_counters.generated_bytes,
+                        &expected_counters.actual_generated_bytes) ||
+            !CheckedAdd(step.epoch_counters.admitted_columns,
+                        &expected_counters.admitted_columns) ||
+            !CheckedAdd(step.epoch_counters.duplicate_columns,
+                        &expected_counters.duplicate_columns) ||
+            !CheckedAdd(step.epoch_counters.rejected_columns,
+                        &expected_counters.rejected_columns)) {
+          return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                       "allocator.cpu_allocation_session.replay_counter_shape.v1",
+                       "CPU allocation session executed-step shape or counters are invalid");
+        }
+        const std::optional<std::uint64_t> reserved_work = CheckedMultiply(
+            step.target_count, config.epoch.limits.maximum_cpu_work_units_per_query);
+        const std::optional<std::uint64_t> reserved_bytes = CheckedMultiply(
+            step.target_count, config.epoch.limits.maximum_generated_bytes_per_column);
+        std::uint64_t transaction_items = step.epoch_counters.source_candidate_count;
+        std::uint64_t column_outcomes = step.epoch_counters.admitted_columns;
+        if (!reserved_work.has_value() || !reserved_bytes.has_value() ||
+            !CheckedAdd(step.target_count, &transaction_items) ||
+            !CheckedAdd(step.epoch_counters.duplicate_columns, &column_outcomes) ||
+            !CheckedAdd(step.epoch_counters.rejected_columns, &column_outcomes) ||
+            !CheckedAdd(*reserved_work, &expected_counters.reserved_cpu_work_units) ||
+            !CheckedAdd(*reserved_bytes, &expected_counters.reserved_generated_bytes) ||
+            !CheckedAdd(transaction_items, &expected_counters.transaction_items) ||
+            step.epoch_counters.target_count != step.target_count ||
+            step.epoch_counters.route_query_count != step.target_count ||
+            step.epoch_counters.cpu_work_units > *reserved_work ||
+            step.epoch_counters.generated_bytes > *reserved_bytes ||
+            column_outcomes != step.target_count) {
+          return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                       "allocator.cpu_allocation_session.replay_counter_agreement.v1",
+                       "CPU allocation session counters do not match executed-step reservations");
+        }
+        expected_input_pool_identity = *step.output_pool_identity;
+        expected_prior_snapshot_identity = step.price_snapshot_identity;
+      } else {
+        if (!is_last ||
+            (step.disposition == NegotiatedRegenerationDisposition::kNoRegenerationRequired
+                 ? step.target_count != 0
+                 : step.target_count == 0)) {
+          return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                       "allocator.cpu_allocation_session.replay_terminal_step.v1",
+                       "CPU allocation session has a nonterminal or inconsistent unexecuted step");
+        }
+      }
+    }
+    if (expected_input_pool_identity != session.final_pool_identity() ||
+        expected_counters != session.counters()) {
+      return Error(
+          CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+          "allocator.cpu_allocation_session.replay_counters.v1",
+          "CPU allocation session final pool or aggregate counters do not match its trace");
+    }
+
+    const CpuCandidateAllocationStep& last_step = session.steps().back();
+    const bool has_terminal_plan = session.terminal_plan().has_value();
+    switch (session.stop().reason) {
+      case CpuCandidateAllocationStopReason::kFixedPoint:
+        if (!has_terminal_plan || last_step_executed ||
+            last_step.disposition != NegotiatedRegenerationDisposition::kNoRegenerationRequired) {
+          return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                       "allocator.cpu_allocation_session.replay_fixed_point.v1",
+                       "P4R-08 fixed-point terminal shape is inconsistent");
+        }
+        break;
+      case CpuCandidateAllocationStopReason::kSessionBoundExhausted:
+        if (!has_terminal_plan || last_step_executed ||
+            last_step.disposition != NegotiatedRegenerationDisposition::kRegenerationRequired) {
+          return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                       "allocator.cpu_allocation_session.replay_session_bound.v1",
+                       "P4R-08 session-bound terminal shape is inconsistent");
+        }
+        break;
+      case CpuCandidateAllocationStopReason::kEpochBoundExhausted:
+        if (has_terminal_plan == last_step_executed ||
+            (has_terminal_plan &&
+             last_step.disposition != NegotiatedRegenerationDisposition::kRegenerationRequired)) {
+          return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                       "allocator.cpu_allocation_session.replay_epoch_bound.v1",
+                       "P4R-08 epoch-bound terminal shape is inconsistent");
+        }
+        break;
+    }
+    if (has_terminal_plan) {
+      const NegotiatedRegenerationPlan& plan = *session.terminal_plan();
+      if (plan.plan_identity != last_step.plan_identity ||
+          plan.price_snapshot.prior_snapshot_identity != last_step.prior_snapshot_identity ||
+          plan.price_snapshot.snapshot_identity != last_step.price_snapshot_identity ||
+          plan.price_snapshot.epoch_index != last_step.price_epoch_index ||
+          plan.disposition != last_step.disposition ||
+          plan.targets.size() != last_step.target_count ||
+          plan.selection != session.final_selection()) {
+        return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                     "allocator.cpu_allocation_session.replay_terminal_plan.v1",
+                     "P4R-08 terminal plan does not match its final trace and selection");
+      }
+    }
+    if (SessionIdentity(session, config) != session.session_identity()) {
+      return Error(CpuCandidateAllocationSessionErrorCode::kInvalidInput,
+                   "allocator.cpu_allocation_session.replay_identity.v1",
+                   "CPU allocation session identity does not match its configuration and payload");
+    }
+    return std::nullopt;
+  } catch (const std::bad_alloc&) {
+    return Error(CpuCandidateAllocationSessionErrorCode::kResourceExhausted,
+                 "allocator.cpu_allocation_session.replay_allocation.v1",
+                 "CPU allocation session replay validation exhausted host memory");
+  } catch (const std::length_error&) {
+    return Error(CpuCandidateAllocationSessionErrorCode::kResourceExhausted,
+                 "allocator.cpu_allocation_session.replay_container_capacity.v1",
+                 "CPU allocation session replay validation exceeded container capacity");
+  } catch (...) {
+    return Error(CpuCandidateAllocationSessionErrorCode::kInternalInvariant,
+                 "allocator.cpu_allocation_session.replay_exception.v1",
+                 "CPU allocation session replay validation raised an unexpected exception");
+  }
+}
 
 [[nodiscard]] std::variant<std::vector<CpuCandidateAllocationPool>,
                            CpuCandidateAllocationSessionError>
@@ -1060,6 +1311,12 @@ ValidateAndCopyInitialPools(const board_ir::BoardSnapshot& board,
 }
 
 }  // namespace
+
+std::optional<CpuCandidateAllocationSessionError> ValidateCpuCandidateAllocationSessionReplay(
+    const board_ir::BoardSnapshot& board, const ResourceCapacityModel& capacities,
+    const CpuCandidateAllocationSession& session, CpuCandidateAllocationSessionConfig config) {
+  return ValidateSessionReplayImpl(board, capacities, session, config);
+}
 
 CpuCandidateAllocationSessionResult RunCpuCandidateAllocationSession(
     const board_ir::BoardSnapshot& board, const ResourceCapacityModel& capacities,

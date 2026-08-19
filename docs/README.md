@@ -46,6 +46,9 @@ architecture explicitly.
 - `adr/ADR-073-bounded-cpu-candidate-allocation-session.md`: replay-linked,
   whole-session-bounded composition of authoritative P4R-06/P4R-07 CPU epochs
   into the minimal reusable One-World allocation contender.
+- `adr/ADR-074-fixed-pool-cpu-multi-world-reference.md`: deterministic
+  fixed-pool CPU Multi-World branching from one replay-validated P4R-08 source,
+  with independent price lineages and exact bounded Pareto retention.
 - `adr/ADR-008-exact-coordinate-arithmetic.md`: accepted arithmetic envelope,
   KiCad fixture unit scale, and exact boundary semantics for Board IR v1.
 - `adr/ADR-009-m1-sparse-field-and-planar-reference-semantics.md`: accepted

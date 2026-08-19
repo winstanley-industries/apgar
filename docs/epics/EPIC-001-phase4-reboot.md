@@ -6,7 +6,7 @@
 | Outcome | `pending` |
 | Owner | APGAR maintainers |
 | Started | August 1, 2026 |
-| Last reviewed | August 7, 2026 ([PR #21](https://github.com/winstanley-industries/apgar/pull/21)) |
+| Last reviewed | August 18, 2026 ([PR #22](https://github.com/winstanley-industries/apgar/pull/22)) |
 | Active baseline | `1a0d6600111c44e7f915b039190f9125d37d4a06` |
 | Archived donor | `1f68ded7ff36547c3ffb8a0629482ad425786106` on `archive/phase4-pre-reset-2026-08-01` |
 | Governing architecture | [Global Allocator](../APGAR_Architecture_Specification_v0.1.md#14-global-allocator), [Benchmark Plan](../APGAR_Architecture_Specification_v0.1.md#26-benchmark-and-evaluation-plan), [Roadmap](../APGAR_Architecture_Specification_v0.1.md#29-implementation-roadmap) |
@@ -122,10 +122,19 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 - P4R-07's single failure-atomic CPU targeted-regeneration epoch is complete in
   [PR #21](https://github.com/winstanley-industries/apgar/pull/21) at merge
   commit `8339a21f0a526cc7566adb47b41374bfed8ac4d5`.
-- P4R-08 is active on replay-linked composition of authoritative P4R-06/P4R-07
-  epochs into the minimal whole-session-bounded deterministic CPU contender.
-  P4R-09 Multi-World and every evidence, runner, telemetry, readiness,
-  campaign, operational-capture, and heldout task remain planned and closed.
+- P4R-08 is complete in [PR #22](https://github.com/winstanley-industries/apgar/pull/22)
+  at merge commit `84a1faf0aa9b0a0df0f2345e5f964caa9589993e`.
+- P4R-09 is active on deterministic fixed-pool CPU Multi-World branching from
+  the replay-validated P4R-08 final pool roster and one common starting state.
+  P4R-10 and every evidence, runner, telemetry, readiness, campaign,
+  operational-capture, publication, and heldout task remain planned and closed.
+- P4R-09 exceeds the 2,500-line planning guidance because its one runnable
+  boundary includes P4R-08 source replay validation, the bounded fixed-pool
+  branch/price/Pareto executor, and an independently expanded exact-small
+  oracle for selection, accounting, price, retention, counters, and identities.
+  Splitting the oracle or source validation would leave the new Multi-World
+  authority self-confirming; the slice adds no schema, runner, evidence,
+  CandidateStore lease, GPU, or interleaved publication concept.
 - P4R-08 exceeds the 2,500-line planning guidance because its cohesive runnable
   boundary includes the owning session result plus an independently accumulated
   exact-small composition, reservation, and replay-identity oracle. Splitting
@@ -162,8 +171,8 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 | P4R-05 | Add the named sequential negotiated-routing baseline. | P4R-04 | Deterministic board-level outcome and independently recomputed resource usage under declared bounds. | `done` | [PR #19](https://github.com/winstanley-industries/apgar/pull/19) / `d914268ce28da2d7708891ef34e795075bba8eb5` |
 | P4R-06 | Add bounded negotiated prices and a deterministic targeted-regeneration plan. | P4R-05 | Replayable price updates, stable hotset/targets, declared caps, and no generator-side global mutation. | `done` | [PR #20](https://github.com/winstanley-industries/apgar/pull/20) / `5f9d3107c18385319f0b998c50eac52e32304373` |
 | P4R-07 | Execute one targeted-regeneration epoch through exact admission and refreshed One-World selection. | P4R-06 | Authentic generated columns, atomic publication, rejection diagnostics, and independently reproduced outcome. | `done` | [PR #21](https://github.com/winstanley-industries/apgar/pull/21) / `8339a21f0a526cc7566adb47b41374bfed8ac4d5` |
-| P4R-08 | Compose bounded epochs into the minimal reusable CPU allocation contender. | P4R-07 | Declared whole-session bounds, deterministic fixed point or typed stop, stable replay, and retained authoritative pools. | `active` | [draft PR #22](https://github.com/winstanley-industries/apgar/pull/22) |
-| P4R-09 | Add fixed-pool Multi-World as a reference extension, without interleaved world-dependent publication. | P4R-08 | Common starting pool/state, deterministic worlds, bounded retention, and stable preferred outcome. | `planned` | — |
+| P4R-08 | Compose bounded epochs into the minimal reusable CPU allocation contender. | P4R-07 | Declared whole-session bounds, deterministic fixed point or typed stop, stable replay, and retained authoritative pools. | `done` | [PR #22](https://github.com/winstanley-industries/apgar/pull/22) / `84a1faf0aa9b0a0df0f2345e5f964caa9589993e` |
+| P4R-09 | Add fixed-pool Multi-World as a reference extension, without interleaved world-dependent publication. | P4R-08 | Common starting pool/state, deterministic worlds, bounded retention, and stable preferred outcome. | `active` | — |
 | P4R-10 | Add one compact evidence bundle and validator for paired development observations. | P4R-09 | Minimal versioned fields, atomic serialization, provenance binding, round-trip tests, and pass/fail/incomplete golden cases. | `planned` | — |
 | P4R-11 | Add one direct paired development runner that emits the compact bundle. | P4R-10 | Process-isolated equal-budget arms, exact-small independent Oracle, typed failures, and one local end-to-end fixture. | `planned` | — |
 | P4R-12 | Freeze the bounded readiness manifest and mechanical rule before observing its runs. | P4R-11 | Named exact and calibration cells, pool sizes, configurations, budgets, Oracle rule, lexicographic non-regression rule, and checksum. | `planned` | — |
@@ -188,8 +197,11 @@ These are summaries only; the architecture and accepted ADRs remain normative.
   `5f9d3107c18385319f0b998c50eac52e32304373` with bounded candidate-allocator
   prices and deterministic targeted-regeneration planning. P4R-07 closed in
   PR #21 at `8339a21f0a526cc7566adb47b41374bfed8ac4d5` with one authentic atomic CPU
-  targeted-regeneration epoch. P4R-08 may compose those exact P4R-06/P4R-07
-  boundaries under whole-session bounds; P4R-09 and later work remain closed.
+  targeted-regeneration epoch. P4R-08 closed in PR #22 at
+  `84a1faf0aa9b0a0df0f2345e5f964caa9589993e` with whole-session-bounded,
+  replay-linked P4R-06/P4R-07 composition. P4R-09 may branch fixed-pool CPU
+  worlds from that accepted final roster under [ADR-074](../adr/ADR-074-fixed-pool-cpu-multi-world-reference.md);
+  P4R-10 and later work remain closed.
 - Do not acquire readiness until P4R-12 freezes its workload identities,
   configurations, budgets, and rule. Do not begin campaign tooling or inspect
   heldout outcomes until readiness passes and P4R-14 freezes the campaign and
@@ -214,6 +226,7 @@ These are summaries only; the architecture and accepted ADRs remain normative.
 - [ADR-071: Bounded Negotiated-Price and Regeneration Planning](../adr/ADR-071-bounded-negotiated-regeneration-plan.md)
 - [ADR-072: Single Bounded Targeted-Regeneration Epoch](../adr/ADR-072-single-targeted-regeneration-epoch.md)
 - [ADR-073: Bounded CPU Candidate-Allocation Session](../adr/ADR-073-bounded-cpu-candidate-allocation-session.md)
+- [ADR-074: Fixed-Pool CPU Multi-World Reference](../adr/ADR-074-fixed-pool-cpu-multi-world-reference.md)
 - Archived donor: `archive/phase4-pre-reset-2026-08-01` at
   `1f68ded7ff36547c3ffb8a0629482ad425786106`
 - Active baseline: `1a0d6600111c44e7f915b039190f9125d37d4a06`
